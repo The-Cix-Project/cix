@@ -22,12 +22,13 @@
 #define KMODPOLICY_LIST_MAX 64
 #define KMODPOLICY_DEPS_MAX 64
 
-/* The automatic loads that run. Only the coldplug sweep exists so far;
- * hotplug and both arrive with the hotplug path (ADR-0348's second
- * release), and the never-saved default moves to both with them. */
+/* The automatic loads that run: coldplug is the sweep at start, hotplug
+ * a device's uevent. A host that has never saved a policy uses both. */
 enum kmod_autoload {
 	KMOD_AUTOLOAD_OFF,
 	KMOD_AUTOLOAD_COLDPLUG,
+	KMOD_AUTOLOAD_HOTPLUG,
+	KMOD_AUTOLOAD_BOTH,
 };
 
 /* Who asked for a load. The blacklist refuses every origin; the
@@ -81,9 +82,8 @@ const char *kmod_autoload_name(enum kmod_autoload a);
 
 /*
  * The live policy. A host that has never saved one gets autoload
- * "coldplug" with empty lists (the owner's default of 2026-10-21 is
- * "both", which this becomes when hotplug exists), and a saved
- * policy is never replaced by that default (ADR-0315's rule). A missing
+ * "both" with empty lists (the owner's default of 2026-10-21), and a
+ * saved policy is never replaced by that default (ADR-0315's rule). A missing
  * file is the never-saved state; an unreadable or malformed one fails
  * init.
  */

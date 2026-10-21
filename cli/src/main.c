@@ -583,7 +583,8 @@ static const char USAGE_TEXT[] =
 	        "  sysctl rm KEY  -- stop reapplying at boot; never touches the live value\n"
 	        "  kmod [ls]  -- every currently-loaded kernel module (/proc/modules, ADR-0159)\n"
 	        "  kmod show NAME  -- modinfo: description, params, depends, in-tree/out-of-tree\n"
-	        "  kmod load NAME [--option=KEY=VALUE ...]  -- real modprobe; no --option= falls\n"
+	        "  kmod load NAME [--option=KEY=VALUE ...]  -- real modprobe, in the module queue;\n"
+	        "               NAME may be an alias; no --option= falls\n"
 	        "               back to this module's own persisted kmod-config default_options\n"
 	        "  kmod unload NAME  -- real modprobe -r (reverse-dependency-aware)\n"
 	        "  kmod-config [ls]  -- every module with a persisted default_options/autoload\n"
@@ -592,10 +593,11 @@ static const char USAGE_TEXT[] =
 	        "  kmod-config rm NAME  -- clears both fields\n"
 	        "  kmod-policy [show]  -- the policy every module load asks (ADR-0348): autoload,\n"
 	        "               blacklist, allowlist\n"
-	        "  kmod-policy set [--autoload=off|coldplug] [--blacklist=NAME,...]\n"
+	        "  kmod-policy set [--autoload=off|coldplug|hotplug|both] [--blacklist=NAME,...]\n"
 	        "               [--allowlist=NAME,...]  -- each flag given replaces that field;\n"
 	        "               an empty list clears it. Blacklisting never unloads a module\n"
-	        "  kmod-scan [show]  -- the coldplug sweep's report from this start\n"
+	        "  kmod-scan [show]  -- the last sweep's report: every modalias and its module\n"
+	        "  kmod-scan run  -- sweep the devices present now, and print its report\n"
 	        "  kmod-build [--version=VERSION] [--symbol=CONFIG_FOO ...]\n"
 	        "               [--upgrade] [--wait] [--keep-on-failure]  -- an ordinary\n"
 	        "               `pkg hostbuild kernel` under the hood, gaining extra =m module\n"
@@ -2885,6 +2887,20 @@ static int cmd_kmod_show(const struct cix_client *c, int json_mode, int argc, ch
 
 #define CLI_KMOD_MAX_OPTIONS 8
 
+/* What the name resolved to and what happened to each module; a name
+ * that is a module resolves to itself. */
+static void fmt_kmod_loaded(const struct json_value *v)
+{
+	const struct json_value *arr = json_object_get(v, "modules");
+	size_t i;
+
+	for (i = 0; arr != NULL && arr->type == JSON_ARRAY && i < arr->u.array.count; i++) {
+		const struct json_value *m = arr->u.array.items[i];
+
+		printf("%-15s %s\n", json_str_or(m, "outcome"), json_str_or(m, "name"));
+	}
+}
+
 static int cmd_kmod_load(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name;
@@ -2914,10 +2930,18 @@ static int cmd_kmod_load(const struct cix_client *c, int json_mode, int argc, ch
 		}
 	}
 
+	/*
+	 * No --option= sends no options field, so the daemon uses the
+	 * module's kmod-config default_options. This always sent
+	 * "options":{} until 2026-10-21, which the daemon reads as "load
+	 * with none", so the defaults the usage line promised never applied.
+	 */
 	jw_init(&w);
 	jw_obj_open(&w);
-	jw_key(&w, "options");
-	jw_obj_open(&w);
+	if (option_count > 0) {
+		jw_key(&w, "options");
+		jw_obj_open(&w);
+	}
 	for (i = 0; i < option_count; i++) {
 		char buf[128];
 		char *eq;
@@ -2933,7 +2957,8 @@ static int cmd_kmod_load(const struct cix_client *c, int json_mode, int argc, ch
 		jw_key(&w, buf);
 		jw_str(&w, eq + 1);
 	}
-	jw_obj_close(&w);
+	if (option_count > 0)
+		jw_obj_close(&w);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -2944,17 +2969,7 @@ static int cmd_kmod_load(const struct cix_client *c, int json_mode, int argc, ch
 		return 1;
 	}
 	jw_free(&w);
-	if (json_mode) {
-		printf("{\"status\":%d}\n", r.status);
-		cix_response_free(&r);
-		return r.status == 200 ? 0 : 1;
-	}
-	if (r.status == 200)
-		printf("loaded %s\n", name);
-	else
-		printf("error: status %d\n", r.status);
-	cix_response_free(&r);
-	return r.status == 200 ? 0 : 1;
+	return emit(&r, json_mode, fmt_kmod_loaded);
 }
 
 static int cmd_kmod_unload(const struct cix_client *c, int json_mode, int argc, char **argv)
@@ -2971,17 +2986,11 @@ static int cmd_kmod_unload(const struct cix_client *c, int json_mode, int argc, 
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
-	if (json_mode) {
-		printf("{\"status\":%d}\n", r.status);
-		cix_response_free(&r);
-		return r.status == 204 ? 0 : 1;
-	}
-	if (r.status == 204)
+	if (r.status == 204 && !json_mode)
 		printf("unloaded %s\n", argv[0]);
-	else
-		printf("error: status %d\n", r.status);
-	cix_response_free(&r);
-	return r.status == 204 ? 0 : 1;
+	/* emit() says the daemon's reason on a refusal -- modprobe's own
+	 * words -- where this printed only the status until 2026-10-21. */
+	return emit(&r, json_mode, NULL);
 }
 
 static int cmd_kmod(const struct cix_client *c, int json_mode, int argc, char **argv)
@@ -3247,7 +3256,7 @@ static int cmd_kmodpolicy_set(const struct cix_client *c, int json_mode, int arg
 		}
 	}
 	if (autoload == NULL && blacklist == NULL && allowlist == NULL) {
-		fprintf(stderr, "usage: cixctl kmod-policy set [--autoload=off|coldplug] "
+		fprintf(stderr, "usage: cixctl kmod-policy set [--autoload=off|coldplug|hotplug|both] "
 		                "[--blacklist=NAME,...] [--allowlist=NAME,...]\n");
 		return 2;
 	}
@@ -3286,7 +3295,7 @@ static int cmd_kmodpolicy(const struct cix_client *c, int json_mode, int argc, c
 	if (strcmp(argv[0], "set") == 0)
 		return cmd_kmodpolicy_set(c, json_mode, argc - 1, argv + 1);
 	fprintf(stderr, "usage: cixctl kmod-policy [show]  -- the policy every module load asks\n"
-	                "       cixctl kmod-policy set [--autoload=off|coldplug] "
+	                "       cixctl kmod-policy set [--autoload=off|coldplug|hotplug|both] "
 	                "[--blacklist=NAME,...] [--allowlist=NAME,...]\n");
 	return 2;
 }
@@ -3298,12 +3307,15 @@ static void fmt_kmodscan(const struct json_value *v)
 	const struct json_value *arr = json_object_get(v, "entries");
 	size_t i, unclaimed = 0;
 
+	if (json_bool_field(v, "running"))
+		printf("a sweep is queued or running; its report will replace this one\n");
 	if (!json_bool_field(v, "ran")) {
 		printf("not run: %s\n", json_str_or(v, "not_run_reason"));
 		return;
 	}
-	printf("swept %.0f aliases in %.0f ms%s\n", json_as_number(json_object_get(v, "aliases")),
-	       json_as_number(json_object_get(v, "duration_ms")),
+	printf("swept %.0f aliases in %.0f ms (%s)%s\n",
+	       json_as_number(json_object_get(v, "aliases")),
+	       json_as_number(json_object_get(v, "duration_ms")), json_str_or(v, "trigger"),
 	       json_bool_field(v, "truncated") ? " (truncated at the alias limit)" : "");
 	for (i = 0; arr != NULL && arr->type == JSON_ARRAY && i < arr->u.array.count; i++) {
 		const struct json_value *e = arr->u.array.items[i];
@@ -3320,12 +3332,50 @@ static void fmt_kmodscan(const struct json_value *v)
 	printf("%zu aliases claimed by no module (--json lists them)\n", unclaimed);
 }
 
+/*
+ * POST queues a sweep and answers at once; this waits for the report
+ * to replace the old one, reading GET until running is false. Bounded:
+ * a sweep on .95 takes about 1.3 s, and one that has not finished in two
+ * minutes is reported rather than waited on for ever.
+ */
+static int cmd_kmodscan_run(const struct cix_client *c, int json_mode)
+{
+	struct cix_response r;
+	int i;
+
+	if (cix_client_request(c, CIX_API_runKmodScan_METHOD, CIX_API_runKmodScan, NULL, &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	if (r.status != 202)
+		return emit(&r, json_mode, fmt_kmodscan);
+	cix_response_free(&r);
+	for (i = 0; i < 240; i++) {
+		usleep(500000);
+		if (cix_client_request(c, CIX_API_getKmodScan_METHOD, CIX_API_getKmodScan, NULL, &r) !=
+		    0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		if (r.status != 200 || !json_bool_field(r.json, "running"))
+			return emit(&r, json_mode, fmt_kmodscan);
+		cix_response_free(&r);
+	}
+	fprintf(stderr, "cixctl: the sweep is still running after 120 s; `cixctl kmod-scan` shows "
+	                "its report when it finishes\n");
+	return 1;
+}
+
 static int cmd_kmodscan(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct cix_response r;
 
+	if (argc > 0 && strcmp(argv[0], "run") == 0)
+		return cmd_kmodscan_run(c, json_mode);
 	if (argc > 0 && strcmp(argv[0], "show") != 0) {
-		fprintf(stderr, "usage: cixctl kmod-scan [show]  -- the coldplug sweep's report\n");
+		fprintf(stderr, "usage: cixctl kmod-scan [show]  -- the last sweep's report\n"
+		                "       cixctl kmod-scan run  -- sweep the devices present now, and "
+		                "print its report\n");
 		return 2;
 	}
 	if (cix_client_request(c, CIX_API_getKmodScan_METHOD, CIX_API_getKmodScan, NULL, &r) != 0) {

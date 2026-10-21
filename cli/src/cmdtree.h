@@ -682,6 +682,7 @@ static const struct cli_node n_kmod_policy_subs[] = {
 };
 
 static const struct cli_node n_kmod_scan_subs[] = {
+	{ "run", NULL, NULL },
 	{ "show", NULL, NULL },
 	{ NULL, NULL, NULL },
 };

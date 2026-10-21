@@ -1381,6 +1381,16 @@ enum logread_state {
 	LOGREAD_STATE_TAKEN,       /* the resumed pass took the body */
 };
 
+/* ADR-0348: what an explicit module load or unload left on its
+ * connection. */
+enum kmodjob_state {
+	KMODJOB_STATE_NONE = 0,
+	KMODJOB_STATE_DONE,        /* kmod_report holds the job's report */
+	KMODJOB_STATE_UNAVAILABLE, /* it could not start: the resumed pass answers busy */
+	KMODJOB_STATE_FAILED,      /* it ran and produced no report */
+	KMODJOB_STATE_TAKEN,       /* the resumed pass took the report */
+};
+
 struct park;
 
 struct conn {
@@ -1516,11 +1526,15 @@ struct conn {
 	 * the pass that resumes it does not write a second. cred_hash and
 	 * cred_secret (#610): what a verified HASH or NEW_SECRET made, held
 	 * from the helper's result to the resumed pass that stores it, and
-	 * wiped at teardown.
+	 * wiped at teardown. kmod_state and kmod_report (ADR-0348) are what
+	 * an explicit module load or unload left, the job's report, held
+	 * until the resumed pass takes it.
 	 */
 	struct park *park;
 	enum logread_state logread_state;
 	int logread_fd;
+	enum kmodjob_state kmod_state;
+	struct kmodscan_report *kmod_report;
 	enum cred_state cred_state;
 	unsigned char cred_bind[CREDCHECK_BIND_LEN];
 	char cred_hash[PWHASH_BCRYPT_LEN + 1];
@@ -2140,7 +2154,7 @@ static void load_boot_modules(void)
 		 */
 		char why[256];
 
-		if (kmodscan_load(boot_modules[i], KMOD_ORIGIN_NIC, why, sizeof(why)) == KMODSCAN_REFUSED)
+		if (kmodscan_load(boot_modules[i], KMOD_ORIGIN_NIC, NULL, why, sizeof(why)) == KMODSCAN_REFUSED)
 			kmodscan_say("info", "kmod boot NIC list: refused %s: %s", boot_modules[i], why);
 	}
 }
@@ -2203,7 +2217,7 @@ static void load_one_configured_module(const char *name, const char *options, vo
 	 * anything written before it, so the logstore_write() that stood
 	 * here reached nowhere, read from the code on 2026-10-21.
 	 */
-	switch (kmodscan_load(name, KMOD_ORIGIN_CONFIG, why, sizeof(why))) {
+	switch (kmodscan_load(name, KMOD_ORIGIN_CONFIG, NULL, why, sizeof(why))) {
 	case KMODSCAN_REFUSED:
 		kmodscan_say("info", "kmod autoload: refused %s: %s", name, why);
 		break;
@@ -5006,12 +5020,25 @@ static int live_attach_one_device(struct registry_entry *e, const struct discove
  * that otherwise can't bind this socket, simply never gets hotplug
  * reactions -- every other capability this daemon has is unaffected.
  */
-static void start_uevent_watch(void)
+static int g_uevent_fd = -1;
+
+/*
+ * ADR-0348: the socket is opened before the start-up sweep and watched
+ * only once the loop exists. A driver the sweep loads makes devices
+ * appear -- a USB controller's driver, then everything behind it -- and
+ * their uevents must queue in this socket rather than fall in the gap
+ * between a sweep that has already passed them and a watch not yet
+ * open. The receive buffer is raised for the same burst; a socket that
+ * overflows anyway says so as ENOBUFS, which the handler answers with a
+ * sweep.
+ */
+static void open_uevent_socket(void)
 {
-	struct cix_epoll_event ev;
-	int fd;
+	int fd, rcvbuf = 4 * 1024 * 1024;
 	struct sockaddr_nl addr;
 
+	if (g_uevent_fd >= 0)
+		return;
 	fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_KOBJECT_UEVENT);
 	if (fd < 0)
 		return;
@@ -5024,6 +5051,23 @@ static void start_uevent_watch(void)
 		close(fd);
 		return;
 	}
+	/* Best-effort: SO_RCVBUFFORCE passes the rmem_max cap, and needs
+	 * CAP_NET_ADMIN, which a real boot has. */
+	if (setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, &rcvbuf, sizeof(rcvbuf)) != 0)
+		(void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+	g_uevent_fd = fd;
+}
+
+static void start_uevent_watch(void)
+{
+	struct cix_epoll_event ev;
+	int fd;
+
+	open_uevent_socket();
+	fd = g_uevent_fd;
+	if (fd < 0)
+		return;
+	g_uevent_fd = -1; /* the conn owns it from here */
 
 	g_uevent_conn.kind = CONN_UEVENT;
 	g_uevent_conn.fd = fd;
@@ -5341,15 +5385,37 @@ static void reconcile_live_device_revocations(void)
  * treated purely as a trigger ("something USB just changed, go
  * recheck"), not as a source of device identity.
  */
+static void kmod_hotplug(const char *alias, const char *device);
+static int kmod_queue_sweep(enum kmodscan_trigger trigger);
+
 static void handle_uevent_event(struct conn *cc)
 {
 	char buf[2048];
 	ssize_t n;
 	int is_add = 0, is_remove = 0, is_usb = 0, is_pci = 0, is_whole_device = 0;
 	int is_hardware = 0; /* ADR-0339: a subsystem the device and storage reads list */
+	const char *modalias = NULL, *devpath = NULL;
 	size_t off;
 
 	n = recv(cc->fd, buf, sizeof(buf) - 1, 0);
+	if (n < 0 && errno == ENOBUFS) {
+		/*
+		 * ADR-0348: the socket overflowed, and the events it dropped
+		 * may have been devices plugged in. Which ones cannot be known,
+		 * so a sweep decides every device present instead -- the
+		 * remedy covers what was lost rather than guessing at it.
+		 */
+		if (kmod_policy_autoload_covers(kmodpolicy_current(), KMOD_ORIGIN_HOTPLUG)) {
+			logstore_write("cixd", "warning",
+			               "the kernel's uevent socket overflowed and dropped events; a "
+			               "sweep decides every device present (ADR-0348)");
+			if (kmod_queue_sweep(KMODSCAN_TRIGGER_OVERFLOW) != 0)
+				logstore_write("cixd", "error",
+				               "kmod: the module queue is full, so the catch-up sweep was "
+				               "not queued -- POST /v1/system/kmod-scan");
+		}
+		return;
+	}
 	if (n <= 0)
 		return;
 	buf[n] = '\0';
@@ -5369,10 +5435,27 @@ static void handle_uevent_event(struct conn *cc)
 		} else if (strncmp(line, "DEVPATH=", 8) == 0) {
 			const char *base = strrchr(line + 8, '/');
 
+			devpath = line + 8;
 			base = (base != NULL) ? base + 1 : line + 8;
 			is_whole_device = strchr(base, ':') == NULL;
+		} else if (strncmp(line, "MODALIAS=", 9) == 0) {
+			modalias = line + 9;
 		}
 		off += line_len + 1;
+	}
+
+	/*
+	 * ADR-0348 rule 3: a device that arrives with a modalias gets its
+	 * driver. Every subsystem, and an interface as much as a whole
+	 * device: a USB driver binds to an interface, and that is where
+	 * the alias is (the TP-Link dongle's ends icFFiscFFipFFin00).
+	 * Queued, never resolved here.
+	 */
+	if (is_add && modalias != NULL && modalias[0] != '\0') {
+		char device[KMODSCAN_DEVICE_MAX];
+
+		snprintf(device, sizeof(device), "/sys%s", devpath != NULL ? devpath : "");
+		kmod_hotplug(modalias, device);
 	}
 
 	/* ADR-0339: a device arriving or leaving -- a disk, a partition, a
@@ -27692,6 +27775,11 @@ static void op_getKmodScan(const struct api_ctx *ctx)
 	handle_kmodscan_get(ctx->fd);
 }
 
+static void op_runKmodScan(const struct api_ctx *ctx)
+{
+	handle_kmodscan_post(ctx->fd);
+}
+
 /* POST /v1/system/kmod-build */
 static void op_postKmodBuild(const struct api_ctx *ctx)
 {
@@ -32274,12 +32362,19 @@ static void conn_out_unlink(struct conn *cc)
 
 /* ---------- ADR-0340 (#609), ADR-0342 (#612): a request waits for work run off the loop ----------
  *
- * Two kinds of work make a request wait, and they share one mechanism:
+ * Three kinds of work make a request wait, and they share one mechanism:
  *
  *   - a credential check (ADR-0340): credcheck_ask() reaches
  *     cred_broker() below for the request being served;
  *   - a filtered log read (ADR-0342): logread_ask() reaches
- *     logread_broker().
+ *     logread_broker();
+ *   - an explicit module load or unload (ADR-0348): kmodscan_ask()
+ *     reaches kmod_broker().
+ *
+ * The module queue also carries the daemon's own work, which no request
+ * waits for: a plugged device's alias and a sweep. Such a record has no
+ * connection from the start (daemon_job), and its done callback does
+ * all of its work itself.
  *
  * If the connection already carries the answer, that is returned.
  * Otherwise the request is PARKED: a park record is made, a helper child
@@ -32300,6 +32395,7 @@ static void conn_out_unlink(struct conn *cc)
 enum park_kind {
 	PARK_CRED,
 	PARK_LOGREAD,
+	PARK_KMOD,
 	PARK_KINDS
 };
 
@@ -32317,7 +32413,10 @@ struct park {
 	int pipe_wr; /* the child's end, closed in the parent as soon as it is forked */
 	/* PARK_LOGREAD */
 	struct logread_query q;
-	int memfd; /* the child writes the response body here; -1 until it is started */
+	int memfd; /* the child writes its result here (both kinds below); -1 until started */
+	/* PARK_KMOD */
+	struct kmodscan_job job;
+	int daemon_job; /* the daemon's own work: no client, from the start */
 };
 
 /*
@@ -32330,6 +32429,9 @@ struct park {
  * startup, leaving the loop and the rest of the host the other half,
  * and 32 waiting. Log reads: 2 and 16 (ADR-0342 item 7) -- a read is
  * mostly the disk, and two at once already make the page cache work.
+ * Module jobs: one `modprobe` at a time (ADR-0348 rule 5), and 256
+ * waiting, because a hub plugged in is a burst of uevents, one job per
+ * alias, and a dropped one is a device without its driver.
  */
 struct park_queue {
 	int running_max;
@@ -32343,14 +32445,17 @@ struct park_queue {
 #define CRED_WAIT_MAX 32
 #define LOGREAD_RUNNING_MAX 2
 #define LOGREAD_WAIT_MAX 16
+#define KMOD_WAIT_MAX 256
 static struct park_queue g_park_q[PARK_KINDS] = {
 	[PARK_CRED] = { .running_max = 1, .wait_max = CRED_WAIT_MAX },
 	[PARK_LOGREAD] = { .running_max = LOGREAD_RUNNING_MAX, .wait_max = LOGREAD_WAIT_MAX },
+	[PARK_KMOD] = { .running_max = 1, .wait_max = KMOD_WAIT_MAX },
 };
 
 static void serve_request(struct conn *cc);
 static void cred_check_done(int exit_status, void *ctx);
 static void logread_done(int exit_status, void *ctx);
+static void kmod_job_done(int exit_status, void *ctx);
 
 static struct park *park_new(enum park_kind kind, struct conn *cc)
 {
@@ -32405,7 +32510,9 @@ static void park_unlink_waiting(struct park *p)
  * removed and freed -- work for a client that has gone would be a fork
  * for nobody, and would hold a place in the queue. A running one keeps
  * its record until the helper finishes; it just loses its client, and a
- * running log read is killed so that it finishes now.
+ * running log read is killed so that it finishes now. A running module
+ * job is not: a modprobe stopped half way through an insert leaves the
+ * kernel's state unknown, and what it did is still logged and announced.
  */
 static void park_abandon(struct park *p)
 {
@@ -32500,9 +32607,53 @@ static int logread_start(struct park *p)
 	return 0;
 }
 
+/* The helper child of a module job (ADR-0348): the job, into a report,
+ * and the report into the memory file the parent made before the fork.
+ * It logs nothing and changes nothing the parent reads (kmodscan.h). */
+static int kmod_job_work(void *arg)
+{
+	struct park *p = arg;
+	struct kmodscan_report r;
+	int rc;
+
+	kmodscan_report_init(&r);
+	kmodscan_run(&p->job, &r);
+	rc = kmodscan_report_write(&r, p->memfd);
+	kmodscan_report_free(&r);
+	return rc == 0 ? 0 : 1;
+}
+
+/* Forks a module job. A memfd for the same reason as a log read: a
+ * sweep's report is far larger than a pipe holds. */
+static int kmod_job_start(struct park *p)
+{
+	p->memfd = memfd_create("cix-kmodjob", MFD_CLOEXEC);
+	if (p->memfd < 0)
+		return -1;
+	if (helper_run_pid(kmod_job_work, p, kmod_job_done, p, "a module job", &p->pid) != 0) {
+		close(p->memfd);
+		p->memfd = -1;
+		return -1;
+	}
+	return 0;
+}
+
 static int park_start(struct park *p)
 {
-	int rc = p->kind == PARK_CRED ? cred_check_start(p) : logread_start(p);
+	int rc;
+
+	switch (p->kind) {
+	case PARK_CRED:
+		rc = cred_check_start(p);
+		break;
+	case PARK_LOGREAD:
+		rc = logread_start(p);
+		break;
+	case PARK_KMOD:
+	default:
+		rc = kmod_job_start(p);
+		break;
+	}
 
 	if (rc == 0) {
 		p->running = 1;
@@ -32548,9 +32699,31 @@ static void park_unavailable(struct conn *cc, enum park_kind kind)
 	cc->park = NULL;
 	if (kind == PARK_CRED)
 		cc->cred_state = CRED_UNAVAILABLE;
-	else
+	else if (kind == PARK_LOGREAD)
 		cc->logread_state = LOGREAD_STATE_UNAVAILABLE;
+	else
+		cc->kmod_state = KMODJOB_STATE_UNAVAILABLE;
 	serve_request(cc);
+}
+
+/*
+ * The daemon's own module job cannot run after all (no fork). There is
+ * no request to answer, so it is said: a plugged device left without its
+ * driver, or a sweep that will not happen.
+ */
+static void kmod_daemon_job_unavailable(struct park *p)
+{
+	if (p->job.kind == KMODSCAN_JOB_SWEEP) {
+		kmodscan_set_sweep_pending(0);
+		logstore_write("cixd", "error",
+		               "kmod: the module queue could not start a sweep (%s) -- POST "
+		               "/v1/system/kmod-scan to try again",
+		               strerror(errno));
+	} else {
+		logstore_write("cixd", "error",
+		               "kmod hotplug: the module queue could not start the job for %s (%s): %s",
+		               p->job.alias, p->job.device, strerror(errno));
+	}
 }
 
 /* Starts what was waiting in this kind's queue, as far as there is room. */
@@ -32567,7 +32740,7 @@ static void park_start_waiting(enum park_kind kind)
 			pq->tail = NULL;
 		pq->waiting--;
 		p->next = NULL;
-		if (cc == NULL) {
+		if (cc == NULL && !p->daemon_job) {
 			/* park_abandon() unlinks a waiting record whose client
 			 * left, so this is not reached; a ghost is freed, not
 			 * forked for, if it ever is. */
@@ -32576,8 +32749,11 @@ static void park_start_waiting(enum park_kind kind)
 		}
 		if (park_start(p) == 0)
 			continue;
+		if (cc == NULL)
+			kmod_daemon_job_unavailable(p);
 		park_free(p);
-		park_unavailable(cc, kind);
+		if (cc != NULL)
+			park_unavailable(cc, kind);
 	}
 }
 
@@ -32796,6 +32972,193 @@ static void logread_done(int exit_status, void *ctx)
 	park_start_waiting(PARK_LOGREAD);
 }
 
+/*
+ * ADR-0348: queues the daemon's own module job -- a sweep or a plugged
+ * device's alias. 0, or -1 when the queue can neither start nor hold it,
+ * which the caller says.
+ */
+static int kmod_submit_daemon_job(const struct kmodscan_job *job)
+{
+	struct park *p = park_new(PARK_KMOD, NULL);
+
+	if (p == NULL)
+		return -1;
+	p->job = *job;
+	p->daemon_job = 1;
+	if (park_submit(p) != 0) {
+		park_free(p);
+		return -1;
+	}
+	return 0;
+}
+
+/* A sweep, unless one is already queued or running: its report will
+ * cover the same devices. 0 when one is pending afterwards. */
+static int kmod_queue_sweep(enum kmodscan_trigger trigger)
+{
+	static struct kmodscan_job job; /* a page and more: not on the stack */
+
+	if (kmodscan_sweep_pending())
+		return 0;
+	memset(&job, 0, sizeof(job));
+	job.kind = KMODSCAN_JOB_SWEEP;
+	job.trigger = trigger;
+	if (kmod_submit_daemon_job(&job) != 0)
+		return -1;
+	kmodscan_set_sweep_pending(1);
+	return 0;
+}
+
+/*
+ * A uevent's MODALIAS=, on the loop: only queued, never resolved here.
+ * An alias already waiting its turn is not queued twice -- a device
+ * re-announced while the queue is busy needs one decision -- and a
+ * full queue is said, naming the device, because a dropped plug is a
+ * device left without its driver.
+ */
+static void kmod_hotplug(const char *alias, const char *device)
+{
+	static struct kmodscan_job job;
+	struct park *w;
+
+	if (!kmod_policy_autoload_covers(kmodpolicy_current(), KMOD_ORIGIN_HOTPLUG))
+		return;
+	for (w = g_park_q[PARK_KMOD].head; w != NULL; w = w->next) {
+		if (w->job.kind == KMODSCAN_JOB_ALIAS && strcmp(w->job.alias, alias) == 0)
+			return;
+	}
+	memset(&job, 0, sizeof(job));
+	job.kind = KMODSCAN_JOB_ALIAS;
+	snprintf(job.alias, sizeof(job.alias), "%s", alias);
+	snprintf(job.device, sizeof(job.device), "%s", device);
+	if (kmod_submit_daemon_job(&job) != 0)
+		logstore_write("cixd", "warning",
+		               "kmod hotplug: the module queue could not take %s (%s) -- it is full, or "
+		               "no helper could start -- so it was not decided; POST "
+		               "/v1/system/kmod-scan decides every device present",
+		               alias, device);
+}
+
+/*
+ * ADR-0348: an explicit load or unload for the request being served, or
+ * a sweep on request. A connection carries one request, and its resumed
+ * pass makes the same ask, so the report attached to it is the answer to
+ * the same job; a load grants nothing, so it needs no bind.
+ */
+static enum kmodscan_answer kmod_broker(const struct kmodscan_job *job,
+                                        struct kmodscan_report **out)
+{
+	struct conn *cc = g_response_conn;
+	struct park *p;
+
+	if (job->kind == KMODSCAN_JOB_SWEEP)
+		return kmod_queue_sweep(job->trigger) == 0 ? KMODSCAN_QUEUED : KMODSCAN_BUSY;
+	if (cc == NULL || cc->fd < 0 || cc->kind != CONN_CLIENT)
+		return KMODSCAN_BUSY;
+	switch (cc->kmod_state) {
+	case KMODJOB_STATE_NONE:
+		break;
+	case KMODJOB_STATE_DONE:
+		*out = cc->kmod_report;
+		cc->kmod_report = NULL;
+		cc->kmod_state = KMODJOB_STATE_TAKEN;
+		return KMODSCAN_READY;
+	case KMODJOB_STATE_UNAVAILABLE:
+		return KMODSCAN_BUSY;
+	case KMODJOB_STATE_FAILED:
+	case KMODJOB_STATE_TAKEN:
+	default:
+		return KMODSCAN_NO_RESULT;
+	}
+	if (cc->park != NULL)
+		return KMODSCAN_BUSY; /* one park per request */
+	p = park_new(PARK_KMOD, cc);
+	if (p == NULL)
+		return KMODSCAN_BUSY;
+	p->job = *job;
+	if (park_submit(p) != 0) {
+		park_free(p);
+		return KMODSCAN_BUSY;
+	}
+	cc->park = p;
+	return KMODSCAN_PARKED;
+}
+
+/*
+ * A module job finished. The parent's half of kmodscan.h's split: read
+ * the report, then do what has an effect -- a sweep's report becomes
+ * the last one, a plug's outcomes are logged, a parked request is served
+ * again with its report attached -- and announce GET /v1/system/kmod
+ * when anything was loaded or unloaded. A request whose client left is
+ * still logged, once, since its modprobe ran.
+ */
+static void kmod_job_done(int exit_status, void *ctx)
+{
+	struct park *p = ctx;
+	struct kmodscan_report *r = calloc(1, sizeof(*r));
+	int ok = 0;
+
+	park_finished(p);
+	if (r != NULL && exit_status == 0 && lseek(p->memfd, 0, SEEK_SET) == 0 &&
+	    kmodscan_report_read(r, p->memfd) == 0)
+		ok = 1;
+	if (!ok)
+		logstore_write("cixd", "error",
+		               "kmod: a module job (%s) ended without a report (helper exit %d)",
+		               p->job.kind == KMODSCAN_JOB_SWEEP    ? "sweep"
+		               : p->job.kind == KMODSCAN_JOB_ALIAS  ? p->job.alias
+		               : p->job.kind == KMODSCAN_JOB_LOAD   ? "load"
+		                                                    : "unload",
+		               exit_status);
+	if (ok && kmodscan_report_changed_modules(r))
+		events_announce(EV_listKmod);
+
+	switch (p->job.kind) {
+	case KMODSCAN_JOB_SWEEP:
+		if (ok)
+			kmodscan_adopt(r);
+		else
+			kmodscan_set_sweep_pending(0);
+		break;
+	case KMODSCAN_JOB_ALIAS:
+		if (ok)
+			kmodscan_report_say(r, KMOD_ORIGIN_HOTPLUG);
+		break;
+	case KMODSCAN_JOB_LOAD:
+	case KMODSCAN_JOB_UNLOAD:
+		if (p->cc != NULL) {
+			struct conn *cc = p->cc;
+
+			cc->park = NULL;
+			if (ok) {
+				cc->kmod_report = r;
+				r = NULL;
+				cc->kmod_state = KMODJOB_STATE_DONE;
+			} else {
+				cc->kmod_state = KMODJOB_STATE_FAILED;
+			}
+			park_free(p);
+			p = NULL;
+			serve_request(cc);
+		} else if (ok && r->entry_count > 0) {
+			logstore_write("cixd", "info",
+			               "kmod: %s of %s finished after the client had gone: %s%s%s",
+			               p->job.kind == KMODSCAN_JOB_LOAD ? "a load" : "an unload",
+			               p->job.name, kmodscan_outcome_name(r->entries[0].outcome),
+			               r->entries[0].reason[0] != '\0' ? " -- " : "",
+			               r->entries[0].reason);
+		}
+		break;
+	}
+	if (r != NULL) {
+		kmodscan_report_free(r);
+		free(r);
+	}
+	if (p != NULL)
+		park_free(p);
+	park_start_waiting(PARK_KMOD);
+}
+
 static void client_conn_teardown(struct conn *cc)
 {
 	conn_out_unlink(cc);
@@ -32817,6 +33180,11 @@ static void client_conn_teardown(struct conn *cc)
 	if (cc->logread_state == LOGREAD_STATE_DONE) {
 		close(cc->logread_fd);
 		cc->logread_state = LOGREAD_STATE_TAKEN;
+	}
+	if (cc->kmod_report != NULL) {
+		kmodscan_report_free(cc->kmod_report);
+		free(cc->kmod_report);
+		cc->kmod_report = NULL;
 	}
 	explicit_bzero(cc->cred_secret, sizeof(cc->cred_secret));
 	explicit_bzero(cc->cred_hash, sizeof(cc->cred_hash));
@@ -37000,9 +37368,12 @@ static int cixd_main(int argc, char **argv)
 	 * in that order and before boot autostart below, so a container
 	 * never starts ahead of a driver either gives it. Both run before
 	 * the loop serves anything. A plain/test invocation runs neither,
-	 * and the scan report says why.
+	 * and the scan report says why. The uevent socket opens first, so a
+	 * device that appears behind a driver the sweep loads is queued
+	 * there and handled once the loop runs (open_uevent_socket()).
 	 */
 	if (init_mode) {
+		open_uevent_socket();
 		kmodscan_boot_sweep();
 		load_configured_modules();
 	} else {
@@ -37712,6 +38083,7 @@ static int cixd_main(int argc, char **argv)
 	credcheck_set_broker(cred_broker);
 	/* ADR-0342: a filtered log read runs in a helper child. */
 	logread_set_broker(logread_broker);
+	kmodscan_set_broker(kmod_broker); /* ADR-0348 */
 	/* ADR-0339: X-Cix-Generation on every answer to an announced read. */
 	http_set_header_hook(events_generation_header);
 	/* ADR-0339 point 7: the baseline every later check compares with --

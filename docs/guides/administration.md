@@ -63,11 +63,14 @@ Which drivers are modules at all is a deliberate split (#347): a driver for a *p
 cixctl kmod-policy
 cixctl kmod-policy set --blacklist=floppy,pcspkr
 cixctl kmod-scan
+cixctl kmod-scan run
 ```
 
-At start, before the API serves anything, the daemon sweeps `/sys/devices` and loads the driver for each device present, with that module's `kmod-config` options, after the boot NIC drivers and before `kmod-config` autoload and container autostart ([ADR-0348](../adr/0348-a-device-gets-its-driver-and-one-policy-decides-every-module-load.md)). `kmod-scan` shows what the sweep met and what it did, unclaimed devices and modules already loaded included. Loads, refusals and failures are also in the log, once each.
+A device gets its driver when it appears ([ADR-0348](../adr/0348-a-device-gets-its-driver-and-one-policy-decides-every-module-load.md)). At start, before the API serves anything, the daemon sweeps `/sys/devices` and loads the driver for each device present, with that module's `kmod-config` options, after the boot NIC drivers and before `kmod-config` autoload and container autostart. After that, a device plugged in gets its driver as it arrives. `kmod-scan` shows what the last sweep met and what it did, unclaimed devices and modules already loaded included; `kmod-scan run` sweeps again now and prints the result. Loads, refusals and failures, the sweep's and a plug's, are in the log, once each.
 
-Every load asks `kmod-policy` first, whoever asks. **A blacklisted module never loads**: not from `kmod load` (refused with the reason), not from `kmod-config` autoload, not from the sweep, and not as a dependency of another module. **The allowlist**, when not empty, restricts only the automatic loads, since naming a module yourself is allowing it. Blacklisting a module does not unload it: `kmod ls` marks a loaded, blacklisted module, the log says so once, and `kmod unload NAME` removes it when you choose. `--autoload=off` stops the sweep. Loading on plug follows in a later release.
+After start, `modprobe` never runs on the daemon's event loop: every load and unload, `kmod load` and `kmod unload` included, waits its turn in one queue, one `modprobe` at a time, so a slow driver does not stop the API answering.
+
+Every load asks `kmod-policy` first, whoever asks. **A blacklisted module never loads**: not from `kmod load` (refused with the reason, also when the name given is an alias for it), not from `kmod-config` autoload, not from a sweep or a plug, and not as a dependency of another module. **The allowlist**, when not empty, restricts only the automatic loads, since naming a module yourself is allowing it. Blacklisting a module does not unload it: `kmod ls` marks a loaded, blacklisted module, the log says so once, and `kmod unload NAME` removes it when you choose. `--autoload` chooses the automatic loads: `both` (the default), `coldplug` (the sweep at start only), `hotplug` (a plug only) or `off`.
 
 The kernel's own route for loading a module by name (`request_module()`) loads nothing on a Cix host, and that is kept, so every module that loads is one this policy decided. A module that matches no device, such as a filesystem type, is a `kmod-config` autoload entry.
 

@@ -10,6 +10,7 @@
 #include "logstore.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int blacklisted_now(const char *name)
@@ -67,12 +68,76 @@ static void respond_kmod_tool_error(int fd, const char *what, char *tool_out)
 	respond_error(fd, 404, "Not Found", msg);
 }
 
+static void respond_kmod_queue_busy(int fd)
+{
+	respond_error_hdrs(fd, 503, "Service Unavailable", "Retry-After: 1\r\n",
+	                   "the module queue is full -- try again shortly", 0);
+}
+
+/*
+ * The answer to an explicit load, from its job's report: the first
+ * refusal is a 409 naming the module and the reason, a failure is
+ * modprobe's own words, and options asked for a module already loaded
+ * are a 409 saying why they cannot apply. Otherwise 200, with the
+ * options used and what the name resolved to.
+ */
+static void respond_kmod_load(int fd, const char *name, const char *options,
+                              const struct kmodscan_report *rep)
+{
+	struct json_writer w;
+	int i;
+
+	if (rep->entry_count == 0) {
+		respond_error(fd, 500, "Internal Server Error",
+		              "the module load produced no outcome -- see the log");
+		return;
+	}
+	for (i = 0; i < rep->entry_count; i++) {
+		const struct kmodscan_entry *e = &rep->entries[i];
+
+		if (e->outcome == KMODSCAN_REFUSED ||
+		    (e->outcome == KMODSCAN_ALREADY_LOADED && e->reason[0] != '\0')) {
+			respond_error(fd, 409, "Conflict", e->reason);
+			return;
+		}
+		if (e->outcome == KMODSCAN_FAILED) {
+			char tool_out[KMOD_TOOL_OUT_MAX];
+
+			snprintf(tool_out, sizeof(tool_out), "%s", e->reason);
+			respond_kmod_tool_error(fd, "modprobe could not load this module", tool_out);
+			return;
+		}
+	}
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "name");
+	jw_str(&w, name);
+	jw_key(&w, "options");
+	kmod_options_write_json(options, &w);
+	jw_key(&w, "modules");
+	jw_arr_open(&w);
+	for (i = 0; i < rep->entry_count; i++) {
+		jw_obj_open(&w);
+		jw_key(&w, "name");
+		jw_str(&w, rep->entries[i].module);
+		jw_key(&w, "outcome");
+		jw_str(&w, kmodscan_outcome_name(rep->entries[i].outcome));
+		jw_obj_close(&w);
+	}
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 void handle_kmod_post(int fd, const char *name, const char *body, size_t body_len)
 {
+	static struct kmodscan_job job; /* a page and more: not on the stack */
 	char options[KMOD_OPTIONS_MAX];
-	char tool_out[KMOD_TOOL_OUT_MAX];
 	struct json_value *root = NULL;
 	const struct json_value *joptions = NULL;
+	struct kmodscan_report *rep;
+	int has_options = 0;
 
 	if (!kmod_name_is_valid(name)) {
 		respond_error(fd, 400, "Bad Request", "invalid module name");
@@ -95,6 +160,7 @@ void handle_kmod_post(int fd, const char *name, const char *body, size_t body_le
 			              "options must be an object of string values");
 			return;
 		}
+		has_options = 1;
 	} else {
 		const char *def = kmodconfig_get_options(name);
 
@@ -103,79 +169,82 @@ void handle_kmod_post(int fd, const char *name, const char *body, size_t body_le
 	json_free(root);
 
 	/*
-	 * ADR-0348: the blacklist beats an explicit request too, and a
-	 * blacklisted dependency would load with the module, so both are
-	 * refused before modprobe runs. The dependency list comes from
-	 * modules.dep in-process; an unreadable file leaves only the name
-	 * to decide on, and modprobe could not load anything without it.
+	 * ADR-0348: the decision and the load run in the module queue, off
+	 * the loop, and this request waits its turn. The job decides the
+	 * name as given and each module it resolves to before anything
+	 * loads -- the blacklist beats an explicit request -- and refuses
+	 * options for a module already loaded, since modprobe would answer
+	 * success for parameters the kernel never saw. That check is the
+	 * job's rather than this handler's because this handler runs again,
+	 * from the start, once the job has loaded the module.
 	 */
-	{
-		char deps[KMODPOLICY_DEPS_MAX][KMOD_NAME_MAX];
-		char why[256];
-		int ndeps = kmod_dependencies(name, deps, KMODPOLICY_DEPS_MAX);
-
-		if (kmod_policy_verdict(kmodpolicy_current(), name, deps, ndeps < 0 ? 0 : ndeps,
-		                        KMOD_ORIGIN_REQUEST, why, sizeof(why)) != KMOD_ALLOW) {
-			respond_error(fd, 409, "Conflict", why);
-			return;
-		}
+	memset(&job, 0, sizeof(job));
+	job.kind = KMODSCAN_JOB_LOAD;
+	snprintf(job.name, sizeof(job.name), "%s", name);
+	if (has_options) {
+		snprintf(job.options, sizeof(job.options), "%s", options);
+		job.has_options = 1;
 	}
-
-	/*
-	 * modprobe on an already-loaded module succeeds and does nothing.
-	 * With options that made this endpoint answer 200 and echo back
-	 * parameters the kernel had never seen -- a reported success for
-	 * work that did not happen, which is the failure mode this project
-	 * treats most seriously. Module parameters are set at insert time,
-	 * so changing them means unloading first, and only the operator can
-	 * decide whether unloading a live module is acceptable; this
-	 * refuses rather than deciding for them.
-	 *
-	 * A bare load of something already loaded stays a 200: that is
-	 * idempotent, claims nothing untrue, and is how every caller that
-	 * just wants the module present already uses it.
-	 */
-	if (options[0] != '\0' && kmod_is_loaded(name)) {
-		respond_error(fd, 409, "Conflict",
-		              "already loaded -- module parameters are set when a module is "
-		              "inserted, so unload it first (DELETE this path) to change them");
+	switch (kmodscan_ask(&job, &rep)) {
+	case KMODSCAN_PARKED:
+		return;
+	case KMODSCAN_READY:
+		break;
+	case KMODSCAN_NO_RESULT:
+		respond_error(fd, 500, "Internal Server Error",
+		              "the module load ended without a result -- see the log");
+		return;
+	case KMODSCAN_QUEUED:
+	case KMODSCAN_BUSY:
+	default:
+		respond_kmod_queue_busy(fd);
 		return;
 	}
-
-	if (kmod_load(name, options, tool_out, sizeof(tool_out)) != 0) {
-		respond_kmod_tool_error(fd, "modprobe could not load this module", tool_out);
-		return;
-	}
-
-	{
-		struct json_writer w;
-
-		jw_init(&w);
-		jw_obj_open(&w);
-		jw_key(&w, "name");
-		jw_str(&w, name);
-		jw_key(&w, "options");
-		kmod_options_write_json(options, &w);
-		jw_obj_close(&w);
-		respond_json(fd, 200, "OK", &w);
-		jw_free(&w);
-	}
+	respond_kmod_load(fd, name, options, rep);
+	kmodscan_report_free(rep);
+	free(rep);
 }
 
 void handle_kmod_delete(int fd, const char *name)
 {
-	char tool_out[KMOD_TOOL_OUT_MAX];
+	static struct kmodscan_job job;
+	struct kmodscan_report *rep;
+	const struct kmodscan_entry *e;
 
 	if (!kmod_name_is_valid(name)) {
 		respond_error(fd, 400, "Bad Request", "invalid module name");
 		return;
 	}
-	if (kmod_unload(name, tool_out, sizeof(tool_out)) != 0) {
-		respond_kmod_tool_error(fd, "modprobe -r could not unload this module", tool_out);
+	memset(&job, 0, sizeof(job));
+	job.kind = KMODSCAN_JOB_UNLOAD;
+	snprintf(job.name, sizeof(job.name), "%s", name);
+	switch (kmodscan_ask(&job, &rep)) {
+	case KMODSCAN_PARKED:
+		return;
+	case KMODSCAN_READY:
+		break;
+	case KMODSCAN_NO_RESULT:
+		respond_error(fd, 500, "Internal Server Error",
+		              "the module unload ended without a result -- see the log");
+		return;
+	case KMODSCAN_QUEUED:
+	case KMODSCAN_BUSY:
+	default:
+		respond_kmod_queue_busy(fd);
 		return;
 	}
-	http_set_blocking(fd);
-	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+	e = rep->entry_count > 0 ? &rep->entries[0] : NULL;
+	if (e == NULL || e->outcome != KMODSCAN_UNLOADED) {
+		char tool_out[KMOD_TOOL_OUT_MAX];
+
+		snprintf(tool_out, sizeof(tool_out), "%s", e != NULL ? e->reason : "");
+		respond_kmod_tool_error(fd, "modprobe -r could not unload this module", tool_out);
+	} else {
+		http_set_blocking(fd);
+		http_write_response(fd, 204, "No Content", "application/json", "", 0);
+	}
+	kmodscan_report_free(rep);
+	free(rep);
 }
 
 void handle_kmod_list(int fd)
@@ -391,5 +460,26 @@ void handle_kmodscan_get(int fd)
 	jw_init(&w);
 	kmodscan_write_json(&w);
 	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* ADR-0348: a sweep on request, queued and answered at once with the
+ * report as it stands, which now says one is running. */
+void handle_kmodscan_post(int fd)
+{
+	static struct kmodscan_job job;
+	struct kmodscan_report *rep;
+	struct json_writer w;
+
+	memset(&job, 0, sizeof(job));
+	job.kind = KMODSCAN_JOB_SWEEP;
+	job.trigger = KMODSCAN_TRIGGER_REQUEST;
+	if (kmodscan_ask(&job, &rep) != KMODSCAN_QUEUED) {
+		respond_kmod_queue_busy(fd);
+		return;
+	}
+	jw_init(&w);
+	kmodscan_write_json(&w);
+	respond_json(fd, 202, "Accepted", &w);
 	jw_free(&w);
 }

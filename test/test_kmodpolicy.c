@@ -147,10 +147,19 @@ static void test_autoload_covers(void)
 
 	policy(&p, NULL, NULL);
 	check(kmod_policy_autoload_covers(&p, KMOD_ORIGIN_COLDPLUG), "coldplug covers the sweep");
-	check(!kmod_policy_autoload_covers(&p, KMOD_ORIGIN_HOTPLUG),
-	      "no mode covers hotplug while no hotplug path exists");
+	check(!kmod_policy_autoload_covers(&p, KMOD_ORIGIN_HOTPLUG), "coldplug does not cover a plug");
+	p.autoload = KMOD_AUTOLOAD_HOTPLUG;
+	check(kmod_policy_autoload_covers(&p, KMOD_ORIGIN_HOTPLUG) &&
+	          !kmod_policy_autoload_covers(&p, KMOD_ORIGIN_COLDPLUG),
+	      "hotplug covers a plug and not the sweep");
+	p.autoload = KMOD_AUTOLOAD_BOTH;
+	check(kmod_policy_autoload_covers(&p, KMOD_ORIGIN_HOTPLUG) &&
+	          kmod_policy_autoload_covers(&p, KMOD_ORIGIN_COLDPLUG),
+	      "both covers a plug and the sweep");
 	p.autoload = KMOD_AUTOLOAD_OFF;
-	check(!kmod_policy_autoload_covers(&p, KMOD_ORIGIN_COLDPLUG), "off covers no sweep");
+	check(!kmod_policy_autoload_covers(&p, KMOD_ORIGIN_COLDPLUG) &&
+	          !kmod_policy_autoload_covers(&p, KMOD_ORIGIN_HOTPLUG),
+	      "off covers neither");
 	check(kmod_policy_autoload_covers(&p, KMOD_ORIGIN_REQUEST) &&
 	          kmod_policy_autoload_covers(&p, KMOD_ORIGIN_CONFIG) &&
 	          kmod_policy_autoload_covers(&p, KMOD_ORIGIN_NIC),
@@ -180,9 +189,14 @@ static void test_apply_json(void)
 	check(apply("{\"autoload\":\"off\",\"blacklist\":[]}", &p, err, sizeof(err)) == 0 &&
 	          p.autoload == KMOD_AUTOLOAD_OFF && p.blacklist_count == 0,
 	      "a field given replaces that field, an empty list included");
-	check(apply("{\"autoload\":\"both\"}", &p, err, sizeof(err)) != 0 &&
+	check(apply("{\"autoload\":\"both\"}", &p, err, sizeof(err)) == 0 &&
+	          p.autoload == KMOD_AUTOLOAD_BOTH &&
+	          apply("{\"autoload\":\"hotplug\"}", &p, err, sizeof(err)) == 0 &&
+	          p.autoload == KMOD_AUTOLOAD_HOTPLUG,
+	      "both and hotplug are accepted");
+	check(apply("{\"autoload\":\"sometimes\"}", &p, err, sizeof(err)) != 0 &&
 	          strstr(err, "autoload") != NULL,
-	      "an autoload mode with no path behind it is refused");
+	      "an unknown autoload mode is refused");
 	check(apply("{\"blacklist\":[\"tg3\",\"tg3\"]}", &p, err, sizeof(err)) != 0 &&
 	          strstr(err, "twice") != NULL,
 	      "a list naming one module twice is refused");
@@ -219,10 +233,10 @@ static void test_store(void)
 	snprintf(path, sizeof(path), "%s/kmod_policy.json", dir);
 
 	check(kmodpolicy_init(path) == 0, "a never-saved policy starts");
-	check(!kmodpolicy_saved() && kmodpolicy_current()->autoload == KMOD_AUTOLOAD_COLDPLUG &&
+	check(!kmodpolicy_saved() && kmodpolicy_current()->autoload == KMOD_AUTOLOAD_BOTH &&
 	          kmodpolicy_current()->blacklist_count == 0 &&
 	          kmodpolicy_current()->allowlist_count == 0,
-	      "a never-saved host has the default: coldplug, empty lists, saved false");
+	      "a never-saved host has the default: both, empty lists, saved false");
 
 	p = *kmodpolicy_current();
 	check(apply("{\"autoload\":\"off\",\"blacklist\":[\"floppy\"]}", &p, err, sizeof(err)) == 0 &&

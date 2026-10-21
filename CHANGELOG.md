@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A device gets its driver when it is plugged in, and modprobe leaves the event loop (ADR-0348 release two, #143)
+
+- **What changed:**
+  - **Hotplug:** a uevent with `ACTION=add` and a `MODALIAS=` is queued, and each module that claims the alias is decided and loaded with its `kmod-config` options. Every subsystem counts, interfaces included: a USB driver binds to an interface, and that is where the alias is. A load, refusal or failure logs one line naming the alias and the device.
+  - **One module queue, off the loop:** after start, every load and unload runs in a helper child, one `modprobe` at a time, with up to 256 waiting: a plug, a sweep, and an explicit `POST` or `DELETE` of `/v1/system/kmod/{name}`, which park as a third kind of ADR-0340's `struct park` and are answered when their job has run. A full queue answers `503` with `Retry-After`; a plug dropped for a full queue is logged, naming the device. The child logs nothing and writes its report to a memory file; the parent logs, records and announces.
+  - **Explicit loads resolve aliases:** the name is decided as given, then `modprobe -R` resolves it and every module it names is decided before any loads, so an alias cannot load a blacklisted module. The `200` gains `modules`, what the name resolved to and what happened to each. The "already loaded with options" `409` moved into the job, because the handler runs again from the start once the job has loaded the module.
+  - **Sweeps:** `POST /v1/system/kmod-scan` queues one and answers `202`; it is the operator's request, so it runs whatever `autoload` says. The report gains `running` and `trigger` (`start`, `request` or `overflow`), and replacing it is announced.
+  - **No plug falls in a gap:** the uevent socket is opened before the start-up sweep, so a device that appears behind a driver the sweep loads waits in it; its receive buffer is raised to 4 MiB; and when it overflows anyway (`ENOBUFS`) a sweep decides every device present, since which events were lost cannot be known.
+  - **Policy:** `autoload` takes `hotplug` and `both`, and a host that has never saved a policy uses `both`, the owner's default.
+  - **cixctl:** `kmod-scan run` sweeps and prints the report. `kmod load` always sent `"options":{}`, which the daemon reads as "load with none", so a module's `kmod-config` default options never applied from cixctl; it now sends no options field without `--option=`. `kmod load` and `kmod unload` printed only the status of a refusal; they now print the daemon's reason.
+- **Verified:** `test_kmodpolicy` checks the two new modes and the new default. `test_kmod`, in `DAEMON_SELFTESTS`, now takes every explicit load and unload through the queue's helper child and back, checks the `409` for a blacklisted name through it, and queues a sweep, which reports `modprobe` absent in a build container, through `202`, `running` and the finished report. `test_apigen` counts 347 operations and 201 changes.
+
 ### One policy decides every module load, and hardware present at boot gets its driver (ADR-0348 release one, #143)
 
 - **What changed:**

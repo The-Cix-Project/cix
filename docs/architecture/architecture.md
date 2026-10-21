@@ -66,8 +66,8 @@ flowchart LR
     devdisk -- "the host's records and what it uses" --> devstate
     devstate["Device state -- free, held, reserved, host, unavailable<br/>the one verdict every grant and the device list read"]
     devmatch["Device mappings -- a name for which device it is<br/>usb_serial, wwid, fs_uuid, mac; ambiguous is refused"] -- "the records a name resolves to" --> devstate
-    kmodpolicy["Module policy -- one verdict for every module load<br/>blacklist beats every origin; coldplug sweep at start"]
-    devdisk -- "each modalias under /sys/devices,<br/>and every explicit load" --> kmodpolicy
+    kmodpolicy["Module policy and queue -- one verdict for every module load<br/>blacklist beats every origin; a sweep at start, then one modprobe at a time off the loop"]
+    devdisk -- "each modalias under /sys/devices, each plugged<br/>device's uevent, and every explicit load" --> kmodpolicy
     logs -- "a filtered log read:<br/>the request parks" --> logread
     logread["Filtered log reads<br/>in helper children, 2 at a time"] -- "result: served again" --> rbac
 ```

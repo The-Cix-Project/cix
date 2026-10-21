@@ -372,10 +372,27 @@ int main(void)
 
 	memset(&r, 0, sizeof(r));
 	if (ok && (cix_client_request(&client, "PUT", "/v1/system/kmod-policy",
-	                              "{\"autoload\":\"both\"}", &r) != 0 ||
+	                              "{\"autoload\":\"sometimes\"}", &r) != 0 ||
 	           r.status != 400)) {
-		fprintf(stderr, "FAIL: PUT kmod-policy with an autoload mode that has no path: "
+		fprintf(stderr, "FAIL: PUT kmod-policy with an unknown autoload mode: "
 		                "expected 400, got %d\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/* hotplug is a mode now (release two); the blacklist PUT below puts
+	 * the seeded off back, so this daemon does not act on a uevent. */
+	memset(&r, 0, sizeof(r));
+	if (ok && (cix_client_request(&client, "PUT", "/v1/system/kmod-policy",
+	                              "{\"autoload\":\"hotplug\"}", &r) != 0 ||
+	           r.status != 200 ||
+	           strcmp(json_as_string(json_object_get(r.json, "autoload")) != NULL
+	                      ? json_as_string(json_object_get(r.json, "autoload"))
+	                      : "",
+	                  "hotplug") != 0)) {
+		fprintf(stderr, "FAIL: PUT kmod-policy autoload hotplug: expected 200 with hotplug, "
+		                "got %d\n",
 		        r.status);
 		ok = 0;
 	}
@@ -384,7 +401,7 @@ int main(void)
 	{
 		char body[192];
 
-		snprintf(body, sizeof(body), "{\"blacklist\":[\"e1000e\"%s%s%s]}",
+		snprintf(body, sizeof(body), "{\"autoload\":\"off\",\"blacklist\":[\"e1000e\"%s%s%s]}",
 		         have_real_name ? ",\"" : "", have_real_name ? real_name : "",
 		         have_real_name ? "\"" : "");
 		memset(&r, 0, sizeof(r));
@@ -459,6 +476,51 @@ int main(void)
 		ok = 0;
 	}
 	cix_response_free(&r);
+
+	/*
+	 * A sweep on request goes through the module queue's helper child
+	 * and back, whatever autoload says. Only where there is no modprobe
+	 * -- a build container, which is where this runs -- so the sweep
+	 * reports that and never walks this container's /sys loading
+	 * modules; the round trip through the queue is the thing proven.
+	 */
+	if (ok && access("/usr/bin/modprobe", X_OK) != 0) {
+		int waited, running = 1;
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/system/kmod-scan", NULL, &r) != 0 ||
+		    r.status != 202 || json_object_get(r.json, "running") == NULL ||
+		    !json_object_get(r.json, "running")->u.boolean) {
+			fprintf(stderr, "FAIL: POST /v1/system/kmod-scan: expected 202 with running "
+			                "true, got %d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		for (waited = 0; ok && running && waited < 100; waited++) {
+			usleep(100000);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/system/kmod-scan", NULL, &r) == 0 &&
+			    r.status == 200 && json_object_get(r.json, "running") != NULL &&
+			    !json_object_get(r.json, "running")->u.boolean) {
+				const char *why = json_as_string(json_object_get(r.json, "not_run_reason"));
+
+				running = 0;
+				if (json_object_get(r.json, "ran")->u.boolean || why == NULL ||
+				    strstr(why, "not present") == NULL) {
+					fprintf(stderr, "FAIL: the requested sweep's report should say modprobe "
+					                "is not present, got '%s'\n",
+					        why != NULL ? why : "(none)");
+					ok = 0;
+				}
+			}
+			cix_response_free(&r);
+		}
+		if (ok && running) {
+			fprintf(stderr, "FAIL: the requested sweep was still running after 10 s\n");
+			ok = 0;
+		}
+	}
 
 	if (test_assert_no_drift(&client, NULL) != 0)
 		ok = 0;

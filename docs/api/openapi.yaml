@@ -3000,7 +3000,13 @@ paths:
         `options` given in the body is used as-is; an omitted (or
         absent) `options` field falls back to this module's own
         persisted kmod-config default_options, if one exists, otherwise
-        loads with none.
+        loads with none. The name may also be a module alias, which
+        `modprobe -R` resolves; kmod-policy decides the name as given
+        and then each module it resolves to, and nothing loads if any
+        of them is refused. The load runs off the daemon's event loop,
+        in the one module queue that also serves plugged devices and
+        sweeps, one `modprobe` at a time (ADR-0348), and the request
+        waits its turn.
       operationId: postKmodLoad
       x-cix-invalidates: [listKmod]
       x-cix-permission: config:write
@@ -3029,12 +3035,12 @@ paths:
                   description: modprobe-style module parameters. With none given, the module's persisted default options are used, if it has any.
       responses:
         "200":
-          description: Loaded; the options actually used
+          description: Loaded; the options actually used, and each module the name resolved to
           content:
             application/json:
               schema:
                 type: object
-                required: [name, options]
+                required: [name, options, modules]
                 properties:
                   name:
                     type: string
@@ -3042,6 +3048,13 @@ paths:
                     type: object
                     additionalProperties:
                       type: string
+                  modules:
+                    type: array
+                    description: >
+                      What the name resolved to -- itself, for a module
+                      name -- and what happened to each.
+                    items:
+                      $ref: "#/components/schemas/KmodLoadOutcome"
         "400":
           description: Invalid module name, or options is not an object of strings
           content:
@@ -3073,9 +3086,31 @@ paths:
             this daemon's. A load with no `options` of something already
             loaded is still 200: idempotent, and claiming nothing
             untrue. Also 409 when kmod-policy refuses the module
-            (ADR-0348): it is blacklisted, or something it depends on
-            is. The blacklist beats an explicit request, and the
-            message names which module it was.
+            (ADR-0348): it is blacklisted, something it depends on is,
+            or the alias it was given resolves to such a module. The
+            blacklist beats an explicit request, and the message names
+            which module it was.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The queue's helper ended without a result; the log says how
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            The module queue is full (ADR-0348): one `modprobe` runs at a
+            time with up to 256 more waiting, and a request beyond that is
+            answered at once. Retry after the header's interval.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                enum: [1]
+              description: Seconds to wait before retrying.
           content:
             application/json:
               schema:
@@ -3085,7 +3120,8 @@ paths:
       description: >
         Real `modprobe -r <name>` -- reverse-dependency-aware removal,
         not a bare rmmod that would leave now-unused dependencies
-        loaded.
+        loaded. It runs in the module queue, off the event loop, like a
+        load (ADR-0348).
       operationId: deleteKmod
       x-cix-invalidates: [listKmod]
       x-cix-permission: config:write
@@ -3112,6 +3148,24 @@ paths:
             above, the message carries modprobe's own reason verbatim
             ("FATAL: Module X is in use.", "is builtin.") rather than a
             fixed sentence. (not loaded, in use, or not staged on this box)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The queue's helper ended without a result; the log says how
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The module queue is full, as for a load. Retry after the header's interval.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                enum: [1]
+              description: Seconds to wait before retrying.
           content:
             application/json:
               schema:
@@ -3225,12 +3279,12 @@ paths:
       description: >
         One policy decides every module load, whoever asks for it: an
         explicit load, a kmod-config autoload entry, the boot NIC list,
-        and the coldplug sweep at start. The blacklist refuses every
-        one of them, and a load whose dependency is blacklisted. The
-        allowlist, when not empty, binds only the automatic loads; an
-        operator naming a module has allowed it. A host that has never
-        saved a policy uses autoload `coldplug` with empty lists, and
-        `saved` says which.
+        a sweep and a plugged device. The blacklist refuses every one
+        of them, and a load whose dependency is blacklisted. The
+        allowlist, when not empty, binds only the automatic loads
+        (sweeps and plugged devices); an operator naming a module has
+        allowed it. A host that has never saved a policy uses autoload
+        `both` with empty lists, and `saved` says which.
       operationId: getKmodPolicy
       x-cix-read: state
       x-cix-permission: config:read
@@ -3262,9 +3316,9 @@ paths:
               properties:
                 autoload:
                   type: string
-                  enum: [off, coldplug]
+                  enum: [off, coldplug, hotplug, both]
                   title: Autoload
-                  description: Which automatic loads run. Coldplug is the sweep at start.
+                  description: Which automatic loads run. Coldplug is the sweep at start; hotplug is a device as it is plugged in.
                 blacklist:
                   type: array
                   maxItems: 64
@@ -3300,18 +3354,23 @@ paths:
                 $ref: "#/components/schemas/Error"
   /system/kmod-scan:
     get:
-      summary: The coldplug sweep's report from this start (ADR-0348)
+      summary: The last sweep's report (ADR-0348)
       description: >
-        At start, before the API serves anything, the daemon walks
-        /sys/devices for each distinct modalias, resolves it with
-        `modprobe -R`, and decides and loads each module through
-        kmod-policy. This is that sweep's report: every alias it met,
-        the device it came from, the module that claims it (null when
-        none does), and what happened. Loads, refusals and failures are
-        also logged once each; unclaimed aliases and modules already
-        loaded are in this report only. `ran` is false, with the reason,
-        when the sweep did not run: autoload excludes coldplug, or this
-        is not a real boot.
+        A sweep walks /sys/devices for each distinct modalias, resolves
+        it with `modprobe -R`, and decides and loads each module through
+        kmod-policy. One runs at start, before the API serves anything,
+        when autoload includes coldplug; one runs on POST to this path;
+        and one runs when the kernel's uevent socket overflowed and
+        plugged devices may have been missed, when autoload includes
+        hotplug. This is the last one's report: every alias it met, the
+        device it came from, the module that claims it (null when none
+        does), and what happened. Loads, refusals and failures are also
+        logged once each; unclaimed aliases and modules already loaded
+        are in this report only. `ran` is false, with the reason, when
+        no sweep has produced a report: autoload excludes coldplug, this
+        is not a real boot, or modprobe is not present. A plugged
+        device is not in this report; its load, refusal or failure is
+        logged.
       operationId: getKmodScan
       x-cix-read: state
       x-cix-permission: config:read
@@ -3323,6 +3382,38 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/KmodScan"
+    post:
+      summary: Sweep the devices present now (ADR-0348)
+      description: >
+        Queues a sweep in the module queue and answers at once, with
+        `running` true; the report replaces this path's state when the
+        sweep finishes, and is announced. A sweep already queued or
+        running is not queued twice. This is the operator's request, so
+        it runs whatever autoload says; the blacklist and the allowlist
+        apply to its loads as to any sweep's.
+      operationId: runKmodScan
+      x-cix-invalidates: [getKmodScan]
+      x-cix-permission: config:write
+      x-cix-expose: [cli]
+      responses:
+        "202":
+          description: Queued; the report as it stands, with running true
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KmodScan"
+        "503":
+          description: The module queue is full. Retry after the header's interval.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                enum: [1]
+              description: Seconds to wait before retrying.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /system/kmod-build:
     post:
       summary: Build a kernel with extra in-tree modules (ADR-0159 Phase B)
@@ -18620,7 +18711,7 @@ components:
       properties:
         autoload:
           type: string
-          enum: [off, coldplug]
+          enum: [off, coldplug, hotplug, both]
         blacklist:
           type: array
           items:
@@ -18632,15 +18723,33 @@ components:
         saved:
           type: boolean
           description: False on a host that has never saved a policy, which uses the default.
+    KmodLoadOutcome:
+      type: object
+      required: [name, outcome]
+      properties:
+        name:
+          type: string
+        outcome:
+          type: string
+          enum: [loaded, already_loaded, builtin]
     KmodScan:
       type: object
-      required: [ran, entries]
+      required: [ran, running, entries]
       properties:
         ran:
           type: boolean
+        running:
+          type: boolean
+          description: A sweep is queued or running, whose report will replace this one.
         not_run_reason:
           type: string
           description: Why the sweep did not run, present when ran is false.
+        trigger:
+          type: string
+          enum: [start, request, overflow]
+          description: >
+            What ran the sweep, present when ran is true: the daemon's
+            start, a POST to this path, or a uevent socket overflow.
         started_at:
           type: integer
           format: unix-seconds

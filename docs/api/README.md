@@ -107,14 +107,15 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | DELETE | `/system/sysctl/{key}` | Stop reapplying at boot; never touches the live value |
 | GET | `/system/kmod` | Every currently-loaded kernel module (live `/proc/modules`) |
 | GET | `/system/kmod/{name}` | Real `modinfo` for a built/available module, whether loaded or not |
-| POST | `/system/kmod/{name}` | Load it (real `modprobe`); options fall back to its own persisted default |
+| POST | `/system/kmod/{name}` | Load it (real `modprobe`, in the module queue); a name may be an alias; options fall back to its own persisted default |
 | DELETE | `/system/kmod/{name}` | Unload it (real `modprobe -r`) |
 | GET | `/system/kmod-config` | Every module with persisted default options and/or boot autoload |
 | PUT | `/system/kmod-config/{name}` | Set default options and/or autoload; only fields given are touched |
 | DELETE | `/system/kmod-config/{name}` | Clear a module's persisted config; never touches whether it's loaded |
 | GET | `/system/kmod-policy` | The policy every module load is decided by: autoload, blacklist, allowlist (ADR-0348) |
 | PUT | `/system/kmod-policy` | Change it; each field given replaces that field. Blacklisting never unloads |
-| GET | `/system/kmod-scan` | The coldplug sweep's report from this start: every modalias, its module, what happened |
+| GET | `/system/kmod-scan` | The last sweep's report: every modalias, its module, what happened |
+| POST | `/system/kmod-scan` | Queue a sweep of the devices present now; `202`, the report replaces the GET when it finishes |
 | POST | `/system/kmod-build` | Rebuild the kernel with extra in-tree `=m` modules; poll via `/pkg/hostbuild/kernel` |
 | GET | `/system/rolling-config` | The rolling-restart jitter window (`jitter_window_seconds`) and the rollback window (`rollback_window_seconds`, ADR-0323) |
 | PUT | `/system/rolling-config` | Set either or both: `jitter_window_seconds` 0-3600 (0 restarts immediately), `rollback_window_seconds` 10-3600, how long a rolled container has to be ready before it goes back to the version it ran. A 400 changes neither |
@@ -2109,20 +2110,25 @@ Read-modify-write, matching `daemon-config`'s own established `PUT` shape -- eit
 ```
 GET /v1/system/kmod-policy
 PUT /v1/system/kmod-policy
-{"autoload": "coldplug", "blacklist": ["floppy"], "allowlist": []}
+{"autoload": "both", "blacklist": ["floppy"], "allowlist": []}
 ```
 
-Every module load asks one verdict over this policy before `modprobe` runs, whoever asks: an explicit `POST /v1/system/kmod/{name}`, a `kmod-config` autoload entry, the boot NIC list, and the coldplug sweep below. **The blacklist refuses every one of them**, and a load whose dependency is blacklisted (from this kernel's `modules.dep`), because `modprobe` would load that dependency too. An explicit request it refuses is a `409` naming the module. **The allowlist, when not empty, binds only the automatic loads**: an operator who names a module has allowed it. `PUT` replaces each field it is given and keeps the rest; an empty list clears one. A host that has never saved a policy uses `coldplug` with empty lists, and `saved` says which. Hotplug arrives in a later release, and the default becomes `both` with it.
+Every module load asks one verdict over this policy before `modprobe` runs, whoever asks: an explicit `POST /v1/system/kmod/{name}`, a `kmod-config` autoload entry, the boot NIC list, a sweep and a plugged device. **The blacklist refuses every one of them**, and a load whose dependency is blacklisted (from this kernel's `modules.dep`), because `modprobe` would load that dependency too. An explicit request it refuses is a `409` naming the module; a name that is an alias is decided as given and then as each module `modprobe -R` resolves it to. **The allowlist, when not empty, binds only the automatic loads**, sweeps and plugged devices: an operator who names a module has allowed it. `autoload` is `off`, `coldplug` (the sweep at start), `hotplug` (a device as it is plugged in) or `both`. `PUT` replaces each field it is given and keeps the rest; an empty list clears one. A host that has never saved a policy uses `both` with empty lists, and `saved` says which.
 
 Blacklisting never unloads. A loaded module the policy refuses is marked `"blacklisted": true` in `GET /v1/system/kmod`, and the `PUT` that blacklisted it logs one warning naming it. Unloading it is `DELETE /v1/system/kmod/{name}`, the operator's decision.
 
 The kernel's own `request_module()` route loads nothing on a Cix host: `kernel.modprobe` names `/sbin/modprobe`, which the control-plane root does not carry. That is kept. A module the kernel would have asked for by name, such as a filesystem type, is a `kmod-config` autoload entry or an explicit load.
 
+**After start, `modprobe` never runs on the daemon's event loop.** Every load and unload goes through one queue served by a helper child, one `modprobe` at a time with up to 256 waiting: a plugged device, a sweep, and an explicit `POST` or `DELETE` of `/v1/system/kmod/{name}`, which waits its turn and is answered when its `modprobe` has run. A full queue answers `503` with `Retry-After`. A plugged device is a uevent with `ACTION=add` and a `MODALIAS=`; each module that claims the alias is decided and loaded with its `kmod-config` options, and a load, refusal or failure is logged once.
+
 ```
 GET /v1/system/kmod-scan
+POST /v1/system/kmod-scan
 ```
 
-At start, before the API serves anything, the daemon walks `/sys/devices` for each distinct `modalias`, resolves it with `modprobe -R`, and decides and loads each module through the policy, with that module's `kmod-config` options. The order is the NIC list, the sweep, `kmod-config` autoload, then boot autostart, so a container never starts before a driver it needs. This is the sweep's report: every alias with its device, the module that claims it (`null` when none does), and `loaded`, `already_loaded`, `builtin`, `unclaimed`, `refused` or `failed`, with the verdict's sentence or modprobe's words as `reason`. Loads, refusals and failures are logged once each, with one summary line. Unclaimed aliases and modules already loaded are in this report only, since a host has hundreds of the first. `ran` is `false` with `not_run_reason` when the sweep did not run: autoload is `off`, or the daemon is not a real `--init-mode` boot.
+A sweep walks `/sys/devices` for each distinct `modalias`, resolves it with `modprobe -R`, and decides and loads each module through the policy, with that module's `kmod-config` options. One runs at start, before the API serves anything, when `autoload` includes coldplug: the order is the NIC list, the sweep, `kmod-config` autoload, then boot autostart, so a container never starts before a driver it needs. `POST` queues one and answers `202` with `running` true; it is the operator's request, so it runs whatever `autoload` says. And one runs when the kernel's uevent socket overflowed, so plugged devices may have been missed, when `autoload` includes hotplug. `trigger` says which: `start`, `request` or `overflow`.
+
+`GET` is the last sweep's report: every alias with its device, the module that claims it (`null` when none does), and `loaded`, `already_loaded`, `builtin`, `unclaimed`, `refused` or `failed`, with the verdict's sentence or modprobe's words as `reason`. Loads, refusals and failures are logged once each, with one summary line. Unclaimed aliases and modules already loaded are in this report only, since a host has hundreds of the first. `ran` is `false` with `not_run_reason` when no sweep has produced a report: autoload excludes coldplug, the daemon is not a real `--init-mode` boot, or `modprobe` is not present.
 
 ## Building an extra kernel module (ADR-0159 Phase B)
 

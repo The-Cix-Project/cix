@@ -18,6 +18,8 @@ static int g_saved;
 static const char *const g_autoload_names[] = {
 	[KMOD_AUTOLOAD_OFF] = "off",
 	[KMOD_AUTOLOAD_COLDPLUG] = "coldplug",
+	[KMOD_AUTOLOAD_HOTPLUG] = "hotplug",
+	[KMOD_AUTOLOAD_BOTH] = "both",
 };
 
 int kmod_names_equal(const char *a, const char *b)
@@ -92,9 +94,9 @@ int kmod_policy_autoload_covers(const struct kmod_policy *p, enum kmod_origin or
 {
 	switch (origin) {
 	case KMOD_ORIGIN_COLDPLUG:
-		return p->autoload == KMOD_AUTOLOAD_COLDPLUG;
+		return p->autoload == KMOD_AUTOLOAD_COLDPLUG || p->autoload == KMOD_AUTOLOAD_BOTH;
 	case KMOD_ORIGIN_HOTPLUG:
-		return 0; /* no hotplug path exists yet */
+		return p->autoload == KMOD_AUTOLOAD_HOTPLUG || p->autoload == KMOD_AUTOLOAD_BOTH;
 	default:
 		return 1;
 	}
@@ -125,7 +127,7 @@ static int autoload_from_name(const char *s, enum kmod_autoload *out)
 static void policy_default(struct kmod_policy *p)
 {
 	memset(p, 0, sizeof(*p));
-	p->autoload = KMOD_AUTOLOAD_COLDPLUG;
+	p->autoload = KMOD_AUTOLOAD_BOTH;
 }
 
 /* A list of module names into list/count. -1 with err set on anything
@@ -172,7 +174,7 @@ int kmodpolicy_apply_json(const struct json_value *body, struct kmod_policy *ino
 	}
 	j = json_object_get(body, "autoload");
 	if (j != NULL && autoload_from_name(json_as_string(j), &inout->autoload) != 0) {
-		snprintf(err, err_size, "autoload must be off or coldplug");
+		snprintf(err, err_size, "autoload must be off, coldplug, hotplug or both");
 		return -1;
 	}
 	j = json_object_get(body, "blacklist");

@@ -20,9 +20,11 @@ void handle_kmod_get(int fd, const char *name);
 void handle_kmodconfig_put(int fd, const char *name, const char *body, size_t body_len);
 void handle_kmodconfig_delete(int fd, const char *name);
 void handle_kmodconfig_list(int fd);
-/* ADR-0348: the module-load policy and the last coldplug sweep's report. */
+/* ADR-0348: the module-load policy and the last sweep's report, and a sweep
+ * queued on request. */
 void handle_kmodpolicy_get(int fd);
 void handle_kmodpolicy_put(int fd, const char *body, size_t body_len);
 void handle_kmodscan_get(int fd);
+void handle_kmodscan_post(int fd);
 
 #endif /* API_KMOD_H */
