@@ -288,19 +288,48 @@ int main(void)
 	cix_response_free(&r);
 
 	/* 3. Live load/unload/show -- this sandbox has no real modprobe/
-	 * modinfo staged at all, so the only provable behavior here is a
-	 * clean 404, never a crash/hang. Real success-path verification
-	 * needs a real installed box (see the file-level comment above). */
+	 * modinfo staged at all, so a module that is not loaded is a clean
+	 * 404, never a crash/hang. Real success-path verification needs a
+	 * real installed box (see the file-level comment above).
+	 *
+	 * The name is one no kernel has. It was e1000e until ADR-0348's
+	 * module queue, which answers a module already loaded from
+	 * /proc/modules without modprobe -- and a container's /proc/modules
+	 * is the host's, where e1000e is loaded (192.168.15.95, 2026-10-21:
+	 * 200 already_loaded where this expected 404). */
 	memset(&r, 0, sizeof(r));
-	if (ok && (cix_client_request(&client, "POST", "/v1/system/kmod/e1000e", "{}", &r) != 0 ||
+	if (ok && (cix_client_request(&client, "POST", "/v1/system/kmod/cixnosuchmodule", "{}",
+	                              &r) != 0 ||
 	           r.status != 404)) {
 		fprintf(stderr,
-		        "FAIL: POST /v1/system/kmod/e1000e (no real modprobe in this sandbox): "
-		        "expected 404, got %d\n",
+		        "FAIL: POST /v1/system/kmod/cixnosuchmodule (no real modprobe in this "
+		        "sandbox): expected 404, got %d\n",
 		        r.status);
 		ok = 0;
 	}
 	cix_response_free(&r);
+
+	/* A module that IS loaded -- the real one read from /proc/modules
+	 * above -- is a 200 through the queue's helper child, saying so. */
+	if (ok && have_real_name) {
+		char path[128];
+		const struct json_value *mods;
+		const char *outcome = NULL;
+
+		snprintf(path, sizeof(path), "/v1/system/kmod/%s", real_name);
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", path, NULL, &r) == 0 && r.status == 200 &&
+		    (mods = json_object_get(r.json, "modules")) != NULL && mods->type == JSON_ARRAY &&
+		    mods->u.array.count > 0)
+			outcome = json_as_string(json_object_get(mods->u.array.items[0], "outcome"));
+		if (outcome == NULL || strcmp(outcome, "already_loaded") != 0) {
+			fprintf(stderr, "FAIL: POST %s of a loaded module: expected 200 already_loaded, "
+			                "got %d (%s)\n",
+			        path, r.status, outcome != NULL ? outcome : "no outcome");
+			ok = 0;
+		}
+		cix_response_free(&r);
+	}
 
 	memset(&r, 0, sizeof(r));
 	if (ok && (cix_client_request(&client, "GET", "/v1/system/kmod/e1000e", NULL, &r) != 0 ||
@@ -314,11 +343,12 @@ int main(void)
 	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	if (ok && (cix_client_request(&client, "DELETE", "/v1/system/kmod/e1000e", NULL, &r) != 0 ||
+	if (ok && (cix_client_request(&client, "DELETE", "/v1/system/kmod/cixnosuchmodule", NULL,
+	                              &r) != 0 ||
 	           r.status != 404)) {
 		fprintf(stderr,
-		        "FAIL: DELETE /v1/system/kmod/e1000e (no real modprobe in this sandbox): "
-		        "expected 404, got %d\n",
+		        "FAIL: DELETE /v1/system/kmod/cixnosuchmodule (no real modprobe in this "
+		        "sandbox): expected 404, got %d\n",
 		        r.status);
 		ok = 0;
 	}
