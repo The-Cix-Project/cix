@@ -85,9 +85,11 @@ void kmod_write_json_loaded(struct json_writer *w, int (*blacklisted)(const char
  */
 int kmod_dependencies(const char *name, char out[][KMOD_NAME_MAX], int max);
 
-/* Whether name is built into this kernel (modules.builtin). A builtin
- * cannot be loaded, and modprobe answers 0 for one, so a sweep reports
- * it as builtin rather than as loaded. */
+/* Whether name is built into this kernel: listed in modules.builtin, or
+ * recorded in modules.builtin.modinfo, which also covers built-in code
+ * that could never have been a module (the vt keyboard handler). A
+ * builtin cannot be loaded, so a sweep reports it as builtin rather than
+ * trying. */
 int kmod_is_builtin(const char *name);
 
 /*

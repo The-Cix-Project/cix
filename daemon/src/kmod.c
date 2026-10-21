@@ -354,6 +354,49 @@ int kmod_dependencies(const char *name, char out[][KMOD_NAME_MAX], int max)
 	return count;
 }
 
+/*
+ * Whether modules.builtin.modinfo has a record for name. That file holds
+ * NUL-separated "name.key=value" records for every piece of built-in
+ * code that carries module info, and modules.builtin lists only objects
+ * that could have been modules. The vt keyboard handler is the case that
+ * needs it: it is not in modules.builtin, it declares input aliases, and
+ * modprobe -R names it for a keyboard. Measured on 192.168.15.95 at
+ * 0.2.57-568, where the sweep reported "keyboard" failed three times with
+ * "Module keyboard not found".
+ */
+static int builtin_modinfo_names(const char *name)
+{
+	char path[PATH_MAX];
+	char mod[KMOD_NAME_MAX];
+	char *rec = NULL;
+	size_t cap = 0;
+	ssize_t len;
+	FILE *f;
+	int found = 0;
+
+	if (modules_file_path("modules.builtin.modinfo", path, sizeof(path)) != 0)
+		return 0;
+	f = fopen(path, "r");
+	if (f == NULL)
+		return 0;
+	while (!found && (len = getdelim(&rec, &cap, '\0', f)) > 0) {
+		const char *dot = memchr(rec, '.', (size_t)len);
+		size_t n;
+
+		if (dot == NULL)
+			continue;
+		n = (size_t)(dot - rec);
+		if (n == 0 || n >= sizeof(mod))
+			continue;
+		memcpy(mod, rec, n);
+		mod[n] = '\0';
+		found = kmod_name_eq(mod, name);
+	}
+	free(rec);
+	fclose(f);
+	return found;
+}
+
 int kmod_is_builtin(const char *name)
 {
 	char path[PATH_MAX];
@@ -365,17 +408,19 @@ int kmod_is_builtin(const char *name)
 	if (!kmod_name_is_valid(name) || modules_file_path("modules.builtin", path, sizeof(path)) != 0)
 		return 0;
 	f = fopen(path, "r");
-	if (f == NULL)
-		return 0;
-	while (fgets(line, sizeof(line), f) != NULL) {
-		line[strcspn(line, "\n")] = '\0';
-		if (module_name_of_path(line, strlen(line), mod, sizeof(mod)) == 0 &&
-		    kmod_name_eq(mod, name)) {
-			found = 1;
-			break;
+	if (f != NULL) {
+		while (fgets(line, sizeof(line), f) != NULL) {
+			line[strcspn(line, "\n")] = '\0';
+			if (module_name_of_path(line, strlen(line), mod, sizeof(mod)) == 0 &&
+			    kmod_name_eq(mod, name)) {
+				found = 1;
+				break;
+			}
 		}
+		fclose(f);
 	}
-	fclose(f);
+	if (!found)
+		found = builtin_modinfo_names(name);
 	return found;
 }
 
