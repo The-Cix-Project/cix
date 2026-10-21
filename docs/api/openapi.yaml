@@ -18643,7 +18643,8 @@ components:
           description: Why the sweep did not run, present when ran is false.
         started_at:
           type: integer
-          description: Unix seconds, present when ran is true.
+          format: unix-seconds
+          description: When the sweep began, present when ran is true.
         duration_ms:
           type: integer
         aliases:
