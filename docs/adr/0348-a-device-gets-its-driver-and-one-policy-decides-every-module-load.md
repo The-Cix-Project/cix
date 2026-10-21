@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-21, for #143. The owner decided the defaults on 2026-10-21: drivers load automatically at boot and on plug, and a blacklisted module that is already loaded is marked and warned about. The precedence rule, that the blacklist beats everything, is the owner's decision of 2026-08-27, recorded on #143.
+Accepted by the owner, 2026-10-21, after an advisor screen, for #143. The owner also chose to keep the kernel's own route closed (rule 8). The owner decided the defaults on 2026-10-21: drivers load automatically at boot and on plug, and a blacklisted module that is already loaded is marked and warned about. The precedence rule, that the blacklist beats everything, is the owner's decision of 2026-08-27, recorded on #143.
 
 ## Context
 

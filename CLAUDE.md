@@ -348,6 +348,17 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Only a running container holds a device.** A kept-exited one is a stopped definition (ADR-0344's reservation rule).
 - **A daemon-initiated stop announces:** `registry_begin_kill()` does it for every kind.
 
+## A device gets its driver, and one policy decides every module load
+
+**Hardware that appears gets its driver by default, and every module load, whoever asks, is decided by one function over one policy.** That is [ADR-0348](docs/adr/0348-a-device-gets-its-driver-and-one-policy-decides-every-module-load.md), accepted by the owner on 2026-10-21 (#143), with the defaults the owner chose that day: autoload at boot and on plug, and a blacklisted module that is loaded is marked and warned about, never unloaded.
+
+- **The blacklist beats everything** (the owner, 2026-08-27): an explicit request (409), a `kmod-config` entry, a sweep, a plug, and a dependency of any of them. The allowlist binds only the automatic origins.
+- **One verdict, pure.** `kmod_policy_verdict()` takes the name, its dependency list, the origin and the policy. Never add a load path that does not ask it, the NIC list included.
+- **Never run `modprobe` on the loop after start.** At start, before the loop serves anything: the NIC list, the sweep, `kmod-config` autoload, then boot autostart. After start, one queue in a helper child; an explicit request parks on it (ADR-0340's park, one more kind).
+- **The kernel's own route stays closed** (the owner, 2026-10-21). The root carries no `/sbin/modprobe` (measured, `probe-rootsbin@1-1`), so `request_module()` loads nothing. Do not open it.
+- **Say every outcome, once.** Loads, refusals and failures log one line; unclaimed aliases and already-loaded modules go in the scan report only.
+- **Test data directories start with the policy saved as `off`**, so a test daemon never sweeps a build container.
+
 ## One way to make an image
 
 **An image is made by `POST /v1/images` (`cixctl image create --name=NAME`) and by nothing else.** `POST /v1/pkg/install` naming an image that does not exist is a 400 naming that fix, and creates nothing (#500) -- the owner's decision of 2026-09-30, chosen over documenting the implicit create an install used to perform, which is how `--image=jump`, a typo for `jumpbox`, became a new image.
