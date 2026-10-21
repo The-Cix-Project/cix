@@ -2445,6 +2445,24 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 307: a plugged device gets its driver, and modprobe leaves the event loop (ADR-0348 release two, #143, 0.2.57-570)
+
+After start every module load and unload runs in one queue, served by a helper child one `modprobe` at a time: a uevent's `MODALIAS=`, a sweep, and an explicit `POST` or `DELETE` of `/v1/system/kmod/{name}`, which park as a third kind of ADR-0340's `struct park`. The child writes a report to a memfd; the parent logs, records and announces. An explicit load decides the name as given and then every module `modprobe -R` resolves it to, before any loads. `POST /v1/system/kmod-scan` queues a sweep. The uevent socket opens before the start-up sweep, and an overflow queues a catch-up sweep. `autoload` gains `hotplug` and `both`, and `both` is the never-saved default.
+
+**Gated:**
+- Compile probe `0.2.57-582` compiled clean and failed one test: `test_kmod` expected `POST /v1/system/kmod/e1000e` to be 404 with no `modprobe`, and got 200 `already_loaded`. The queue answers a loaded module from `/proc/modules`, a build container's `/proc/modules` is the host's, and `e1000e` is loaded on .95 (`cixctl kmod ls`). The test now names a module no kernel has for the 404s, the unload included, and checks a loaded module is 200 `already_loaded` through the queue.
+- `0.2.57-583` was green, and its log shows `test_kmod`, `test_kmodpolicy`, `test_apigen` (347 operations, 201 changes), `test_blocking_waits`, `test_announce`, `test_lint` and `test_docindex` PASS. `test_kmod` takes every explicit load and unload through the helper child, the 409 for a blacklisted name included, and a requested sweep through `202`, `running` and its finished report.
+
+**Measured on 192.168.15.95:**
+- **The policy flipped by default:** before the reboot `kmod-policy` read `coldplug` (never saved); on 570 it read `both`.
+- **The start-up sweep:** 59 aliases in 1377 ms, `rtw88_8822bu` loaded, 27 builtin, 31 unclaimed, no failures. The loaded set was the same 18 modules before and after, 12 containers running, `ar-1` running.
+- **An alias resolves:** `cixctl kmod load usb:v2357p012Ed0210dc00dsc00dp00icFFiscFFipFFin00` and `kmod load rtw88_8822bu` both answered `already_loaded rtw88_8822bu`.
+- **The loop keeps answering during a sweep:** across a requested sweep, 60 reads of `GET /v1/system/kmod-scan` all answered within 4.4 ms, 7 of them while it reported `running: true`. Requested sweeps took 173 and 175 ms with warm caches. Each logged one summary line: `kmod sweep (request): 59 aliases in 173 ms`.
+- **The blacklist beats an alias:** with `rtw88_8822bu` blacklisted, the alias answered 409 `rtw88_8822bu is blacklisted (kmod-policy), which usb:v2357p012E... resolves to`, the name answered 409, `kmod ls` marked the loaded module `BLACKLISTED`, and `ar-1` kept running. The blacklist was then cleared, which leaves .95 with a saved policy of `both` and empty lists, the same values as the default.
+- **No hotplug line at boot:** the uevents queued during start were for modules already loaded or aliases no module claims, which are not logged by design.
+
+**Not yet covered:** a load by plug. The owner's re-plug of `ar-1`'s dongle, with its `kmod-config` entry removed and the module unloaded, is ADR-0348's verification 3 and is still to do. The dashboard (release three) does not yet show the policy, the scan report or the mark.
+
 ## Part 306: one policy decides every module load, and a coldplug sweep at start (ADR-0348 release one, #143, 0.2.57-568 and -569)
 
 `GET`/`PUT /v1/system/kmod-policy` holds an autoload mode, a blacklist and an allowlist. A pure `kmod_policy_verdict()` is asked by every load path: an explicit `POST /v1/system/kmod/{name}` (409 when refused), `kmod-config` autoload, the boot NIC list, and a new coldplug sweep. The blacklist refuses every origin, and any module whose `modules.dep` dependency it names. The allowlist binds only automatic loads.
