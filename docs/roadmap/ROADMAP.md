@@ -2445,6 +2445,27 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 303: a restart that cannot be made is retried, and says why (ADR-0346, #623, 0.2.57-564)
+
+A crash restart or boot autostart whose create is refused now goes to `restart_was_refused()`. If the image cannot run, the definition joins ADR-0270's wait. Otherwise it is retried on ADR-0027's backoff (`restart_backoff_delay()`, now one function, capped at 30 s) until it succeeds or is stopped or deleted. The volume and LDAP-group existence checks moved ahead of the first write (`body_reference_gone()`). The reason is on GET as `restart_refused`. It is announced and logged only when it changes, logged once more on recovery, and cleared by a stop or a redefine. cixctl prints it under the container's line, and the dashboard shows it under Status. Before this, measured on .95 at 0.2.57-563, such a container read `stopped`, logged nothing, and stayed down.
+
+**Gated:** compile probe `0.2.57-574` was green, and its log shows `test_container_restart PASS`. That test's new case refuses two restarts with an address collision. It checks:
+- the reason on GET;
+- one log line across two attempts;
+- recovery within the cap once the address is free;
+- a stop ending the retries and clearing the field.
+
+The 564 hostbuild's suite passed too.
+
+**Measured on 192.168.15.95 after booting 0.2.57-564** (slot b, 12 containers running), with a scratch `restartprobe`: `jumpbox`, a 5-second service, `restart: always`, holding the QEMU tablet through a `usb_serial` mapping `gonedev`:
+- **Refusal:** after `gonedev` was removed, `container ls` printed `restart refused: unknown or not-currently-present device gonedev -- retried at most every 30 s`. GET read `"status":"stopped"` and `"restart_refused":"unknown or not-currently-present device gonedev"`, and the log carried one refusal line.
+- **Dashboard:** rendered in Chromium from the box's own 0.2.57-564 `index.html`, `app.js` and `style.css`, fed the box's live responses. It shows "Restart refused" with that sentence under Status.
+- **Recovery:** with the mapping recreated, the log said `restarted after its restart was refused` 16 s later. The container was `running`, and the refusal was still logged once across every retry in between.
+- **Stop:** refused again, then stopped. `restart_refused` read `""`. With the mapping back, it was still `stopped` 45 s later, with no second recovery line.
+- `restartprobe` and `gonedev` were removed afterwards, and 12 containers were running.
+
+**Not covered:** rule 2 has no gate. An address or device refusal returns before any write; the moved checks are verified by reading. #623 stays open for a radio unplugged from a container that keeps running.
+
 ## Part 302: an unplugged device is given back when it returns (ADR-0345 step 4, #349, 0.2.57-563)
 
 Each device grant now records the `ref` it was named by. A USB unplug that revokes a grant sends that `ref` back to `pending_devices`, with its `shared` flag, and the next matching hardware add gives the device back: in any port when a mapping named it. A pending entry is `{ref, shared}`. A reference gives back every device it names and skips what is still held. All three pending setters announce. Revocation asks one snapshot through the pure `device_grants_gone()`, and any hardware add now runs the give-back, because a USB stick's disk node arrives in a block add after the USB one. `DELETE .../devices/{id}` pends nothing.
