@@ -2445,6 +2445,24 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 305: a container whose process dies before exec is a failed create (#622, 0.2.57-567)
+
+`container_create()` used to wait for the child's exec on the diagnostic pipe and return success whichever way the child went, so `POST /v1/containers` answered `201 running` for a child already dying (measured at 0.2.57-556 on `devgate-sr0`). Each diagnostic record now carries the child's errno, and the child writes one only on its way to `_exit()`. The non-fatal KSM note moved to the container's stderr, which is its log. The create treats a waiting record as failure: it reaps the child, takes the record as its error step and errno, and returns -1. The wait now comes before any `interfaces[]` grant is moved in, so a child that dies there has none to give back.
+
+**Gated:**
+- Compile probe `0.2.57-577` failed in `test_blocking_waits`: the per-file budget had been raised for the new reap, and the whole-daemon ceiling had not (53 against 52). Fixed in b463e07e.
+- `0.2.57-578` was green, and its log shows `test_volume PASS` and `test_blocking_waits PASS`. `test_volume`'s new case puts a volume under a regular file and expects a 500 naming `child: volume mkdir` and `Not a directory`, then a 404.
+
+**Measured on 192.168.15.95 after booting 0.2.57-567** (slot a, 12 containers running): a scratch volume `p622vol`, and a `jumpbox` container `p622` with that volume at `/usr/bin/bash/x`.
+- The create answered `500 {"error":"failed to create container: Not a directory (child: volume mkdir: Not a directory)"}`.
+- `GET /v1/containers/p622` answered 404.
+- The cixd log carried one line, `container p622: failed to create: Not a directory (child: volume mkdir: Not a directory)`.
+- The volume was deleted afterwards, and 12 containers were running.
+
+**Read, not measured:**
+- An auto-allocated address comes from `ip_in_use()` over the live registry, so a failed create holds no address, and ADR-0346's retry of a refused restart cannot run the pool dry.
+- Whether a failed fresh create leaves its rootfs snapshot on disk was not measured. The next create of that name reuses an existing tree (ADR-0277).
+
 ## Part 304: a container whose interface leaves the host has failed (ADR-0347, #623, 0.2.57-565)
 
 When the device an `interfaces[]` grant hangs off leaves the host, the reconcile that revokes `devices[]` grants finds the interface's anchor gone, logs one error and stops the container with the FAIL teardown. The exit counts as a failure, so the restart policy applies, and ADR-0346's retry brings the container back when the device returns. Only a running container holds a device, a DELETE during any restarting teardown removes the definition, and a stop the daemon starts itself announces.
