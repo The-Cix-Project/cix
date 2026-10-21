@@ -5350,6 +5350,14 @@ function renderContainerDetail(name) {
 	/* Summary -- identity/runtime status only. */
 	fields.textContent = "";
 	fields.appendChild(fieldBlock("Status", c.status));
+	/* Why a defined container is not running when nobody stopped it --
+	 * the daemon's own words (ADR-0270, ADR-0346). Status alone says
+	 * "stopped" for all three. */
+	if (c.awaiting_image)
+		fields.appendChild(fieldBlock("Waiting for", "image " + c.awaiting_image + " to be built"));
+	if (c.restart_refused)
+		fields.appendChild(fieldBlock("Restart refused",
+		    c.restart_refused + " — retried at most every 30 s until it succeeds, or until it is stopped or deleted"));
 	/* The image links to its own page (#592): an image is a Software
 	 * subject with no tree leaf of its own, so the container that runs
 	 * it is the natural way in, and this was plain text. */

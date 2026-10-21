@@ -288,11 +288,11 @@ static void write_deployments(struct json_writer *w, int *stage_counts)
 		if (def != NULL && def->awaiting_image[0] != '\0') {
 			stage = PIPELINE_ACQUIRE;
 			blocked_on_image = def->awaiting_image;
-			if (def->last_replay_error[0] != '\0') {
+			if (def->restart_refused[0] != '\0') {
 				status = PIPELINE_FAILED;
 				snprintf(waiting_reason, sizeof(waiting_reason),
 				          "image %s is ready, but creating this deployment failed: %s",
-				          def->awaiting_image, def->last_replay_error);
+				          def->awaiting_image, def->restart_refused);
 			} else {
 				status = PIPELINE_BLOCKED;
 				snprintf(waiting_reason, sizeof(waiting_reason),

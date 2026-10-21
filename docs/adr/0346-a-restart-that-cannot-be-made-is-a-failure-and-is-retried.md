@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-21. It came out of #623: what happens to `ar-1` when its radio is unplugged. It amends [ADR-0027](0027-restart-policy-expansion-and-backoff.md) (backoff covers a refused restart, not only a crash) and follows [ADR-0270](0270-a-deployment-waits-for-its-image-rather-than-being-refused.md)'s shape for saying why a defined container is not running.
+Accepted by the owner, 2026-10-21. It came out of #623: what happens to `ar-1` when its radio is unplugged. It amends [ADR-0027](0027-restart-policy-expansion-and-backoff.md) (backoff covers a refused restart, not only a crash) and follows [ADR-0270](0270-a-deployment-waits-for-its-image-rather-than-being-refused.md)'s shape for saying why a defined container is not running.
 
 ## Context
 
@@ -38,17 +38,18 @@ Measured on 192.168.15.95 at 0.2.57-563, or read from the code at `f6a00110`. Ea
 5. **What stops it is what already stops a crash-loop:** `stop`, which sets the definition's `stopped` flag that the timer handler checks unconditionally, and `DELETE`, which removes the definition. A new guard joins them: **a timer that fires for a name already running does nothing.** An operator who re-created the container during the wait would otherwise be refused "already exists" every 30 seconds for ever.
 6. **It is said once, and shown always.**
    - The log gets an error line when a refusal first appears or its reason changes, and an info line on the first successful restart after a refusal: "restarted after its restart was refused". It gives no count, because `consecutive_failures` counts crashes too, and a number would be wrong whenever a refusal followed a crash-loop. A definition retried every 30 seconds would otherwise write 2,880 lines a day.
-   - The container's record says why it is not running, in a new field `restart_refused`: the sentence the create was refused with, `""` otherwise. As with ADR-0270's `awaiting_image`, its status stays `stopped`, and like `awaiting_image` the field is optional in the contract. Both writers emit it: the stopped-definition one with the sentence, and `registry_write_json_one()` with `""`. It is set through a setter that announces it (ADR-0339) **only when the sentence changes**: a retry refused for the same reason announces nothing, or the dashboard would refetch every 30 seconds for each such definition. `container ls` and the dashboard show it beside `awaiting_image`.
+   - The container's record says why it is not running, in a new field `restart_refused`: the sentence the create was refused with, `""` otherwise. As with ADR-0270's `awaiting_image`, its status stays `stopped`, and like `awaiting_image` the field is optional in the contract. Like `awaiting_image`, only the stopped-definition writer emits it, since a running record is never refused. (This sentence said both writers did until implementation; `registry_write_json_one()` carries neither field.) A `stop` clears it, since the retries it describes have ended. It is set through a setter that announces it (ADR-0339) **only when the sentence changes**: a retry refused for the same reason announces nothing, or the dashboard would refetch every 30 seconds for each such definition. `container ls` and the dashboard show it beside `awaiting_image`.
    - Like `consecutive_failures`, it is not persisted, and `containerdef_add()` clears it on every redefine, as it already clears `stopped` and `consecutive_failures`, so a re-created container does not keep a stale reason. After a daemon restart, boot autostart tries again and sets it again if the restart is still refused.
 
 ## Verification
 
-1. **In the gate.** `test_container_restart` is in `DAEMON_SELFTESTS`. A `restart: always` definition has a one-second service, an explicit IP, and `restart_delay_seconds` of 15. That puts its first delay at the 30-second cap (ADR-0027 doubles on the first failure), so the window is deliberate rather than a race. During that delay a second container takes the same IP. Before the test asserts on it, the exact status and sentence an explicit-IP collision is refused with are read from the code. The test then asserts:
-   - the restart is refused;
-   - the log carries the refusal once;
-   - the definition's `restart_refused` names the address;
-   - once the squatter is deleted, the definition is running again within the cap, `restart_refused` is empty again, and the log says it restarted after the refusals.
-   It also asserts that `stop` during a refusal ends the retries. **And that a refusal leaves nothing behind:** the restart delay is lowered once the squatter holds the address, so the definition is refused at least twice. The log then carries one refusal line, and the container's rootfs directory holds nothing for the definition while it is refused.
+1. **In the gate.** `test_container_restart` is in `DAEMON_SELFTESTS`. Two `restart: always` definitions each have a one-second service, an explicit IP, and `restart_delay_seconds` of 5, so the first delay is 10 seconds (ADR-0027 doubles on the first failure) and the window is deliberate rather than a race. During it a second container takes each one's IP, and the restart is refused with `ip is held by container "<squatter>"`, the sentence `create_container_from_body()` writes for that collision. The test asserts:
+   - each definition's `restart_refused` names the squatter;
+   - after the second attempt, 20 seconds after the first, the log carries the first definition's refusal exactly once;
+   - once its squatter is deleted, it is running again within 45 seconds (the 30-second cap plus margin), and the log says it restarted after its restart was refused;
+   - the second definition, stopped while refused and its squatter deleted at once, reads `restart_refused` as empty after the stop and has not restarted when the first has.
+
+   **What the gate does not show is rule 2**, because an address collision is a validation refusal and returns before any write. The moved existence checks are verified by reading: `body_reference_gone()` runs before `persist_mkdir_p(container_base)` and the rootfs snapshot, and checks only `volume_find()` and `ldap_group_find()` against the body.
 2. **Live, on .95.** The tablet case above is repeated: delete the mapping, let the service exit, then read the refusal in the log and in `restart_refused`. Recreate the mapping, and the container is running within 30 seconds.
 
 ## Consequences

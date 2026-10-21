@@ -299,6 +299,48 @@ static time_t wait_for_new_pid(const struct cix_client *c, const char *name, lon
 	return 0;
 }
 
+/* Copies GET /v1/containers/{name}'s string field key into out ("" when
+ * absent). Returns the HTTP status, or -1 when the request failed. */
+static int container_str(const struct cix_client *c, const char *name, const char *key, char *out,
+                         size_t out_size)
+{
+	char path[128];
+	struct cix_response r;
+	const char *v;
+	int status;
+
+	out[0] = '\0';
+	snprintf(path, sizeof(path), "/v1/containers/%s", name);
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
+		cix_response_free(&r);
+		return -1;
+	}
+	status = r.status;
+	v = json_str_field(r.json, key);
+	if (v != NULL)
+		snprintf(out, out_size, "%s", v);
+	cix_response_free(&r);
+	return status;
+}
+
+/* The number of log lines matching regex (already URL-encoded), or -1
+ * when the read failed. */
+static int count_log_lines(const struct cix_client *c, const char *regex)
+{
+	char path[256];
+	struct cix_response r;
+	int n = -1;
+
+	snprintf(path, sizeof(path), "/v1/system/logs?regex=%s&tail=50", regex);
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200 && r.json != NULL &&
+	    r.json->type == JSON_ARRAY)
+		n = (int)r.json->u.array.count;
+	cix_response_free(&r);
+	return n;
+}
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -1523,6 +1565,150 @@ int main(void)
 			        "FAIL: 40 delete+recreate races never once hit the teardown 409, so the "
 			        "message this case exists to check was never exercised (#421)\n");
 			ok = 0;
+		}
+	}
+
+	/*
+	 * ADR-0346 (#623): a restart that cannot be made is a failure, and is
+	 * retried. refused1 and refused2 each exit after a second; while each
+	 * waits out its first backoff (5 s doubled once, 10 s), a squatter
+	 * takes its address, so the restart is refused with "ip is held by
+	 * container". Before ADR-0346 that refusal went to stderr and the
+	 * container stayed down for good.
+	 *
+	 * refused1 proves the rest of the rule: the reason is on GET, the log
+	 * says it once across a retry, and the container comes back by itself
+	 * once the address is free. refused2 is stopped while refused and its
+	 * squatter deleted at once, so its next retry -- which would succeed --
+	 * must not happen: a stop ends the retries.
+	 */
+	{
+		static const char *const rf_names[2] = { "refused1", "refused2" };
+		static const char *const rf_squatters[2] = { "squatter1", "squatter2" };
+		static const char *const rf_ips[2] = { "172.60.0.71", "172.60.0.72" };
+		char body[640];
+		char got[256];
+		int ri, waited;
+
+		for (ri = 0; ri < 2; ri++) {
+			snprintf(body, sizeof(body),
+			         "{\"name\":\"%s\",\"image\":\"restarttest\","
+			         "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\","
+			         "\"cmd\":[\"/bin/daemon_child\",\"1\",\"0\"]}],"
+			         "\"networks\":[{\"name\":\"" READY_NETWORK_NAME "\",\"ip\":\"%s\"}],"
+			         "\"restart\":\"always\",\"restart_delay_seconds\":5}",
+			         rf_names[ri], rf_ips[ri]);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/containers", body, &r) != 0 ||
+			    r.status != 201) {
+				fprintf(stderr, "FAIL: POST %s, status=%d %.200s\n", rf_names[ri], r.status,
+				        r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+		for (ri = 0; ri < 2; ri++) {
+			if (wait_for_gone(&client, rf_names[ri], 80) == 0) {
+				fprintf(stderr, "FAIL: %s never exited, so its restart was never pending\n",
+				        rf_names[ri]);
+				ok = 0;
+				continue;
+			}
+			snprintf(body, sizeof(body),
+			         "{\"name\":\"%s\",\"image\":\"restarttest\","
+			         "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\","
+			         "\"cmd\":[\"/bin/daemon_child\",\"300\",\"0\"]}],"
+			         "\"networks\":[{\"name\":\"" READY_NETWORK_NAME "\",\"ip\":\"%s\"}]}",
+			         rf_squatters[ri], rf_ips[ri]);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/containers", body, &r) != 0 ||
+			    r.status != 201) {
+				fprintf(stderr, "FAIL: POST %s, status=%d %.200s\n", rf_squatters[ri], r.status,
+				        r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+
+		/* The first retry is 10 s after the exit; give it 25. */
+		for (ri = 0; ri < 2; ri++) {
+			for (waited = 0; waited < 25000; waited += 250) {
+				container_str(&client, rf_names[ri], "restart_refused", got, sizeof(got));
+				if (strstr(got, "ip is held by container") != NULL)
+					break;
+				usleep(250000);
+			}
+			if (strstr(got, "ip is held by container") == NULL ||
+			    strstr(got, rf_squatters[ri]) == NULL) {
+				fprintf(stderr,
+				        "FAIL: %s's restart_refused is \"%s\", expected the address held by "
+				        "%s (ADR-0346)\n",
+				        rf_names[ri], got, rf_squatters[ri]);
+				ok = 0;
+			}
+		}
+
+		if (stop_container(&client, "refused2") != 200) {
+			fprintf(stderr, "FAIL: stop refused2 while its restart is refused\n");
+			ok = 0;
+		}
+		container_str(&client, "refused2", "restart_refused", got, sizeof(got));
+		if (got[0] != '\0') {
+			fprintf(stderr,
+			        "FAIL: refused2 still reads restart_refused \"%s\" after a stop, which "
+			        "says it is being retried (ADR-0346)\n",
+			        got);
+			ok = 0;
+		}
+		memset(&r, 0, sizeof(r));
+		cix_client_request(&client, "DELETE", "/v1/containers/squatter2", NULL, &r);
+		cix_response_free(&r);
+
+		/* refused1's second retry is 20 s after its first. Past it, the
+		 * refusal must still have been said once. */
+		usleep(23000000);
+		if (count_log_lines(&client, "refused1%3A%20restart%20refused") != 1) {
+			fprintf(stderr,
+			        "FAIL: refused1's refusal was logged %d times across two attempts, "
+			        "expected once (ADR-0346)\n",
+			        count_log_lines(&client, "refused1%3A%20restart%20refused"));
+			ok = 0;
+		}
+
+		memset(&r, 0, sizeof(r));
+		cix_client_request(&client, "DELETE", "/v1/containers/squatter1", NULL, &r);
+		cix_response_free(&r);
+
+		/* Next attempt at most 30 s away (the cap); give it 45. */
+		for (waited = 0; waited < 45000; waited += 500) {
+			if (count_log_lines(&client, "refused1%3A%20restarted%20after%20its%20restart") > 0)
+				break;
+			usleep(500000);
+		}
+		if (waited >= 45000) {
+			container_str(&client, "refused1", "restart_refused", got, sizeof(got));
+			fprintf(stderr,
+			        "FAIL: refused1 did not come back within 45 s of its address being "
+			        "freed; restart_refused is \"%s\" (ADR-0346)\n",
+			        got);
+			ok = 0;
+		}
+
+		container_str(&client, "refused2", "status", got, sizeof(got));
+		if (container_exists(&client, "refused2") != 0 ||
+		    count_log_lines(&client, "refused2%3A%20restarted%20after%20its%20restart") != 0) {
+			fprintf(stderr,
+			        "FAIL: refused2 restarted after a stop, with status \"%s\" -- a stop must "
+			        "end the retries (ADR-0346)\n",
+			        got);
+			ok = 0;
+		}
+
+		for (ri = 0; ri < 2; ri++) {
+			snprintf(body, sizeof(body), "/v1/containers/%s", rf_names[ri]);
+			memset(&r, 0, sizeof(r));
+			cix_client_request(&client, "DELETE", body, NULL, &r);
+			cix_response_free(&r);
 		}
 	}
 

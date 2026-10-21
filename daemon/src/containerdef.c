@@ -1,5 +1,6 @@
 #include "containerdef.h"
 #include "diskrole.h"
+#include "events.h"
 #include "json.h"
 #include "persist.h"
 
@@ -138,7 +139,7 @@ int containerdef_add(const char *name, const char *body, size_t body_len,
 	 * waiting through containerdef_set_awaiting_image() after this, on
 	 * the branch where no create happened at all. */
 	d->awaiting_image[0] = '\0';
-	d->last_replay_error[0] = '\0';
+	d->restart_refused[0] = '\0';
 	d->follow_rolling = follow_rolling;
 	d->has_follow_rolling_jitter = has_follow_rolling_jitter;
 	d->follow_rolling_jitter_seconds = follow_rolling_jitter_seconds;
@@ -153,7 +154,7 @@ int containerdef_add(const char *name, const char *body, size_t body_len,
  * this definition as waiting for that image to be realized.
  *
  * Persisted (an intent must survive a restart), so it saves state --
- * unlike containerdef_set_replay_error() below, which deliberately does
+ * unlike containerdef_set_restart_refused() below, which deliberately does
  * not.
  */
 int containerdef_set_awaiting_image(const char *name, const char *image)
@@ -166,7 +167,7 @@ int containerdef_set_awaiting_image(const char *name, const char *image)
 		return -1;
 	snprintf(d->awaiting_image, sizeof(d->awaiting_image), "%s", image != NULL ? image : "");
 	if (d->awaiting_image[0] == '\0')
-		d->last_replay_error[0] = '\0';
+		d->restart_refused[0] = '\0';
 	return save_state();
 }
 
@@ -211,18 +212,28 @@ int containerdef_clear_roll(const char *name)
 }
 
 /*
- * ADR-0270. Why the last replay of a waiting definition failed for a
- * reason that was not the image. In memory only, never saved: the same
- * reasoning consecutive_failures already carries -- a failure recorded
- * before a restart describes a world that no longer exists.
+ * ADR-0270, ADR-0346. Why the last automatic create of this definition
+ * was refused. In memory only, never saved: the same reasoning
+ * consecutive_failures already carries -- a failure recorded before a
+ * restart describes a world that no longer exists.
+ *
+ * Announces only on a change (ADR-0339): a retry refused for the same
+ * reason every 30 seconds must not make every dashboard refetch.
  */
-void containerdef_set_replay_error(const char *name, const char *err)
+int containerdef_set_restart_refused(const char *name, const char *why)
 {
 	struct container_def *d = containerdef_find(name);
+	char next[sizeof(d->restart_refused)];
 
 	if (d == NULL)
-		return;
-	snprintf(d->last_replay_error, sizeof(d->last_replay_error), "%s", err != NULL ? err : "");
+		return 0;
+	snprintf(next, sizeof(next), "%s", why != NULL ? why : "");
+	if (strcmp(next, d->restart_refused) == 0)
+		return 0;
+	snprintf(d->restart_refused, sizeof(d->restart_refused), "%s", next);
+	events_announce(EV_listContainers);
+	events_announce(EV_getContainer);
+	return 1;
 }
 
 /*
@@ -265,7 +276,7 @@ int containerdef_promote_pending(const char *name, const char *restart_policy,
 	d->has_follow_rolling_jitter = has_follow_rolling_jitter;
 	d->follow_rolling_jitter_seconds = follow_rolling_jitter_seconds;
 	d->awaiting_image[0] = '\0';
-	d->last_replay_error[0] = '\0';
+	d->restart_refused[0] = '\0';
 	d->stopped = 0;
 	d->consecutive_failures = 0;
 	return save_state();
@@ -310,6 +321,11 @@ int containerdef_set_stopped(const char *name, int stopped)
 	if (d == NULL)
 		return 0;
 	d->stopped = stopped;
+	/* ADR-0346: a stop ends the retries, so the reason that read "retried
+	 * at most every 30 s" is no longer true; cleared through the setter
+	 * that announces it. */
+	if (stopped)
+		containerdef_set_restart_refused(name, "");
 	return save_state();
 }
 
@@ -468,6 +484,9 @@ static void write_stopped_def_json_one(struct container_def *d, struct json_writ
 	 */
 	jw_key(w, "awaiting_image");
 	jw_str(w, d->awaiting_image);
+	/* ADR-0346: why its last automatic create was refused, "" if none. */
+	jw_key(w, "restart_refused");
+	jw_str(w, d->restart_refused);
 	jw_key(w, "paused");
 	jw_bool(w, 0);
 	jw_key(w, "pid");

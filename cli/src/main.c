@@ -1017,6 +1017,19 @@ static void fmt_container_line(const struct json_value *v)
 	       cpuset != NULL && cpuset->type == JSON_STRING ? cpuset->u.string : "-", quota_buf,
 	       cap_add != NULL && cap_add->type == JSON_ARRAY ? cap_add->u.array.count : 0,
 	       cmd_buf[0] != '\0' ? cmd_buf : "-");
+
+	/* Why a defined container is not running when nobody stopped it
+	 * (ADR-0270, ADR-0346): the status column says "stopped" for all
+	 * three, so the reason goes on a line of its own. */
+	{
+		const char *awaiting = json_str_field(v, "awaiting_image");
+		const char *refused = json_str_field(v, "restart_refused");
+
+		if (awaiting != NULL && awaiting[0] != '\0')
+			printf("%-20s waiting for image %s to be built\n", "", awaiting);
+		if (refused != NULL && refused[0] != '\0')
+			printf("%-20s restart refused: %s -- retried at most every 30 s\n", "", refused);
+	}
 }
 
 static void fmt_list(const struct json_value *v)

@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A restart that cannot be made is retried, and says why (ADR-0346, #623)
+
+- **What changed:**
+  - **Refused restarts:** a crash restart or boot autostart whose create is refused calls `restart_was_refused()`. If the image cannot run, the definition joins ADR-0270's wait. Otherwise it is retried on ADR-0027's backoff, capped at 30 s, until it succeeds or is stopped or deleted. Before, the reason went to stderr and the container stayed down for good.
+  - **Backoff:** the crash path's inline doubling is now `restart_backoff_delay()`, called by both paths.
+  - **No leftovers:** the volume and LDAP-group existence checks moved into `body_reference_gone()`, ahead of the container directory and rootfs snapshot, so a retried refusal writes nothing.
+  - **Timer guard:** a restart timer for a name already running, or for a definition awaiting its image, does nothing.
+  - **Visible:** `GET /v1/containers/{name}` carries an optional `restart_refused` with the refusal's sentence. The field replaces the unexposed `last_replay_error`. It is announced only when the sentence changes and cleared by a stop or a redefine. The log records a refusal once per reason, and once more on recovery. `cixctl container ls` prints the reason (and `awaiting_image`) under the container's line, and the dashboard shows both on the container page.
+- **Verified:** `test_container_restart` gates an address-collision refusal: the reason on GET, one log line across two attempts, recovery within the cap, and a stop ending the retries. Live verification on .95 is in ROADMAP.
+
 ### An unplugged device is given back when it returns (ADR-0345 step 4, #349)
 
 - **What changed:**

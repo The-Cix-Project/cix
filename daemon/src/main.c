@@ -14551,6 +14551,51 @@ static int default_dns_servers_for(const struct registry_network_attachment *net
 	return taken_count;
 }
 
+/*
+ * ADR-0346: the references a create body makes that can stop existing
+ * after the body was first accepted -- a volume, and an LDAP group the
+ * container admits -- asked before the create writes anything. Every
+ * other late check validates the body itself, which cannot change
+ * between a first create and its restarts. These two were refused only
+ * after the rootfs snapshot, and a refused restart is now retried, so
+ * each retry would have taken and set aside a snapshot: on btrfs two
+ * ioctls, without it a full copy of the image (ADR-0341). Returns 0, or
+ * 400 with the same sentence the late check gives.
+ */
+static int body_reference_gone(const struct json_value *root, int ldap_client,
+                               const struct json_value *jallow_groups, char *err, size_t err_size)
+{
+	const struct json_value *jvolumes = json_object_get(root, "volumes");
+	size_t i;
+
+	if (jvolumes != NULL && jvolumes->type == JSON_ARRAY) {
+		for (i = 0; i < jvolumes->u.array.count; i++) {
+			const char *vname =
+			    json_as_string(json_object_get(jvolumes->u.array.items[i], "name"));
+
+			if (vname != NULL && volume_find(vname) == NULL) {
+				snprintf(err, err_size, "no such volume: %s", vname);
+				return 400;
+			}
+		}
+	}
+	if (ldap_client && jallow_groups != NULL && jallow_groups->type == JSON_ARRAY) {
+		for (i = 0; i < jallow_groups->u.array.count; i++) {
+			const char *g = json_as_string(jallow_groups->u.array.items[i]);
+
+			if (g != NULL && simple_name_is_valid(g, LDAP_GROUP_NAME_MAX) &&
+			    ldap_group_find(g) == NULL) {
+				snprintf(err, err_size,
+				         "ldap_allow_groups names group \"%s\", which does not exist -- create "
+				         "it first, so a typo cannot silently lock everyone out",
+				         g);
+				return 400;
+			}
+		}
+	}
+	return 0;
+}
+
 static int create_container_from_body(const char *body, size_t body_len,
                                        struct registry_entry **out_entry,
                                        char out_restart_policy[16], int *out_restart_delay_seconds,
@@ -16098,6 +16143,22 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 	} else {
 		snprintf(container_root, sizeof(container_root), "%s", CONTAINERS_DIR);
+	}
+
+	/*
+	 * ADR-0346: before the first write. A volume or an LDAP group can be
+	 * gone by the time a restart replays this body, and a refused
+	 * restart is retried, so it must refuse having written nothing. The
+	 * checks where those references are used stay, for the body-shape
+	 * refusals they also make; for existence they no longer fire.
+	 */
+	{
+		int gone = body_reference_gone(root, ldap_client, jallow_groups, err_msg, err_msg_size);
+
+		if (gone != 0) {
+			json_free(root);
+			return gone;
+		}
 	}
 
 	snprintf(container_base, sizeof(container_base), "%s/%s", container_root, name);
@@ -34172,6 +34233,88 @@ static void handle_client_event(struct conn *cc)
  * logged and simply means this one restart doesn't happen -- not fatal
  * to the daemon.
  */
+/*
+ * ADR-0027's backoff: the definition's base delay, doubled once per
+ * consecutive failure, capped. One function, because a crash and a
+ * refused restart (ADR-0346) are the same failure for this purpose,
+ * and the first-failure doubling is exactly what a second copy gets
+ * wrong. Self-terminating: it stops doubling the moment the delay would
+ * meet or exceed the cap, so it is safe however large
+ * consecutive_failures grows over a long daemon lifetime -- no
+ * shift/multiply overflow.
+ */
+static int restart_backoff_delay(const struct container_def *def)
+{
+	int delay = def->restart_delay_seconds;
+	int i;
+
+	for (i = 0; i < def->consecutive_failures && delay < CONTAINER_RESTART_BACKOFF_CAP_SECONDS; i++)
+		delay *= 2;
+	if (delay > CONTAINER_RESTART_BACKOFF_CAP_SECONDS)
+		delay = CONTAINER_RESTART_BACKOFF_CAP_SECONDS;
+	return delay;
+}
+
+static void arm_restart_timer(const char *name, int delay_seconds);
+
+/*
+ * ADR-0346: a crash restart or a boot autostart that
+ * create_container_from_body() refused. Before this, both wrote the
+ * reason to stderr, which nothing reads on a shell-less host, and gave
+ * up: measured on 192.168.15.95 at 0.2.57-563, such a container read
+ * "stopped" with stopped=no, logged nothing, and stayed down after what
+ * it needed came back.
+ *
+ * One wait per cause. An image that cannot run joins ADR-0270's wait
+ * -- awaiting_image, its build queued -- and the build landing creates
+ * it, as for a deployment. Anything else is retried on ADR-0027's
+ * backoff, the same failure as a crash: a device or mapping absent, a
+ * network gone, an address taken, a volume deleted. A stop or a DELETE
+ * ends it, and the timer handler does nothing for a name already
+ * running.
+ *
+ * Said once: the log carries a refusal when it first appears or its
+ * reason changes, and the definition carries the reason, which GET
+ * shows as restart_refused.
+ */
+static void restart_was_refused(const char *name, const char *why)
+{
+	struct container_def *def = containerdef_find(name);
+	struct json_value *root;
+	const char *image;
+	char image_copy[REGISTRY_NAME_MAX] = "";
+
+	if (def == NULL)
+		return;
+	root = json_parse(def->body, def->body_len);
+	image = root != NULL ? json_as_string(json_object_get(root, "image")) : NULL;
+	if (image != NULL)
+		snprintf(image_copy, sizeof(image_copy), "%s", image);
+	json_free(root);
+
+	if (image_copy[0] != '\0' && !deployment_image_can_run(image_copy)) {
+		char prep_err[256];
+
+		if (deployment_image_prepare(image_copy, prep_err, sizeof(prep_err)) == DEPLOY_IMAGE_FORKED &&
+		    containerdef_set_awaiting_image(name, image_copy) == 0) {
+			containerdef_set_restart_refused(name, "");
+			logstore_write("cixd", "info",
+			               "container %s: its image %s cannot run yet, so it waits for that "
+			               "image's build rather than being retried (ADR-0270, ADR-0346)",
+			               name, image_copy);
+			return;
+		}
+	}
+
+	if (containerdef_set_restart_refused(name, why))
+		logstore_write("cixd", "error",
+		               "container %s: restart refused: %s -- retried at most every %d s until it "
+		               "succeeds, or until a stop or a DELETE (ADR-0346)",
+		               name, why, CONTAINER_RESTART_BACKOFF_CAP_SECONDS);
+	def->consecutive_failures++;
+	arm_restart_timer(name, restart_backoff_delay(def));
+}
+
 static void arm_restart_timer(const char *name, int delay_seconds)
 {
 	int tfd;
@@ -34254,7 +34397,16 @@ static void handle_restart_timer_event(struct conn *cc)
 	close(cc->fd);
 
 	def = containerdef_find(cc->restart_name);
-	if (def != NULL && !def->stopped) {
+	/*
+	 * ADR-0346: a name already running does nothing. An operator who
+	 * re-created the container while a refused restart was waiting
+	 * would otherwise be refused "already exists" at every retry, for
+	 * ever, now that a refusal re-arms. Deleted and stopped definitions
+	 * already end here (ADR-0027), and so does one now waiting for its
+	 * image, which its build creates.
+	 */
+	if (def != NULL && !def->stopped && def->awaiting_image[0] == '\0' &&
+	    registry_find(cc->restart_name) == NULL) {
 		struct registry_entry *entry;
 		char restart_policy[16];
 		int restart_delay_seconds;
@@ -34267,23 +34419,35 @@ static void handle_restart_timer_event(struct conn *cc)
 		int follow_rolling;
 		int has_follow_rolling_jitter, follow_rolling_jitter_seconds;
 		char err_msg[256];
+		/* Read before the create: a create from the body does not touch
+		 * the definition, so whether it was waiting is known only here. */
+		int was_refused = def->restart_refused[0] != '\0';
 		int status = create_container_from_body(
 		    def->body, def->body_len, &entry, restart_policy, &restart_delay_seconds, depends_on,
 		    &depends_on_count, &follow_rolling, &has_follow_rolling_jitter, &follow_rolling_jitter_seconds, err_msg,
 		    sizeof(err_msg));
 
 		if (status != 0) {
-			fprintf(stderr, "%s: restart failed: %s\n", cc->restart_name, err_msg);
 			/* ADR-0323 answer 4: a rolled version that can no longer
 			 * be created goes back now; nothing else would restart it. */
 			if (def->roll_to[0] != '\0') {
 				char reason[300];
 
+				logstore_write("cixd", "error", "container %s: restart refused: %s",
+				               cc->restart_name, err_msg);
 				snprintf(reason, sizeof(reason), "could not be restarted: %s", err_msg);
 				roll_back(def, reason);
 				arm_restart_timer(cc->restart_name, 1);
+			} else {
+				restart_was_refused(cc->restart_name, err_msg);
 			}
 		} else {
+			if (was_refused) {
+				containerdef_set_restart_refused(cc->restart_name, "");
+				logstore_write("cixd", "info",
+				               "container %s: restarted after its restart was refused (ADR-0346)",
+				               cc->restart_name);
+			}
 			resync_managed_services();
 		}
 		/* else: create_container_from_body() already registered its
@@ -34616,7 +34780,7 @@ static void apply_pending_deployments(void)
 		                                     &follow_rolling, &has_follow_rolling_jitter,
 		                                     &follow_rolling_jitter_seconds, err_msg, sizeof(err_msg));
 		if (status != 0) {
-			containerdef_set_replay_error(order[i], err_msg);
+			containerdef_set_restart_refused(order[i], err_msg);
 			logstore_write("cixd", "error",
 			                "deployment %s: image %s is ready but creating it failed: %s -- it stays "
 			                "pending and is retried when that image next changes (ADR-0270)",
@@ -35288,8 +35452,6 @@ static void container_exit_finalize(struct registry_entry *entry)
 
 		if (should_restart) {
 			time_t uptime = time(NULL) - started_at;
-			int delay = def->restart_delay_seconds;
-			int i;
 
 			/* registry_remove() is safe here even though entry->running
 			 * is already 0 (its own kill/reap branch is skipped, so no
@@ -35320,17 +35482,7 @@ static void container_exit_finalize(struct registry_entry *entry)
 				def->consecutive_failures = 0;
 			}
 
-			/* Self-terminating: stops doubling the moment delay would
-			 * meet or exceed the cap, so this is safe regardless of how
-			 * large consecutive_failures grows over a long daemon
-			 * lifetime -- no risk of shift/multiply overflow. */
-			for (i = 0; i < def->consecutive_failures && delay < CONTAINER_RESTART_BACKOFF_CAP_SECONDS;
-			     i++)
-				delay *= 2;
-			if (delay > CONTAINER_RESTART_BACKOFF_CAP_SECONDS)
-				delay = CONTAINER_RESTART_BACKOFF_CAP_SECONDS;
-
-			arm_restart_timer(name_copy, delay);
+			arm_restart_timer(name_copy, restart_backoff_delay(def));
 		}
 		/*
 		 * else (restart:"no", or on-failure with a clean 0 exit): the
@@ -36198,7 +36350,10 @@ static void containerdef_autostart_all(void)
 		                                     &has_follow_rolling_jitter, &follow_rolling_jitter_seconds,
 		                                     err_msg, sizeof(err_msg));
 		if (status != 0) {
-			fprintf(stderr, "%s: autostart failed: %s\n", order[i], err_msg);
+			/* ADR-0346: said and retried, as a refused crash restart
+			 * is -- before, a box that booted without what a container
+			 * needed (an unplugged radio) left it down for good. */
+			restart_was_refused(order[i], err_msg);
 			continue;
 		}
 		/* create_container_from_body() already registered entry's own

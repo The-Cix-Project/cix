@@ -146,14 +146,16 @@ struct container_def {
 	 * once per version rather than on every pass. */
 	char roll_skipped[72];
 	/*
-	 * Why the LAST replay of a waiting definition failed for a reason
-	 * that was not the image (a name taken since, a network deleted, a
-	 * rendered field validation rejects). NOT persisted -- deliberately,
-	 * exactly like consecutive_failures directly above: a failure from
-	 * before a restart describes a world that no longer exists, and the
-	 * next replay re-establishes it in one attempt if it is still true.
+	 * Why the last AUTOMATIC create of this definition was refused, ""
+	 * when the last one succeeded or none was refused: an ADR-0270 replay
+	 * of a waiting deployment refused for a reason that was not the
+	 * image, a crash restart, or a boot autostart (ADR-0346). One fact,
+	 * one field -- GET reports it as restart_refused. NOT persisted --
+	 * deliberately, exactly like consecutive_failures directly above: a
+	 * failure from before a restart describes a world that no longer
+	 * exists, and the next attempt re-establishes it if it is still true.
 	 */
-	char last_replay_error[192];
+	char restart_refused[192];
 	int in_use;
 };
 
@@ -240,11 +242,13 @@ int containerdef_rollback_window_get(void);
 int containerdef_rollback_window_set(int seconds);
 
 /*
- * ADR-0270: record why the last replay of a waiting definition failed
- * for a reason other than its image. In memory only -- never persisted,
- * the same deliberate choice consecutive_failures already makes.
+ * ADR-0270, ADR-0346: record why the last automatic create of this
+ * definition was refused ("" when it succeeded). In memory only --
+ * never persisted, the same deliberate choice consecutive_failures
+ * already makes. Returns 1 when the reason changed, which is when it
+ * announces and when a caller says so in the log; 0 otherwise.
  */
-void containerdef_set_replay_error(const char *name, const char *err);
+int containerdef_set_restart_refused(const char *name, const char *why);
 
 /*
  * ADR-0270: a definition that was waiting for its image has now been

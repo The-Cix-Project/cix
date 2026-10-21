@@ -17885,6 +17885,18 @@ components:
             because it is a defined container that is not running -- this
             field is what distinguishes "has never started, waiting for its
             image" from "was running and someone stopped it".
+        restart_refused:
+          type: string
+          description: >
+            ADR-0346. Why the last automatic create of this definition was
+            refused -- a crash restart, a boot autostart, or the replay of a
+            deployment whose image arrived -- and "" when none was. Status
+            stays "stopped"; this is what tells "being retried because what
+            it needs is missing" from "someone stopped it". It is retried on
+            the restart backoff (at most every 30 seconds) until it
+            succeeds, or until a stop or a DELETE. A refusal because the
+            image cannot run sets awaiting_image instead. Present only on a
+            definition that is not running.
         paused:
           type: boolean
           description: >
