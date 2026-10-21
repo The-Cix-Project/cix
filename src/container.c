@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/prctl.h>
@@ -21,13 +22,25 @@
 #include <unistd.h>
 
 /*
- * Writes "prefix: strerror(errno)\n" to fd (the diag pipe's write end,
- * always valid in the child by the time this is ever called -- see
- * container_create()'s own comment on why this pipe is unconditional,
- * not opt-in). dprintf() reads errno itself via strerror(), so callers
- * just need to call this immediately after the failing call, exactly
- * like the perror() it replaces.
+ * Writes one diag record to fd (the diag pipe's write end, always valid
+ * in the child by the time this is ever called -- see container_create()'s
+ * own comment on why this pipe is unconditional, not opt-in): the errno
+ * as a native int, then "prefix: strerror(errno)\n". Callers call this
+ * immediately after the failing call, exactly like the perror() it
+ * replaces.
+ *
+ * #622: a record is written only on the way to _exit(). That is what
+ * lets container_create() read "the pipe has data" as "the child is
+ * dying before exec", and the errno is what its -1 return carries.
+ * A non-fatal note goes to the child's stderr instead.
  */
+static void child_diag_errno(int fd, int err)
+{
+	ssize_t n = write(fd, &err, sizeof(err));
+
+	(void)n;
+}
+
 /*
  * Issue #88: mkdir -p for a volume's mount point inside the container's
  * future root. Needed because a volume may legitimately be mounted at a
@@ -57,7 +70,10 @@ static int volume_mkdir_p(char *path)
 
 static void child_diag(int fd, const char *prefix)
 {
-	dprintf(fd, "%s: %s\n", prefix, strerror(errno));
+	int err = errno;
+
+	child_diag_errno(fd, err);
+	dprintf(fd, "%s: %s\n", prefix, strerror(err));
 }
 
 /*
@@ -94,6 +110,7 @@ static void child_diag_mountns_pivot(int fd, int mountns_pivot_ret)
 		{ MOUNTNS_PIVOT_ERR_MOUNT_DEV_PTS, "mount(devpts)" },
 	};
 	const char *step = "unknown step";
+	int err = errno;
 	size_t i;
 
 	for (i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
@@ -102,7 +119,8 @@ static void child_diag_mountns_pivot(int fd, int mountns_pivot_ret)
 			break;
 		}
 	}
-	dprintf(fd, "child: mountns_pivot: %s: %s\n", step, strerror(errno));
+	child_diag_errno(fd, err);
+	dprintf(fd, "child: mountns_pivot: %s: %s\n", step, strerror(err));
 }
 
 /*
@@ -243,8 +261,10 @@ static int write_userns_maps(pid_t pid, long long base, long long len)
  * The signal is the diag pipe the child already has: its write end is
  * close-on-exec, and the parent closed its own, so the read end becomes
  * readable exactly when the child execs (EOF) or writes a diagnostic on
- * its way to exiting. Nothing is read here -- container_read_diag()
- * still consumes any diagnostic after the reap, as before.
+ * its way to exiting. Nothing is read here. Returns 1 when there is a
+ * diagnostic waiting, which since #622 means the child is dying before
+ * exec (child_diag() writes only then), and 0 otherwise: exec'd, timed
+ * out, or a poll error.
  *
  * Bounded by CONTAINER_EXEC_WAIT_MS. Everything the child does between
  * the parent's handshakes and its exec is metadata syscalls -- mounts,
@@ -257,7 +277,7 @@ static int write_userns_maps(pid_t pid, long long base, long long len)
  */
 #define CONTAINER_EXEC_WAIT_MS 5000
 
-static void wait_for_child_exec(int diag_fd)
+static int wait_for_child_exec(int diag_fd)
 {
 	struct pollfd pfd;
 	struct timespec start, now;
@@ -270,17 +290,62 @@ static void wait_for_child_exec(int diag_fd)
 		elapsed_ms = (now.tv_sec - start.tv_sec) * 1000L +
 		             (now.tv_nsec - start.tv_nsec) / 1000000L;
 		if (elapsed_ms >= CONTAINER_EXEC_WAIT_MS)
-			return;
+			return 0;
 		pfd.fd = diag_fd;
 		pfd.events = POLLIN;
 		pfd.revents = 0;
 		rc = poll(&pfd, 1, (int)(CONTAINER_EXEC_WAIT_MS - elapsed_ms));
-		if (rc > 0)
-			return; /* EOF (exec'd) or a diagnostic (dying): either way, done */
+		if (rc > 0) {
+			/* A pipe with no writers polls POLLHUP and no POLLIN when
+			 * it is empty, so the byte count is what tells a
+			 * diagnostic from an exec. */
+			int queued = 0;
+
+			return ioctl(diag_fd, FIONREAD, &queued) == 0 && queued > 0;
+		}
 		if (rc == 0 || errno != EINTR)
-			return; /* timed out, or a real poll error */
+			return 0; /* timed out, or a real poll error */
 		/* EINTR: SIGCHLD from another child, say -- wait out the rest */
 	}
+}
+
+/*
+ * #622: reads a dying child's diag record into the create's error step
+ * and returns its errno, for container_create() to fail with. Reads to
+ * EOF, which the child's _exit() gives, so the whole record is there
+ * however it was split across writes. A record shorter than its errno,
+ * or one carrying errno 0, is reported as EIO: the create failed, and a
+ * -1 return must say so in errno.
+ */
+static int take_child_diag(int diag_fd)
+{
+	char buf[sizeof(g_last_error_step) + sizeof(int)];
+	size_t total = 0;
+	int err = EIO;
+	ssize_t n;
+
+	while (total < sizeof(buf) - 1) {
+		n = read(diag_fd, buf + total, sizeof(buf) - 1 - total);
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			break;
+		total += (size_t)n;
+	}
+	buf[total] = '\0';
+	if (total >= sizeof(int)) {
+		memcpy(&err, buf, sizeof(int));
+		if (err == 0)
+			err = EIO;
+		snprintf(g_last_error_step, sizeof(g_last_error_step), "%s", buf + sizeof(int));
+	} else {
+		snprintf(g_last_error_step, sizeof(g_last_error_step),
+		         "child: died before exec with an incomplete diagnostic");
+	}
+	n = (ssize_t)strlen(g_last_error_step);
+	if (n > 0 && g_last_error_step[n - 1] == '\n')
+		g_last_error_step[n - 1] = '\0';
+	return err;
 }
 
 /*
@@ -1174,10 +1239,13 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 * without the saving, and refusing to start it would trade a
 		 * working container for a memory optimisation. The diagnostic
 		 * says so rather than the container silently differing from
-		 * what was asked for.
+		 * what was asked for. It goes to the container's own stderr,
+		 * which is its log: the diag pipe carries only a death before
+		 * exec (#622).
 		 */
 		if (spec->ksm && prctl(PR_SET_MEMORY_MERGE, 1, 0, 0, 0) != 0)
-			child_diag(diag_pipe[1], "child: prctl(PR_SET_MEMORY_MERGE) -- running without KSM");
+			dprintf(STDERR_FILENO, "cix: prctl(PR_SET_MEMORY_MERGE): %s -- running without KSM\n",
+			        strerror(errno));
 
 		if (container_caps_drop(spec->cap_add, spec->cap_add_count) != 0) {
 			child_diag(diag_pipe[1], "child: container_caps_drop");
@@ -1408,6 +1476,28 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		close(net_pipe[1]);
 	}
 
+	/*
+	 * #622: a child that wrote a diag record is dying before exec, so the
+	 * create has failed. Measured on 192.168.15.95 at 0.2.57-556 before
+	 * this: POST /v1/containers answered 201 running for a child that had
+	 * died on container_dev_mknod. Waited for before the interfaces move,
+	 * which the child does not need (cix-init waits for them itself), so a
+	 * child that dies here has none to give back.
+	 */
+	if (wait_for_child_exec(diag_pipe[0])) {
+		siginfo_t info;
+		int child_errno = take_child_diag(diag_pipe[0]);
+
+		waitid(P_PIDFD, pidfd, &info, WEXITED);
+		close(diag_pipe[0]);
+		close(pidfd);
+		if (bpf_prog_fd >= 0)
+			close(bpf_prog_fd);
+		close(cgroup_fd);
+		errno = child_errno;
+		return -1;
+	}
+
 	out->interfaces_netns_fd = -1;
 	out->iface_bringup_pid = 0;
 	out->iface_bringup_split_fd = -1;
@@ -1445,8 +1535,6 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			return -1;
 		}
 	}
-
-	wait_for_child_exec(diag_pipe[0]);
 
 	out->pid = (pid_t)ret;
 	out->cgroup_fd = cgroup_fd;
@@ -1503,6 +1591,15 @@ ssize_t container_read_diag(struct container_handle *h, char *buf, size_t bufsiz
 		total += n;
 	}
 	buf[total] = '\0';
+	/* child_diag()'s record starts with the errno; the text after it is
+	 * what a caller shows. */
+	if (total >= (ssize_t)sizeof(int)) {
+		memmove(buf, buf + sizeof(int), (size_t)total - sizeof(int) + 1);
+		total -= (ssize_t)sizeof(int);
+	} else {
+		buf[0] = '\0';
+		total = 0;
+	}
 	/* Trim the single trailing '\n' child_diag() always writes -- the
 	 * caller's own format string (logstore_write()/a JSON field) adds
 	 * its own line ending or delimiter, doesn't need ours too. */

@@ -6195,7 +6195,9 @@ paths:
               $ref: "#/components/schemas/ContainerCreateRequest"
       responses:
         "201":
-          description: Container created and started
+          description: >
+            Container created and started: its process has exec'd cix-init.
+            A process that dies before exec is a 500, never a 201 (#622).
           content:
             application/json:
               schema:
@@ -6220,8 +6222,11 @@ paths:
             A real internal failure partway through creation: no free IP
             addresses left on an auto-allocated network, the container
             table is full, the container's own on-disk directory or its
-            staged files[] content could not be written, or the
-            underlying clone3()/registry create itself failed
+            staged files[] content could not be written, the
+            underlying clone3()/registry create itself failed, or the
+            container's process died in its setup before exec. The error
+            then names the step and the reason, e.g. `child: volume
+            mkdir: Not a directory`, and no container is left registered.
           content:
             application/json:
               schema:
@@ -16435,7 +16440,8 @@ components:
             forks. Off unless asked for: merging is not free, and a
             container whose memory is genuinely unique pays the
             scanner's comparison cost for no return. A failure to
-            apply is reported and does not stop the container --
+            apply is reported in the container's log and does not
+            stop the container --
             merging is an optimisation, and refusing to start would
             trade a working container for it.
         ip_forward:
@@ -17971,7 +17977,8 @@ components:
             forks. Off unless asked for: merging is not free, and a
             container whose memory is genuinely unique pays the
             scanner's comparison cost for no return. A failure to
-            apply is reported and does not stop the container --
+            apply is reported in the container's log and does not
+            stop the container --
             merging is an optimisation, and refusing to start would
             trade a working container for it.
         ip_forward:

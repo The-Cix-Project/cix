@@ -739,9 +739,12 @@ struct container_handle {
 	/*
 	 * Read end of an internal, always-on diagnostic pipe (see
 	 * container_create()'s own comment): the child's pre-exec setup
-	 * failures and a failed final execve() both write a human-readable
-	 * "step: strerror(errno)" line here instead of (or in addition to)
-	 * the bare numeric exit code every caller already sees. -1 once
+	 * failures and a failed final execve() both write a record here
+	 * (the errno, then a "step: strerror(errno)" line) instead of (or in
+	 * addition to) the bare numeric exit code every caller already sees.
+	 * Since #622 container_create() itself fails on one written within
+	 * CONTAINER_EXEC_WAIT_MS, so a handle sees one only from a child
+	 * slower than that. -1 once
 	 * container_read_diag() has consumed it (one-shot; see that
 	 * function's own comment for why a single read is always enough).
 	 */
@@ -1064,7 +1067,8 @@ int container_wait(const struct container_handle *h, int *exit_status, int *term
 
 /*
  * Reads whatever diagnostic text (if any) h->diag_fd's write end
- * received before it closed -- always true by the time a caller
+ * received before it closed, without the record's leading errno --
+ * always true by the time a caller
  * reaches this, since container_wait() already reaped the process
  * (closing it directly on a setup/exec failure) or the process
  * exec'd successfully (closing it via O_CLOEXEC) -- so this never

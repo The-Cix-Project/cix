@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container whose process dies before exec is a failed create (#622)
+
+- **What changed:**
+  - **The create waits for the answer:** `container_create()` now fails when the child writes its diagnostic, so `POST /v1/containers` answers 500 naming the step and reason, such as `child: volume mkdir: Not a directory`, and registers nothing. Before, it answered 201 `running` for a child already dying, as measured on .95 at 0.2.57-556.
+  - **Restarts:** a crash restart or boot autostart refused this way is retried on ADR-0346's backoff and shown in `restart_refused`. A step that always fails, such as a mount point under a regular file, is therefore retried every 30 s until the definition changes, with one log line.
+  - **Interfaces after exec:** the wait now comes before an `interfaces[]` grant is moved in (cix-init waits for its interfaces itself), so a child that dies there has none to give back.
+  - **The diagnostic pipe is fatal-only:** each record carries the child's errno, which the create's -1 returns. The non-fatal KSM note moved to the container's own stderr, which is its log.
+- **Verified:** `test_volume`, in `DAEMON_SELFTESTS`, creates a container whose volume sits under a regular file. It checks for a 500 naming `child: volume mkdir` and `Not a directory`, and that a GET then returns 404.
+
 ### An interface that left with its hardware is not moved back (ADR-0347, #623)
 
 - **What changed:** the reconcile that fails a container marks each interface whose anchor it found gone, and `registry_remove()` skips those when it moves interfaces back to the host. Before, the move failed for an interface that no longer exists, and an unplug logged a second error, "an interface did not come back to the host under its own name", after ADR-0347's one line. An interface that fails to come back for any other reason still logs it.

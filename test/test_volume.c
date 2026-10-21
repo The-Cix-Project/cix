@@ -200,6 +200,34 @@ int main(void)
 	      "a container naming an unknown volume is refused (400), never auto-created");
 	cix_response_free(&r);
 
+	/* 3b. #622: a child that dies before exec is a failed create. A
+	 * mount point under a regular file fails the child's mkdir with
+	 * ENOTDIR, and the request must say so rather than answer 201
+	 * running for a container that is already gone. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/containers",
+	                       "{\"name\":\"cprexec\",\"image\":\"voltest\","
+	                       "\"volumes\":[{\"name\":\"vol1\",\"path\":\"/bin/volume_child/vol\"}],"
+	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/volume_child\"]}]}",
+	                       &r) != 0) {
+		check(0, "POST of a container whose child dies before exec answers");
+	} else {
+		const char *err = r.json != NULL ? json_str_field(r.json, "error") : NULL;
+
+		if (r.status != 500 || err == NULL || strstr(err, "child: volume mkdir") == NULL ||
+		    strstr(err, "Not a directory") == NULL)
+			fprintf(stderr, "  got status=%d error=%s\n", r.status, err != NULL ? err : "(none)");
+		check(r.status == 500 && err != NULL && strstr(err, "child: volume mkdir") != NULL &&
+		          strstr(err, "Not a directory") != NULL,
+		      "a child that dies before exec fails the create, naming its step and errno");
+	}
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	check(cix_client_request(&client, "GET", "/v1/containers/cprexec", NULL, &r) == 0 &&
+	          r.status == 404,
+	      "a create whose child died before exec leaves no container behind");
+	cix_response_free(&r);
+
 	/* 4. write into the volume from a real container */
 	memset(&r, 0, sizeof(r));
 	check(cix_client_request(&client, "POST", "/v1/containers",

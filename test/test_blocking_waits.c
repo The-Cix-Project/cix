@@ -233,7 +233,9 @@ static const struct budget g_budgets[] = {
 	{ "daemon/src/kmod.c", 1, "modprobe, bounded" },
 	{ "daemon/src/storagemigrate.c", 1, "double-fork intermediate" },
 	{ "daemon/src/containerstoragemigrate.c", 1, "double-fork intermediate" },
-	{ "src/container.c", 4, "clone3 intermediates and container_wait" },
+	{ "src/container.c", 5,
+	  "clone3 intermediates, container_wait, and the reap of a child that wrote its "
+	  "diagnostic and is already exiting before exec (#622)" },
 	/* 3 -> 4 (#447): container_net_apply_sysctls_running() waits for its
 	 * setns() helper, which writes at most CONTAINER_MAX_SYSCTLS files under
 	 * /proc/sys/net and exits -- the same bounded shape as the other three. */
