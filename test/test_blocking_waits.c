@@ -280,8 +280,11 @@ static const struct budget g_budgets[] = {
  * rtnl_link_set_up() on a radio. The helper still runs; the daemon
  * reaps it through its own epoll instead of standing still for it.
  * Then 51 -> 52 for #618: buildenv_wait_for() in pkg.c, the per-file
- * entry's bounded reap of a waiter killed because it cannot be watched. */
-#define TOTAL_ALLOWED 52
+ * entry's bounded reap of a waiter killed because it cannot be watched.
+ * Then 52 -> 53 for #622: container_create()'s reap of a child that wrote
+ * its diagnostic before exec. The diagnostic is read to EOF first, and
+ * EOF is the child's exit, so the wait reaps a process already gone. */
+#define TOTAL_ALLOWED 53
 
 static int is_comment(const char *line)
 {
