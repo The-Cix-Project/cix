@@ -333,7 +333,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 **A crash restart or boot autostart that the create refuses is retried on ADR-0027's backoff, unless the cause has its own wait.** That is [ADR-0346](docs/adr/0346-a-restart-that-cannot-be-made-is-a-failure-and-is-retried.md), accepted by the owner on 2026-10-21. Measured on .95 before it, at 0.2.57-563: such a container read `stopped` with `stopped=no`, logged nothing, and stayed down after what it needed returned.
 
 - **One wait per cause.** An image that cannot run joins ADR-0270's wait (`awaiting_image`). Everything else is retried. Never add a third wait.
-- **One remedy:** `restart_was_refused()` serves both the restart timer and autostart, and `restart_backoff_delay()` is the one backoff calculation. Never inline either.
+- **One remedy:** `restart_was_refused()` serves all three entry points: the restart timer, boot autostart and the rolling replay, and `restart_backoff_delay()` is the one backoff calculation. Never inline either.
 - **A refusal that is retried must have written nothing.** A new existence check on something a body references goes in `body_reference_gone()`, before the first write, never after it.
 - **Said once:** `restart_refused` is set through its announcing setter only when the sentence changes, and the log follows the same rule. Never log or announce per attempt.
 - **`stop` and `DELETE` end it.** `stop` lasts until the next reboot for `restart: always`, by ADR-0027.

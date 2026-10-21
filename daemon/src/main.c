@@ -17661,6 +17661,10 @@ static int create_container_from_body(const char *body, size_t body_len,
 	dns_server_sync_all();
 	dns_forwarders_sync_all();
 
+	/* ADR-0346: it is running, so no refusal stands -- whichever path
+	 * brought it up. The setter announces only if one did. */
+	containerdef_set_restart_refused(entry->name, "");
+
 	*out_entry = entry;
 	return 0;
 }
@@ -34567,22 +34571,26 @@ static void rolling_restart_replay(const char *name, struct container_def *def)
 	                                &follow_rolling, &has_follow_rolling_jitter,
 	                                &follow_rolling_jitter_seconds, err_msg,
 	                                sizeof(err_msg)) != 0) {
-		/*
-		 * stderr is not mirrored into the log store, and this is a
-		 * failure an operator has no other way to see: the container
-		 * was stopped deliberately and did not come back.
-		 */
-		logstore_write("cixd", "error", "%s: rolling restart failed: %s", name, err_msg);
-		fprintf(stderr, "%s: rolling restart failed: %s\n", name, err_msg);
 		/* A rolled version that cannot even be created has failed its
 		 * probation before it started. */
 		if (def->roll_to[0] != '\0') {
 			char reason[300];
 
+			logstore_write("cixd", "error", "%s: rolling restart failed: %s", name, err_msg);
 			snprintf(reason, sizeof(reason), "could not be created: %s", err_msg);
 			roll_back(def, reason);
 			arm_rolling_restart_timer(name, 0);
+			return;
 		}
+		/*
+		 * ADR-0346: the third entry point. A rolling restart -- an
+		 * image roll, or the restart a DHCP range change makes -- whose
+		 * replay is refused used to log once and leave the container
+		 * down for good: the gap the ADR closed for the crash timer and
+		 * boot autostart, missed here. A refused roll keeps its own
+		 * branch above (ADR-0323 answer 4).
+		 */
+		restart_was_refused(name, err_msg);
 		return;
 	}
 	resync_managed_services();
