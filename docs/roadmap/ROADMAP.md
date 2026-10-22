@@ -2445,6 +2445,25 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 309: a container's /proc/loadavg is its own load average (ADR-0349, #625, 0.2.57-572)
+
+procfuse's own process samples every cgroup under `cix-workload` every 5 s, counting R and D threads over each cgroup's subtree, and applies the kernel's `calc_load()`. The averages live in a page shared with cixd, keyed by cgroup path and restarted when the subtree's oldest thread changes. A container's `/proc/loadavg` and `GET /v1/containers/{name}/stats` (`load`) serve that one figure. The container page's Summary tab and `cixctl container stats` show it. `/proc/stat` and `/proc/uptime` use the same thread scan, in place of `cgroup.procs` and the leaf.
+
+**Gated:** compile probe `0.2.57-586` was green first time. `test_procfuse` (in `SELFTESTS`) drives passes over a crafted tree and checks the kernel's figures worked by hand (0.08 after one pass of one running thread, 0.63 after twelve, 0.58 after one idle pass), the subtree counts, the reset on a new occupant, a freed entry and the unrecorded count.
+
+**Measured on 192.168.15.95, 2026-10-22:**
+- **The release:** booted on slot a, 12 containers running, `ar-1` `hostapd:running`. The box's served `index.html` and `app.js` are byte-identical to the tag.
+- **Absent before the first sample:** `cixctl container stats load-busy` printed `load=not sampled yet` straight after the create.
+- **Rise, isolation and one figure:** two scratch containers on `jumpbox`, one spinning a bash loop and one sleeping.
+  - After about 80 s, the busy one's own `/proc/loadavg` read `0.74 0.24 0.09 1/4 312` and its stats read `load1=0.74 load5=0.24 load15=0.09 running=1 threads=4`.
+  - The idle one read `0.00 0.00 0.00 0/4` on both surfaces.
+  - The host's `GET /v1/system/stats` read `load1 0.97`, its own figure.
+  - A recreated busy container read exactly `0.63 0.18 0.06` after one minute, the curve `uptime` shows on a host.
+- **Decay under one occupant:** with a sleeping service beside the spinner, stopping only the spinner took `load1` from 0.63 to 0.49, 0.38, 0.30 and 0.23 at 15 s steps, with `running=0 threads=2`.
+- **Reset when the occupant goes:** the first busy container had the spinner as its only service. Stopping it ended the container (`exited`, `threads=0`), so its figure started over at 0.00 instead of decaying (rule 5).
+- **Dashboard:** rendered in Chromium from the box's own files with that container's stats response. The Summary tab shows "Load average: 0.13 (1m) 0.13 (5m) 0.06 (15m) · 0 of 2 threads running" below the graphs. Without `load` it says "not sampled yet". At a 500-pixel window the document is 485 px wide and the line wraps.
+- **Logs:** no drift lines and no unrecorded-cgroup warning.
+
 ## Part 308: the dashboard shows the module policy, the device scan and the blacklisted mark (ADR-0348 release three, #143, 0.2.57-571)
 
 `getKmodPolicy`, `putKmodPolicy`, `getKmodScan` and `runKmodScan` are exposed to `web`. Host › Devices › Kernel Modules marks a loaded, blacklisted module with a badge, edits the policy through `putKmodPolicy`'s generated form, and shows the last sweep's report: its fields through `renderDetailRows` (that renderer's second caller), a Scan now button, and every alias with its module, outcome and reason, failures and refusals first. Both reads are Devices-page refreshers, so a policy change and a finished scan arrive by announcement. The scan report's fields gained contract `title`s. `.processes-cmdline`, already serving the sysctl key, became `.cell-identifier` and serves the alias too, so a 300-character input alias no longer widens the whole page; a render before the release showed it doing exactly that.
