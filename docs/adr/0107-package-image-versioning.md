@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Its "an image version is a plain sequential integer" decision is superseded by [ADR-0108](0108-image-version-content-hash.md); every other part stands.
 
 ## Context
 

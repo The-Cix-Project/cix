@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. The forwarder convention established alongside it is superseded by [ADR-0203](0203-dns-forwarders-are-daemon-owned-config.md); `GET`/`PUT /v1/system/resolv` itself is unaffected.
 
 ## Context
 

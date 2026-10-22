@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Its transport half is superseded by [ADR-0212](0212-signing-keys-over-rest.md); its security reasoning stands.
 
 ## Context
 

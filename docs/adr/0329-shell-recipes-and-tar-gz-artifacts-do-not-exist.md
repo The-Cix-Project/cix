@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, 2026-10-03, the owner's direction on cix#569: *"What are shell recepies, those should not exist, please deprecate them."* It supersedes [ADR-0309](0309-shell-recipes-are-history-the-shell-path-retires-with-its-last-dependent.md) clause 1 (published shell recipes stay, in the repository and on hosts) and the shell half of [ADR-0307](0307-a-packages-artifact-format-is-the-one-its-recipe-declares.md) clause 1 (a shell recipe publishes `.tar.gz` by construction). It finishes what [ADR-0328](0328-cix-produces-no-tarball.md) left open under "Not decided here". The One Build System Mandate in CLAUDE.md already said a recipe is CPDL and an artifact is `.cixpkg`; this is the change that makes the daemon agree.
+Accepted, 2026-10-03, the owner's direction on cix#569: *"What are shell recepies, those should not exist, please deprecate them."* It supersedes [ADR-0309](0309-shell-recipes-are-history-the-shell-path-retires-with-its-last-dependent.md) clause 1 (published shell recipes stay, in the repository and on hosts) and the shell half of [ADR-0307](0307-a-packages-artifact-format-is-the-one-its-recipe-declares.md) clause 1 (a shell recipe publishes `.tar.gz` by construction). Its Decision clause 7 also supersedes [ADR-0036](0036-multi-source-package-recipes.md)'s staging of sources into `/build/src` and `/build/extra`. It finishes what [ADR-0328](0328-cix-produces-no-tarball.md) left open under "Not decided here". The One Build System Mandate in CLAUDE.md already said a recipe is CPDL and an artifact is `.cixpkg`; this is the change that makes the daemon agree.
 
 ## Context
 

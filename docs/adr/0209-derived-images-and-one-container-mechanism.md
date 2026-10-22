@@ -10,6 +10,8 @@ making an image's manifest true by construction rather than by
 convention. Directly caused by
 [issue #168](https://git.home.arpa/itdlabs/cix/issues/168) and
 [issue #169](https://git.home.arpa/itdlabs/cix/issues/169).
+Its "glibc floor" caveat, under "What this does not fix", is superseded by
+[ADR-0216](0216-the-glibc-floor-is-closed.md), which closes that floor.
 
 ## Context
 

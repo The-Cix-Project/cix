@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Its direction, one shared build sandbox made observable but left fungible, is superseded by [ADR-0199](0199-recipes-declare-their-build-tools.md): a build container is composed from the tools its recipe declares.
 
 Applies [ADR-0107](0107-package-image-versioning.md)/[ADR-0108](0108-image-version-content-hash.md)'s image model to the one thing that had been living outside it.
 

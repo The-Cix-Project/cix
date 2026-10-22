@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Its terminal-fidelity boundary is superseded by [ADR-0243](0243-the-dashboard-terminal-is-a-real-vt.md); the WebSocket, the exec path and the PTY allocation stand.
 
 ## Context
 

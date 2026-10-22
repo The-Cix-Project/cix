@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. One half of it, the rule that the CA private key is never returned over the API, is superseded by [ADR-0281](0281-the-ca-leaves-the-box-encrypted-or-it-is-lost.md): one endpoint now returns it, only encrypted under an operator passphrase.
 
 ## Context
 

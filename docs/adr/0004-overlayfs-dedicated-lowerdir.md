@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Its OverlayFS shared-lower storage model is superseded by [ADR-0207](0207-btrfs-storage-substrate-userns-by-default.md) where btrfs is the substrate; overlay remains the fallback where btrfs is absent ([ADR-0341](0341-a-containers-rootfs-is-a-snapshot-on-its-images-filesystem.md)).
 
 ## Context
 
