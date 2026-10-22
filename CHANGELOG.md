@@ -9,7 +9,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 ### A slow container create names its slowest step (#624)
 
 - **What changed:** `create_container_from_body()`, the one body every path that brings a container up replays (a `POST`, a start, boot autostart, a crash restart), now marks its phases with `stallwatch_step()` (#619). There are 20 phases, from "parse the body" through "clone, enter and wait for exec" to "sync the DNS servers". A create slow enough to be a pass's slowest is then recorded as, for example, `POST /v1/containers/ar-1/start (1748 ms), slowest step container create: …`, where it used to name only the request. On 192.168.15.95 `ar-1`'s create held the loop for 1.7 to 2.4 s with no step named.
-- **Verified:** instrumentation only, no behaviour change. The named step is read from `GET /v1/system/stalls` on the next `ar-1` create.
+- **Verified:** instrumentation only, no behaviour change. On 0.2.57-573, four stop/start cycles of `ar-1` answered in 0.21 to 0.25 s and left no stall record, so the slow create no longer reproduces; its cause is not established. #624 is closed on that measurement. If it recurs, the stall record will name the step.
 
 ### A container's /proc/loadavg is its own load average (ADR-0349, #625)
 
