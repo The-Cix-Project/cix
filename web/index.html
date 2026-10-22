@@ -687,17 +687,32 @@
 			</div>
 <div class="tab-panel" data-tab="kmod" hidden>
 			
-			<p class="hint">Real, live <code>/proc/modules</code> state plus the persisted default-options/autoload config each one may have (ADR-0159 Phase A) -- load/unload here takes effect immediately; a kernel rebuild (below) is only needed to add support for a module that isn't already built at all.</p>
+			<p class="hint">What the kernel has loaded now, and the one policy that decides every load, whoever asks (ADR-0348). Loading and unloading take effect at once.</p>
 
 			<h3>Loaded modules</h3>
 			<table id="kmod-table">
 				<tbody id="kmod-body">
-					<tr><td colspan="5" class="empty">Reading&hellip;</td></tr>
+					<tr><td colspan="6" class="empty">Reading&hellip;</td></tr>
+				</tbody>
+			</table>
+
+			<h3>Load policy</h3>
+			<p class="hint" id="kmod-policy-saved"></p>
+			<form id="kmod-policy-form"></form>
+
+			<h3>Last device scan</h3>
+			<table class="detail-table"><tbody id="kmodscan-fields"></tbody></table>
+			<div class="form-actions">
+				<button type="button" id="kmodscan-run" data-op="runKmodScan">Scan now</button>
+			</div>
+			<table id="kmodscan-table">
+				<tbody id="kmodscan-body">
+					<tr><td colspan="4" class="empty">Reading&hellip;</td></tr>
 				</tbody>
 			</table>
 
 			<h3>Persisted config</h3>
-			<p class="hint">Default options and boot-time autoload for a specific module -- set one via the Hardware menu's "+ Configure Module" action.</p>
+			<p class="hint">Options for one module, used whoever loads it, and whether to load it at start when no device asks for it. Set one from the Hardware menu's "Configure Module".</p>
 			<table id="kmodconfig-table">
 				<tbody id="kmodconfig-body">
 					<tr><td colspan="4" class="empty">Reading&hellip;</td></tr>

@@ -3288,7 +3288,7 @@ paths:
       operationId: getKmodPolicy
       x-cix-read: state
       x-cix-permission: config:read
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: The live policy
@@ -3306,7 +3306,7 @@ paths:
       operationId: putKmodPolicy
       x-cix-invalidates: [getKmodPolicy, listKmod]
       x-cix-permission: config:write
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:
@@ -3374,7 +3374,7 @@ paths:
       operationId: getKmodScan
       x-cix-read: state
       x-cix-permission: config:read
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: The last sweep's report
@@ -3394,7 +3394,7 @@ paths:
       operationId: runKmodScan
       x-cix-invalidates: [getKmodScan]
       x-cix-permission: config:write
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       responses:
         "202":
           description: Queued; the report as it stands, with running true
@@ -18738,14 +18738,18 @@ components:
       properties:
         ran:
           type: boolean
+          title: Ran
         running:
           type: boolean
+          title: Another scan running
           description: A sweep is queued or running, whose report will replace this one.
         not_run_reason:
           type: string
+          title: Why it did not run
           description: Why the sweep did not run, present when ran is false.
         trigger:
           type: string
+          title: Ran because of
           enum: [start, request, overflow]
           description: >
             What ran the sweep, present when ran is true: the daemon's
@@ -18753,14 +18757,18 @@ components:
         started_at:
           type: integer
           format: unix-seconds
+          title: Started
           description: When the sweep began, present when ran is true.
         duration_ms:
           type: integer
+          title: Took (ms)
         aliases:
           type: integer
+          title: Aliases met
           description: Distinct modaliases the sweep met.
         truncated:
           type: boolean
+          title: Cut short
           description: True when the sweep stopped recording at its alias limit (4096).
         entries:
           type: array

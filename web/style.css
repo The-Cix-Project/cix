@@ -1813,7 +1813,10 @@ table {
 	background: var(--tree-active-bg);
 }
 
-.processes-cmdline {
+/* A long identifier in a list cell: a process's command line, a sysctl
+   key, a device's modalias. It takes the row's spare width and no more,
+   so one 300-character alias cannot widen the whole page. */
+.cell-identifier {
 	max-width: 0;
 	width: 100%;
 	/* One line, ellipsised, full text on hover -- a wrapped cmdline

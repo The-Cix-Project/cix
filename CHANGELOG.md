@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The dashboard shows the module policy, the device scan and the blacklisted mark (ADR-0348 release three, #143)
+
+- **What changed:**
+  - **Contract:** `getKmodPolicy`, `putKmodPolicy`, `getKmodScan` and `runKmodScan` are exposed to `web` as well as `cli`.
+  - **Host › Devices › Kernel Modules:** the loaded modules gain a Policy column, which marks a loaded, blacklisted module with a red `blacklisted` badge and leaves every other row blank. A **Load policy** section edits autoload, the blacklist and the allowlist through the form generated from `putKmodPolicy`, and says when the host has never saved a policy and runs on the default. A **Last device scan** section shows the report's fields, a **Scan now** button that queues a sweep, and every alias the sweep met with its module, outcome and reason; the alias's hover is the device it came from. Outcomes wear the four badge kinds: loaded, already loaded and built in are green, a refusal is amber, a failed load is red, and an unclaimed alias is grey.
+  - **Live:** both reads are refreshers of the Devices page, so a policy change and a finished scan arrive by announcement (ADR-0339). The button is never disabled while a scan runs, because the daemon answers a second request `202` too.
+- **Verified:** `test_api_surfaces` requires the dashboard to call each operation it is now exposed to, and `test_web_tree` resolves the two new tables' schemas and op.
+
 ### A device gets its driver when it is plugged in, and modprobe leaves the event loop (ADR-0348 release two, #143)
 
 - **What changed:**

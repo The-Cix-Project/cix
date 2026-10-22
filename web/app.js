@@ -121,6 +121,8 @@ const cache = {
 	sysctls: [],
 	kmodModules: [],
 	kmodConfig: [],
+	kmodPolicy: null,
+	kmodScan: null,
 };
 
 const statusLeds = document.getElementById("status-leds");
@@ -4997,7 +4999,7 @@ function renderProcessesTable(procs) {
 		{ field: "group_id", label: "GID" },
 		{ field: "container", label: "Container",
 		  link: (p) => (p.container ? "#containers/" + encodeURIComponent(p.container) : null) },
-		{ field: "command_line", label: "Command", cls: "processes-cmdline",
+		{ field: "command_line", label: "Command", cls: "cell-identifier",
 		  title: (p) => p.command_line },
 		{ label: "", actions: (p) => {
 			const kill = document.createElement("button");
@@ -12398,7 +12400,7 @@ async function removeSysctl(key) {
  * response and a space-joined string to a reader. */
 function renderSysctlList() {
 	renderTable(document.getElementById("sysctl-table"), "SysctlEntry", cache.sysctls, [
-		{ field: "key", cls: "processes-cmdline" },
+		{ field: "key", cls: "cell-identifier" },
 		{ label: "Value", text: (s) => formatSysctlValue(s.value) },
 		{ label: "", actions: (s) => {
 			const rm = document.createElement("button");
@@ -12462,6 +12464,53 @@ async function refreshKmodConfig() {
 	}
 }
 
+/* ADR-0348: the one policy every load asks, and the last sweep's report. */
+async function refreshKmodPolicy() {
+	try {
+		cache.kmodPolicy = await apiRequest("GET", CIX_API.getKmodPolicy());
+	} catch (e) {
+		/* Best-effort -- cache.kmodPolicy just stays at whatever was last shown. */
+	}
+}
+
+async function refreshKmodScan() {
+	try {
+		cache.kmodScan = await apiRequest("GET", CIX_API.getKmodScan());
+	} catch (e) {
+		/* Best-effort -- cache.kmodScan just stays at whatever was last shown. */
+	}
+}
+
+/*
+ * Queued, not run: the daemon answers 202 at once and announces the
+ * report when the sweep finishes, which refreshes the table. So the
+ * button is never disabled while a sweep runs -- a second press is
+ * answered 202 too, and a disabled control would claim a refusal the
+ * daemon does not make.
+ */
+document.getElementById("kmodscan-run").addEventListener("click", async () => {
+	try {
+		cache.kmodScan = await apiRequest("POST", CIX_API.runKmodScan());
+		showStatus("Scan queued.", false);
+		renderCurrentView();
+	} catch (e) {
+		showStatus("Failed to start a scan: " + e.message, true);
+	}
+});
+
+/* A scan outcome's badge. A refusal is the policy doing its job, not a
+ * fault, so it is amber rather than red; red is kept for a load that
+ * was allowed and failed. */
+function kmodScanOutcomeKind(outcome) {
+	if (outcome === "loaded" || outcome === "already_loaded" || outcome === "builtin")
+		return "ok";
+	if (outcome === "refused")
+		return "paused";
+	if (outcome === "failed")
+		return "error";
+	return "unknown";
+}
+
 async function unloadKmod(name) {
 	if (!confirm("Unload kernel module \"" + name + "\" now? Modules only it was using are "
 	             + "unloaded too."))
@@ -12503,6 +12552,11 @@ function renderKmodList() {
 		{ label: "Used by", text: (m) => m.used_by_count +
 			(m.used_by && m.used_by.length > 0 ? " [" + m.used_by.join(",") + "]" : "") },
 		"state",
+		/* Derived rather than the boolean field, because the field would
+		 * read "no" in every row: the mark is for the one row that is a
+		 * problem, the way a "current version" column marks one row. */
+		{ label: "Policy", text: (m) => (m.blacklisted ? "blacklisted" : ""),
+		  badge: () => "error" },
 		{ label: "", actions: (m) => {
 			const unload = document.createElement("button");
 
@@ -12535,6 +12589,64 @@ function renderKmodList() {
 		op: "listKmodConfig",
 		what: "persisted module options",
 		empty: "No kmod config persisted.",
+	});
+
+	renderKmodPolicy(cache.kmodPolicy);
+	renderKmodScan(cache.kmodScan);
+}
+
+function renderKmodPolicy(policy) {
+	const savedNote = document.getElementById("kmod-policy-saved");
+
+	if (policy === null)
+		return;
+	/* `saved` is not a field of the PUT, so the form cannot say it. */
+	savedNote.hidden = policy.saved;
+	savedNote.textContent = policy.saved ? "" :
+		"This host has never saved a policy, so it uses the default: drivers load at " +
+		"start and on plug, and nothing is blacklisted.";
+	syncForm(document.getElementById("kmod-policy-form"), "putKmodPolicy", {
+		values: { autoload: policy.autoload, blacklist: policy.blacklist,
+		          allowlist: policy.allowlist },
+		submit: "Save",
+		saved: "Policy saved",
+		failed: "Failed to save the module policy",
+		after: (body, res) => {
+			cache.kmodPolicy = res;
+			renderCurrentView();
+		},
+	});
+}
+
+/* A sweep meets dozens of aliases no driver claims, so the report is
+ * listed with what needs reading first: a failure, a refusal, then what
+ * loaded, and the unclaimed last. Within an outcome, the sweep's order. */
+const KMOD_SCAN_ORDER = ["failed", "refused", "loaded", "already_loaded", "builtin", "unclaimed"];
+
+/*
+ * The report's own fields as rows, and the aliases it met as a table.
+ * An alias can run to hundreds of characters (an input device lists
+ * every key it has), so it is one line, cut off, with the whole alias
+ * and the device it came from on hover.
+ */
+function renderKmodScan(scan) {
+	const entries = scan === null ? [] : scan.entries.slice().sort((a, b) =>
+		KMOD_SCAN_ORDER.indexOf(a.outcome) - KMOD_SCAN_ORDER.indexOf(b.outcome));
+
+	if (scan !== null)
+		renderDetailRows(document.getElementById("kmodscan-fields"), "KmodScan", scan,
+		                 { omit: ["entries"] });
+	renderTable(document.getElementById("kmodscan-table"), "KmodScanEntry", entries, [
+		"module",
+		{ field: "outcome", badge: (o) => kmodScanOutcomeKind(o) },
+		"reason",
+		{ field: "alias", cls: "cell-identifier", title: (e) => e.alias + "\n" + e.device },
+	], {
+		op: "getKmodScan",
+		what: "the device scan",
+		empty: scan !== null && !scan.ran
+			? "No scan has run: " + (scan.not_run_reason || "no reason given") + "."
+			: "The scan met no device aliases.",
 	});
 }
 
@@ -14899,7 +15011,8 @@ const VIEW_REFRESHERS = {
 	"build-overview": [refreshBuildOverview],
 	"pkg-build-config": [refreshPkgBuildConfig, refreshBuildLogs],
 	update: [refreshImages, refreshPkgList, refreshSoftwareReconcile],
-	devices: [refreshDevices, refreshDeviceMaps, refreshKmod, refreshKmodConfig],
+	devices: [refreshDevices, refreshDeviceMaps, refreshKmod, refreshKmodConfig, refreshKmodPolicy,
+	          refreshKmodScan],
 	"dns-records": [refreshDnsRecords, refreshDnsServers, refreshDnsForwarders],
 	"dns-servers": [refreshDnsRecords, refreshDnsServers, refreshDnsForwarders],
 	"dns-forwarders": [refreshDnsRecords, refreshDnsServers, refreshDnsForwarders],
@@ -14956,6 +15069,7 @@ const ALL_REFRESHERS = [
 	refreshPkgCacheConfig, refreshPkgCacheStatus, refreshPkgRepositories,
 	refreshSiteConfig, refreshDaemonConfig, refreshRollingConfig,
 	refreshPkgBuildConfig, refreshRoutes, refreshSysctl, refreshKmod, refreshKmodConfig,
+	refreshKmodPolicy, refreshKmodScan,
 	refreshSwap, refreshTlsThrottleConfig, refreshTlsThrottleStatus,
 ];
 
