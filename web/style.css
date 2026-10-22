@@ -1819,7 +1819,7 @@ table {
 .cell-identifier {
 	max-width: 0;
 	width: 100%;
-	/* One line, ellipsised, full text on hover -- a wrapped cmdline
+	/* One line, ellipsised, full text on hover -- a wrapped value
 	   makes every row a different height and the table unscannable. */
 	overflow: hidden;
 	text-overflow: ellipsis;
