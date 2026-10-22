@@ -13658,7 +13658,7 @@ async function refreshTrustAnchors() {
 
 		cache.trustAnchors = r.anchors || [];
 	} catch (e) {
-		/* The table keeps what it last showed; renderTable() says why
+		/* The table keeps what it last showed, and its list state says why
 		 * a read was refused (op listTrustAnchors). */
 	}
 	renderTrustAnchors();
