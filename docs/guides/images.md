@@ -150,6 +150,8 @@ A build container runs from an image too. A build image — `cix-builder` and th
 | A version is a hash of the resolved package set | [ADR-0108](../adr/0108-image-version-content-hash.md) |
 | Image recipes | [ADR-0123](../adr/0123-pkg-redesign-part4-image-recipes-and-artifact.md), [ADR-0252](../adr/0252-an-image-recipe-is-authoritative.md) |
 | Images are derived from packages; reclaiming unused versions | [ADR-0209](../adr/0209-derived-images-and-one-container-mechanism.md) |
+| A bounded history, collected off the event loop | [ADR-0343](../adr/0343-an-image-keeps-a-bounded-history-and-a-version-leaves-it-off-the-loop.md) |
+| An image's content comes only from packages | [ADR-0333](../adr/0333-an-images-content-comes-only-from-packages.md) |
 | Build images are composed from packages | [ADR-0225](../adr/0225-build-images-are-composed-from-packages.md), [ADR-0208](../adr/0208-build-image-taxonomy.md) |
 | Rolling containers and restart jitter | [ADR-0124](../adr/0124-pkg-redesign-part5-rolling-containers-and-restart-jitter.md) |
 | Per-package version policy | [ADR-0188](../adr/0188-per-package-rolling-policy.md) |

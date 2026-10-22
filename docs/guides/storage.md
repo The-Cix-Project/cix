@@ -339,5 +339,6 @@ survive different events:
 | State / rebuildable / log placement model | [ADR-0141](../adr/0141-multi-disk-storage-placement.md) |
 | btrfs substrate and snapshot-backed containers | [ADR-0207](../adr/0207-btrfs-storage-substrate-userns-by-default.md) |
 | A container's rootfs is derived from its image | [ADR-0277](../adr/0277-a-container-rootfs-is-derived-from-its-image.md) |
+| A container's rootfs is a snapshot on its image's filesystem | [ADR-0341](../adr/0341-a-containers-rootfs-is-a-snapshot-on-its-images-filesystem.md) |
 | Where attached disks mount | [ADR-0231](../adr/0231-attached-disks-do-not-mount-inside-the-data-directory.md) |
 | Host swap | [ADR-0069](../adr/0069-host-swap-file.md) |
