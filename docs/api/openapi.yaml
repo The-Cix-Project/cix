@@ -3474,7 +3474,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: Already installed at this version, or another install/hostbuild is already in progress
+          description: Already installed at this version; all package job slots are in use; or a hostbuild is already running -- only one runs at a time, whatever it builds (#362, #627)
           content:
             application/json:
               schema:

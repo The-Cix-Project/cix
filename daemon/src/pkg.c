@@ -10589,6 +10589,27 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *version,
 		return PKG_ERR_INVALID_NAME;
 	if (pkg_any_job_busy())
 		return PKG_ERR_BUSY;
+	/*
+	 * #362: one hostbuild at a time, whatever package it names.
+	 *
+	 * Two of these 13 seconds apart put 192.168.15.95 into a
+	 * kernel-panic reboot loop -- cixd is pid 1 and the kernel command
+	 * line carries panic=10, so a cixd death is a reboot, and there were
+	 * three before the builds died with the host. ADR-0165's
+	 * shared-parent cgroup budget was in place and did not prevent it.
+	 *
+	 * HERE and not in a request handler (#627). It began in
+	 * handle_pkg_hostbuild(), and POST /v1/system/kmod/build, which
+	 * starts a kernel hostbuild through this same function, never asked.
+	 * Every caller gets the refusal now. The host roll's kernel-then-cix
+	 * hand-off is unaffected: the kernel's chain is released in
+	 * pkg_build_completed() before its completion starts cix.
+	 * pkg_install_start() keeps its admission checks in the handler for
+	 * the rolling drain's sake (pkg_job_in_flight_for()); no drain starts
+	 * a hostbuild.
+	 */
+	if (pkg_job_in_flight_for(NULL, NULL, 1))
+		return PKG_ERR_HOSTBUILD_RUNNING;
 	chain_idx = chain_alloc();
 
 	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0 ||
@@ -22405,6 +22426,13 @@ int pkg_error_describe(enum pkg_error err, const char **phrase, char *msg, size_
 		         "the recipe declares more build memory (resources { memory }) than "
 		         "memory_max_ceiling allows -- the cixd log names both; raise it with PUT "
 		         "/v1/system/pkg-build-config");
+		return 409;
+	case PKG_ERR_HOSTBUILD_RUNNING:
+		*phrase = "Conflict";
+		snprintf(msg, msg_size,
+		         "a hostbuild is already running -- only one at a time, because two "
+		         "concurrent hostbuilds have panic-rebooted a host (#362); wait for it to "
+		         "finish, or cancel it with POST /v1/pkg/cancel");
 		return 409;
 	case PKG_ERR_SPAWN_FAILED:
 	case PKG_ERR_PERSIST_FAILED:

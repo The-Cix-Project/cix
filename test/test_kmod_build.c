@@ -439,6 +439,32 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	/*
+	 * #627: while that hostbuild runs, a second kmod-build is refused
+	 * with #362's one-at-a-time 409. It used to be asked only by
+	 * POST /pkg/hostbuild's handler, so this route could start a second
+	 * hostbuild beside the first. The sentence is asserted, not just the
+	 * status, because a 409 for some other reason would pass a status
+	 * check and prove nothing.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (ok && cix_client_request(&client, "POST", "/v1/system/kmod-build",
+	                             "{\"config_symbols\":[\"CONFIG_FOO\"]}", &r) == 0) {
+		const char *err = json_as_string(json_object_get(r.json, "error"));
+
+		if (r.status != 409 || err == NULL || strstr(err, "only one at a time") == NULL) {
+			fprintf(stderr,
+			        "FAIL: a second kmod-build during a hostbuild: expected 409 naming #362, "
+			        "got %d: %s\n",
+			        r.status, err != NULL ? err : "(no error field)");
+			ok = 0;
+		}
+	} else if (ok) {
+		fprintf(stderr, "FAIL: a second kmod-build during a hostbuild: request failed\n");
+		ok = 0;
+	}
+	cix_response_free(&r);
+
 	state[0] = '\0';
 	kmod_err[0] = '\0';
 	for (i = 0; ok && i < KMOD_POLLS; i++) {

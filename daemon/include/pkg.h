@@ -402,7 +402,13 @@ enum pkg_error {
 	 * but two places disagreeing about what one immutable version is.
 	 * Refused, kept as it was, and reported rather than skipped.
 	 */
-	PKG_ERR_DIVERGENT
+	PKG_ERR_DIVERGENT,
+	/*
+	 * #362, #627: a hostbuild is already running, and only one runs at
+	 * a time. Its own code rather than PKG_ERR_BUSY, which means every
+	 * job slot is taken -- a different cause with a different remedy.
+	 */
+	PKG_ERR_HOSTBUILD_RUNNING
 };
 
 /*

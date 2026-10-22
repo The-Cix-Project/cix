@@ -26431,29 +26431,8 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 	jkeep = json_object_get(root, "keep_on_failure");
 	keep_on_failure = (jkeep != NULL && jkeep->type == JSON_BOOL && jkeep->u.boolean);
 
-	/*
-	 * #362: one hostbuild at a time, whatever package it names.
-	 *
-	 * Two of these 13 seconds apart put 192.168.15.95 into a
-	 * kernel-panic reboot loop -- cixd is pid 1 and the kernel command
-	 * line carries panic=10, so a cixd death is a reboot, and there were
-	 * three before the builds died with the host. ADR-0165's
-	 * shared-parent cgroup budget was in place and did not prevent it.
-	 *
-	 * Until then the only thing standing between an operator and that
-	 * outcome was a sentence in CLAUDE.md, which a script or a dashboard
-	 * button walks past without ever seeing. Refusing here is a check
-	 * that does not depend on anyone having read the rule.
-	 */
-	if (pkg_job_in_flight_for(NULL, NULL, 1)) {
-		json_free(root);
-		respond_error(fd, 409, "Conflict",
-		              "a hostbuild is already running -- only one at a time, because two "
-		              "concurrent hostbuilds have panic-rebooted a host (#362); wait for it "
-		              "to finish, or cancel it with POST /v1/pkg/cancel");
-		return;
-	}
-
+	/* #362: a second hostbuild is refused by pkg_hostbuild_start() itself
+	 * (PKG_ERR_HOSTBUILD_RUNNING, a 409), for every caller (#627). */
 	perr = pkg_hostbuild_start(name, version, upgrade, NULL, keep_on_failure, &pid,
 	                            &pidfd, &chain_idx);
 	if (perr != PKG_OK) {

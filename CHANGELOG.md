@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A kernel module build cannot start beside another hostbuild (#627)
+
+- **What changed:** #362's rule, one hostbuild at a time because two at once have panic-rebooted a host, was enforced only by `POST /v1/pkg/hostbuild`'s handler. `POST /v1/system/kmod-build` starts a kernel hostbuild through the same `pkg_hostbuild_start()` and never asked, so it could start one beside another. The refusal now lives in `pkg_hostbuild_start()` itself, as `PKG_ERR_HOSTBUILD_RUNNING` (409, the same #362 sentence), so every caller gets it. Its own code rather than `PKG_ERR_BUSY`, which means every job slot is taken. The host roll's kernel-then-cix hand-off is unaffected: the kernel's job slot is released before its completion starts cix.
+- **Verified:** `test_kmod_build`, a floor selftest that runs a real kmod-build, now sends a second one while the first is in flight and asserts a 409 carrying the #362 sentence, not just the status.
+
 ### A slow container create names its slowest step (#624)
 
 - **What changed:** `create_container_from_body()`, the one body every path that brings a container up replays (a `POST`, a start, boot autostart, a crash restart), now marks its phases with `stallwatch_step()` (#619). There are 20 phases, from "parse the body" through "clone, enter and wait for exec" to "sync the DNS servers". A create slow enough to be a pass's slowest is then recorded as, for example, `POST /v1/containers/ar-1/start (1748 ms), slowest step container create: …`, where it used to name only the request. On 192.168.15.95 `ar-1`'s create held the loop for 1.7 to 2.4 s with no step named.
