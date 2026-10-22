@@ -7,7 +7,7 @@ A retrospective is written when the **pattern** across several bugs matters more
 | | answers | granularity |
 |---|---|---|
 | [`../adr/`](../adr/) | why one decision was made | one decision |
-| [`../roadmap/ROADMAP.md`](../roadmap/ROADMAP.md) | what shipped and how it was verified | one phase |
+| [`../roadmap/ROADMAP.md`](../roadmap/ROADMAP.md) | what shipped and how it was verified | one part |
 | **`retrospective/`** | why a whole episode was harder than the work in it | one episode |
 
 Each is a dated record of one episode and is **append-only**: never rewritten afterwards, because a retrospective that gets tidied up as understanding improves stops being evidence of what it was actually like at the time. Files are named `NNNN-kebab-case-title.md`, numbered sequentially, oldest first — the same convention `adr/` uses and for the same reason.

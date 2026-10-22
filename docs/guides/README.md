@@ -8,7 +8,7 @@ Task-oriented "how do I do X" instructions for building, installing, operating, 
 |---|---|
 | [`quickstart.md`](quickstart.md) | The fastest real path to a first running container |
 | [`installing.md`](installing.md) | Building and using the installer ISO: Secure Boot, partitioning, first boot |
-| [`building-cix.md`](building-cix.md) | Compiling `cixd`/`cixctl`/`web` — on a dev machine, or self-hosted from a running Cix box |
+| [`building-cix.md`](building-cix.md) | Compiling `cixd`/`cixctl`/`web` — self-hosted, on a running Cix box |
 
 **Operating** — running and administering an installed box day to day:
 

@@ -25,7 +25,7 @@ this platform can check what it downloads ([ADR-0254](../adr/0254-upstream-check
 
 | File | Fingerprint | What it verifies |
 |---|---|---|
-| [`kernel.org-autosigner.asc`](kernel.org-autosigner.asc) | `B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1` | kernel.org's `sha256sums.asc`, so a kernel `pkg_sha256` quotes a checksum **kernel.org signed** rather than one this platform computed over its own download |
+| [`kernel.org-autosigner.asc`](kernel.org-autosigner.asc) | `B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1` | kernel.org's `sha256sums.asc`, so a kernel recipe's source `sha256` quotes a checksum **kernel.org signed** rather than one this platform computed over its own download |
 
 The file is not the trust anchor; **the fingerprint is**. `pgpverify.c`
 recomputes the fingerprint from the key material and refuses anything
@@ -49,7 +49,7 @@ is inside the signed trusted comment rather than only in the filename:
 
 ```
 Signature and comment signature verified
-Trusted comment: cix installer iso, v2.5.1
+Trusted comment: cix installer iso, <version>-<release>
 ```
 
 Use **stock `minisign`**, not a Cix tool. An installer that checks its
