@@ -152,7 +152,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/containers/{name}/migrate-storage` | Status of the most recent (or running) container-storage migration |
 | POST | `/containers/{name}/migrate-storage` | Move this container's own storage to a new disk, or back to the default |
 | GET | `/containers/{name}/files` | Read one file's raw bytes back out of a container's rootfs | **Read `X-Cix-Source` (#394)** — `container`, `writable` or `image`: a 200 means "some tree the daemon can reach has these bytes", and only `container` answers "what does this container see". The endpoint once returned 2 MB of valid ELF for a binary a shell inside that same container could not find, and was believed over the shell twice. `X-Cix-Mode`/`Uid`/`Gid`/`Size` carry the metadata the body cannot (#139).
-| PUT | `/containers/{name}/files` | Write/overwrite one file inside an already-existing container, live, without a recreate (ADR-0153) | The write lands in the container's **host-side rootfs** when it has one — the tree it pivoted onto, reached without crossing its id-mapped mount. Creating a file through `/proc/<pid>/root` is refused with `EOVERFLOW` on a running userns container, which is why this returned 500 for every container on a userns-by-default host while `GET` on the same container worked (#333). The kernel-side mechanism is **not established** — the obvious id-mapped-mount explanation is ruled out, since the rootfs that failed is not id-mapped. Omitting `owner`/`group` inherits the rootfs's own ownership, which is what makes the file read as root inside the container under either userns presentation. A path shadowed inside the container by a mount (`/run`, a volume) gets a **409 with nothing written**, rather than a 204 that would be invisible to it. |
+| PUT | `/containers/{name}/files` | Write/overwrite one file inside an already-existing container, live, without a recreate (ADR-0153). The write lands in the container's **host-side rootfs** when it has one — the tree it pivoted onto, reached without crossing its id-mapped mount. Creating a file through `/proc/<pid>/root` is refused with `EOVERFLOW` on a running userns container, which is why this returned 500 for every container on a userns-by-default host while `GET` on the same container worked (#333). The kernel-side mechanism is **not established** — the obvious id-mapped-mount explanation is ruled out, since the rootfs that failed is not id-mapped. Omitting `owner`/`group` inherits the rootfs's own ownership, which is what makes the file read as root inside the container under either userns presentation. A path shadowed inside the container by a mount (`/run`, a volume) gets a **409 with nothing written**, rather than a 204 that would be invisible to it. |
 | DELETE | `/containers/{name}/files` | Remove one file from inside an already-existing container, live, without a recreate |
 | POST | `/containers/{name}/networks` | Attach a network to an already-running container, live, without a recreate (ADR-0156) |
 | DELETE | `/containers/{name}/networks/{network}` | Detach a live-attached network; refuses a create-time attachment (409) |
@@ -229,7 +229,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/images/{name}` | Inspect one image, including its manifest |
 | DELETE | `/images/{name}` | Remove an image (refused for `base`, if in use, or if it still has packages) |
 | POST | `/images/{name}/manifest` | Upsert one `{package, mode, version}` manifest entry (ADR-0107) |
-| GET | `/images/{name}/versions/{version}/manifest` | What one specific image **version** holds — the `name@version` pairs installed into it, snapshotted when it was produced (#398) | The image-level manifest is a *live* document. A container records the version it runs from and keeps running it, so "what is in this container" must be answered from the version — reading the live manifest describes what the image holds *now*, a different question with the same shape. Deliberately not the *declared* manifest: that is live intent, and a `rolling` entry's version there is a floor rather than a fact. A version produced before snapshots existed returns 404 rather than falling back, deliberately: the fallback would be a wrong answer with nothing marking it. And an installed record is still not proof the bytes reached any container (#395). |
+| GET | `/images/{name}/versions/{version}/manifest` | What one specific image **version** holds — the `name@version` pairs installed into it, snapshotted when it was produced (#398). The image-level manifest is a *live* document. A container records the version it runs from and keeps running it, so "what is in this container" must be answered from the version — reading the live manifest describes what the image holds *now*, a different question with the same shape. Deliberately not the *declared* manifest: that is live intent, and a `rolling` entry's version there is a floor rather than a fact. A version produced before snapshots existed returns 404 rather than falling back, deliberately: the fallback would be a wrong answer with nothing marking it. And an installed record is still not proof the bytes reached any container (#395). |
 | DELETE | `/images/{name}/manifest/{package}` | Remove one manifest entry |
 | GET | `/images/recipes` | List image recipes (metadata only) (ADR-0123) |
 | POST | `/images/recipes` | Add/replace an image recipe (a JSON document, ADR-0311) |
@@ -324,38 +324,6 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | PUT | `/pkg/source-policy` | Set the platform-wide default (channel preference + depth) |
 | PUT | `/pkg/{name}/source-policy` | Override it for one package, or hold it: `{"pinned": true}` keeps discovery from authoring the package and `false` lifts the hold. A body naming only `pinned` changes only the hold (#565) |
 | DELETE | `/pkg/{name}/source-policy` | Back to the platform default channel and depth; a hold is kept |
-### Why a package failed, as a field (issue #101)
-
-`GET /v1/pkg/{name}` and the package list report **`failure_kind`** alongside `error`:
-
-| kind | meaning | what to do about it |
-|---|---|---|
-| `fetch` | the source could not be reached, or did not match its checksum | usually transient — try again |
-| `build` | the build container failed to start, or the build itself failed | a real defect in the recipe or toolchain — retrying changes nothing |
-| `recipe` | the recipe is missing, unreadable or unparseable | a catalogue problem — sync or fix the recipe |
-| `install` | the build succeeded; merging its output into the image did not | neither of the above; look at the image |
-| `null` | nothing is wrong | — |
-
-`failed` on its own could not be acted on: a package that could not be *reached* and one that failed to *build* read identically, and every caller had to pattern-match an error string to tell them apart. `cixctl pkg ls` shows it as `failed:fetch` / `failed:build`; the dashboard shows it next to the state with the message on hover.
-
-The kind is set in the one function that records a failure, and it is a required parameter of that function — a failure cannot be recorded without saying what kind it was.
-
-### Why a package failed, as a field (issue #101)
-
-`GET /v1/pkg/{name}` and the package list report **`failure_kind`** alongside `error`:
-
-| kind | meaning | what it calls for |
-|---|---|---|
-| `fetch` | the source could not be reached, or did not match its checksum | usually transient — try again |
-| `build` | the build container failed to start, or the build itself failed | a real defect in the recipe or toolchain; retrying changes nothing |
-| `recipe` | the recipe is missing, unreadable or unparseable | a catalogue problem — sync or fix the recipe |
-| `install` | the build succeeded, merging its output into the image did not | neither of the above |
-| `null` | nothing is wrong | — |
-
-`failed` on its own could not be acted on: a package that could not be *reached* and one that failed to *build* read identically, and every caller had to pattern-match an error string to tell them apart. `cixctl pkg ls` shows it as `failed:fetch` / `failed:build`; the dashboard shows it beside the state, with the message on hover.
-
-The kind is set in the single function that records a failure, and it is a **required parameter** of that function — a failure cannot be recorded without saying what kind it was.
-
 | GET | `/pkg/build-logs` | Every persisted build log, newest first — the complete output of each recent build (issue #57) |
 | GET | `/pkg/build-logs/{file}` | One build log as plain text, tail-first if it is larger than the response cap |
 | GET | `/pkg/sync` | The most recent (or currently running) sync's status |
@@ -399,7 +367,7 @@ That last limit was added after measuring, not before. The unrestricted form fla
 
 It is **reported, never fatal to an install** — a deliberate difference from the ELF undefined-symbol gate, which refuses. That check has essentially no false positives; reading C without a preprocessor cannot make the same claim, so this one says so loudly instead: in the daemon log at install time, and here afterwards.
 
-It is deliberately its own endpoint rather than a field on `GET /pkg`: it stats every file of every installed package, and `GET /pkg` is polled every two seconds by the dashboard and is already this daemon's single largest source of event-loop stalls. The cost is measured rather than estimated — 2.66 s for 202 installed packages on the reference host, which `GET /system/stalls` attributes as that boot's worst loop pass, by name. Below the 5 s stall threshold and above the 750 ms slow-pass one: about one dashboard poll's worth of blocked control plane, which is fine for a verb an operator runs and is exactly why it is not on a polled path.
+It is deliberately its own endpoint rather than a field on `GET /pkg`: it stats every file of every installed package, and `GET /pkg` was polled every two seconds by the dashboard (before [ADR-0339](../adr/0339-the-dashboard-is-told-what-changed.md)) and was already this daemon's single largest source of event-loop stalls. The cost is measured rather than estimated — 2.66 s for 202 installed packages on the reference host, which `GET /system/stalls` attributes as that boot's worst loop pass, by name. Below the 5 s stall threshold and above the 750 ms slow-pass one: about one dashboard poll's worth of blocked control plane, which is fine for a verb an operator runs and is exactly why it is not on a polled path.
 
 **Seeing how far behind a host is.** `GET /pkg/{name}` has always answered "is this out of date" for one package, in `available_version`. Nothing aggregated it, so the only way to learn a host had drifted was to ask about every installed package and compare — which in practice nobody did. On the reference host that reached 34 of 139 installed packages, several revisions behind in places, and was found by accident (issue #217). `GET /pkg/drift` answers it in one call.
 
@@ -407,6 +375,22 @@ It reports; it does not act. `POST /pkg/update-all` is the verb, and it delibera
 
 
 Every error response is `{"error": "message"}` with an appropriate 4xx/5xx status. Every mutating endpoint that touches disk or spawns a subprocess can in principle also return `500` (a real I/O or subprocess failure, not a client mistake) — see `openapi.yaml`'s own per-path `"500"` response for exactly which internal failure each one covers; the specific set differs per endpoint and isn't repeated here.
+
+### Why a package failed, as a field (issue #101)
+
+`GET /v1/pkg/{name}` and the package list reported **`failure_kind`** alongside `error`, until ADR-0256 replaced it with `stage` and `status` ([below](#unpack-is-new-and-it-fixes-a-real-misdirection)):
+
+| kind | meaning | what to do about it |
+|---|---|---|
+| `fetch` | the source could not be reached, or did not match its checksum | usually transient — try again |
+| `build` | the build container failed to start, or the build itself failed | a real defect in the recipe or toolchain — retrying changes nothing |
+| `recipe` | the recipe is missing, unreadable or unparseable | a catalogue problem — sync or fix the recipe |
+| `install` | the build succeeded; merging its output into the image did not | neither of the above; look at the image |
+| `null` | nothing is wrong | — |
+
+`failed` on its own could not be acted on: a package that could not be *reached* and one that failed to *build* read identically, and every caller had to pattern-match an error string to tell them apart. `cixctl pkg ls` shows the stage and status as `failed:build/failed`; the dashboard shows them next to the state with the message on hover.
+
+The stage is set in the one function that records a failure, `pkg_fail()`, and it is a required parameter of that function — a failure cannot be recorded without saying where it happened.
 
 ## The running configuration as one document (ADR-0206)
 
@@ -539,8 +523,8 @@ observation means nothing, but `auth_token_set: false` against a host
 that has a token reads as an instruction to clear it, and quietly doing
 nothing about that would be worse than saying no.
 
-**Each section declares how it may be written.** `replace` (11
-sections) means one setter replaces it whole. `reconcile` (11) means it
+**Each section declares how it may be written.** `replace` (9
+sections) means one setter replaces it whole. `reconcile` (13) means it
 is applied element by element: **what the document names is created or
 updated, and what it does not name is removed** -- the same thing
 `replace` already means for a list like `resolver.nameservers`. `manual`
@@ -635,12 +619,12 @@ A declared command whose binary is missing fails at exec and is reported as an e
 From the CLI:
 
 ```
-cixctl run --name=jump --image=jumpbox --console='shell=/usr/bin/bash -l' -- /usr/bin/bash /usr/local/bin/jumpbox-start.sh
+cixctl container run --name=jump --image=jumpbox --console='shell=/usr/bin/bash -l' --service='jumpbox=/usr/bin/bash /usr/local/bin/jumpbox-start.sh'
 cixctl container console jump                  # first declared
 cixctl container console jump --console=logs   # by name
 ```
 
-The `--console=NAME=/path args` form splits the command on spaces, so an argument containing a literal space cannot be written that way — a real limit, and the reason a deployment (`recipes/deployment/<name>/*/container.json`, a real JSON array with nothing to lose in quoting) is the better place to declare anything non-trivial.
+The `--console=NAME=/path args` form splits the command on spaces, so an argument containing a literal space cannot be written that way — a real limit, and the reason a deployment (`recipes/deployment/<name>@<version>.json` in cix-recipes, a real JSON array with nothing to lose in quoting) is the better place to declare anything non-trivial.
 
 ## The console is a real terminal: size and type
 
@@ -728,7 +712,7 @@ Deliberately *not* done: making gating fail closed when its precondition is brok
 Each operation in `openapi.yaml` carries `x-cix-permission`, naming the one permission a caller needs. The words come from the spec's own top-level `x-cix-permissions` list, a closed vocabulary:
 
 - `public`: no session needed. `POST /v1/login`; `POST /v1/logout`, which revokes only the token it is given and is idempotent, so requiring a live session would turn a repeat logout into a `401`; `GET /v1/health`; and `GET /v1/whoami`, which answers "am I logged in, and what may I do" to a caller who may not be.
-- `authenticated`: any valid session. No operation uses it today; it is in the vocabulary for operations every user may perform on their own account.
+- `authenticated`: any valid session. Today that is the event stream (`GET /v1/events`, `GET /v1/events/status`) and a user's own app passwords (`/v1/whoami/app-passwords`): operations every user may perform on their own account.
 - `<area>:read|operate|write` for the areas containers, images, volumes, networks, storage, devices, packages, services, identity, pki, schedules, config and system. `operate` changes the running state of something that exists without creating or destroying it; today that is container start, stop, pause, unpause and service start, stop and restart.
 - `containers:console`: an interactive shell in a container, which is more than any `write`.
 
@@ -736,9 +720,9 @@ Each operation in `openapi.yaml` carries `x-cix-permission`, naming the one perm
 
 ### A secret a caller TYPES is marked `format: password`
 
-Eight request fields carry it: `POST /login`'s `password`, the `passphrase` on `POST /pki/export` and
-`POST /pki/import`, the `token` on the add and update of both `/pkg/sources` and `/pkg/repositories`, and
-`LdapUserCreateRequest`'s `password`. It changes nothing on the wire -- it is OpenAPI's own standard hint
+Nine request fields carry it: `POST /login`'s `password`, the `passphrase` on `POST /pki/export` and
+`POST /pki/import`, the `token` on the add and update of both `/pkg/sources` and `/pkg/repositories`,
+`LdapUserCreateRequest`'s `password`, and `LdapConfig`'s write-only `bind_password` (`PUT /ldap/config`). It changes nothing on the wire -- it is OpenAPI's own standard hint
 that a value is a secret being entered -- and the dashboard renders such a field obscured, because since
 [ADR-0338](../adr/0338-the-dashboard-renders-from-the-contract.md) a form is generated from this schema and
 a generated `type: string` would otherwise be a plain text input showing the password as it is typed.
@@ -749,7 +733,7 @@ and obscuring it would defeat the only reason it is returned.
 
 ### An integer that is a moment is marked `format: unix-seconds`
 
-Thirty-seven response properties carry it -- every `*_at`, `*_until` and `*_unixtime`, plus `created`,
+Thirty-eight response properties carry it -- every `*_at`, `*_until` and `*_unixtime`, plus `created`,
 `at`, `last_attempt` and a stall record's `ts`. It changes nothing on the wire: the value is the same integer of Unix seconds it
 always was. What it changes is that the fact is now **machine-readable**, so the dashboard renders a
 moment from the contract instead of from its own arithmetic -- there were twenty separate
@@ -775,7 +759,7 @@ property's name, a renderer may only read its contract.
 Durations are a separate question and deliberately unanswered: `expires_in_seconds`, `window_seconds` and
 sixteen others are counts rather than moments, they have no format, and they must not borrow this one.
 
-**Eight of the thirty-seven are declared but not yet reachable** (measured 2026-10-17: 29 reach
+**Eight of the thirty-eight are declared but not yet reachable** (measured 2026-10-17: 29 reach
 `CIX_API.FIELDS`), and this is a real limit rather than an oversight. apigen emits `CIX_API.FIELDS` per
 *named* component schema, so a property of an inline nested object -- a pipeline run's `ended_at`, a
 measurement's `measured_at` -- carries the format in this document and does not reach the renderer, which
@@ -965,7 +949,8 @@ Authorization: Basic base64("agent-1:3f9c...")
 - **Every other operation says which reads it makes stale** with `x-cix-invalidates`, a list of `operationId`s. A change no read shows, such as a reboot, says `[]` rather than leaving the key out. A bulk change that can alter any read there is, applying a whole config document (`applyConfig`) or restoring a backup (`postSystemRestore`), says `[*]`. A list of everything would be wrong the day a read is added. Only state, sample and session reads may be named, because a stream is subscribed to and a derived read is computed on request.
 - **`x-cix-composed-of`** declares a view: a state read the daemon joins at read time from other reads.
   `getPipeline` joins packages, images, the ESP, deployments, containers and the source catalogue,
-  and `getPkgDrift` joins packages and recipes. Announcing any input announces the view, so the view is declared once rather than added to every
+  `getPkgDrift` joins packages and recipes, and `listSoftware` joins image recipes, images, recipes,
+  packages, deployments and containers. Announcing any input announces the view, so the view is declared once rather than added to every
   change and daemon site that touches an input. One level only: `apigen` refuses a view built from a
   view.
 - **`x-cix-volatile-fields`** names a field of a state read that moves with the clock rather than with a change: a session's `expires_in_seconds`, a build environment's `idle_seconds`, a log's `size_bytes` and `modified_at` while it is written, and a job's `stage_seconds`, `run_seconds` and `last_output_seconds_ago`. One more is volatile in one read only: a container's `captured_output` tail in `listContainers`. Its own `getContainer` is announced on every line appended. The box's own drift check leaves these out of its comparison. A change of state that follows from the clock, such as a session expiring, is not volatile: the daemon makes it, and announces it, at the moment it is due.
@@ -1325,11 +1310,11 @@ PUT /v1/system/logs/config
 {"max_bytes": 5368709120, "min_level": "info"}
 ```
 
-One consolidated, size-capped log (ADR-0070): real kernel `dmesg` (source `kernel`, read directly from `/dev/kmsg`), cixd's own internal diagnostics (source `cixd`, mirrored to stderr too — stderr is still the only channel during boot, before the API is reachable), a per-request audit trail (source `audit`) — one entry per **mutating** (`POST`/`PUT`/`DELETE`) REST request this daemon handles, `<who> <method> <path>`, covering every real action either `cixctl` or the web dashboard takes since both are pure REST clients. **`<who>` is the authenticated caller** ([ADR-0271](../adr/0271-an-action-is-attributable-to-a-person.md)), or `-` when nobody is authenticated — host-auth gating is off until an admin user exists, so `-` is a reachable, honest state and not an error. A **refused** write is audited too, at `warn`, with `REFUSED (not authorized)`: auditing only what got past authorization would lose exactly the attempts worth seeing. A login is the one request with no token yet, so it records itself as `-` and the login handler audits by name on both outcomes instead (`<user> logged in`, `<user> login REFUSED (invalid username or password)` — never the password, never which half was wrong). The trail used to carry method and path alone, which answers "what happened" and never "who did it" — and, since ADR-0126, **every container's own stdout/stderr, transparently** (source `container`, tagged with the `container` field) — no opt-in needed; a container's own `"capture_output":true` (see the Containers section) only additionally mirrors the same bytes into that one container's own `GET /containers/{name}` tail, it's a separate, still-opt-in feature fed from the same pipe. `container=` filters to one container's own lines; `regex=` (POSIX extended, case-insensitive) matches against `msg`, `400` on a malformed pattern. Every `GET` (not just `/health`) is excluded from the audit trail (ADR-0132) — a query is never an action, and the web dashboard's own routine ~30-request poll cycle every 2s would otherwise drown real actions in noise. All sources interleave into one chronologically-ordered store, not siloed per-source streams.
+One consolidated, size-capped log (ADR-0070): real kernel `dmesg` (source `kernel`, read directly from `/dev/kmsg`), cixd's own internal diagnostics (source `cixd`, written to the store only — the daemon's stderr is a separate channel, never mirrored in either direction, and still the only one during boot, before the API is reachable), a per-request audit trail (source `audit`) — one entry per **mutating** (`POST`/`PUT`/`PATCH`/`DELETE`) REST request this daemon handles, `<who> <method> <path>`, covering every real action either `cixctl` or the web dashboard takes since both are pure REST clients. **`<who>` is the authenticated caller** ([ADR-0271](../adr/0271-an-action-is-attributable-to-a-person.md)), or `-` when nobody is authenticated — host-auth gating is off until an admin user exists, so `-` is a reachable, honest state and not an error. A **refused** write is audited too, at `warn`, with `REFUSED (no session)` or `REFUSED (lacks <permission>)`: auditing only what got past authorization would lose exactly the attempts worth seeing. A login is the one request with no token yet, so it records itself as `-` and the login handler audits by name on both outcomes instead (`<user> logged in from <ip>`, `<user> login REFUSED (invalid username or password) from <ip>` — never the password, never which half was wrong). The trail used to carry method and path alone, which answers "what happened" and never "who did it" — and, since ADR-0126, **every container's own stdout/stderr, transparently** (source `container`, tagged with the `container` field) — no opt-in needed; a container's own `"capture_output":true` (see the Containers section) only additionally mirrors the same bytes into that one container's own `GET /containers/{name}` tail, it's a separate, still-opt-in feature fed from the same pipe. `container=` filters to one container's own lines; `regex=` (POSIX extended, case-insensitive) matches against `msg`, `400` on a malformed pattern. Every `GET` (not just `/health`) is excluded from the audit trail (ADR-0132) — a query is never an action, and the web dashboard's own routine reads (a ~30-request poll cycle every 2s when this was decided) would otherwise drown real actions in noise. All sources interleave into one chronologically-ordered store, not siloed per-source streams.
 
 **A filtered read waits; it never holds the box ([ADR-0342](../adr/0342-a-log-read-never-walks-the-store-on-the-event-loop.md)).** The store is read backwards, so a read with no filter (no `source`, `level`, `container` or `regex`, and `since` absent or 0) costs only what it returns and is answered at once; it is also the only log read the [event stream](#what-a-read-is-and-what-a-change-makes-stale-x-cix-read-x-cix-invalidates) will take as a subscription. A read with any filter may have to read every segment, because a filter that matches little finds nothing until it has looked everywhere, so it runs off the daemon's event loop: 2 at a time, up to 16 more waiting, and `503` with `Retry-After: 1` beyond that. Its answer is exactly what it always was, only later. Measured on 192.168.15.95 before the change: a regex matching nothing in a 100 MB store held the whole daemon for 1533 ms.
 
-Storage is 8 rotating segment files, not a byte-exact ring buffer — the oldest whole segment is dropped once the configured `max_bytes` cap is reached (enforced at segment granularity, so expect a few percent of slop against the exact number, the same tradeoff `logrotate`/`journald` already make). `tail` defaults to 1000 and is capped at 5000; `since` is Unix seconds.
+Storage is 8 rotating segment files, not a byte-exact ring buffer — the oldest whole segment is dropped once the configured `max_bytes` cap is reached (enforced at segment granularity, so expect a few percent of slop against the exact number, the same tradeoff `logrotate`/`journald` already make). `tail` defaults to 1000, which is also what a value outside `[1, 5000]` gets; `since` is Unix seconds.
 
 `PUT .../config`'s two fields — `max_bytes` and `min_level` — are independent; a real request only ever needs to give the one actually changing, and the response always echoes back the resulting full config. `min_level` (any real syslog severity name: `emerg`/`alert`/`crit`/`err` or `error`/`warning` or `warn`/`notice`/`info`/`debug`, default `debug` — log everything) is checked *at write time*, before an entry ever touches a segment file — genuinely different from `GET`'s own `level` query filter, which only ever filters what's already stored. Each captured log message itself is capped at 4096 bytes (`LOGSTORE_MSG_MAX`, raised from an original, too-small 512 after a real deployment failure's own build-output capture was silently truncated away before the actual error line) — a real build failure's captured output (`pkg %s@%s: build output: ...`) keeps the *tail* of the output, not the head, since the actual error is almost always the last thing printed.
 
@@ -1421,9 +1406,9 @@ POST /v1/containers
 ```
 
 - `name` must match `[A-Za-z0-9_-]+` — it's used verbatim as the on-disk directory name under `/var/lib/cix/containers/`.
-- `image` must already exist and be populated at `/var/lib/cix/rebuildable/images/{image}/rootfs` (ADR-0141) — the daemon never creates image content itself (see ADR-0004); a missing image is a `400`, not a silently-empty container.
+- `image` must already exist and be populated at `/var/lib/cix/rebuildable/images/{image}/<version>/rootfs` for its current version (ADR-0141, ADR-0108) — the daemon never creates image content itself (see ADR-0004); a missing image is a `400`, not a silently-empty container.
 - `memory_swap_max` (issue #52) is the one limit here where **0 is a real setting**, not "off": it means this container may not swap at all, so under memory pressure it is reclaimed or OOM-killed rather than pushed to disk — a genuine choice for a latency-sensitive workload on a box that does have swap. Omit the field for unlimited swap; a negative value is refused rather than silently meaning "unset", because omitting it is what means that. It reads back the same way: `0` stays `0`, `null` means no limit, and the two never collapse into one another. `GET /containers/{name}/stats` reports `memory.swap_current` alongside it — a limit with no way to see usage against it is half a feature. No kernel-config change was needed: `CONFIG_MEMCG_SWAP` no longer exists upstream (removed before 6.1), and `memory.swap.max` is registered unconditionally wherever memcg and `CONFIG_SWAP` are on, both of which this platform's kernel already had.
-- `memory_max`/`pids_max`/`cpu_max`/`cpuset_cpus` are optional cgroup v2 limits; omit for no limit. `cpu_max` is the raw cgroup-native `"<quota> <period>"` string in microseconds (e.g. `"50000 100000"` = 50% of one CPU); `cpuset_cpus` is the raw `cpuset.cpus` range-list value (e.g. `"0-1,3"`), restricting which host CPUs this container's processes may run on. Both are passed straight through, not reinterpreted into a percentage or another unit — the same pass-through convention `memory_max`'s bytes and `pids_max`'s raw count already use. `memory_max`/`cpu_max`/`pids_max` (not `cpuset_cpus`) are echoed back on `GET /containers`/`GET /containers/{name}`, read live from the real cgroup rather than mirroring what was requested here — `null` for any not set. Previously write-only (settable here, but never retrievable again afterward) until Part 163 closed the gap.
+- `memory_max`/`pids_max`/`cpu_max`/`cpuset_cpus` are optional cgroup v2 limits; omit for no limit. `cpu_max` is the raw cgroup-native `"<quota> <period>"` string in microseconds (e.g. `"50000 100000"` = 50% of one CPU); `cpuset_cpus` is the raw `cpuset.cpus` range-list value (e.g. `"0-1,3"`), restricting which host CPUs this container's processes may run on. Both are passed straight through, not reinterpreted into a percentage or another unit — the same pass-through convention `memory_max`'s bytes and `pids_max`'s raw count already use. `memory_max`/`cpu_max`/`pids_max`/`cpuset_cpus` (the last since issue #49) are echoed back on `GET /containers`/`GET /containers/{name}`, read live from the real cgroup rather than mirroring what was requested here — `null` for any not set. Previously write-only (settable here, but never retrievable again afterward) until Part 163 closed the gap.
 - `disk_quota_bytes` is an optional, real, kernel-enforced hard limit on this container's own overlay upperdir — the enforcement mechanism is picked automatically from the backing filesystem's own type, no separate flag needed. On ext4 (the default), this is a project quota (see [ADR-0062](../adr/0062-ext4-project-disk-quotas.md)); writes past it fail with `EDQUOT` at the filesystem level, and it requires the containers partition to have real project-quota support (`mkfs.ext4 -O quota -E quotatype=prjquota`, the default for a system installed via `cix-install.c`). On btrfs, this is a qgroup hard limit set directly on the container's own upperdir subvolume (see [ADR-0103](../adr/0103-btrfs-quota-backend.md)) — equally real, kernel-enforced, not advisory. Either way, if the backing filesystem can't support the requested enforcement, creation fails `500` with a clear error rather than silently not enforcing the limit. Omit for no limit.
 - `disk` is optional (task #638, [ADR-0102](../adr/0102-per-container-disk-selection.md)): a bare disk name (e.g. `"sdb"`, from `GET /storage`) to place this container's base on, instead of the default OS disk. The base holds an overlay container's upper and work trees and the mountpoint the container pivots onto. It does **not** hold the rootfs: a container's rootfs is a btrfs snapshot of its image version, kept beside the image store on rebuildable storage whatever `disk` says, because a snapshot cannot cross a filesystem ([ADR-0341](../adr/0341-a-containers-rootfs-is-a-snapshot-on-its-images-filesystem.md)). The disk must already be mounted and carry the `"container-storage"` role (`POST /storage-roles`) — `400` if it doesn't exist, isn't mounted, or lacks that role. Echoed back as `disk` on `GET /containers` (`null` for the default placement).
 - `networks` is optional: 1–64 entries, each either a bare name (auto-allocated IP) or `{"name": "internal", "ip": "172.31.0.50"}` for an explicit, operator-chosen address — each network must already exist via `POST /v1/networks` (`400` if unknown), and an explicit `ip` must be a usable address on that network: in its subnet, not the reserved address/network address, and not already taken (`400`/`409`). Omit `networks` entirely for no networking (isolated netns, only `lo` — same as before this field existed). The **first** entry is primary and gets the default route; the rest only get their own subnet's connected route.
@@ -1466,7 +1451,7 @@ Response (`201`):
 
 **A `201` means the container's first process has exec'd ([#549](https://git.home.arpa/itdlabs/cix/issues/549)).** The create answers once the child has started its program in its own root, or has failed to (its reason is then in the container's diagnostics), rather than as soon as it was cloned. So `/proc/<pid>/root` and a console opened straight after the `201` see the container. That is a wait of milliseconds, bounded at 5 s; past that the create answers anyway, as it always did.
 
-`exit_status` is the raw `waitid()` status and is ambiguous on its own — **`term_signal`** disambiguates it (issue #78): `0` means the container exited normally and `exit_status` is a real exit code; a nonzero `term_signal` is the signal that killed it, and `exit_status` is then that same signal number, *not* an exit code. Because a deliberate `stop`/`delete` `SIGKILL`s the container, `term_signal` is `9` for any container stopped or deleted while running — the reliable way to tell that apart from a genuine `exit 9`. Both are `null` while running.
+`exit_status` is the raw `waitid()` status and is ambiguous on its own — **`term_signal`** disambiguates it (issue #78): `0` means the container exited normally and `exit_status` is a real exit code; a nonzero `term_signal` is the signal that killed it, and `exit_status` is then that same signal number, *not* an exit code. A deliberate `stop`/`delete` asks `cix-init` to shut down (ADR-0260), so a container stopped while running normally exits `0` with `term_signal` `0`; `term_signal` is `9` when it did not stop within its grace and was `SIGKILL`ed — the reliable way to tell that apart from a genuine `exit 9`. Both are `null` while running.
 
 **The platform's own containers are excluded by default (#426).** `GET /v1/containers` lists the operator's containers; names prefixed `__` — which today means exactly the build containers, `__pkgbuild-<chain index>` — are left out unless `?include_internal=1` (`true`/`yes` also work; anything else, a bare `?include_internal=` included, is false, because a malformed value meaning "show everything" would be the wrong way round for a flag whose purpose is to show less). Up to `max_concurrent_jobs` build containers exist at once, ten on a real host, so a busy box listed ten machine-owned entries among a dozen real ones with nothing to distinguish them but the name.
 
@@ -1623,7 +1608,7 @@ One direction only. Nothing parses `daily at 02:00 for 3h` back, so there is no 
 
 ```
 PUT /v1/schedules/x {"action":"rm -rf /", ...}
--> 400 no action "rm -rf /"; this platform runs: pkg.discover
+-> 400 no action "rm -rf /"; this platform runs: pkg.discover, system.backup, volume.backup, system.roll, pkg.sync
 ```
 
 Actions **enqueue**; they never do heavy work inline. Each calls an entry point that already exists and already respects its own queue — which is what keeps a scheduler from becoming a way around "never two heavy builds at once".
@@ -1632,13 +1617,13 @@ Actions **enqueue**; they never do heavy work inline. Each calls an entry point 
 
 - **`every` is anchored on the last run**, not on a fixed epoch. An epoch-anchored period fires the instant the daemon starts whenever the box has been down longer than one period, turning every reboot into a burst of work.
 - **`catch_up` defaults to false.** A wall-clock job whose time passed while the daemon was down waits for the next occurrence unless it asked otherwise. A backup usually should catch up; a build sweep should not — it would start heavy work at the least predictable moment there is.
-- **`window_minutes` is a duration, not a second job.** A schedule fires an instant; an update window is an interval during which an action may keep *starting* work. Modelling it as an open job and a close job would put a state machine in the operator's hands. **It is stored and reported and nothing consumes it yet** — `scheduler_in_window()` exists and no action calls it, because the first queue-draining action has not been written. Not a working update window until one is.
+- **`window_minutes` is a duration, not a second job.** A schedule fires an instant; an update window is an interval during which an action may keep *starting* work. Modelling it as an open job and a close job would put a state machine in the operator's hands. **`system.roll` is the one action that consumes it** — it reboots only before `scheduler_running_window_end()`, the end of the running job's window; `scheduler_in_window()` still has no caller.
 - **`POST /schedules/{name}/run` runs a disabled job too.** The enabled flag governs the schedule, not the button. It is also never a way to *define* a schedule — only to run one that exists.
 - **`last_ok` is null before the first run.** "It has not run" and "it ran and failed" are different facts, and a boolean alone cannot hold both.
 
 ### What is scheduled, and what deliberately is not
 
-Four actions are registered:
+Five actions are registered:
 
 | Action | What it does |
 |---|---|
@@ -1713,7 +1698,7 @@ The fold is correct now and it still hides something real, which is why **`drift
 
 `cancelled` is what proves these are two axes rather than one longer list: a killed build is not a different *place*, it is the build stage with a different *outcome*, and the two need opposite responses from the same position.
 
-`blocked` means waiting on something outside this stage — an earlier stage, or a person. `not-implemented` means this platform performs the stage by hand today: `authenticate` and `author` both honestly are, and saying so keeps a manual step visible as a position in a sequence rather than as an absence. A green tick there would mean "we did not check".
+`blocked` means waiting on something outside this stage — an earlier stage, or a person. `not-implemented` means this platform does not perform the stage for that package — `discover` for one that declares no upstream, which rolls only when someone publishes a recipe, and `author` for one an operator holds (#565) — and saying so keeps a manual step visible as a position in a sequence rather than as an absence. A green tick there would mean "we did not check".
 
 ### What a row means
 
@@ -1893,7 +1878,7 @@ depth asks for release 1 back within line 7.2, which publishes only 1 release(s)
 
 **Computed on every read, never stored.** A row is a pure function of three things that each already have an owner: the kind's cached release list, the effective policy, and the recipes on disk. A stored fourth copy would go stale the instant a recipe is published, with no event to invalidate it. So reading this endpoint *is* running the check — which is what makes manual invocation free.
 
-Reading never fetches. Refreshing a kind's release list is a network operation and belongs to that kind's own endpoint (`POST /system/kernel-releases` for kernel.org). Every row carries `upstream_fetched_at` so stale data is visible rather than implied.
+Reading never fetches. Refreshing a kind's release list is a network operation and belongs to that kind's own endpoint (`POST /system/kernel-policy/refresh` for kernel.org, or the `pkg.discover` action for every kind). Every row carries `upstream_fetched_at` so stale data is visible rather than implied.
 
 > **Two kernel resolvers.** `GET /system/kernel-policy` (ADR-0193) steers `longterm` by the running kernel's own series; the catalogue uses the depth expression instead. Both are legitimate answers to different questions — ADR-0255 records the split and partly supersedes ADR-0193.
 
@@ -1976,11 +1961,11 @@ Probing runs on the daemon's own event loop as a **non-blocking** connect &mdash
 
 ## Container lifecycle: start, stop, pause, unpause
 
-`POST /v1/containers/{name}/stop` kills it now but keeps its persisted definition (and its on-disk state) — it reappears as status `"stopped"`, never vanishing, for **every** policy including `"no"` (ADR-0181: *stop is stop*). On the next daemon restart an `"always"`/`"on-failure"` container comes back (a fresh chance every boot), `"unless-stopped"` stays down until explicitly started, and `"no"` stays down always. `DELETE /v1/containers/{name}` is the only thing that removes a container — gone for good regardless of policy, it removes the persisted definition too, in the same call, and it won't come back on a pending crash-restart or any future boot. It also unmounts and recursively removes the container's own on-disk overlay directories (`upper`/`work`/`merged`, ADR-0106) — best-effort, a cleanup failure is logged but never turns the delete itself into an error, since the registry/definition state is the one source of truth for whether a container exists.
+`POST /v1/containers/{name}/stop` stops it now but keeps its persisted definition (and its on-disk state) — it reappears as status `"stopped"`, never vanishing, for **every** policy including `"no"` (ADR-0181: *stop is stop*). On the next daemon restart an `"always"`/`"on-failure"` container comes back (a fresh chance every boot), `"unless-stopped"` stays down until explicitly started, and `"no"` stays down always. `DELETE /v1/containers/{name}` is the only thing that removes a container — gone for good regardless of policy, it removes the persisted definition too, in the same call, and it won't come back on a pending crash-restart or any future boot. It also unmounts and recursively removes the container's own on-disk overlay directories (`upper`/`work`/`merged`, ADR-0106) — best-effort, a cleanup failure is logged but never turns the delete itself into an error, since the registry/definition state is the one source of truth for whether a container exists.
 
-Every configured limit now reads back in `GET /containers/{name}` — `memory_max`/`cpu_max`/`pids_max`/`cpuset_cpus` live from the real cgroup, `disk_quota_bytes` from the creation request (#49) — and unknown fields in a create or recipe body are a `400` naming the offender instead of being silently dropped (#68); `cixctl ps` shows `cpuset=`/`disk_quota=`/`caps=` columns and the dashboard consolidates the resource envelope on the container's Hardware tab (#48/#69).
+Every configured limit now reads back in `GET /containers/{name}` — `memory_max`/`cpu_max`/`pids_max`/`cpuset_cpus` live from the real cgroup, `disk_quota_bytes` from the creation request (#49) — and unknown fields in a create or recipe body are a `400` naming the offender instead of being silently dropped (#68); `cixctl container ls` shows `cpuset=`/`disk_quota=`/`caps=` columns and the dashboard consolidates the resource envelope on the container's Hardware tab (#48/#69).
 
-For a **running** container, both are asynchronous (ADR-0180, issue #67 — a synchronous kill-and-wait once froze the whole single-threaded daemon on a child stuck in uninterruptible D-state): the response means every durable effect is already applied (definition/ownership changes for delete, the stopped flag for stop) and the `SIGKILL` sent; reaping, registry release, and (for delete) the disk cleanup complete when the kernel confirms the exit, typically within one loop turn. Until then the container reports status `"deleting"`/`"stopping"`, a same-name create `409`s (saying "still shutting down -- retry shortly" rather than the flat "already exists" it used to, which read as a conflict with a container `container ls` does not show -- #417), and anything the unreaped process still holds isn't released yet — concretely, `DELETE` on a network it was attached to can transiently `409` ("still in use"). Chain on the settled state, not on the response: poll the container's own `GET` to `404` (delete) or status `"stopped"` (stop) first.
+For a **running** container, both are asynchronous (ADR-0180, issue #67 — a synchronous kill-and-wait once froze the whole single-threaded daemon on a child stuck in uninterruptible D-state): the response means every durable effect is already applied (definition/ownership changes for delete, the stopped flag for stop) and the shutdown asked of `cix-init`, with `SIGTERM` alongside and `SIGKILL` after the container's grace; reaping, registry release, and (for delete) the disk cleanup complete when the kernel confirms the exit, typically within one loop turn. Until then the container reports status `"deleting"`/`"stopping"`, a same-name create `409`s (saying "still shutting down -- retry shortly" rather than the flat "already exists" it used to, which read as a conflict with a container `container ls` does not show -- #417), and anything the unreaped process still holds isn't released yet — concretely, `DELETE` on a network it was attached to can transiently `409` ("still in use"). Chain on the settled state, not on the response: poll the container's own `GET` to `404` (delete) or status `"stopped"` (stop) first.
 
 `POST /v1/containers/{name}/start` is the counterpart: brings a container that isn't currently running back to life without a daemon restart, replaying its persisted definition through the same creation path a daemon restart's own autostart already uses — one source of truth for "how a definition becomes a live container." It handles both non-running states persist-all produces: a `"stopped"` container (no live entry) and an `"exited"` one (ran and exited on its own, retained with its exit code — the stale exited record is cleared first, so a start always genuinely restarts it rather than no-opping). Idempotent — an already-**live** (running/paused) container is a plain `200`, not an error. `404` if no persisted definition exists for this name at all (this endpoint only ever replays an existing definition; `POST /containers` creates a new one). Unlike boot-time autostart, this endpoint ignores `restart: "unless-stopped"` gating entirely — an explicit, manual start always means start it.
 
@@ -2082,7 +2067,7 @@ POST /v1/system/kmod/e1000e
 {"options": {"debug": "1"}}
 ```
 
-Real `modprobe <name> [key=value ...]` -- real dependency resolution (via the already-harvested `modules.dep`, see `kernel.recipe`/ADR-0061) and real module-parameter passing, neither reimplemented. `options` given in the body is used as-is; an omitted (or entirely absent) `options` field falls back to this module's own persisted `default_options` below, if one exists, otherwise loads with none. `DELETE /v1/system/kmod/{name}` is `modprobe -r <name>` -- real, reverse-dependency-aware removal, not a bare `rmmod` that would leave now-unused dependencies loaded. Both respond `404` if `modprobe` itself failed -- overwhelmingly "no such module" in practice, the one case a bare exit code can't usefully distinguish from "bad option" or "the real binary isn't staged on this box at all" (this project's own dev/build sandbox has neither `modprobe` nor `modinfo` -- only a real installed image does, via `kmod.recipe`).
+Real `modprobe <name> [key=value ...]` -- real dependency resolution (via the already-harvested `modules.dep`, see the `kernel` recipe/ADR-0061) and real module-parameter passing, neither reimplemented. `options` given in the body is used as-is; an omitted (or entirely absent) `options` field falls back to this module's own persisted `default_options` below, if one exists, otherwise loads with none. `DELETE /v1/system/kmod/{name}` is `modprobe -r <name>` -- real, reverse-dependency-aware removal, not a bare `rmmod` that would leave now-unused dependencies loaded. Both respond `404` if `modprobe` itself failed -- overwhelmingly "no such module" in practice, the one case a bare exit code can't usefully distinguish from "bad option" or "the real binary isn't staged on this box at all" (this project's own dev/build sandbox has neither `modprobe` nor `modinfo` -- only a real installed image does, via the `kmod` package).
 
 **The status stays a uniform `404`; the message no longer does.** Both calls used to capture modprobe's stdout and stderr into a pipe and discard it, so a real refusal on a live box read `{"error":"modprobe -r could not unload this module"}` and named nothing -- while modprobe itself had written the answer (`FATAL: Module usb_storage is in use.`, `is builtin.`, `not found in directory /lib/modules/...`), each pointing at a different fix. Quoting the tool verbatim is not the same as parsing it for a status code, which is what the uniform `404` was actually protecting against, so the message now carries whatever modprobe said. The same applies to `autoload` at boot, which additionally reports to the log store rather than stderr -- boot-time stderr goes nowhere an operator can read (#132), so an autoload that silently did not happen was indistinguishable from one never configured.
 
@@ -2168,7 +2153,7 @@ POST /v1/system/ntp/sync
 
 `state` is `never` (nothing attempted yet), `ok`, or `failed` (every candidate exhausted with no valid reply, or a valid reply arrived but the final `clock_settime()` itself failed -- e.g. no `CAP_SYS_TIME`).
 
-**2. Container-to-container NTP:** `POST`/`GET`/`DELETE /v1/ntp/servers`, registering a running container as an available time source -- mirrors `POST /v1/dns/servers`/`POST /v1/ldap/servers` exactly:
+**2. Container-to-container NTP:** `POST`/`GET /v1/ntp/servers` and `DELETE /v1/ntp/servers/{container}`, registering a running container as an available time source -- mirrors `POST /v1/dns/servers`/`POST /v1/ldap/servers` exactly:
 
 ```
 POST /v1/ntp/servers
@@ -2245,7 +2230,7 @@ POST /v1/containers
 GET /v1/containers/{name}/stats
 ```
 
-A real, host-side, point-in-time snapshot — no in-container agent, no server-side history (the daemon never stores a sample; call again to get a fresh one, and compute rates/percentages client-side from consecutive samples, exactly what `cixctl stats` and the web dashboard's own Stats tab both do). Response shape:
+A real, host-side, point-in-time snapshot — no in-container agent, no server-side history (the daemon never stores a sample; call again to get a fresh one, and compute rates/percentages client-side from consecutive samples, exactly what `cixctl container stats` and the web dashboard's own Stats tab both do). Response shape:
 
 ```json
 {
@@ -2275,7 +2260,7 @@ GET /v1/system/processes
 A real, direct `/proc` scan — every process on the box, not just ones this daemon itself spawned (host-level daemons, a shell an operator started over SSH into a jumpbox container's own console, everything). A point-in-time snapshot, same posture as `GET /system/stats`/`GET /containers/{name}/stats` above — no history, call again for a fresh one. Response shape (one entry per process):
 
 ```json
-[{"pid": 1234, "ppid": 1, "comm": "chronyd", "command_line": "/usr/sbin/chronyd -d -f /etc/chrony.conf", "container": "ntp-1", "user_id": 0, "group_id": 0}]
+[{"pid": 1234, "ppid": 1, "comm": "chronyd", "command_line": "/usr/sbin/chronyd -d -f /etc/chrony.conf", "container": "ntp-1", "state": "S", "wchan": "do_select", "user_id": 0, "group_id": 0}]
 ```
 
 `container` is populated by walking the process's own real host ppid chain against every currently-running container's own root pid — every container's own init is a direct `clone3()` child of `cixd` itself, so this reaches either a known container root (a match) or `cixd`'s own pid / pid 1 (empty string, a plain host-level process) for every case that matters. `command_line` is `/proc/<pid>/cmdline`'s own space-joined argv, or `"[comm]"` for a kernel thread (or a process caught between `execve()` calls) — the same convention `ps(1)` itself uses for an empty cmdline. `user_id`/`group_id` are the real (not effective/saved/filesystem) uid/gid from `/proc/<pid>/status`.
@@ -2296,7 +2281,7 @@ A real, immediate `SIGKILL` — no grace period, unlike `DELETE /containers/{nam
 GET /v1/containers/{name}/files?path=/etc/hosts
 ```
 
-The read-path counterpart to `POST /containers`' own `files[]` (write-only, host-to-container, staged before the container's own `clone3()`). Response is raw bytes (`application/octet-stream`), not JSON — this daemon's only other non-JSON response besides the web dashboard's own static assets and the console WebSocket upgrade.
+The read-path counterpart to `POST /containers`' own `files[]` (write-only, host-to-container, staged before the container's own `clone3()`). Response is raw bytes (`application/octet-stream`), not JSON — one of this daemon's few non-JSON responses, beside the web dashboard's own static assets, `GET /pkg/{name}/artifact/export/download`, `GET /pkg/build-logs/{file}` and the three WebSocket upgrades (`/containers/{name}/console`, `/pkg/build/log`, `/events`).
 
 Path resolution depends on whether the container is currently running: while running, the file is read through `/proc/<pid>/root/<path>` (the container's own mount namespace and root, no privilege boundary crossed since the daemon already runs as real root). Once the container is down — **whether it exited on its own or was cleanly stopped** — the file is read from the container's own real, host-visible writable tree (its rootfs for a direct-rootfs container, its overlay upperdir for a classic one), falling back for an exited-but-still-registered container to the image's own read-only rootfs if the path was never written by the container itself.
 
@@ -2304,7 +2289,7 @@ A cleanly **stopped** container is a valid target (issue #162). It used to be a 
 
 One limit worth stating plainly: for a stopped container this reaches its **writable** tree. A direct-rootfs container (the ADR-0207 default) has its whole filesystem there, so reads are complete; a legacy overlay container has only what it wrote, so a path existing solely in the image's lower layer is still a `404` while it is down — the lowerdir is recorded on the registry entry, and a stopped container has no entry to record it.
 
-`path` must be an absolute, `/`-leading, traversal-free path (no `.`/`..` component, no empty `//` component) — the exact same validation `POST /containers`' own `files[].path` already applies, reused verbatim. In the default mode a path resolving to a directory is `400`, not an implicit directory listing — a client that meant to read a file and hit a directory is told so rather than handed something else. Listing is a **separate, explicit mode**: `?list=1` (any value that is neither empty nor `0`) returns a directory listing of `path` instead of file content. That parameter had been honoured by the daemon since the endpoint was written and was simply absent from `openapi.yaml`; it is declared there now, because an undeclared query parameter is no longer ignored (see below). `cixctl files get NAME --path=/some/path [--output=PATH]` is the CLI surface (stdout if `--output=` is omitted).
+`path` must be an absolute, `/`-leading, traversal-free path (no `.`/`..` component, no empty `//` component) — the exact same validation `POST /containers`' own `files[].path` already applies, reused verbatim. In the default mode a path resolving to a directory is `400`, not an implicit directory listing — a client that meant to read a file and hit a directory is told so rather than handed something else. Listing is a **separate, explicit mode**: `?list=1` (any value that is neither empty nor `0`) returns a directory listing of `path` instead of file content. That parameter had been honoured by the daemon since the endpoint was written and was simply absent from `openapi.yaml`; it is declared there now, because an undeclared query parameter is no longer ignored (see below). `cixctl container files get NAME --path=/some/path [--output=PATH]` is the CLI surface (stdout if `--output=` is omitted).
 
 ## A query parameter this API does not declare is refused
 
@@ -2332,7 +2317,7 @@ Path resolution mirrors the read side's own running/not-running split: while run
 
 A cleanly **stopped** container is a valid target here too (#162) — and this is the case that motivated the fix, since editing a file before starting a container is exactly the operation an operator wants on one that is down. It resolves to the same tree the next start will run from.
 
-**Deliberately live and ephemeral, never persisted into the container's own `files[]` body** — a future restart or recreate replays the original persisted definition unchanged, with no memory of this write. If the change needs to survive a recreate, the durable path is a container recipe (ADR-0151): edit the recipe, `POST .../recipes/{name}/apply`. `cixctl files put NAME --path=/some/path --file=LOCAL_PATH [--mode=0644]` is the CLI surface.
+**Deliberately live and ephemeral, never persisted into the container's own `files[]` body** — a future restart or recreate replays the original persisted definition unchanged, with no memory of this write. If the change needs to survive a recreate, the durable path is a container recipe (ADR-0151): edit the recipe, `POST .../recipes/{name}/apply`. `cixctl container files put NAME --path=/some/path --file=LOCAL_PATH [--mode=0644]` is the CLI surface.
 
 ## Attaching/detaching a network on an already-running container
 
@@ -2393,7 +2378,7 @@ Two real, ready-to-use clients — neither requires hand-rolling the handshake y
 - **`cixctl console NAME [--console=NAME]`** — a full, `termios` raw-mode terminal: tab completion, Ctrl-C, `vim`/`top`/`less` all work correctly, since it drives a real local terminal end to end.
 - **The web dashboard's own Console tab** (a container's default view when selected in the left tree) — the browser's native `WebSocket` object talks directly to this endpoint, no hand-rolled handshake needed client-side. Deliberately reduced fidelity by design (ADR-0010's "no framework" constraint, confirmed with the user rather than silently accepted): a line-buffer renderer with `\r`/`\n`/backspace/Tab and SGR color support, no cursor-addressable screen model, so full-screen redraw programs (`vim`, `top`, `less`) render wrong there specifically — `cixctl console` has no such limitation.
 
-Any frame-parse failure post-upgrade (including an unmasked client frame, which RFC 6455 requires a server to reject) — or a WebSocket CLOSE frame from either side, or the exec'd process exiting on its own — ends the session the same way: `SIGKILL` the exec'd process, then close the raw connection immediately (no WS CLOSE frame is sent back, no HTTP status is possible once the connection is a WebSocket at all) — no leaked processes survive session teardown. No new authentication layer exists for this endpoint — exactly as protected as every other existing mutating endpoint today (network reachability only), a more sensitive capability than most, worth stating plainly rather than leaving implicit.
+Any frame-parse failure post-upgrade (including an unmasked client frame, which RFC 6455 requires a server to reject) — or a WebSocket CLOSE frame from either side, or the exec'd process exiting on its own — ends the session the same way: `SIGKILL` the exec'd process, then close the raw connection immediately (no WS CLOSE frame is sent back, no HTTP status is possible once the connection is a WebSocket at all) — no leaked processes survive session teardown. The upgrade is answered before `dispatch()`, so it is authorized by `authorize_upgrade_route()` itself: it needs a login whose groups hold `containers:console` ([ADR-0317](../adr/0317-permissions-are-declared-by-the-api-contract.md)), the permission `openapi.yaml` declares for it.
 
 ## Diagnosing a container that starts but exits on its own (`capture_output`)
 
@@ -2432,7 +2417,7 @@ GET /v1/containers/jumpbox1
 
 On a successful upgrade, whatever of the build's output was already captured is sent immediately as one frame (so attaching mid-build doesn't start blind), then every further chunk streams live as the build produces it. The daemon sends a real WebSocket CLOSE frame — and tears every attached client down — the instant that specific build finishes, success or failure; there's no "reconnect and keep watching," since by definition there's nothing left to watch. `404` if no matching build is currently in progress; `503` if 4 clients are already attached to it (a soft cap, not a silent drop).
 
-ADR-0157 Phase 2: several builds can genuinely be in flight at once, up to `pkg-build-config`'s own `max_concurrent_jobs` (10 by default further). Optional `?name=`/`?image=` query params pick which one to attach to — omitting `name` falls back to "the one build in progress" when that's unambiguous (zero or one running); with two builds running at once, omitting `name` gets a `400` asking for an explicit one rather than guessing which the caller meant.
+ADR-0157 Phase 2: several builds can genuinely be in flight at once, up to `pkg-build-config`'s own `max_concurrent_jobs` (10 by default, and at most). Optional `?name=`/`?image=` query params pick which one to attach to — omitting `name` falls back to "the one build in progress" when that's unambiguous (zero or one running); with two builds running at once, omitting `name` gets a `400` asking for an explicit one rather than guessing which the caller meant.
 
 **`?image=` is not defaulted to `base` here, and that is the one place this endpoint deliberately differs from every image-optional endpoint that installs something** ([#476](https://git.home.arpa/itdlabs/cix/issues/476)). A `name` with no `image` means "whichever image is building that package" — the caller is asking about a job that already exists and already chose its own target, so there is nothing to default. Defaulting it made a running host build unreachable by name, because a host build's job is filed under the internal `__hostbuild` image an operator has no reason to know: `cixctl pkg build-log --name=cix` answered `404 no build in progress` for the whole of a running `cix` host build. If two images really are building the same package at once, a bare `name` gets a `400` naming `image` as the way to disambiguate rather than attaching to an arbitrary one.
 
@@ -2444,7 +2429,7 @@ The two `404`s are also distinct now, because they mean different things to an o
 
 `PkgEntry` carries `build_container` — the registry container this build is running in right now, `__pkgbuild-<chain index>` (ADR-0157 Phase 2). With up to `max_concurrent_jobs` builds in flight, the chain slot a given job took was previously not discoverable at all: the name existed inside the daemon (`build_container_name`, assigned when the fetch completes and the container is created) and was reported only in the one case where a *failed* build's container was deliberately kept (`kept_build_container`, ADR-0175). So the container of a build that was working fine — the one an operator actually wants to look inside — had no name in the API.
 
-With it, everything the container API already offers applies to a live build: `GET /v1/containers/{name}/stats` for real CPU/memory/disk, `GET /v1/containers/{name}/processes` for what the build is actually running (which is the honest answer to "is this configure loop stuck"), and the console for a look inside. None of that is new machinery; it was simply unreachable without the name.
+With it, everything the container API already offers applies to a live build: `GET /v1/containers/{name}/stats` for real CPU/memory/disk, `GET /v1/system/processes` (whose `container` field names it) for what the build is actually running (which is the honest answer to "is this configure loop stuck"), and the console for a look inside. None of that is new machinery; it was simply unreachable without the name.
 
 Non-null **exactly while `state` is `"building"`**. It is null during `"fetching"`, because the container does not exist yet — it is created after the source is fetched and its checksum verified — and null again once the build leaves that state. The last part is a deliberate gate, not an accident of bookkeeping: the daemon clears its own `build_container_name` only when a later job claims the same chain slot, so reporting the field unconditionally would show an installed package still sitting in a container that has since been torn down, or — once that slot is reused — one now running an unrelated build. Gated on state, the field can only ever name a container that exists and belongs to this job.
 
@@ -2537,7 +2522,7 @@ Also auto-maintained: this install's own instance DNS record (its FQDN pointing 
 
 ## LDAP: server registration, user/group CRUD, and automatic provisioning
 
-LDAP server registration mirrors DNS server registration's own REST shape and persistence discipline, but with one real, deliberate difference: **registration never sends a signal**. `glauth` (`recipes/package/glauth/2.4.0/build.sh`, this platform's own standard integrable LDAP provider, replacing `lldap`) runs a real `fsnotify` watcher on its own config file whenever that file sets `watchconfig = true` — confirmed directly against glauth's own source (`v2/glauth.go`'s `startConfigWatcher()`) — and reloads automatically on any write. DNS server registration exists because dnsmasq only reads its hosts file once at startup; glauth has no equivalent gap to work around. Registration *does* immediately write into the container's own config file, though: the full current user/group set (task #726, so a fresh/replacement instance starts current instead of empty) and, as of ADR-0148, the `baseDN` line kept in sync with `hostauth-config`'s own real `ldap_base_dn`.
+LDAP server registration mirrors DNS server registration's own REST shape and persistence discipline, but with one real, deliberate difference: **registration never sends a signal**. `glauth` (its recipe in cix-recipes, this platform's own standard integrable LDAP provider, replacing `lldap`) runs a real `fsnotify` watcher on its own config file whenever that file sets `watchconfig = true` — confirmed directly against glauth's own source (`v2/glauth.go`'s `startConfigWatcher()`) — and reloads automatically on any write. DNS server registration exists because dnsmasq only reads its hosts file once at startup; glauth has no equivalent gap to work around. Registration *does* immediately write into the container's own config file, though: the full current user/group set (task #726, so a fresh/replacement instance starts current instead of empty) and, as of ADR-0148, the `baseDN` line kept in sync with `hostauth-config`'s own real `ldap_base_dn`.
 
 Once a running glauth container exists (its own config file staged at creation time, `datastore = "config"` and `watchconfig = true` set, the same `--file=` staging convention `lldap.recipe` established), register it so its config file's path is on record for the LDAP user/group CRUD endpoints below to render into:
 
@@ -2591,10 +2576,10 @@ The same `PUT` carries the client login settings and the glauth listener setting
 
 ### Real, live-LDAP SSH login (ADR-0144 task #838)
 
-`sshd` queries LDAP live, at connection time, instead of reading files Cix pre-renders — this platform's one real SSH-login mechanism (an earlier, file-rendered alternative from task #731 existed briefly during ADR-0144's own development and was retired once this one was proven working end to end; see [ADR-0145](../adr/0145-retire-file-rendered-ssh-target-sync.md) for why). Needs `openssh` built `--with-pam` (`recipes/package/openssh/10.4p1-8/build.sh` onward -- `-8` specifically for a real, standard-OpenSSH fix: with `UsePAM yes`, PAM's own conversation (and therefore `pam_ldap.so`'s nslcd-socket conversation) runs inside sshd's own privsep pre-auth child, which `chroot()`s to `--with-privsep-path` before that conversation happens; `-8` relocates that path from `/var/empty` to `/run/sshd-empty` so a same-filesystem hard link of `/run/nslcd/socket` into the chroot is reachable at all, closing a real "invalid user"/PAM-auth-failure gap found live), plus `linux-pam` and `nss-pam-ldapd` (Parts 116-118) already installed on the target image. Not a container-creation flag — this is real per-container runtime configuration, staged the same way `glauth.cfg`/`dnsmasq.conf`/`chrony.conf` already are, via the container's own `files` entries at creation time:
+`sshd` queries LDAP live, at connection time, instead of reading files Cix pre-renders — this platform's one real SSH-login mechanism (an earlier, file-rendered alternative from task #731 existed briefly during ADR-0144's own development and was retired once this one was proven working end to end; see [ADR-0145](../adr/0145-retire-file-rendered-ssh-target-sync.md) for why). Needs `openssh` built `--with-pam` (`openssh@10.4p1-8` onward -- `-8` specifically for a real, standard-OpenSSH fix: with `UsePAM yes`, PAM's own conversation (and therefore `pam_ldap.so`'s nslcd-socket conversation) runs inside sshd's own privsep pre-auth child, which `chroot()`s to `--with-privsep-path` before that conversation happens; `-8` relocates that path from `/var/empty` to `/run/sshd-empty` so a same-filesystem hard link of `/run/nslcd/socket` into the chroot is reachable at all, closing a real "invalid user"/PAM-auth-failure gap found live), plus `linux-pam` and `nss-pam-ldapd` (Parts 116-118) already installed on the target image. Not a container-creation flag — this is real per-container runtime configuration, staged the same way `glauth.cfg`/`dnsmasq.conf`/`chrony.conf` already are, via the container's own `files` entries at creation time:
 
 - `/etc/nslcd.conf` (mode `0600`, root-only): `uri`/`base`/`binddn`/`bindpw` pointing at the real LDAP servers (`ldap-1`/`ldap-2`) and a real bind/service account carrying `can_search: true` (see below) — `nslcd` itself runs as root in this project's minimal images (no `uid`/`gid` directive; matches `chrony.recipe`'s own "no privilege drop" precedent), so no separate account is needed just for it to read its own config. Also needs `pam_authc_ppolicy no` — `glauth`'s `config` backend doesn't handle the LDAP password-policy control `nslcd` requests by default, and answers with a spurious `Invalid credentials` rather than ignoring the unsupported control, confirmed live.
-- `/etc/nsswitch.conf`: `passwd`/`group`/`shadow: files ldap` — routes `getpwnam()`/`getgrnam()` through `nslcd`'s NSS module for any account not already in the container's own local `/etc/passwd` — plus `hosts: files dns`, the same line every image's baseline carries ([ADR-0296](../adr/0296-the-platform-keeps-nsswitch-correct.md)). This file **replaces** the image baseline, so until [#478](https://git.home.arpa/itdlabs/cix/issues/478) it silently changed host resolution as a side effect of an LDAP feature: it carried no `hosts` line at all, and glibc's own compiled-in default supplied one. Both variants are now generated from a single definition in `daemon/src/nsswitch.c`.
+- `/etc/nsswitch.conf`: `passwd`/`group`/`shadow: files ldap` — routes `getpwnam()`/`getgrnam()` through `nslcd`'s NSS module for any account not already in the container's own local `/etc/passwd` — plus `hosts: files dns`, the same line as the default variant every other container is staged with at creation ([ADR-0296](../adr/0296-the-platform-keeps-nsswitch-correct.md), [ADR-0333](../adr/0333-an-images-content-comes-only-from-packages.md)). This file **replaces** that default, so until [#478](https://git.home.arpa/itdlabs/cix/issues/478) it silently changed host resolution as a side effect of an LDAP feature: it carried no `hosts` line at all, and glibc's own compiled-in default supplied one. Both variants are now generated from a single definition in `daemon/src/nsswitch.c`.
 - `/etc/pam.d/sshd`: `auth`/`account` each try `pam_unix.so` first (`sufficient` — succeeds for local-only accounts like `root`, silently falls through for LDAP accounts since glauth exposes no real shadow-compatible hash via NSS), then `pam_ldap.so` (`sufficient` — a real bind-as-user LDAP verification, the actual password check for every LDAP account), then `pam_deny.so` (`required` — reject anything neither step accepted).
 - `AuthorizedKeysCommand`/`AuthorizedKeysCommandUser` in `sshd_config`, plus `UsePAM yes` and `PasswordAuthentication yes` (both default to `no` even in a `--with-pam` build, see `openssh/10.4p1-7`'s own header comment; `10.4p1-8`'s own header comment covers the separate privsep-chroot fix) — the command script itself does a real `ldapsearch` for the connecting user's `sshPublicKey` attribute (rendered by `render_users_groups_toml()`, see the `ssh_public_key` field above) and prints it as an `authorized_keys` line. Must be invoked via an explicit interpreter (`AuthorizedKeysCommand /usr/bin/bash /usr/sbin/ldap-authorized-keys %u`, not a bare shebang path) — confirmed live that `sshd`'s own direct `execve()` of a shebang script fails with `ENOEXEC` in this project's own TCC-built binary/kernel combination, root cause not further isolated once the working fix was found; a real, environment-specific gap worth remembering for any future `subprocess()`-style exec of a script from this exact `openssh` build.
 - `can_search` (exposed as a real public API/CLI field by this same task, see the `LdapUser` schema above): grant it to one real, durable, named service account (e.g. `svc-nslcd`) and use that account's DN/password as both `nslcd.conf`'s own `binddn`/`bindpw` and the `AuthorizedKeysCommand` script's own bind credentials — glauth requires a real, capability-granted bind for any search, confirmed live (an anonymous bind gets `50 Insufficient access` even with `IgnoreCapabilities = true` set, which only bypasses *capability* checks for an already-authenticated bind, not the bind requirement itself).
@@ -2638,6 +2623,7 @@ Mirrors `dns_register`/`pki_issue`'s own container-creation-hook shape closely, 
 POST /v1/containers
 {
   "name": "svc1", "image": "myapp",
+  "services": [{"name": "main", "cmd": ["/bin/some-binary"]}],
   "ldap_provision": true,
   "ldap_group": "svcaccts"
 }
@@ -2662,7 +2648,7 @@ POST /v1/pki/ca
 {"common_name": "Cix Root CA", "days": 3650}
 ```
 
-Both fields are optional (shown defaults). **The CA private key is never returned over the API, in any endpoint, ever** — it's the root of trust and must never leave the host. A second `POST /v1/pki/ca` is a `409` — `pki_ca_create()` is a one-shot by design; see [Regenerating the whole chain](#regenerating-the-whole-chain-post-pkireset) below for the real "start over" operation.
+Both fields are optional (shown defaults). **The CA private key is never returned over the API in the clear** — it's the root of trust. The one way it leaves the host is `POST /v1/pki/export`, the whole PKI store encrypted under an operator passphrase, to carry across a reinstall ([ADR-0281](../adr/0281-the-ca-leaves-the-box-encrypted-or-it-is-lost.md)); `POST /v1/pki/import` takes it back. A second `POST /v1/pki/ca` is a `409` — `pki_ca_create()` is a one-shot by design; see [Regenerating the whole chain](#regenerating-the-whole-chain-post-pkireset) below for the real "start over" operation.
 
 ### A second, intermediate CA tier
 
@@ -2671,7 +2657,7 @@ POST /v1/pki/intermediate
 {"common_name": "Cix Intermediate CA", "days": 1825}
 ```
 
-Requires the root to already be bootstrapped (`400` otherwise); a second call is `409`, the same one-shot-only precedent as `/pki/ca`. Once this succeeds, every future `POST /pki/certs` leaf is signed by the intermediate instead of the root automatically — transparent to that endpoint, no separate opt-in — and `GET /pki/certs/{name}` plus any `pki_issue`-delivered `tls.crt` then carries the real, complete chain (leaf + intermediate). The intermediate's own private key is never returned over the API either, same as the root's.
+Requires the root to already be bootstrapped (`400` otherwise); a second call is `409`, the same one-shot-only precedent as `/pki/ca`. Once this succeeds, every future `POST /pki/certs` leaf is signed by the intermediate instead of the root automatically — transparent to that endpoint, no separate opt-in — and `GET /pki/certs/{name}` plus any `pki_issue`-delivered `tls.crt` then carries the real, complete chain (leaf + intermediate). The intermediate's own private key is never returned over the API in the clear either, same as the root's.
 
 Issue a leaf certificate:
 
@@ -2684,7 +2670,7 @@ POST /v1/pki/certs
 - `sans` is optional and defaults to `[name]` — a cert always carries at least its own name as a Subject Alternative Name. The default-qualification rule above is never applied to an explicitly-supplied `sans` entry, only to `name` and the default SAN derived from it.
 - `days` is optional, default 365.
 
-The `201` response (`PkiCertIssued`) is the **only** place the leaf's private key is ever returned:
+The `201` response (`PkiCertIssued`) is the **only** place the leaf's private key is returned in the clear at issuance (a `POST /pki/reset` reissue returns the new one the same way, below):
 
 ```json
 {
@@ -2755,6 +2741,7 @@ POST /v1/containers
 {
   "name": "jump",
   "image": "jump",
+  "services": [{"name": "sshd", "cmd": ["/usr/sbin/sshd", "-D", "-e"]}],
   "pki_cert": "jump-ssh",
   "pki_cert_dir": "/etc/cix-tls",
   "follow_rolling": true
@@ -2921,7 +2908,7 @@ GET /v1/storage
 
 Real host block devices, live-enumerated from `/sys/class/block` on every call, the same "real hardware, never persisted" convention `GET /devices` already established. Since task #844, every partition on a disk is also listed as its own ordinary entry (`is_partition`/`parent_disk`) alongside the whole disk itself — a partition is independently assignable everywhere a whole disk name is accepted (`POST /storage-roles`, `POST /storage/{name}/format`, and see "Partition-level disk management" below). `model`/`removable` are always empty/`false` for a partition entry — neither sysfs attribute exists per-partition, only on the parent whole disk. `is_os_disk` flags the one disk holding this platform's own fixed ESP/root-a/root-b/config/containers layout, and (propagated) every one of its own partitions — never a candidate for a role of its own or for formatting/repartitioning; every other disk or partition is available for a role assignment and, once role-assigned, formatting.
 
-`mounted`/`mount_path` are real, current ground truth read fresh from `/proc/mounts` on every call — true if any partition on the disk (or the whole-disk device itself) is currently mounted, regardless of whether this daemon is the one that mounted it. Deliberately independent of the disk format job's own `state` (`GET /diskformat/{name}`, `"ready"` once a format+mount this daemon itself ran succeeds), which is purely in-memory, per-daemon-process state — forgotten across a restart even though the real mount persists, and blind to a disk mounted by hand or from before this mechanism existed. `GET /storage` is the one place to check whether a disk is *actually* mounted right now.
+`mounted`/`mount_path` are real, current ground truth read fresh from `/proc/mounts` on every call — true if any partition on the disk (or the whole-disk device itself) is currently mounted, regardless of whether this daemon is the one that mounted it. Deliberately independent of the disk format job's own `state` (`GET /storage/{name}/format`, `"ready"` once a format+mount this daemon itself ran succeeds), which is purely in-memory, per-daemon-process state — forgotten across a restart even though the real mount persists, and blind to a disk mounted by hand or from before this mechanism existed. `GET /storage` is the one place to check whether a disk is *actually* mounted right now.
 
 `reads_completed`/`writes_completed`/`sectors_read`/`sectors_written`/`io_time_ms` (ADR-0142) are real, live counters straight from `/sys/block/<name>/stat` — monotonically increasing since boot, the same "poll and difference two samples yourself for a rate" convention this API's other cumulative counters already use, never a rate this daemon computes on your behalf. `io_time_ms` (the kernel's own "time spent doing I/Os") is the closest real, cheaply-available proxy for disk I/O delay/business this daemon exposes. `used_bytes`/`free_bytes` are real `statvfs(2)` numbers for `mount_path` — only meaningful when `mounted` is true; an unmounted disk has no filesystem context to ask, and both are `0` in that case (check `mounted`, don't infer it from these being zero).
 
@@ -2956,7 +2943,7 @@ GET /v1/storage/sdb/format
 {"disk_name": "sdb", "state": "ready", "fs_type": "btrfs", "mount_path": "/mnt/cix/sdb"}
 ```
 
-`state` is `"none"` (no job has ever run for this disk — including when a job ran/is running for a *different* disk, so a status check never shows another disk's unrelated job), `"running"`, `"ready"`, or `"failed"` (`error` distinguishes `mkfs.<fs_type>` failing outright from it succeeding but the subsequent `mount(2)` failing). Only one format job may run daemon-wide at a time (`409` otherwise) — the same v1 single-job constraint every other async job here already has. Mounted at a fixed path under this platform's own data directory by default; a `container-storage`-role disk can also be selected explicitly per container via `POST /containers`' own `disk` field (ADR-0102, Phase D, already built).
+`state` is `"none"` (no job has ever run for this disk — including when a job ran/is running for a *different* disk, so a status check never shows another disk's unrelated job), `"running"`, `"ready"`, or `"failed"` (`error` distinguishes `mkfs.<fs_type>` failing outright from it succeeding but the subsequent `mount(2)` failing). Only one format job may run daemon-wide at a time (`409` otherwise). Mounted at a fixed path under this platform's own data directory by default; a `container-storage`-role disk can also be selected explicitly per container via `POST /containers`' own `disk` field (ADR-0102, Phase D, already built).
 
 ### Unmount (issue #34)
 
@@ -2997,7 +2984,7 @@ DELETE /v1/storage/sdb/partitions/sdb1
 
 Removes one partition — every other partition on the disk is untouched. `404` if `partition_name` doesn't currently exist or doesn't actually belong to `disk_name`; `400` if it isn't actually a partition at all (a whole disk name given where a partition was expected); `409` if it's part of the OS disk's own layout, still has a role assigned (`DELETE /storage-roles/{name}` first, same no-silent-data-loss convention role removal already has elsewhere), or is currently mounted.
 
-A disk is used in exactly one of two mutually-exclusive modes: role assigned directly to the whole disk (the original model), or partitioned with roles assigned to the individual partitions instead — `storage role.c`/`diskformat.c` needed no code changes of their own for this, since both already operate purely on whatever `GET /storage` reports, partition or whole disk alike.
+A disk is used in exactly one of two mutually-exclusive modes: role assigned directly to the whole disk (the original model), or partitioned with roles assigned to the individual partitions instead — `diskrole.c`/`diskformat.c` needed no code changes of their own for this, since both already operate purely on whatever `GET /storage` reports, partition or whole disk alike.
 
 `POST /storage/{name}/partitions/{partition_name}/resize` grows a partition. **Grow only, deliberately** — shrinking is not the mirror image of growing: the filesystem has to shrink *first*, and cutting the table entry before that destroys the tail of a live filesystem. Refusing is the difference between an operation that cannot lose data and one that can.
 
@@ -3083,9 +3070,9 @@ GET  /v1/containers/{name}/migrate-storage      {"state": "none"}
 POST /v1/containers/{name}/migrate-storage      {"disk": "sdc"}
 ```
 
-Same `{"disk": "name"|null}` contract as the three daemon-wide kinds above, narrowed to one container's own overlay storage (the `disk` field `POST /v1/containers` already accepts at creation time, `ADR-0102`, now movable after the fact too). Requires a persisted definition to restart from — `restart` other than `"no"` — since the cutover below always ends with a real stop-then-replay; a `"no"`-policy container is rejected with `400`, not silently accepted and left half-migrated.
+Same `{"disk": "name"|null}` contract as the two daemon-wide kinds above, narrowed to one container's own overlay storage (the `disk` field `POST /v1/containers` already accepts at creation time, `ADR-0102`, now movable after the fact too). Requires a persisted definition to restart from, since the cutover below always ends with a real stop-then-replay; since [ADR-0181](../adr/0181-persist-all-containers-restart-decoupled-from-existence.md) every container has one, `restart: "no"` included, so only a container with no definition is rejected with `400`, not silently accepted and left half-migrated.
 
-The one real difference from state/log/rebuildable-storage's own contract: those three are daemon-wide singletons this single-threaded reactor alone reads/writes, so repointing a cached path while the bulk copy runs is safe. A container's own overlay is actively read/written by that container's own live process the entire time, so the bulk async copy here is knowingly a first, possibly-stale pass — once it finishes, this daemon briefly **stops the container**, does one more synchronous copy pass (catching anything written since), patches the persisted definition's own `disk` field, and **automatically restarts** the container from the new location, the same `create_container_from_body()` replay `POST /containers/{name}/start` and a crash-restart both already use. A failure at any point after the stop — the final copy pass, or the restart itself — brings the container back up from its **original** location instead of leaving it down: the whole migration is all-or-nothing from the caller's point of view, not a partial state to reconcile by hand.
+The one real difference from log/rebuildable-storage's own contract: those two are daemon-wide singletons this single-threaded reactor alone reads/writes, so repointing a cached path while the bulk copy runs is safe. A container's own overlay is actively read/written by that container's own live process the entire time, so the bulk async copy here is knowingly a first, possibly-stale pass — once it finishes, this daemon briefly **stops the container**, does one more synchronous copy pass (catching anything written since), patches the persisted definition's own `disk` field, and **automatically restarts** the container from the new location, the same `create_container_from_body()` replay `POST /containers/{name}/start` and a crash-restart both already use. A failure at any point after the stop — the final copy pass, or the restart itself — brings the container back up from its **original** location instead of leaving it down: the whole migration is all-or-nothing from the caller's point of view, not a partial state to reconcile by hand.
 
 `404` for an unknown container; `400` for a missing/invalid `disk` field, an unknown/OS disk, a disk with the wrong role, a role-correct disk that isn't currently mounted, or a container with no persisted definition; `409` if a migration for this container is already running or the requested placement is already active.
 
@@ -3111,7 +3098,7 @@ POST /v1/containers
 - `sysctls` is optional: an object of up to 32 `"key": "value"` entries; `key` must start with `net.` (the one sysctl subtree the kernel actually namespaces end to end — `400` for anything else, a real security boundary, not incidental). Applied inside the container's own netns right after `clone3()`, the same mechanism `ip_forward` already uses.
 - `env` is optional: an object of up to 32 `"KEY": "VALUE"` entries, merged into the container's own process environment at `execve()` time — a container gets *only* these, never a copy of `cixd`'s own environment. `KEY` must be a POSIX-portable environment variable name (letters, digits, underscore, not starting with a digit; `400` otherwise). This is a real runtime value, not a config-templating mechanism — compare to `files[]`'s own `{{SECRET:KEY}}` substitution (a one-time, build-time text fill-in with no runtime presence at all, see container recipes' `{{SECRET:KEY}}` substitution further below); `env` is the same shape `docker run -e KEY=VALUE` gives a container.
 - All three survive exactly like everything else in `restart: "always"`'s own replay mechanism — no separate persistence work needed. See ADR-0030.
-- `cmd` itself is echoed back on every `GET /containers`/`GET /containers/{name}` response (`ADR-0100`) — previously there was no way to ask a running or stopped container "what is your entrypoint," since the create request's own `argv` only ever pointed into that request's transient parsed body. `env` is echoed back the same way.
+- `services`, each with its `cmd`, is echoed back on every `GET /containers`/`GET /containers/{name}` response (`ADR-0100`) — previously there was no way to ask a running or stopped container "what is your entrypoint," since the create request's own `argv` only ever pointed into that request's transient parsed body. `env` is echoed back the same way.
 
 **Changing sysctls on an existing container** is `PUT /v1/containers/{name}/sysctls` (#447), which saves deleting the container and POSTing its whole definition again. The body maps keys to values: a string sets a key, `null` removes it, and keys not mentioned stay as stored. The same `net.*` rule as create applies, checked by the same function.
 
@@ -3152,7 +3139,7 @@ That `/home` now survives the container being deleted and recreated — which fo
 - `disk` on `POST /volumes` places the volume by the same disk-role naming a container's own `disk` field uses ([ADR-0141](../adr/0141-multi-disk-storage-placement.md)) — deliberately the same mechanism, not a second storage story. Omitted means default OS-disk placement.
 - `DELETE /volumes/{volume_name}` is the only thing that ever removes a volume's data, and is refused `409` while **any container definition** references it — not merely while one is running. A stopped container will come back and expect its data; the error names the container holding it.
 
-Not covered, deliberately (each its own decision rather than a silent default): per-volume quotas — container overlays have `disk_quota_bytes`, a volume is currently an unbounded way to fill a disk; concurrent sharing between containers — nothing prevents it, but no locking or coordination is offered; and inclusion in the backup bundle — volumes are workload data, and [ADR-0033](../adr/0033-platform-state-backup-restore.md)'s config-only boundary stands.
+Not covered, deliberately (each its own decision rather than a silent default): concurrent sharing between containers — nothing prevents it, but no locking or coordination is offered; and inclusion in the backup bundle — volumes are workload data, and [ADR-0033](../adr/0033-platform-state-backup-restore.md)'s config-only boundary stands.
 
 ### Attaching a volume to a container that already exists
 
@@ -3178,7 +3165,7 @@ A volume must already exist (`404` otherwise, never an implicit create), a conta
 The platform bundle above carries configuration only, and that boundary stands — but it left volumes with no recovery story at all. A volume exists *precisely* because its contents should outlive the container that wrote them, and "whatever you arranged yourself outside Cix" was the only answer available, with no way to arrange anything inside it either, since a volume is a host directory no container can reach.
 
 ```
-PUT /v1/system/volume-backup-config   {"disk":"sdb","enabled":true,"interval_hours":24}
+PUT /v1/system/volume-backup-config   {"disk":"sdb","enabled":true}
 PUT /v1/volumes/jump-home/backups     {"enabled":true,"retain":7}
 POST /v1/volumes/jump-home/backup
 POST /v1/volumes/jump-home/restore    {"snapshot":"20260822T030000Z","confirm_volume_name":"jump-home"}
@@ -3186,7 +3173,7 @@ POST /v1/volumes/jump-home/restore    {"snapshot":"20260822T030000Z","confirm_vo
 
 - **Opt-in per volume.** Nothing is copied unless asked for — a volume holding a scratch build tree should not be snapshotted just for existing, and copying workload data is something to request rather than assume.
 - **The policy belongs to the volume, not the container.** A volume is the thing with data; a container merely mounts one, and two containers can mount the same volume. Hanging the policy on the container would mean two policies over one set of bytes, and would still exclude the container's own overlay, which is ephemeral by design. A container's detail page *shows* the backups of the volumes it mounts, derived — the same way it already shows which volumes those are.
-- **One shared interval, per-volume retention.** How much history is worth keeping depends on what the volume holds; when the sweep runs does not, and N independent timers is N ways for a schedule to be quietly wrong. The sweep rides the same periodic tick the configuration snapshots already use.
+- **One shared interval, per-volume retention.** How much history is worth keeping depends on what the volume holds; when the sweep runs does not, and N independent timers is N ways for a schedule to be quietly wrong. The sweep is one schedule with action `volume.backup` (`/v1/schedules`, [ADR-0257](../adr/0257-one-scheduler-structured-schedules.md)); `interval_hours` on this config is refused with a `400` saying so.
 - **What happens when a container is using it is a per-volume choice**, and it decides whether the volume is ever actually backed up. A service container is normally `restart: always` and never stops, so the default means "never" — quietly, forever, for exactly the volumes that most need it.
   - `refuse` (default) — skip it. Safe, and useless for an always-on workload.
   - `pause` — freeze every running container that mounts this volume for the duration of the copy, then thaw. The freeze is the kernel cgroup freezer ([ADR-0045](../adr/0045-container-start-pause-lifecycle.md)), **not** SIGSTOP, so a process can neither ignore nor handle it: nothing writes while the copy runs and the snapshot is genuinely consistent rather than crash-consistent. **All** mounting containers are paused, not just one — any of them could write, and a snapshot that is only mostly quiesced is a crash-consistent one wearing a consistent one's label. The cost is real downtime for however long the copy takes, and every failure path thaws again, because a missed backup must not become an outage.
@@ -3290,9 +3277,10 @@ Until now, changing a `cmd`, an env var or a staged file meant delete-and-recrea
 
 **It applies at the container's next start, and the response says so** (`"applies": "next-start"`, plus `"restart_required": true` when it is running right now). That is not a limitation being papered over: a running process's argv cannot be changed without re-exec'ing it, so "change `cmd` on a running container" is `restart` by another name. What genuinely *can* change live already does, through its own endpoints — [volumes](#persistent-volumes-issue-88-adr-0183) and [the management address](#setting-the-management-address).
 
-Two groups of fields are refused rather than silently ignored:
+Three groups of fields are refused rather than silently ignored:
 
 - **`name`** — a container's name is its identity; that would be a different container.
+- **`sysctls`** — the `400` names `PUT /v1/containers/{name}/sysctls` (above), which checks each entry and applies it live; through here it would be stored unchecked.
 - **`restart`, `restart_delay_seconds`, `depends_on`, `follow_rolling`, `follow_rolling_jitter_seconds`** — these feed the definition index, and its one parser lives in the create path. A second parser here would be a parallel implementation of the same validation, which this project does not do. The `400` names the offending field and says to recreate the container; extracting that parser is the follow-up that lifts the restriction.
 
 `cixctl container edit NAME --json='{...}'` is the CLI surface.
@@ -3328,7 +3316,7 @@ GET /v1/system/boot-console
 PUT /v1/system/boot-console   {"consoles": ["tty0", "ttyS0,115200n8"], "extra": "nomodeset"}
 ```
 
-An installed Cix host boots through systemd-boot, and every loader entry carried a hardcoded `console=tty0 console=ttyS0`. That is a reasonable default and a poor thing to be stuck with — real hardware sometimes needs a serial console at a particular baud, a framebuffer argument to produce any output at all, or exactly the opposite (`nomodeset`) when the framebuffer is what breaks it. None of it was reachable without reinstalling.
+An installed Cix host boots through `cix-boot.efi`, which reads systemd-boot's loader-entry format ([ADR-0215](../adr/0215-our-own-efi-boot-manager.md)), and every loader entry carried a hardcoded `console=tty0 console=ttyS0`. That is a reasonable default and a poor thing to be stuck with — real hardware sometimes needs a serial console at a particular baud, a framebuffer argument to produce any output at all, or exactly the opposite (`nomodeset`) when the framebuffer is what breaks it. None of it was reachable without reinstalling.
 
 **A change is applied to the loader entries already on the ESP**, not only to entries written by future updates: an operator who cannot see the console is not in a position to wait for the next A/B update. It takes effect at the next boot, and the response says how many entries were rewritten.
 
@@ -3348,7 +3336,7 @@ PUT    /v1/system/esp                  {"default": "cix-*"}          # partial; 
 DELETE /v1/system/esp/entries/cix-a+3.conf
 ```
 
-The most important field is the one you cannot set: **`selected_entry`** names the entry systemd-boot would actually boot, and each entry carries `matches_default`. The daemon computes that rather than leaving an operator to derive it from a glob and a directory listing — which is the step that went wrong. `cixctl esp show` leads with `will boot: <entry>`.
+The most important field is the one you cannot set: **`selected_entry`** names the entry the boot manager would actually boot, and each entry carries `matches_default`. The daemon computes that rather than leaving an operator to derive it from a glob and a directory listing — which is the step that went wrong. `cixctl esp show` leads with `will boot: <entry>`.
 
 Two refusals, both hard errors rather than warnings, because anyone using this endpoint is by definition not at the console: a `default` matching **zero** existing entries is refused with 409 (it is silent, and strands the host on next boot — the error names what does exist), and the **last remaining** entry for the running slot cannot be deleted, though duplicates of it can, since clearing accumulated duplicates is what removal is for. A `loader.conf` rewrite preserves directives this daemon has no opinion about (`console-mode`, `editor`, …) rather than regenerating the file and silently dropping them.
 
@@ -3429,9 +3417,9 @@ PUT /v1/system/ksm
 
 KSM scans anonymous memory and collapses identical pages onto one physical copy. It earns its place here for a specific reason: containers on this platform are overwhelmingly built from the **same image**, so identical pages across them are the ordinary case rather than a lucky one.
 
-**The container half exists now (#260).** A container opts in with `"ksm": true` on `POST /v1/containers`, or `cixctl run --ksm`. The daemon applies it with `prctl(PR_SET_MEMORY_MERGE)` in the container's own process just before exec, which covers memory the payload has not allocated yet and is inherited by anything it forks — the payload is an arbitrary program with no call sites this daemon could add a `madvise()` to. Off unless asked for, because merging is not free: a container whose memory is genuinely unique pays the scanner's comparison cost for no return. A failure to apply is reported in the container's log and does **not** stop the container, since merging is an optimisation and refusing to start would trade a working container for it.
+**The container half exists now (#260).** A container opts in with `"ksm": true` on `POST /v1/containers`, or `cixctl container run --ksm`. The daemon applies it with `prctl(PR_SET_MEMORY_MERGE)` in the container's own process just before exec, which covers memory the payload has not allocated yet and is inherited by anything it forks — the payload is an arbitrary program with no call sites this daemon could add a `madvise()` to. Off unless asked for, because merging is not free: a container whose memory is genuinely unique pays the scanner's comparison cost for no return. A failure to apply is reported in the container's log and does **not** stop the container, since merging is an optimisation and refusing to start would trade a working container for it.
 
-The two halves are independent and both are needed: opting a container in while the scanner is off does nothing, and running the scanner with nothing opted in does nothing. KSM merges nothing that has not volunteered, and no container currently volunteers — the per-container opt-in (`prctl(PR_SET_MEMORY_MERGE)`) is not built yet. Enabling the scanner right now costs CPU and saves nothing. That is exactly why it defaults to **off**, the opposite of zswap, which costs nothing until the box is already swapping.
+The two halves are independent and both are needed: opting a container in while the scanner is off does nothing, and running the scanner with nothing opted in does nothing. KSM merges nothing that has not volunteered, so the scanner costs CPU and saves nothing until a container opts in. That is exactly why it defaults to **off**, the opposite of zswap, which costs nothing until the box is already swapping.
 
 Same intent-versus-reality split as zswap: what was asked for and what the kernel reports are separate fields, because a page that only echoed its own input could never show a kernel that ignored it. `kernel_run` has **three** values rather than two — `0` stopped, `1` running, `2` unmerging — so a host someone left mid-unmerge by hand is visible instead of being flattened into a boolean.
 
@@ -3567,7 +3555,7 @@ For an `ldap_client` container the right ids are already known — `GET /v1/ldap
 
 ## Capability restriction (issue #29)
 
-Every container's process runs as real root with no user namespace — a genuine, tracked gap (issue #29: full user-namespace support is the eventual complete fix, still open, large enough to need its own design pass). Until that lands, `cixd` closes the single most severe consequence of it directly: right before a container's `cmd` is `execve()`'d, its capability bounding set is permanently trimmed to a small default-safe list via `prctl(PR_CAPBSET_DROP, ...)` (see `src/container_caps.c` for the exact list and the reasoning behind each entry). `CAP_SYS_MODULE` is the headline case — kernel modules aren't namespaced, so an untrimmed container could otherwise call `init_module()` directly and compromise the host kernel with no exploit required at all. `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE`, `CAP_SYS_RAWIO`, `CAP_SYS_BOOT`, `CAP_BPF`, and a dozen others narrower still are dropped the same way. `CAP_NET_ADMIN`/`CAP_NET_RAW`/`CAP_SETUID`/`CAP_SETGID` stay by default — confirmed, real, in-use needs on this project's own containers today (e.g. `jumpbox1`'s `sshd`).
+A container created with `"userns": false` runs its process as real root; a user namespace is the default (`daemon-config`'s `userns_default`, on for a fresh install, ADR-0207). For every container `cixd` also closes the single most severe consequence of real root directly: right before a container's `cmd` is `execve()`'d, its capability bounding set is permanently trimmed to a small default-safe list via `prctl(PR_CAPBSET_DROP, ...)` (see `src/container_caps.c` for the exact list and the reasoning behind each entry). `CAP_SYS_MODULE` is the headline case — kernel modules aren't namespaced, so an untrimmed container could otherwise call `init_module()` directly and compromise the host kernel with no exploit required at all. `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE`, `CAP_SYS_RAWIO`, `CAP_SYS_BOOT`, `CAP_BPF`, and a dozen others narrower still are dropped the same way. `CAP_NET_ADMIN`/`CAP_NET_RAW`/`CAP_SETUID`/`CAP_SETGID` stay by default — confirmed, real, in-use needs on this project's own containers today (e.g. `jumpbox1`'s `sshd`).
 
 ```
 POST /v1/containers
@@ -3618,7 +3606,7 @@ Before this field existed, a container had no DNS resolution capability from Cix
 
 A package manager built from scratch: recipes are CBS recipes in CPDL (`build.cbs`, [ADR-0305](../adr/0305-a-recipes-format-is-its-filename.md)), builds happen inside this project's own container runtime, and the daemon **never executes a recipe on the host** — it reads what a recipe declares (name, version and release, sources and their `sha256`, runtime and build requirements, `metadata { }`) from `cbs explain --json`, and the recipe's phases only ever run inside the isolated, network-less build container. Shell recipes do not exist ([ADR-0329](../adr/0329-shell-recipes-and-tar-gz-artifacts-do-not-exist.md)). See [`docs/guides/writing-recipes.md`](../guides/writing-recipes.md) for the full recipe-authoring contract.
 
-**Every install targets one image**, `/var/lib/cix/rebuildable/images/{image}/rootfs` (ADR-0141) — `"base"` by default (any container created with `"image": "base"` gets everything installed there, no separate host/container package paths to keep in sync), or an explicit other one (see [Per-image installs](#per-image-installs) below) for software that shouldn't be part of every container's baseline.
+**Every install targets one image**, producing a new version of it at `/var/lib/cix/rebuildable/images/{image}/{version}/rootfs` (ADR-0141, ADR-0107) — `"base"` by default (any container created with `"image": "base"` gets everything installed there, no separate host/container package paths to keep in sync), or an explicit other one (see [Per-image installs](#per-image-installs) below) for software that shouldn't be part of every container's baseline.
 
 **Installs are asynchronous.** The daemon is single-threaded and non-blocking; a network fetch or a real compile can take anywhere from seconds to minutes, so `POST /v1/pkg/install` returns immediately (`202`) and the actual work happens in the background — poll `GET /v1/pkg/{name}` for progress. **Fetching happens on the host** (a `curl` subprocess — this project's networking plane has no outbound NAT, so a build container has no network access at all, a stronger isolation boundary for untrusted build scripts, not a limitation worked around).
 
@@ -3649,21 +3637,21 @@ The cancelled entry records `failure_kind` **`cancelled`**, which is not `build`
 
 **Up to `max_concurrent_jobs` install/hostbuild jobs may genuinely run at once (ADR-0157), default 10** — each its own independent chain, its own build container, its own captured output; a `POST /pkg/install`/`POST /pkg/hostbuild` while every chain slot is already busy gets `409`, same as before this existed (v1 was hardcoded to exactly one). `GET`/`PUT /v1/system/pkg-build-config` (`max_concurrent_jobs`, range 1-10 — 10 is also the daemon's own hard compile-time ceiling, not just this config's default) show/set the real ceiling; lowering it never disrupts jobs already in flight, only future ones. `GET /v1/pkg/build/log`'s own `?name=&image=` query params (below) exist specifically because more than one build can now be live-tailed at once.
 
-**Every build's own sandbox is now cgroup-limited (ADR-0165), not just its job-count slot** — found missing the hard way: a burst of concurrent installs with no per-build resource ceiling hung a real production `cixd` entirely (TCP still accepted connections, no HTTP request ever completed again). `memory_max` (bytes, default 2GiB) and `cpu_max` (raw cgroup v2 `cpu.max` syntax, default `"100000 100000"` — one full CPU's worth) are the same `PUT /v1/system/pkg-build-config` resource, applied to every `__pkgbuild-N` container's own cgroup via the identical mechanism a regular container's own `memory_max`/`cpu_max` fields already use — not a second implementation. 0/null means unlimited for either field, a deliberate opt-out for a box that genuinely has spare capacity to give, not a validation error.
+**Every build's own sandbox is now cgroup-limited (ADR-0165), not just its job-count slot** — found missing the hard way: a burst of concurrent installs with no per-build resource ceiling hung a real production `cixd` entirely (TCP still accepted connections, no HTTP request ever completed again). `memory_max` (bytes, default 2GiB) and `cpu_max` (raw cgroup v2 `cpu.max` syntax, default `"100000 100000"` — one full CPU's worth) are the same `PUT /v1/system/pkg-build-config` resource, applied to the one parent cgroup every `__pkgbuild-N` container lives under (`cix-workload/cix-pkgbuild`), so they are the aggregate budget of all builds together rather than a per-build limit (issue #85), via the identical mechanism a regular container's own `memory_max`/`cpu_max` fields already use — not a second implementation. 0/null means unlimited for either field, a deliberate opt-out for a box that genuinely has spare capacity to give, not a validation error.
 
-One-time setup, before installing anything:
+Seeding the shared `cix-builder` sandbox (no install needs it since #168; a build's environment is composed from its declared tools, below):
 
 ```
 POST /v1/pkg/bootstrap
 ```
 
-Stages a real build toolchain (`gcc`/`make`/`ld`/`as`/`cc1`/`sh`/`tar` and their real headers/libraries) into the sandboxed build image. No body: copies live from this daemon's own host `/usr/{include,lib,lib64,bin,libexec}` with the real `cp -a` — works for dev/test convenience when `cixd` happens to be running somewhere with a real toolchain already, but produces an empty, non-functional toolchain on a real minimal install (nothing under its own `/usr` beyond `cixd`/`cixctl` and their bare runtime libs). `{"toolchain_path": "/local/path/to/toolchain.squashfs"}` imports a real, portable artifact (built once, elsewhere, with `image/src/mktoolchainimage.c`) via a local path already `scp`'d onto this box. Both of those are synchronous (`204`), unchanged.
+Stages a real build toolchain (`gcc`/`make`/`ld`/`as`/`cc1`/`sh`/`tar` and their real headers/libraries) into the sandboxed build image. No body is refused with `400` (issue #168): it used to copy this daemon's own host `/usr/{include,lib,lib64,bin,libexec}` with `cp -a`, which on any real host is another operating system's files. `{"toolchain_path": "/local/path/to/toolchain.squashfs"}` imports a real, portable artifact (built once, elsewhere, with `image/src/mktoolchainimage.c`) via a local path already `scp`'d onto this box, synchronously (`204`).
 
-**`{"toolchain_url": "...", "toolchain_sha256": "..."}` is a third mode (ADR-0065): the daemon fetches the artifact itself, host-side** — the same real `curl` primitive every recipe's own source already uses, not a second fetch mechanism. Closes a real gap the other two modes both rest on: a genuinely fresh, minimal Cix install has no SSH server and no general shell at all (ADR-0034), so "the operator transfers it onto the box" was never actually possible for a from-scratch install with nothing else already on the network to reach it via — confirmed the hard way (`nc -z <box> 22` closed) rather than assumed. Async (`202`, since a real network fetch of a real, large artifact can't block this daemon's single-threaded event loop) — poll `GET /v1/pkg/bootstrap` (`state`: `none`/`fetching`/`ready`/`failed`) the same shape `GET /system/iso` already established. `409` if a fetch is already in flight; `400` if `toolchain_url` is given without a valid 64-char `toolchain_sha256`. All three modes are idempotent — safe to call again.
+**`{"toolchain_url": "...", "toolchain_sha256": "..."}` is a third mode (ADR-0065): the daemon fetches the artifact itself, host-side** — the same real `curl` primitive every recipe's own source already uses, not a second fetch mechanism. Closes a real gap `toolchain_path` rests on: a genuinely fresh, minimal Cix install has no SSH server and no general shell at all (ADR-0034), so "the operator transfers it onto the box" was never actually possible for a from-scratch install with nothing else already on the network to reach it via — confirmed the hard way (`nc -z <box> 22` closed) rather than assumed. Async (`202`, since a real network fetch of a real, large artifact can't block this daemon's single-threaded event loop) — poll `GET /v1/pkg/bootstrap` (`state`: `none`/`fetching`/`ready`/`failed`) the same shape `GET /system/iso` already established. `409` if a fetch is already in flight; `400` if `toolchain_url` is given without a valid 64-char `toolchain_sha256`. Both modes are idempotent — safe to call again.
 
-**The build sandbox is the `cix-builder` image** ([ADR-0198](../adr/0198-build-sandbox-is-a-real-image.md)), resolved through the ordinary image mechanism rather than living at a flat path beside it (this used to compare itself to a hostbuild's `--build-image=`, which [ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md) retired). It used to be an unversioned directory grown silently by every successful install, so what it contained was a function of one box's entire install history — expressible nowhere, comparable to nothing, and the reason a recipe could stop building with no visible change anywhere. Now `GET /v1/images/cix-builder` shows its version history like any other image, and a version can be rolled back to.
+**A build runs in an environment composed from its recipe's declared build tools** ([ADR-0199](../adr/0199-recipes-declare-their-build-tools.md)): the packages named in `requires { build { … } }`, plus the `cbs` engine and the C library, which are always added, laid out from each package's recorded file list as an ordinary image named `__buildenv-<hash>` for the hash of that set, so the same set is composed once and reused. A declared tool must therefore be installed in some image. The shared sandbox `POST /v1/pkg/bootstrap` seeds is the `cix-builder` image ([ADR-0198](../adr/0198-build-sandbox-is-a-real-image.md)), resolved through the ordinary image mechanism rather than living at a flat path beside it (this used to compare itself to a hostbuild's `--build-image=`, which [ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md) retired). It used to be an unversioned directory grown silently by every successful install, so what it contained was a function of one box's entire install history — expressible nowhere, comparable to nothing, and the reason a recipe could stop building with no visible change anywhere. Now `GET /v1/images/cix-builder` shows its version history like any other image, and a version can be rolled back to.
 
-That has a consequence worth knowing: this image is grown by **every** ordinary install, not only by an explicit `pkg install --image=cix-builder`, so a hostbuild's own inputs move when unrelated things are installed. That was always true; it is now visible. Its *manifest*, though, still lists only what was installed into it directly — the accreted union is real content without a declared list, which is the remaining half of issue #40.
+Until #168 this image was grown by **every** ordinary install, so a later build could see what an earlier one installed — real content no manifest described. No install grows it any more: a build sees its dependencies because its recipe named them.
 
 A box upgrading from the flat layout has its existing sandbox folded in as a real version at startup and the old directory **set aside, not deleted** (renamed with the version it produced). What the sandbox contains does not change; only how it is tracked does.
 
@@ -3752,13 +3740,15 @@ POST /v1/pkg/install
 Response (`202`):
 
 ```json
-{"name": "hello", "version": "2.12.1", "state": "fetching", "error": null, "files": []}
+{"name": "hello", "image": "base", "version": "2.12.1-1", "state": "fetching", "error": null, "files": [],
+ "phase": null, "failed_command": null, "current_phase": null, "phases": null}
 ```
 
 Poll `GET /v1/pkg/hello` until `state` leaves `fetching`/`building`:
 
 ```json
-{"name": "hello", "version": "2.12.1", "state": "installed", "error": null, "files": ["usr/bin/hello", "..."]}
+{"name": "hello", "image": "base", "version": "2.12.1-1", "state": "installed", "error": null, "files": ["usr/bin/hello", "..."],
+ "phase": null, "failed_command": null, "current_phase": null, "phases": null}
 ```
 
 `state: "failed"` populates `error` (checksum mismatch, build failure, etc.) — the package stays visible via `GET` so the failure is diagnosable, not silently dropped. `DELETE /v1/pkg/hello` unlinks every file in its manifest from the base image, not just the registry entry.
@@ -3778,7 +3768,7 @@ Installs `leaf` first (skipped entirely if already installed), then `top` — on
 
 ### Upgrades
 
-Re-`POST`ing an already-installed package is always `409`, even after its recipe's `pkg_version` has changed on disk — explicit intent is required:
+Re-`POST`ing an already-installed package is always `409`, even after its recipe's version has changed — explicit intent is required:
 
 ```
 POST /v1/pkg/install
@@ -3808,7 +3798,7 @@ A bare install/hostbuild always resolves `name` to its highest published recipe 
 
 ```
 POST /v1/pkg/install
-{"name": "curl", "version": "8.20.0"}
+{"name": "curl", "version": "8.21.0-7"}
 ```
 
 404/400 if no such `(name, version)` recipe is published. This pin applies only to the single package actually being installed — every dependency it pulls in via its runtime requirements still always resolves to *its own* highest available version, regardless of what the top-level target is pinned to.
@@ -3825,7 +3815,7 @@ POST /v1/pkg/install
 {"name": "bird", "image": "router"}
 ```
 
-`bird` (and its dependencies, resolved the same way as always) builds into `/var/lib/cix/rebuildable/images/router/rootfs` — containers created with `"image": "base"` never see it. The same package name is tracked independently per image: `bash` installed into both `base` and `router` are two separate entries, each independently upgradable/removable. An install naming an image that does not exist is a **400** that names the fix (`cixctl image create --name=router`) and creates nothing (#500); it used to create the image implicitly, which is how a typo (`--image=jump` for `jumpbox`) became a new image. A new image is empty — not even a C library — so an image that will run something gets `glibc` installed like any other package.
+`bird` (and its dependencies, resolved the same way as always) builds into a new version of `router` (`/var/lib/cix/rebuildable/images/router/<version>/rootfs`, below) — containers created with `"image": "base"` never see it. The same package name is tracked independently per image: `bash` installed into both `base` and `router` are two separate entries, each independently upgradable/removable. An install naming an image that does not exist is a **400** that names the fix (`cixctl image create --name=router`) and creates nothing (#500); it used to create the image implicitly, which is how a typo (`--image=jump` for `jumpbox`) became a new image. A new image is empty — not even a C library — so an image that will run something gets `glibc` installed like any other package.
 
 **A path in an image belongs to one installed package** ([ADR-0319](../adr/0319-a-path-belongs-to-one-package.md), #553). An install whose staged files include a path another installed package in that image already owns fails before anything is staged. The entry goes to `failed`, with an `error` naming this package, the path, and the owner, e.g. `sharedb@1.0-1 installs "usr/share/x", which shareda@1.0-1 already owns in image "base"`. The package's own previous version does not count, so an ordinary upgrade is unaffected. A package whose recipe declares `replaces { package "NAME" }` (cbs v0.1.99) may install paths that NAME owns; they then belong to it, so `GET /v1/pkg/NAME` stops listing them and deleting NAME leaves them in place.
 
@@ -3833,7 +3823,7 @@ POST /v1/pkg/install
 
 ```
 POST /v1/images/router/manifest
-{"package": "bird", "mode": "pinned", "version": "2.19.1"}
+{"package": "bird", "mode": "pinned", "version": "2.19.1-1"}
 ```
 
 `mode: "pinned"` means exactly that version, never auto-advancing; `mode: "rolling"` means `version` is a floor, resolving to the highest available recipe version `>=` it. Re-`POST`ing the same `package` updates its mode/version in place (upsert), never duplicates. `GET /v1/images/router` echoes the full manifest alongside the bare `name` it always returned. `DELETE /v1/images/router/manifest/bird` removes one entry. This only records intent — it does not itself install anything.
@@ -3843,7 +3833,7 @@ POST /v1/images/router/manifest
 ```json
 {
   "name": "router",
-  "manifest": [{"package": "bird", "mode": "pinned", "version": "2.19.1"}],
+  "manifest": [{"package": "bird", "mode": "pinned", "version": "2.19.1-1"}],
   "current_version": "3f9c2a...",
   "versions": [
     {"version": "3f9c2a...", "created_at": 1786292454},
@@ -3867,7 +3857,7 @@ DELETE /v1/pkg/bird@router
 
 A bare `GET /v1/pkg/bird` still means `bird@base`. `GET /v1/pkg` (the list) includes every `(name, image)` entry, each with its own `"image"` field. Note this compound form applies to `/pkg/{name}` only, not `/pkg/recipes/{name}` — a recipe isn't tracked per-image, so its own name parameter never accepts an `@` suffix.
 
-Note: the C runtime for dynamically-linked binaries (`ld.so`/`libc.so.6`/`libtinfo.so.6`) is seeded automatically into whichever image a package lands in, `base` or otherwise (ADR-0019 for `base` at install time, ADR-0023 generalizes it to every image at first install).
+Note: no C runtime is seeded into an image ([ADR-0333](../adr/0333-an-images-content-comes-only-from-packages.md)); `glibc` is an ordinary package. The one automatic install is the default `base` image's: at daemon start, a `base` with no C library has `glibc` installed into it like any other package.
 
 ### Hostbuild: standalone artifacts instead of merging into an image
 
@@ -3882,7 +3872,7 @@ An optional `"version"` field pins the hostbuild to a specific published recipe 
 
 ### Debugging a failed build: `keep_on_failure` (ADR-0175, issue #35)
 
-A build container that fails is normally torn down immediately, like any other exited container — there's nothing left to inspect afterward. Set `"keep_on_failure": true` on `POST /pkg/install`, `POST /pkg/hostbuild`, or `POST /system/kmod-build` to change that: on a build failure (any nonzero exit from the recipe's `pkg_build()`/`pkg_install()`), the exited build container is left registered and its overlay mounted instead of being removed. The preserved container's own name comes back as `PkgEntry`'s new `kept_build_container` field:
+A build container that fails is normally torn down immediately, like any other exited container — there's nothing left to inspect afterward. Set `"keep_on_failure": true` on `POST /pkg/install`, `POST /pkg/hostbuild`, or `POST /system/kmod-build` to change that: on a build failure (any failure of the recipe's CPDL build), the exited build container is left registered and its overlay mounted instead of being removed. The preserved container's own name comes back as `PkgEntry`'s new `kept_build_container` field:
 
 ```
 POST /v1/pkg/install
@@ -3896,7 +3886,7 @@ GET /v1/pkg/gcc
 
 From there, the preserved container is a completely ordinary, addressable exited container — no new mechanism, reusing two endpoints that already exist:
 
-- `GET /v1/containers/__pkgbuild-0/files?path=/build/cbsws/build/...` (ADR-0055) reads a crashing binary, a core dump, or any partially-built object tree straight out of the failed build's own overlay upperdir (or lowerdir, for anything untouched from the base toolchain sandbox) for real, offline debugging — the same endpoint already used for reading any exited container's files.
+- `GET /v1/containers/__pkgbuild-0/files?path=/build/cbsws/build/...` (ADR-0055) reads a crashing binary, a core dump, or any partially-built object tree straight out of the failed build's own overlay upperdir (or lowerdir, for anything untouched from the composed build environment) for real, offline debugging — the same endpoint already used for reading any exited container's files.
 - `DELETE /v1/containers/__pkgbuild-0` tears it down once you're done — an ordinary container delete, nothing preservation-specific about cleanup.
 
 Only ever applies to the single package actually being installed/hostbuilt — an incidental dependency that fails mid-chain is never preserved, matching the existing (and much more common) "just a normal failure" case. `cixctl pkg install --name=NAME --keep-on-failure`, `cixctl pkg hostbuild NAME --keep-on-failure`, and `cixctl kmod-build --keep-on-failure` are the CLI surface.
@@ -3914,7 +3904,7 @@ POST /v1/pkg/install
 GET /v1/pkg/gcc
 {"name": "gcc", "state": "failed", "kept_build_container": "__pkgbuild-0", ...}
 
-# fix gcc.recipe, publish it as a new version (POST /pkg/recipe), then:
+# fix gcc's recipe, publish it as a new version (POST /pkg/recipes), then:
 
 POST /v1/pkg/resume
 {"name": "gcc", "version": "12.5.0-5"}
@@ -4036,14 +4026,15 @@ GET /v1/health
 {"status": "ok"}
 
 GET /v1/system/boot
-{"build_version": "v1.6.0-9-gc59e482-dirty", "build_time": "2026-08-08T00:52:00Z", "slot": "b", "kernel_version": "6.18.40"}
+{"build_version": "0.2.57-358", "build_time": "2026-08-08T00:52:00Z", "slot": "b", "kernel_version": "6.18.40",
+ "platform_devices": {"root_disk": "vda", "esp": "/dev/vda1", "root_a": "/dev/vda2", "root_b": "/dev/vda3", "config": "/dev/vda4", "containers": "/dev/vda5"}}
 
 GET /v1/system/assembly
 {"running": false, "started_generation": 3, "completed_generation": 3, "image_path": "/var/lib/cix/rebuildable/bootroot/cixd-root.squashfs",
  "image_present": true, "image_complete": true, "image_bytes": 20434944, "image_mtime": 1789644673}
 ```
 
-`GET /health` is deliberately minimal -- both `cixctl` and the web dashboard poll it every few seconds purely for a status dot, and it's excluded from the audit trail (see [A consolidated log](#a-consolidated-log) above) as low-value polling noise. Build/slot/kernel identity is a separate, lower-frequency check: `GET /system/boot` reports `build_version` (`git describe --tags --always --dirty` at build time), `build_time`, `slot` (`"a"`/`"b"`, or `null` for a dev/test daemon started without `--slot=`), and `kernel_version` (the running `uname(2)` release string). This is the deploy/reboot verification signal referenced throughout [`docs/guides/kernel-build-and-ab-updates.md`](../guides/kernel-build-and-ab-updates.md) -- a `200` from `health` alone only proves *some* daemon answered, not that it's the one you just wrote; `slot`/`kernel_version` from `boot` are the direct answer to "did I actually boot into what I just wrote."
+`GET /health` is deliberately minimal -- both `cixctl` and the web dashboard poll it every few seconds purely for a status dot, and it's excluded from the audit trail (see [A consolidated log](#a-consolidated-log) above) as low-value polling noise. Build/slot/kernel identity is a separate, lower-frequency check: `GET /system/boot` reports `build_version` (the release the recipe passed as `CIX_VERSION`, e.g. `0.2.57-358`, ADR-0312; without one, `git describe --tags --always --dirty` at build time), `build_time`, `slot` (`"a"`/`"b"`, or `null` for a dev/test daemon started without `--slot=`), and `kernel_version` (the running `uname(2)` release string). This is the deploy/reboot verification signal referenced throughout [`docs/guides/kernel-build-and-ab-updates.md`](../guides/kernel-build-and-ab-updates.md) -- a `200` from `health` alone only proves *some* daemon answered, not that it's the one you just wrote; `slot`/`kernel_version` from `boot` are the direct answer to "did I actually boot into what I just wrote."
 
 `boot` also carries **`platform_devices`** (#305) -- `esp`, `root_a`, `root_b`, `config`, `containers`, each the block device that partition resolved to **this boot**, read from the GPT partition labels `cix-install.c` writes rather than assumed from a device name. An empty string means no partition carrying that label was found on any disk, which is the normal answer for a dev/test daemon that is not an installed system and the thing to look at on one that is.
 
@@ -4053,7 +4044,7 @@ It is reported here because it was otherwise visible only on stderr -- the seria
 
 **`GET /system/assembly` is where control-plane assembly reports itself ([ADR-0230](../adr/0230-the-five-lifecycle-domains.md), issue #182).** These fields used to sit on `/system/boot`, whose subject is *what booted* — reporting there on *what is being built* meant an operator watching a deploy had to know that assembly is a side effect of a hostbuild named `cix` and is observed somewhere else. ADR-0230's rule is that status belongs to the thing that is happening, never to a neighbour that happens to know about it; this is its first application, and the fields moved rather than being duplicated.
 
-`started_generation`/`completed_generation`/`running` (ADR-0105) are a real freshness signal for `pkg hostbuild cix --deploy`'s own server-side follow-on assembly (ADR-0057) — `cixd-root.squashfs` existing at the hostbuild's `artifact_path` is not the same as it being *this* round's own fresh build, since that file is a leftover from whichever assembly last succeeded. `completed_generation` only ever advances on a real, confirmed success; `--deploy` captures it as a baseline before triggering anything and waits for it to advance past that baseline (`running` distinguishes "still working" from "gave up, that attempt failed") rather than trusting file-exists.
+`started_generation`/`completed_generation`/`running` (ADR-0105) are a real freshness signal for the server-side assembly every successful `cix` hostbuild starts by itself, with or without `--deploy` (ADR-0057) — `cixd-root.squashfs` existing at the hostbuild's `artifact_path` is not the same as it being *this* round's own fresh build, since that file is a leftover from whichever assembly last succeeded. `completed_generation` only ever advances on a real, confirmed success; `--deploy` captures it as a baseline before triggering anything and waits for it to advance past that baseline (`running` distinguishes "still working" from "gave up, that attempt failed") rather than trusting file-exists.
 
 The four `image_*` fields (#481) are what is *actually at that path*, `stat()`ed on every request rather than remembered — and they exist because the three counters above are not. All three live in the daemon's memory, and deploying an assembled root ends in a reboot, so the normal state of a host that has just booted the thing it assembled is `{"running": false, "started_generation": 0, "completed_generation": 0}` — byte-identical to a host that has never assembled anything in its life. Both readings are honest about what *this daemon process* has done; neither says anything about the file, which is the thing the operator's next command stages. That gap is how a possibly-half-written root came within one expired auth token of being staged and booted.
 
@@ -4128,7 +4119,7 @@ POST /v1/system/update
 ```
 
 - **`image_url` is how a real installed host actually updates itself (#141).** The `image_path` form assumes someone can already put a multi-megabyte file on the box — but an installed Cix host has no shell and no `scp` target, and the API's own 1 MiB request cap rules out sending a squashfs as a request body. That left `/system/update` unable to update the control plane of the machine it runs on, and every deploy in this project's history routed around it instead. With `image_url` the daemon fetches the image itself, writes it to its own staging path, and from there the existing `image_path` logic runs unchanged — one staging code path, not two. `image_sha256` is **required** alongside it and verified before the image is used anywhere: this call writes a boot slot, so an unverified image would only be caught at the next reboot, which is the worst possible moment to catch it. The daemon resolves the URL itself, so on a host with no working upstream resolver (see [`/system/resolv`](#the-hosts-own-outbound-dns-resolver-adr-0076)) only a literal IP will work. `image_url` and `image_path` are alternatives — give one, not both.
-- `image_path`/`kernel_path` are local paths the operator has already transferred onto the box (e.g. `scp`, or a hostbuild artifact already sitting on this same host — see [Hostbuild](#hostbuild-standalone-artifacts-instead-of-merging-into-an-image) above) — there is no upload endpoint; see ADR-0031 for why. Both are optional, but at least one is required — update just the root, just the kernel, or both together in one call. Writes whatever's given onto this daemon's own **inactive** A/B slot (the other one from whichever it's currently running as — `--slot=a` or `--slot=b`) and stages a fresh systemd-boot loader entry with a fresh boot-counter. The kernel is per-slot too (`cix-bzImage-a`/`cix-bzImage-b` on the ESP, both pre-staged identically at install time, ADR-0032). Omitting one of `image_path`/`kernel_path` no longer leaves the inactive slot's own existing copy stale (ADR-0095) — the omitted half is auto-filled from the **active** slot's own currently-running copy instead, so a root-only update still pairs with a kernel that's known-good (already booted), never a leftover from an earlier cycle; the response's own `updated` array is always `["root", "kernel"]` for exactly this reason — both genuinely are fresh in the inactive slot after the call. `400` if this daemon has no `--slot=` (not a real installed system), neither path is given, either path doesn't exist/isn't readable, or either file fails its own on-disk magic check (squashfs's `"hsqs"`, or a bzImage's boot-sector/`setup_header` magic) — checked for both before either is written, so a bad `kernel_path` never leaves a good `image_path` half-applied.
+- `image_path`/`kernel_path` are local paths the operator has already transferred onto the box (e.g. `scp`, or a hostbuild artifact already sitting on this same host — see [Hostbuild](#hostbuild-standalone-artifacts-instead-of-merging-into-an-image) above) — there is no upload endpoint; see ADR-0031 for why. Both are optional, but at least one is required — update just the root, just the kernel, or both together in one call. Writes whatever's given onto this daemon's own **inactive** A/B slot (the other one from whichever it's currently running as — `--slot=a` or `--slot=b`) and stages a fresh loader entry with a fresh boot-counter. The kernel is per-slot too (`cix-bzImage-a`/`cix-bzImage-b` on the ESP, both pre-staged identically at install time, ADR-0032). Omitting one of `image_path`/`kernel_path` no longer leaves the inactive slot's own existing copy stale (ADR-0095) — the omitted half is auto-filled from the **active** slot's own currently-running copy instead, so a root-only update still pairs with a kernel that's known-good (already booted), never a leftover from an earlier cycle; the response's own `updated` array is always `["root", "kernel"]` for exactly this reason — both genuinely are fresh in the inactive slot after the call. `400` if this daemon has no `--slot=` (not a real installed system), neither path is given, either path doesn't exist/isn't readable, or either file fails its own on-disk magic check (squashfs's `"hsqs"`, or a bzImage's boot-sector/`setup_header` magic) — checked for both before either is written, so a bad `kernel_path` never leaves a good `image_path` half-applied.
 - **A root is staged with the kernel its modules are for (cix#568).** The control-plane root carries the kernel's modules, and a kernel loads only modules built for its own release. An assembly records those releases beside its root as `<image>.kernel-releases`. When the kernel this call would stage reports another release (in its bzImage setup header, which is what `uname -r` will say), the kernel hostbuild's `bzImage` is staged instead when it is that release. Otherwise the answer is `409`, naming both releases, and nothing is written. Before this, a hand deploy of cix made after a kernel hostbuild, but before rebooting onto it, paired the new modules with the running kernel. That host boots and confirms, since cixd loads no module, and then cannot load a driver. A root with no record (built elsewhere, or by an older assembly) pairs as before. A kernel given alone is refused (`409`) when the running root carries modules and none are for its release. Staged alone, it takes the running root forward (ADR-0095), whose modules are for the running kernel. `POST /system/iso` checks the same pairing between the root and the kernel artifact it puts on the installer.
 - Response includes `"updated"`, always `["root", "kernel"]` (see above).
 - Deliberately does **not** reboot — call `POST /system/reboot` separately once ready to cut over; the existing boot-counter/`confirm_boot()` machinery, entirely unchanged, decides whether the fresh slot sticks.
@@ -4167,7 +4158,7 @@ Bundles platform *configuration* state — container definitions, networks, DNS 
 - **Does NOT include workload data.** Each container's own persistent data (a git host's repos, a resolver's zone files, a metrics database) is that container's own concern, backed up with its own native tooling. This endpoint has no way to reach into another container's filesystem and never tries to.
 - **Includes the volume registry, but not volume contents.** Which volumes exist and where they are placed is configuration and is in the bundle — it has to be, because container definitions reference volumes by name and an unknown name is a hard `400` ([ADR-0183](../adr/0183-persistent-volumes.md)), so a bundle without it restores onto a box where every container with a volume fails to start. What a volume *holds* is workload data and falls under the previous bullet: a restore recreates the volumes empty, and refilling them is yours to do, the same as image content below.
 - **Does NOT include image rootfs content.** Since everything is compiled from source, an image's content is reproducible by re-running `pkg install` for whatever `pkg_installed` records — this bundle is the "shopping list" (what should be installed, where), not the built bytes. Getting all the way back to a fully-populated system after a restore means re-running those installs, not something this endpoint does for you automatically.
-- **Never touches PKI, at all.** The CA private key (and every issued leaf certificate's own key) is never returned over the API anywhere in this system, by existing, deliberate design (see [PKI](#pki-a-ca-chain-and-issued-leaf-certificates) above) — that rule isn't bent or partially relaxed here. Back up `/var/lib/cix/state/pki/` (ADR-0141) separately, directly on the host, outside the API entirely.
+- **Never touches PKI, at all**, and says so: `pki_included` is always `false`. The CA private key (and every issued leaf certificate's own key) is never returned in the clear (see [PKI](#pki-a-ca-chain-and-issued-leaf-certificates) above) — that rule isn't bent or partially relaxed here. The PKI store is carried separately by `POST /v1/pki/export`, encrypted under a passphrase ([ADR-0281](../adr/0281-the-ca-leaves-the-box-encrypted-or-it-is-lost.md)).
 
 ```
 POST /v1/system/restore
@@ -4184,17 +4175,17 @@ The reverse of `GET /system/backup` — same shape, every field optional and ind
 
 ```
 GET /v1/system/backup-config
-{"disk": null, "enabled": false, "interval_hours": 0}
+{"disk": null, "enabled": false}
 ```
 
 Turns the `backup` disk role (present since multi-disk management Phase B, but until this phase a pure inert label nothing ever acted on) into a real, working mechanism. `disk: null` means no automatic snapshots are possible regardless of `enabled` — a disk carrying the `backup` role must be configured first (`POST /storage-roles`).
 
 ```
 PUT /v1/system/backup-config
-{"interval_hours": 6}
+{"enabled": true}
 ```
 
-Mirrors `PUT /system/daemon-config`'s own "only the fields given are changed" convention — set just `disk`, just `enabled`, just `interval_hours`, or any combination. `disk` is *not* validated at PUT time (it doesn't need to already be mounted, or even exist yet) — real validation happens at snapshot time, the same "pure bookkeeping vs. real action" split every other storage-placement endpoint here already uses; check `GET .../status` for what actually happened. `interval_hours: 0` means no automatic schedule — `POST .../snapshot-now` remains the only trigger. Changing `enabled` or `interval_hours` re-arms the daemon's own periodic timer immediately, the same shape NTP's hourly auto-sync already uses.
+Mirrors `PUT /system/daemon-config`'s own "only the fields given are changed" convention — set just `disk`, just `enabled`, or both. `disk` is *not* validated at PUT time (it doesn't need to already be mounted, or even exist yet) — real validation happens at snapshot time, the same "pure bookkeeping vs. real action" split every other storage-placement endpoint here already uses; check `GET .../status` for what actually happened. When automatic snapshots run is a schedule with action `system.backup` (`/v1/schedules`, [ADR-0257](../adr/0257-one-scheduler-structured-schedules.md)); `interval_hours` here is refused with a `400` saying so. With no such schedule, `POST .../snapshot-now` is the only trigger.
 
 ```
 POST /v1/system/backup-config/snapshot-now
@@ -4228,14 +4219,14 @@ Writes **exactly the same bundle `GET /system/backup` itself produces** — cont
 - Routes are set-once at creation and not echoed back or introspectable afterward; modifying them on a running container would need a new "enter another netns from outside" primitive, not built yet. See `docs/roadmap/ROADMAP.md`.
 - DNS and LDAP server bindings are both persisted (ADR-0091 fixed this for DNS; LDAP's own binding table, task #725, was built with persistence from the start). DNS: only one hosts-format record type; no CNAME/MX/TXT/etc.
 - PKI: no certificate revocation/CRL, no CSR-submission flow (the daemon always generates both the keypair and the cert itself). CA regeneration/rotation **is** built (`POST /pki/reset`, above) — that gap has closed since this list was first written.
-- Package manager: up to `max_concurrent_jobs` (default/max 10, ADR-0157) install/hostbuild chains may run at once, but each individual dependency chain still resolves and builds serially within itself (a chain's own dependencies-then-target order never parallelizes), and `POST /pkg/update-all`'s own successive calls still compete for that same shared pool of slots — see [Package manager](#package-manager-source-based-asynchronous-installs) above; no version-constrained dependencies (any installed version satisfies a dependency); symlinks in a package's own `DESTDIR` output are skipped (regular files and directories only).
+- Package manager: up to `max_concurrent_jobs` (default/max 10, ADR-0157) install/hostbuild chains may run at once, but each individual dependency chain still resolves and builds serially within itself (a chain's own dependencies-then-target order never parallelizes), and `POST /pkg/update-all`'s own successive calls still compete for that same shared pool of slots — see [Package manager](#package-manager-source-based-asynchronous-installs) above; no version-constrained dependencies (any installed version satisfies a dependency).
 - ~~No scheduled/periodic trigger, and no "update then reboot" chaining.~~ **Both built.** The daemon
   has its own scheduler (`cixctl schedule`), a fresh host gets a `pkg.sync` every 6 hours
   ([ADR-0316](../adr/0316-a-fresh-host-syncs-recipes-on-a-schedule.md)), and `system.roll` hostbuilds
   the kernel and cix, assembles, stages and **reboots** inside a nightly 03:00 window
   ([ADR-0327](../adr/0327-the-host-follows-its-rolling-packages-in-a-nightly-window.md)). The
   chaining this entry said did not exist is the whole of that ADR.
-- Volumes ([above](#persistent-volumes-issue-88-adr-0183)) closed the "no bind-mount concept" gap this list used to record, but have no coordination for concurrent sharing between containers, and are not part of the backup bundle. (A per-volume quota WAS in this list and is built: `volume_set_quota()`, an ext4 project quota or a btrfs qgroup, with the intent persisted so it survives a restart.) Injecting a *large* binary asset or directory tree at creation time still has no home — creation-time `files` are content-inlined and bounded at 64KiB each.
+- Volumes ([above](#persistent-volumes-issue-88-adr-0183)) closed the "no bind-mount concept" gap this list used to record, but have no coordination for concurrent sharing between containers, and their contents are not part of the backup bundle (the volume registry is; contents have their own snapshots, [above](#backing-up-what-a-volume-holds)). (A per-volume quota WAS in this list and is built: `volume_set_quota()`, an ext4 project quota or a btrfs qgroup, with the intent persisted so it survives a restart.) Injecting a *large* binary asset or directory tree at creation time still has no home — creation-time `files` are content-inlined and bounded at 64KiB each.
 - Per-connection log lines elsewhere in this daemon (the audit trail, container lifecycle events) still don't carry a peer IP the way `log_tls_error()` now does (ADR-0134) — closed for the one case that was actually flooding a real deployment's logs, not generalized to every log line this daemon writes.
 
 ## Why this file exists alongside `openapi.yaml`
