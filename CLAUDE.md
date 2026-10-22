@@ -289,6 +289,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **`container_rootfs_dir()` is the one place a rootfs path is built.** `disk` and the `container-storage` role place a container's base, never its rootfs. A base holds only an overlay container's `upper`/`work` and the pivot mountpoint: staged files go into the rootfs, the seed marker sits beside it, subordinate ids are in `STATE_DIR` and a volume has its own `disk`. Whether `disk` should stay is #615.
 - **A snapshot cannot cross a filesystem**, and that is the whole cause: images were on `rebuildable-storage` and container bases on the OS disk, so every create on .95 fell back to a copy or to overlay. Never put a container's rootfs anywhere its image cannot be snapshotted to.
 - **The copy stays only where btrfs is absent**, and it goes into a helper child there (#614). Never add a copy to the btrfs path.
+- **A build slot's previous tree leaves the same way** (#626): `reset_build_container_dir()` sets it aside with `rootfs_discard()`, exported to `pkg.c` through `rootfsdiscard.h`. It used to `rmtree()` on the loop, and after a kernel build that held it 5.7 s. Never delete a tree on the loop, and never add a second delete queue.
 
 ## A log read never walks the store on the event loop
 

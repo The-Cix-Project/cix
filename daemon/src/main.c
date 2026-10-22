@@ -120,6 +120,7 @@
 #include "api_network.h"
 #include "apiresp.h"
 #include "daemonpaths.h"
+#include "rootfsdiscard.h"
 #include "apiroute.h"
 #include "events.h"
 #include "api_config.h"
@@ -14270,7 +14271,7 @@ static void rootfs_discard_entry(const char *trash, const char *leaf, char *out,
  * -- the tree is already out of the way, and the next start's sweep
  * deletes it.
  */
-static int rootfs_discard(const char *name, const char *path, const char *trash_parent)
+int rootfs_discard(const char *name, const char *path, const char *trash_parent)
 {
 	char trash[PATH_MAX], leaf[PATH_MAX], entry[PATH_MAX];
 	const char *slash = strrchr(path, '/');

@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A build no longer deletes the previous build's tree on the event loop (#626)
+
+- **What changed:** a build container that exits is unmounted and left on disk, so its slot (`__pkgbuild-<n>`) still holds the previous build's whole tree until the next build there resets it. That reset was an `rmtree()` on the event loop, because a slot is a plain directory rather than a subvolume. It now sets the tree aside with one rename into the containers directory's `.discard`, and ADR-0341's queue deletes it in a helper child, the same way a deleted container's base goes. `rootfs_discard()` is exported to `pkg.c` for this through `rootfsdiscard.h`, so there is still one delete queue. The reset is also its own step, "build prep: set the previous build aside", so a slow one is named apart from the staging.
+- **Measured before it:** on 192.168.15.95, 2026-10-22 09:59:40Z, an hourly `hibr` build's prep held the loop 5666 ms in "build prep: stage the build tree". Per the retained build logs, the build before it was the night's kernel hostbuild.
+- **Verified:** the floor tests run several builds through the same slots in every release selftest, including dependency chains whose second package must not see the first's output, so the reset and its never-on-re-entry rule are exercised there.
+
 ### A kernel module build cannot start beside another hostbuild (#627)
 
 - **What changed:** #362's rule, one hostbuild at a time because two at once have panic-rebooted a host, was enforced only by `POST /v1/pkg/hostbuild`'s handler. `POST /v1/system/kmod-build` starts a kernel hostbuild through the same `pkg_hostbuild_start()` and never asked, so it could start one beside another. The refusal now lives in `pkg_hostbuild_start()` itself, as `PKG_ERR_HOSTBUILD_RUNNING` (409, the same #362 sentence), so every caller gets it. Its own code rather than `PKG_ERR_BUSY`, which means every job slot is taken. The host roll's kernel-then-cix hand-off is unaffected: the kernel's job slot is released before its completion starts cix.

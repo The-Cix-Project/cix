@@ -33,6 +33,7 @@
 #include "jsondiff.h"
 #include "recipe_format.h"
 #include "persist.h"
+#include "rootfsdiscard.h"
 #include "treecopy.h"
 #include "pki.h"
 #include "releasekey.h"
@@ -4505,10 +4506,22 @@ static int extract_tarball(const char *tarball_path, const char *dest_dir)
  * unrelated earlier install that used the same index). Called before
  * every build's prep, guaranteeing each one starts from a genuinely
  * clean container directory regardless of what ran there before.
+ *
+ * SET ASIDE, NOT DELETED HERE (#626). A build container that exits is
+ * unmounted and left on disk, so its slot still holds the previous
+ * build's whole tree -- sources, objects, the cbs workspace -- and this
+ * reset is the first thing to remove it. It used to rmtree it on the
+ * event loop, since a slot is a plain directory rather than a
+ * subvolume: on 192.168.15.95, 2026-10-22 09:59:40Z, an hourly hibr
+ * build's prep held the loop 5666 ms in "stage the build tree", and the
+ * build before it, per the retained build logs, was the night's kernel
+ * hostbuild (every build runs as __pkgbuild-<slot>, hostbuilds too). One
+ * rename into the containers directory's .discard now, and ADR-0341's
+ * queue deletes it in a helper child.
  */
-static int reset_build_container_dir(const char *container_base)
+static int reset_build_container_dir(const char *name, const char *container_base)
 {
-	return cix_btrfs_subvol_delete_or_rmtree(container_base);
+	return rootfs_discard(name, container_base, g_containers_dir);
 }
 
 /*
@@ -10948,7 +10961,7 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
  *
  * Empty symbols UNLINKS the file rather than merely skipping the
  * write. A fresh build never sees a stale one (reset_build_container_dir()
- * wipes container_base first), but pkg_resume_build() deliberately
+ * sets container_base aside first), but pkg_resume_build() deliberately
  * preserves /build/extra across a resume -- so a resume that drops the
  * symbols an earlier attempt had must remove what that attempt wrote,
  * or the recipe would merge a file this call never asked for. ENOENT
@@ -11350,6 +11363,25 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	         e->build_upperdir);
 	snprintf(extra_dir, sizeof(extra_dir), "%s/build/extra", e->build_upperdir);
 
+	/*
+	 * The previous build's tree, set aside (#626) -- its own step, so a
+	 * slow one is named apart from the staging below.
+	 *
+	 * NEVER on a re-entry after the cixpkg unpack child exited (ADR-0307
+	 * clause 3): every step below has already run then, the child filled
+	 * dest_dir, and pkg_unpack_completed() checked the result. Resetting
+	 * here would set aside the tree the child just extracted, leaving an
+	 * empty package that installs cleanly.
+	 */
+	int reset_failed = 0, reset_errno = 0;
+
+	stallwatch_step("build prep: set the previous build aside");
+	if (!g_chains[chain_idx].unpacked &&
+	    reset_build_container_dir(e->build_container_name, container_base) != 0) {
+		reset_failed = 1;
+		reset_errno = errno;
+	}
+
 	stallwatch_step("build prep: stage the build tree"); /* #619 */
 	{
 		char tmp_dir[PATH_MAX];
@@ -11397,24 +11429,18 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				/*
 				 * Re-entered after the cixpkg unpack child exited
 				 * (ADR-0307 clause 3), and every step below has
-				 * already run: the container directory was reset,
+				 * already run: the previous tree was set aside,
 				 * dest_dir and tmp_dir were created, the child
 				 * filled dest_dir, and pkg_unpack_completed() ran
-				 * the #139 usability check over the result.
-				 *
-				 * FIRST in the chain, and that placement is the
-				 * point rather than tidiness:
-				 * reset_build_container_dir() is what the old
-				 * first branch does, and on a re-entry it would
-				 * delete the tree the child just extracted --
-				 * leaving an empty package that installs cleanly.
+				 * the #139 usability check over the result. The
+				 * reset above is skipped for the same reason.
 				 */
-			} else if (reset_build_container_dir(container_base) != 0) {
+			} else if (reset_failed) {
 				prep_step = "reset build container dir";
 				/* A filesystem operation, so errno names the cause --
 				 * it was discarded here, and the message then pointed
 				 * at a subprocess this step never ran (#504). */
-				prep_errno = errno;
+				prep_errno = reset_errno;
 			} else if (persist_mkdir_p(dest_dir) != 0) {
 				prep_step = "create dest dir";
 				prep_errno = errno;
