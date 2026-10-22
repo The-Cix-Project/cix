@@ -36,7 +36,7 @@ Both get their candidates from `cixctl __complete`, a hidden helper that reads t
 
 Flag *values* are not completed. The useful ones (container names, image names) can only come from the daemon, and a blocking request on every keypress is worse than none.
 
-The command tree is data in `cli/src/cmdtree.h`. `test_clitree` re-derives the command surface from `cli/src/main.c` and fails the build when the two disagree.
+The command tree is data in `cli/src/cmdtree.h`. `test_clitree` re-derives the command surface from `cli/src/main.c` and fails the build when a top-level command, subcommand name or flag one of them names appears nowhere in the other.
 
 ## The pager
 
@@ -54,18 +54,18 @@ It engages only when all of these hold:
 - **`--json` is not set.** That output is meant for another program.
 - **It is turned on.** The setting is stored in `~/.cixctl_pager`.
 
-`$PAGER` is respected. The fallback is `less -FRX`: `-F` exits at once when the output fits one screen, `-R` passes colour through, and `-X` leaves the output on screen after the pager exits. An explicitly empty `PAGER` means no pager.
+`$PAGER` is respected. The fallback is `less -FRX`: `-F` exits at once when the output fits one screen, `-R` passes colour through, and `-X` leaves the output on screen after the pager exits. An empty `PAGER` gets the fallback too; `pager off` is how to turn paging off.
 
 `pager` configures this client only, so it has no endpoint.
 
 ## Seeding a fresh box
 
 ```
-cixctl --host=NEWBOX image recipe add --name=toolchain --file=recipes/image/toolchain@1.0.0.sh
+cixctl --host=NEWBOX image recipe add --name=toolchain --file=recipes/image/toolchain@1.0.1.json
 cixctl --host=NEWBOX image materialize toolchain
 ```
 
-`--file=` is a local path. Image recipes live in the [cix-recipes](https://git.home.arpa/itdlabs/cix-recipes) repository as flat `<name>@<version>.sh` files ([ADR-0308](../adr/0308-recipes-are-their-own-repository-flat.md)); the path above is relative to a checkout of it. `image materialize` creates the image if it does not exist, declares its manifest from the image recipe of the same name, and installs every package in it (#141). An install that finds an approved prebuilt artifact verifies it and stages it without composing a build sandbox, so a host with no compiler can materialize a build image ([ADR-0225](../adr/0225-build-images-are-composed-from-packages.md)). A package that arrives as another's build dependency is reported as `already present`, not as an error.
+`--file=` is a local path. Image recipes live in the [cix-recipes](https://git.home.arpa/itdlabs/cix-recipes) repository as flat `<name>@<version>.json` files ([ADR-0308](../adr/0308-recipes-are-their-own-repository-flat.md)); the path above is relative to a checkout of it. `image materialize` creates the image if it does not exist, declares its manifest from the image recipe of the same name, and installs every package in it (#141). An install that finds an approved prebuilt artifact verifies it and stages it without composing a build sandbox, so a host with no compiler can materialize a build image ([ADR-0225](../adr/0225-build-images-are-composed-from-packages.md)). A package that arrives as another's build dependency is reported as `already present`, not as an error.
 
 ## Configuration as a document
 
@@ -164,7 +164,7 @@ Runbooks: [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and
 | `management-address set A.B.C.D` | Set the off-box address; the network follows from it. Live and persistent. Point later commands at the new address with `--host=` |
 | `management-address reset` | Unbind the off-box address. `127.0.0.1` stays bound |
 | `tls-throttle show` | Per-source throttling of repeated failed HTTPS handshakes (ADR-0134) |
-| `tls-throttle set [--enabled \| --disabled] [--threshold=N] [--window-seconds=N] [--block-seconds=N] [--log-interval-seconds=N]` | Change only the fields given. `threshold` failures within `window-seconds` block a source on both listeners for `block-seconds`; loopback is never throttled. `log-interval-seconds` limits how often one source's failures are logged; `0` logs every one |
+| `tls-throttle set [--enabled \| --disabled] [--threshold=N] [--window-seconds=N] [--block-seconds=N] [--log-interval-seconds=N]` | Change only the fields given. `threshold` failures within `window-seconds` block a source on the HTTPS listener for `block-seconds` (plain HTTP stays open to it, ADR-0137); loopback is never throttled. `log-interval-seconds` limits how often one source's failures are logged; `0` logs every one |
 | `tls-throttle status` | Every source currently tracked (in memory, not persisted) |
 | `control-plane-reservation show` | CPU and memory held back for the daemon, the host totals, and the ceiling applied to the `cix-workload` cgroup that every container and build runs under (#86) |
 | `control-plane-reservation set [--enabled \| --disabled] [--cpu-percent=N] [--memory-bytes=N]` | Change it; applied to the live cgroup immediately. `cpu_percent` is 1-50 |
@@ -195,6 +195,9 @@ Runbooks: [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and
 |---|---|
 | `host-stats` | Host-wide uptime, load, CPU, memory, disk and network, including pressure-stall (PSI) figures (ADR-0073, ADR-0074). `uptime.host` is seconds since boot, `uptime.daemon` seconds since `cixd` started |
 | `stalls` | Times the control plane stopped going round its loop, with the kernel function it was sleeping in and the request it was serving (#100). Recorded by a separate watchdog process |
+| `events [status]` | The box's boot epoch and the generation of every read it announces when it changes ([ADR-0339](../adr/0339-the-dashboard-is-told-what-changed.md)) |
+| `events verify` | Check now whether anything changed that the box did not announce |
+| `events --follow [--subscribe=PATH ...]` | The announcements live, one JSON frame per line, until the daemon ends the stream. Each `--subscribe=` (a stats, log or ports read, at most 8) adds its samples |
 | `kmsg [--tail=N]` | The kernel ring buffer (`/dev/kmsg`) over REST (#77) |
 | `logs [--source=kernel\|cixd\|audit\|container] [--level=...] [--container=NAME] [--regex=PATTERN] [--tail=N] [--since=UNIXTS]` | The consolidated log: kernel messages, `cixd` diagnostics, the per-request audit trail and every container's stdout/stderr (ADR-0070, ADR-0126). `--regex=` is a case-insensitive POSIX extended regex on the message text |
 | `logs config [--max-bytes=N] [--min-level=LEVEL]` | Show or set the log's size cap and minimum severity (`emerg`/`alert`/`crit`/`err`\|`error`/`warning`\|`warn`/`notice`/`info`/`debug`, default `debug`) |
@@ -411,7 +414,7 @@ See [`networking.md`](networking.md).
 
 | Command | |
 |---|---|
-| `image create --name=NAME` | An empty image with the C runtime seeded, ready for `pkg install --image=NAME` |
+| `image create --name=NAME` | An empty image with no packages, not even a C library, ready for `pkg install --image=NAME` |
 | `image materialize NAME` | Create the image if absent, declare its manifest from the image recipe `NAME`, and install every package in it (#141) |
 | `image ls` / `image show NAME` | List / inspect one (manifest, current version, version history) |
 | `image rm NAME` | Remove one; refused for `base`, for an image in use, or with packages installed |
@@ -478,7 +481,7 @@ See [`networking.md`](networking.md).
 
 | Command | |
 |---|---|
-| `pkg ls` | Every known package, installed or in flight. A failure reads `failed:fetch`, `failed:build`, `failed:recipe` or `failed:install` (#101) |
+| `pkg ls` | Every known package, installed or in flight. A failure names the pipeline stage it reached and what happened there, `STATE:STAGE[.PHASE]/STATUS`, such as `failed:fetch/failed` or `failed:build.check/failed` (#101, ADR-0256) |
 | `pkg install --name=NAME [--image=IMAGE] [--version=VERSION] [--upgrade] [--keep-on-failure]` | Install or upgrade a package; an omitted version resolves by the package's policy. `--keep-on-failure` keeps a failed build's container for inspection ([Debugging a failed build](../api/README.md#debugging-a-failed-build-keep_on_failure-adr-0175-issue-35)) |
 | `pkg rm NAME[@IMAGE]` | Uninstall |
 | `pkg hostbuild NAME [--version=VERSION] [--wait] [--deploy] [--upgrade] [--keep-on-failure]` | Build or fetch a host artifact (`kernel`, `cix`, `isotools`) instead of installing into an image ([the hostbuild variant](writing-recipes.md#the-hostbuild-variant)). `--upgrade` reruns an installed one whose recipe version moved. `--deploy` implies `--wait` and then writes the result to the inactive slot with `update` (`kernel` and `cix`); it does not reboot |
