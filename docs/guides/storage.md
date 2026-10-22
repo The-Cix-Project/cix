@@ -101,8 +101,8 @@ disk or partition takes one of these roles:
 
 | Role | One per host? | What lives there | What puts it there |
 |---|---|---|---|
-| `container-storage` | No — many disks can have it | A container's own rootfs and data | Per container, at creation: `cixctl container run --disk=NAME` ([ADR-0102](../adr/0102-per-container-disk-selection.md)); an existing container moves with `cixctl container migrate-storage NAME --disk=NAME` |
-| `rebuildable-storage` | Yes | Anything regenerable from recipes and sources: container images, installed packages, build artifacts, staged ISOs | `cixctl storage rebuildable migrate --disk=NAME` |
+| `container-storage` | No — many disks can have it | A container's base; its rootfs stays beside its image ([ADR-0341](../adr/0341-a-containers-rootfs-is-a-snapshot-on-its-images-filesystem.md)) | Per container, at creation: `cixctl container run --disk=NAME` ([ADR-0102](../adr/0102-per-container-disk-selection.md)); an existing container moves with `cixctl container migrate-storage NAME --disk=NAME` |
+| `rebuildable-storage` | Yes | Anything regenerable from recipes and sources: container images, every container's rootfs, installed packages, build artifacts, staged ISOs | `cixctl storage rebuildable migrate --disk=NAME` |
 | `log-storage` | Yes | The consolidated log store | `cixctl storage logs migrate --disk=NAME` |
 | `swap` | Yes | Backs a host swap file | `cixctl swap enable --size-mb=N --disk=NAME` ([ADR-0069](../adr/0069-host-swap-file.md)) |
 | `backup` | Yes | Scheduled configuration snapshots | `cixctl backup-config set --disk=NAME --enable` |
@@ -134,9 +134,10 @@ largest thing on the box. A backup only has to cover the first.
 
 In rough order of how often it is worth doing:
 
-- **Container data outgrowing the OS disk** → `container-storage`. The
-  most common reason. Place individual containers on it with
-  `container run --disk=`.
+- **Container data outgrowing the OS disk** → `rebuildable-storage`,
+  which holds every container's rootfs beside its image. A
+  `container-storage` disk, chosen per container with
+  `container run --disk=`, takes only the container's base.
 - **Package and image content filling the box** → `rebuildable-storage`.
   This is usually the largest consumer: images, every installed
   package's files, build artifacts, staged ISOs. Moving it off the OS
@@ -165,8 +166,8 @@ below. It also gives per-subvolume quota accounting (qgroups),
 copy-on-write, and checksummed metadata.
 
 **ext4 is the older option** and is on a retirement path for platform
-storage. It has no snapshots and no CoW, so a container placed on an
-ext4 disk cannot share extents with its image.
+storage. It has no snapshots and no CoW, so with the image store on an
+ext4 disk a container cannot share extents with its image.
 
 **btrfs is the default.** `format` with no `--fs-type` gives you btrfs,
 which is what you want in almost every case:
@@ -195,19 +196,21 @@ differences.
 Where a snapshot is not possible, the rootfs is built another way
 (`daemon/src/main.c`, container create):
 
-| Container storage | User-namespaced container (the default) | Non-userns container |
+| Image store (where the rootfs lives) | User-namespaced container (the default) | Non-userns container |
 |---|---|---|
 | btrfs, snapshot succeeds | Snapshot, presented through an id-mapped mount | Snapshot |
-| btrfs, snapshot fails (e.g. image store on another filesystem) | Full copy | OverlayFS over the image version, logged as a warning |
-| not btrfs (e.g. an ext4 `container-storage` disk) | Full copy (`cp --reflink=auto -a`) | OverlayFS over the image version |
+| btrfs, snapshot fails | Full copy, logged as a warning | OverlayFS over the image version, logged as a warning |
+| not btrfs (e.g. an ext4 `rebuildable-storage` disk) | Full copy | OverlayFS over the image version |
 
 Consequences worth knowing:
 
 - **A container on btrfs has a real subvolume as its rootfs**, not a
   union mount.
-- **Snapshots are per-filesystem.** A container placed on an ext4
-  `container-storage` disk costs a full copy of its image (or an
-  overlay, for a non-userns container).
+- **Snapshots are per-filesystem.** That is why a container's rootfs
+  lives beside the image store rather than on its `--disk=`
+  ([ADR-0341](../adr/0341-a-containers-rootfs-is-a-snapshot-on-its-images-filesystem.md)).
+  An image store on ext4 costs every container a full copy of its
+  image (or an overlay, for a non-userns container).
 - **`used_bytes` on a btrfs disk counts shared extents once.** Adding up
   per-container usage will exceed the disk's own figure. That is
   correct, not a bug.

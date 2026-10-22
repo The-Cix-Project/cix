@@ -46,6 +46,7 @@ cixctl image policy jumpbox --recipe=follow --apply=converge  # set some of it
 | `recipe` | `manual`, `follow` | Under `follow`, a changed recipe is applied as soon as it reaches the box, by the 6-hourly sync or a publish. Committing it to cix-recipes `main` is then a deploy, and the manifest becomes exactly the recipe: an entry the recipe drops is removed ([ADR-0330](../adr/0330-a-followed-image-holds-its-recipe-and-nothing-else.md)). |
 | `apply` | `declare`, `converge` | Under `converge`, applying also queues the image to install, upgrade or downgrade every entry to match, one job at a time, like a rolling rebuild. `image materialize` is the one-shot, waited-for version of the same thing. With `recipe: follow`, converge also uninstalls every package outside the recipe's runtime closure once the image is satisfied, so everything a followed image should keep, build tools included, belongs in its recipe (ADR-0330). |
 | `downgrade` | `refuse`, `allow` | Under `refuse`, an apply that would move a pin to an older version is refused and lists each one. `--allow-downgrade` applies it anyway, once. |
+| `keep` | `3`, any of `0`–`64` | How many unreferenced versions the image keeps, newest first; see [Reclaiming old versions](#reclaiming-old-versions) ([ADR-0343](../adr/0343-an-image-keeps-a-bounded-history-and-a-version-leaves-it-off-the-loop.md)). |
 
 Two rules hold whatever the policy:
 
@@ -115,14 +116,14 @@ cixctl image manifest rm --image=tools --package=curl
 
 ## Reclaiming old versions
 
-Nothing removes a version automatically, and every install leaves one behind. Reclaim the ones nothing uses:
+Every install leaves a version behind, and the daemon collects the ones nothing uses by itself: after the last package job in flight ends, for each image a job gave a new version, and once after it starts ([ADR-0343](../adr/0343-an-image-keeps-a-bounded-history-and-a-version-leaves-it-off-the-loop.md)). To run that pass now:
 
 ```sh
 cixctl image gc --dry-run      # list what would be removed; changes nothing
 cixctl image gc                # remove it
 ```
 
-A version is kept if it is its image's current version, if a container in the registry pins it, or if a stored container definition names it — a stopped container is revived from its definition, so its version must survive. `image gc` is refused while any package job is running. Removal cannot be undone, so run `--dry-run` first.
+A version is kept if it is its image's current version, if a container in the registry pins it, or if a stored container definition names it, as its version or as the version a roll would go back to — a stopped container is revived from its definition, so its version must survive. On top of those, each image keeps its newest `keep` unreferenced versions (its policy, default 3; `cixctl image policy NAME --keep=N`). `image gc` is refused while any package job is running. A removed version is set aside and deleted in the background, and removal cannot be undone, so run `--dry-run` first.
 
 `--measure` adds the size of each collectable version. It walks every one of them, and the daemon answers no other request while it does, which can take minutes on a host with many versions; leave it off unless the number is needed.
 

@@ -32,7 +32,7 @@ cixctl pki cert create --name=svc.internal --sans=svc.internal,svc --days=365
 cixctl container run --name=web --image=myapp --pki-issue --pki-cert-dir=/etc/cix-tls --pki-days=365 --service=main=/usr/bin/some-binary
 ```
 
-Issues a cert named after the container and writes `tls.crt`/`tls.key` (mode `0600`) directly into its filesystem at creation time — one-time delivery, no live resync, since a cert doesn't change after a container starts (a chain rotation, below, explicitly redelivers). Deleting the container automatically removes its cert too. Requires the CA to already be bootstrapped.
+Issues a cert named after the container and writes `tls.crt` (mode `0644`) and `tls.key` (mode `0600`) directly into its filesystem at creation time — one-time delivery, no live resync, since a cert doesn't change after a container starts (a chain rotation, below, explicitly redelivers). Deleting the container automatically removes its cert too. Requires the CA to already be bootstrapped.
 
 ### LDAP over TLS
 
@@ -88,7 +88,7 @@ Create the identity once, then hand it to the container without giving it owners
 
 ```sh
 cixctl pki cert create --name=jump-ssh --sans=jump-ssh --days=730
-cixctl container run --name=jump --image=jump --pki-cert=jump-ssh --pki-cert-dir=/etc/cix-tls ...
+cixctl container run --name=jump --image=jumpbox --pki-cert=jump-ssh --pki-cert-dir=/etc/cix-tls ...
 ```
 
 The delivered files are identical to `--pki-issue`'s, so a service config written for one works unchanged with the other. Nothing deletes the cert when the container goes — which is the point, and also means retiring the service means `pki cert rm` deliberately. The named cert must already exist and the two flags are mutually exclusive; both are refused with a `400` before the container is created. See [ADR-0280](../adr/0280-a-certificates-identity-and-its-lifetime-are-separate-concerns.md).
@@ -142,7 +142,7 @@ This install's root CA is private and self-signed — nothing trusts it by defau
 **Get the certificate**: web dashboard's System > PKI > Root CA page has a "Download certificate (.crt)" button once the CA is bootstrapped — or fetch it directly:
 
 ```sh
-cixctl pki ca show --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["cert_pem"])' > cix-root-ca.crt
+cixctl --json pki ca show | python3 -c 'import json,sys; print(json.load(sys.stdin)["cert_pem"])' > cix-root-ca.crt
 ```
 
 Trusting the **root** is enough even if you've also bootstrapped an intermediate CA (System > PKI > Intermediate CA has its own download button too, but you don't need to separately trust it) — the HTTPS listener sends the full leaf+intermediate chain on every handshake (ADR-0136), so a client that trusts only the root can validate the whole path.

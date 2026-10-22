@@ -10,7 +10,7 @@ This guide covers standing each service up, feeding it, and taking a server out 
 2. **The container is registered** as a server of its kind. Registration is what makes the daemon write configuration into it and track its health. Deleting a container forgets its registration.
 3. **Health is probed**, and a server can be drained by hand. See [Health, drain and undrain](#health-drain-and-undrain).
 
-A deployment can declare its own registration, so recreating the container from its recipe restores the server and not only the process: `dns_server` (`{"hosts_path": ...}`), `ntp_server: true`, `syslog_target: true` and `ldap_server` in the recipe are each equivalent to the matching register call after creation (see the `ContainerCreateRequest` schema in [`openapi.yaml`](../api/openapi.yaml)). The shipped `dns-1`/`dns-2` recipes declare `dns_server`; the `ntp-*` and `syslog-*` recipes do not, so those are registered by hand as shown below. DHCP registration has no recipe field: after a DHCP server's container is deleted and recreated, register it again with `cixctl dhcp server add` and name it in its ranges again.
+A deployment can declare its own registration, so recreating the container from its recipe restores the server and not only the process: `dns_server` (`{"hosts_path": ...}`), `ntp_server: true`, `syslog_target: true` and `ldap_server` in the recipe are each equivalent to the matching register call after creation (see the `ContainerCreateRequest` schema in [`openapi.yaml`](../api/openapi.yaml)). The shipped `dns-1`/`dns-2` recipes declare `dns_server`, the `ntp-*` recipes `ntp_server` and the `syslog-*` recipes `syslog_target`, so applying any of them registers it. DHCP registration has no recipe field: after a DHCP server's container is deleted and recreated, register it again with `cixctl dhcp server add` and name it in its ranges again.
 
 The recipes, images and deployments reach a host through the recipe repository sync (`cixctl pkg sync`, configured with `cixctl pkg source`, ADR-0324), which publishes package recipes, image recipes and deployments together.
 
@@ -141,11 +141,11 @@ cixctl ntp status     # outcome of the most recent attempt
 
 `ntp config set` with no flags clears the upstream list; the host then relies on registered servers alone. `ntp sync` is refused when there is nothing to sync from, and while an attempt is already in flight.
 
-To serve time to containers and the LAN, run `ntp-1`/`ntp-2` (chrony, from the `chrony` image) and register them:
+To serve time to containers and the LAN, run `ntp-1`/`ntp-2` (chrony, from the `chrony` image); their deployments register them. `register` is for an NTP container whose definition does not:
 
 ```sh
 cixctl deployment apply ntp-1
-cixctl ntp server register --container=ntp-1
+cixctl ntp server register --container=ntp-3
 cixctl ntp server ls
 cixctl ntp server unregister ntp-1
 ```
@@ -158,9 +158,11 @@ The clock can be set by hand with `cixctl time set --unixtime=N` (`cixctl time` 
 
 Every container's stdout/stderr already lands in the consolidated log store (`cixctl logs`). A syslog target receives a copy: every container-sourced line is also sent to each registered target as an RFC 3164 UDP datagram ([ADR-0127](../adr/0127-syslog-forward-targets.md)).
 
+The `syslog-*` deployments register themselves; `register` is for a container whose definition does not:
+
 ```sh
 cixctl deployment apply syslog-1
-cixctl syslog target register --container=syslog-1
+cixctl syslog target register --container=syslog-3
 cixctl syslog target ls
 cixctl syslog target unregister syslog-1
 ```

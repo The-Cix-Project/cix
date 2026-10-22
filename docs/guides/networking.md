@@ -38,7 +38,7 @@ Brings a host interface administratively **down and then back up** (`POST /syste
 
 Run it **from the console** (which talks to `127.0.0.1` and is unaffected). If you run it against the off-box address that rides the interface being flapped, the reply may not come back even though the flap succeeded — the interface is momentarily down — so reconnect and re-check rather than treating a dropped reply as failure. Loopback (`lo`) is refused outright.
 
-**First check whether a flap is even the right tool.** If the symptom is "eth0 exists but can't reach the LAN" *and* the driver loaded late at boot, the interface may simply never have been enslaved to the management bridge (its uplink attach failed and the boot continued — the address is on the bridge, the bridge has no port). `cixctl network ls` shows whether `eth0` is in the management network's interface list; if it is not, the fix is `cixctl network attach-interface <mgmt-net> --interface=eth0`, not a flap. Flap when the interface is attached and the link itself is stuck.
+**First check whether a flap is even the right tool.** If the symptom is "eth0 exists but can't reach the LAN" *and* the driver loaded late at boot, the interface may simply never have been enslaved to the management bridge (its uplink attach failed and the boot continued — the address is on the bridge, the bridge has no port). `cixctl --json network ls` shows whether `eth0` is in the management network's interface list; if it is not, the fix is `cixctl network attach-interface <mgmt-net> --interface=eth0`, not a flap. Flap when the interface is attached and the link itself is stuck.
 
 An interface enslaved to a bridge this way stays visible on the host with state `host:bridge-port` — read from the kernel's own `master` symlink, not from a bookkeeping table — and a container cannot be given it. The interface carrying the management address is `host:management-interface` for the same reason. An interface *moved* into a container stays listed too, as `held` by that container: the daemon records the grant when it makes it, because the host can no longer see the interface afterwards ([ADR-0344](../adr/0344-a-device-is-one-record-with-one-state-and-every-grant-asks-it.md)).
 
@@ -65,7 +65,7 @@ By the time a container exists, the adapter's USB endpoint has already been clai
 - deleting the container moves the PHY back, and the host has it again in about a second
 - if you want both an AP and a client interface on one adapter, both must live in the *same* container — a wiphy cannot be split across namespaces
 
-**Driver loading is separate and explicit.** A radio driver is a kernel module (see [administration.md](administration.md#kernel-modules)), so the interface only exists once the module is loaded. Mark it to load on every boot rather than loading it by hand:
+**Driver loading follows the module policy.** A radio driver is a kernel module (see [administration.md](administration.md#kernel-modules)), so the interface only exists once the module is loaded. By default the daemon loads the module a device's alias names, at start and when the device is plugged in, so a present dongle needs nothing more ([ADR-0348](../adr/0348-a-device-gets-its-driver-and-one-policy-decides-every-module-load.md)); `cixctl kmod-scan` shows what each alias resolved to. When the policy's `autoload` is off or its allowlist leaves the driver out, mark it to load on every boot instead:
 
 ```sh
 cixctl kmod-config set rtw88_8822bu --autoload

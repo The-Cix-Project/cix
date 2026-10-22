@@ -106,13 +106,14 @@ required. Everything else is optional:
 | `--dns-register` | Register the container's name in the platform's DNS records |
 | `--interface=IFNAME` | Move a host NIC (or a radio's whole PHY) into the container, exclusively |
 | `--memory-max=BYTES` `--memory-swap-max=BYTES` `--pids-max=N` `--cpu-max="QUOTA PERIOD"` `--cpuset=0-1,3` | cgroup v2 limits. `--memory-swap-max=0` forbids swap |
-| `--disk=NAME` | Put its storage on a disk with the `container-storage` role ([`storage.md`](storage.md#3-the-roles-you-assign)) |
+| `--disk=NAME` | Put its base on a disk with the `container-storage` role; its rootfs stays beside its image ([`storage.md`](storage.md#3-the-roles-you-assign)) |
 | `--disk-quota=BYTES` | Kernel-enforced limit on its own storage |
 | `--volume=NAME:/path[:ro]` | Mount a [volume](#volumes), up to 8 |
 | `--file=CONTAINER_PATH=LOCAL_PATH[:MODE]` | Stage a local file into the container before it starts; `--file-owner=CONTAINER_PATH:UID:GID` sets its owner |
 | `--env=KEY=VALUE` | An environment variable, up to 32. A container gets only these, never the daemon's environment |
 | `--sysctl=KEY=VALUE` | A `net.*` sysctl inside its own netns, up to 32 |
 | `--device=ID` / `--optional-device=ID` | Pass a host device through; see [`administration.md`](administration.md#device-hotplug) |
+| `--reserve-devices` | Hold its devices and interfaces for it while it is stopped too, refusing them to every other container ([ADR-0344](../adr/0344-a-device-is-one-record-with-one-state-and-every-grant-asks-it.md)) |
 | `--cap-add=CAP_NAME` | Keep a capability that is dropped by default |
 | `--userns` | Run in a user namespace explicitly (the default already does) |
 | `--ksm` | Volunteer its memory to kernel samepage merging |
@@ -357,9 +358,10 @@ cixctl volume restore jump-home 20260822T030000Z    # replaces the contents
 volume is running: `refuse` (the default, which for an always-on
 container means never), `pause` (freeze every container using it for a
 consistent copy) or `allow` (copy live, crash-consistent). Restore is
-refused while a container using it is running. The shared interval is
-`PUT /v1/system/volume-backup-config`, which has no CLI command; the
-web dashboard sets it. Full rules:
+refused while a container using it is running. The shared target disk
+is `PUT /v1/system/volume-backup-config`, which has no CLI command; the
+web dashboard sets it. When the sweep runs is the `volume.backup`
+schedule (`cixctl schedule ls`). Full rules:
 [`docs/api/README.md`](../api/README.md#backing-up-what-a-volume-holds).
 
 Volume contents are not in `cixctl backup`; the bundle carries only the
@@ -446,8 +448,9 @@ cixctl deployment apply syslog-1                              # create the conta
 cixctl deployment rm syslog-1
 ```
 
-- The file's own `"name"` must equal `--name`, or `add` is refused. Its
-  content is not otherwise checked until it is applied.
+- The file must be JSON and its own `"name"` must equal `--name`, or
+  `add` is refused. Its content is not otherwise checked until it is
+  applied.
 - **`apply` creates.** It goes through the same create path as
   `POST /v1/containers`, so a container with that name must not already
   exist; to re-create, `cixctl container rm NAME` first.
@@ -490,7 +493,8 @@ and says when the container is running and needs a restart.
 
 - `name`, `restart`, `restart_delay_seconds`, `depends_on`,
   `follow_rolling` and `follow_rolling_jitter_seconds` are refused with
-  `400`; re-create the container to change them.
+  `400`; re-create the container to change them. `sysctls` is refused
+  too; change those with `cixctl container sysctl NAME KEY=VALUE`.
 - The merged body is stored without being validated; a mistake shows up
   as a failed start (`handle_container_patch()`, `daemon/src/main.c`).
 - The merge is top-level only, so changing one entry of `files` or
