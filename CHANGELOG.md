@@ -4247,7 +4247,7 @@ Three things change visibly:
 
 `GET /v1/system/hostauth/sessions` gave only a username and seconds-to-expiry, so two sessions for one account, for example the dashboard and `cixctl`, could not be told apart, and nothing said where a session came from. Each session now records `logged_in_at` (Unix seconds) and `source_ip` (the client address cixd saw on the TCP connection) when `POST /login` issues it. Both are fixed for the session's life, so a token used from another machine still shows where it was issued. `cixctl hostauth-sessions ls` and the dashboard's Sessions table show both, and a successful login's audit line now names its source address, as a refused one already did. The endpoint's description also stops claiming that most reads need no login, which has not been true since ADR-0317. `test_hostauth` checks both fields on its own session.
 
-### A container with no console says so instead of offering a terminal
+### A container with no console says so instead of offering a terminal (#557)
 
 The Console tab of a container that declares no console kept an empty terminal on screen and said to "use Run with an absolute path". There is no such control on that tab, and the console endpoint takes only a declared console's name, answering 409 otherwise. The terminal is now hidden and the tab shows the daemon's own message: the container declares no console, so there is nothing to attach to.
 
@@ -7115,6 +7115,11 @@ Bootroot assembly runs *after* a `pkg hostbuild cix` reports `installed`, so a c
 
 `start_fetch_for()`'s "source N hashes to the wrong value" error logged the full `pkg_source` URL, which by then carries the token `parse_recipe()` substituted for `{{REPO_TOKEN}}` -- so a fetch mismatch wrote a live repo credential into the log store (measured on 192.168.15.95, 2026-09-13, in a `cix` fetch-mismatch line during the ADR-0289 verification). The log store is behind auth, but a credential at rest there travels wherever logs travel (a paste, a screenshot, the `syslog-1/2` targets). Fixed by running the URL through the existing `redact_repo_token()` before logging -- the same helper #405 uses on both sides of recipe persistence -- so the token value becomes the `{{REPO_TOKEN}}` placeholder again while the host and path, the useful diagnostic, stay. Audited the sibling fetch/sync paths: the "source was never written" line logs no URL, and the repo-sync URL (which also embeds the token) only ever reaches `execve(curl)`, never the log.
 
+### One badge vocabulary on the dashboard (#459, #460)
+
+- **What changed:** every status pill is drawn by one `statusBadge()` helper, where each view used to derive its own badge classes by hand, and the pipeline view gave up its own `pipeline-badge` for the same widget. `docs/guides/web-ux-guidelines.md` was written alongside as the dashboard's design system.
+- **Verified:** shipped in v2.57.156 (commits `9d5ef7d6`, `1696bd18`, `e4a5f84a`). *This entry was added on 2026-10-22, in a documentation sweep that found the change had none.*
+
 ### A hostbuild package is consumed from the cache like any other (ADR-0289, #129)
 
 `cix`, `kernel` and `isotools` are hostbuild packages — a host builds them for itself and, since #129, publishes them to the artifact cache. This settles the mirror: a host now **consumes** one from the cache instead of rebuilding it, which for `cix`/`kernel` is the most expensive thing this platform does. The belief that a hostbuild always rebuilds was **false**, and proven so on a real host — measured on 192.168.15.95 (2026-09-13): `POST /v1/pkg/hostbuild {name:cix, version:v2.57.155, upgrade:true}` went `fetching → installed` in **3 s**, `artifact_cached=true`, **no build**. The remote signed-artifact fetch was never hostbuild-gated (`start_fetch_for()`'s child reaches the artifact tier for a hostbuild too), and since these packages carry no `pkg_artifact_sha256` the trust anchor is the ADR-0279 release-key signature — the fetch succeeding proves the box holds a trusted key (adopted from `docs/keys/` by `pkg sync`). The push path already signs every artifact a key-holding host publishes, so every *new* version of a hostbuild package is signed at publish and cache-consumable from then on.
@@ -8669,6 +8674,11 @@ An SSH certificate authority would remove trust-on-first-use altogether rather t
 key, and an OpenSSH certificate is not an X.509 certificate — a distinct signed object with
 SSH-format fields, which this X.509 CA cannot issue without new machinery. Left as its own decision
 (ADR-0280 records it as considered, not rejected).
+
+### A source-checksum failure says which of three things went wrong (#332)
+
+- **What changed:** the source-checksum check used to report one message for three different failures: a source that was never written, a file that could not be hashed, and a file that hashed to the wrong value. Each now names itself. The wrong-value case logs the path, the size, both digests and the source URL, and its failure message carries both digest prefixes and the byte count.
+- **Verified:** `probe-bad-sha` declared a real tarball with one character of its sha256 changed, so the fetch succeeds and only the comparison fails (commit `52e7b76a`). *This entry was added on 2026-10-22, in a documentation sweep that found the change had none.*
 
 ### cix-build-system builds on a Cix host (cix-build-system#124)
 
@@ -13162,6 +13172,11 @@ symptom (#291). The next concrete step is for the test to check the target's
 init is alive and its `/proc/<pid>/ns/*` open-able immediately before exec'ing,
 so at least run 1's shape is reported as a dead container rather than as zero
 bytes.
+
+### A volume sits under the device that holds it in the Storage tree (#329, #320)
+
+- **What changed:** the tree appended volumes flat onto the disk list, so `jump-home` sat level with `vda` and said nothing about which partition it uses. It now hangs under the device whose mount point holds it, longest match first, with its own glyph. A volume whose holder cannot be found is still listed, directly under Disks.
+- **Verified:** against live data on 192.168.15.95: `jump-home`'s `host_path` is under `/var/lib/cix`, which `vda5` holds, and the tree places it under `vda5` with no orphans (commit `3cdd6de4`). *This entry was added on 2026-10-22, in a documentation sweep that found the change had none.*
 
 ### A routed services subnet behind a VRRP gateway pair (cr-1, cr-2)
 
