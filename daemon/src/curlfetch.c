@@ -57,6 +57,13 @@ static int is_curatedly_retryable(CURLcode code, long http_status)
 	}
 }
 
+static char g_ca_bundle[4096];
+
+void curlfetch_set_ca_bundle(const char *path)
+{
+	snprintf(g_ca_bundle, sizeof(g_ca_bundle), "%s", path != NULL ? path : "");
+}
+
 /* One transfer attempt. resume_from is bytes already on disk (0 for a
  * fresh attempt); ignored for an upload. Returns the CURLcode and, for
  * an upload, the HTTP status via *out_http_status regardless of
@@ -98,6 +105,11 @@ static CURLcode perform_one(CURL *curl, const struct curlfetch_opts *opts, long 
 	curl_easy_setopt(curl, CURLOPT_USERAGENT, "curl/" LIBCURL_VERSION);
 	curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
 	curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+	/* ADR-0350: the root's public roots plus the operator's anchors.
+	 * Checked per transfer, so a bundle that went missing falls back to
+	 * libcurl's default rather than failing every fetch. */
+	if (g_ca_bundle[0] != '\0' && access(g_ca_bundle, R_OK) == 0)
+		curl_easy_setopt(curl, CURLOPT_CAINFO, g_ca_bundle);
 	if (opts->connect_timeout > 0)
 		curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, opts->connect_timeout);
 	if (opts->max_time > 0)

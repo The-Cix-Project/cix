@@ -371,6 +371,15 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Absent, never zero.** A cgroup not sampled yet reads the host's line in `/proc/loadavg` and has no `load` in stats.
 - **The status bar's load stays the host's.**
 
+## A host trusts its operator's CA by registration
+
+**The control-plane root trusts the `ca-certificates` package's public roots and nothing else; cixd's fetches trust those plus the CAs an operator registers through `/v1/system/trust-anchors`.** That is [ADR-0350](docs/adr/0350-a-host-trusts-its-operators-ca-by-registration.md), accepted by the owner on 2026-10-22 (#591).
+
+- **Never write an anchor into the root.** The root is published inside the installer ISO, so an anchor there would make every public install trust the owner's private CA. Anchors live in the state directory, in a bundle cixd writes and hands to libcurl as `CURLOPT_CAINFO`.
+- **`curlfetch_perform()` is the one TLS verifier against the default path.** A new HTTPS client in cixd goes through it, or it does not see the anchors.
+- **An anchor is never fetched,** because fetching is what needs it, and the catalogue cannot carry one for the same reason.
+- **The root's bundle switches to the package only after the site CA is registered on .95** (ADR-0350 rule 6), and that switch is verified by a pair: a forge commit succeeds, and a fetch from a host no anchor covers fails.
+
 ## One way to make an image
 
 **An image is made by `POST /v1/images` (`cixctl image create --name=NAME`) and by nothing else.** `POST /v1/pkg/install` naming an image that does not exist is a 400 naming that fix, and creates nothing (#500) -- the owner's decision of 2026-09-30, chosen over documenting the implicit create an install used to perform, which is how `--image=jump`, a typo for `jumpbox`, became a new image.

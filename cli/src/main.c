@@ -567,6 +567,11 @@ static const char USAGE_TEXT[] =
 	        "  signing-keys [show]  -- the Secure Boot signing key pair `iso build` needs\n"
 	        "  signing-keys set --key=PATH --cert=PATH  -- install it (ADR-0212)\n"
 	        "  signing-keys clear  -- remove it from this host\n"
+	        "  trust-anchors [ls]  -- the CAs registered for this host's HTTPS fetches (ADR-0350)\n"
+	        "  trust-anchors add --file=CA.pem  -- register one CA certificate; takes effect\n"
+	        "               for the next fetch, no reboot\n"
+	        "  trust-anchors rm FINGERPRINT  -- remove one; servers only it certifies stop\n"
+	        "               being reachable over HTTPS from this host\n"
 	        "  release-key [show]  -- the Ed25519 key that signs published artifacts\n"
 	        "  release-key set --key=PATH  -- install it (ADR-0220)\n"
 	        "  release-key clear  -- remove it from this host\n"
@@ -18331,6 +18336,107 @@ static void fmt_upstream_keys(const struct json_value *v)
 	}
 }
 
+/* One anchor's row, or the whole list (ADR-0350). */
+static void fmt_trust_anchor_row(const struct json_value *e)
+{
+	const char *fp = json_as_string(json_object_get(e, "fingerprint"));
+	const char *subject = json_as_string(json_object_get(e, "subject"));
+	const struct json_value *root = json_object_get(e, "root");
+	const struct json_value *expired = json_object_get(e, "expired");
+	time_t not_after = (time_t)json_as_number(json_object_get(e, "not_after"));
+	char expires[16] = "-";
+	struct tm tm;
+
+	if (gmtime_r(&not_after, &tm) != NULL)
+		strftime(expires, sizeof(expires), "%Y-%m-%d", &tm);
+	printf("%-64s %-5s %-10s%s %s\n", fp != NULL ? fp : "",
+	       root != NULL && root->type == JSON_BOOL && root->u.boolean ? "root" : "inter",
+	       expires,
+	       expired != NULL && expired->type == JSON_BOOL && expired->u.boolean ? " EXPIRED" : "",
+	       subject != NULL ? subject : "");
+}
+
+static void fmt_trust_anchors(const struct json_value *v)
+{
+	const struct json_value *arr = json_object_get(v, "anchors");
+	size_t i;
+
+	if (arr == NULL) {
+		/* A POST answers with the one anchor it registered. */
+		fmt_trust_anchor_row(v);
+		return;
+	}
+	if (arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("(no trust anchors -- HTTPS fetches trust the root's public roots only)\n");
+		return;
+	}
+	printf("%-64s %-5s %-10s %s\n", "FINGERPRINT", "KIND", "EXPIRES", "SUBJECT");
+	for (i = 0; i < arr->u.array.count; i++)
+		fmt_trust_anchor_row(arr->u.array.items[i]);
+}
+
+/*
+ * cixctl trust-anchors [ls] | add --file=CA.pem | rm FINGERPRINT (ADR-0350)
+ */
+static int cmd_trust_anchors(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	static const char usage[] =
+	    "usage: cixctl trust-anchors [ls] | add --file=CA.pem | rm FINGERPRINT\n";
+	char path[512];
+	struct cix_response r;
+
+	if (argc == 0 || (argc == 1 && strcmp(argv[0], "ls") == 0)) {
+		if (cix_client_request(c, CIX_API_listTrustAnchors_METHOD, CIX_API_listTrustAnchors,
+		                       NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_trust_anchors);
+	}
+	if (argc == 2 && strcmp(argv[0], "add") == 0 && strncmp(argv[1], "--file=", 7) == 0) {
+		char *content = NULL;
+		size_t content_len = 0;
+		struct json_writer w;
+
+		if (read_local_file(argv[1] + 7, &content, &content_len) != 0) {
+			fprintf(stderr, "cixctl: could not read %s\n", argv[1] + 7);
+			return 1;
+		}
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "pem");
+		jw_str(&w, content);
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+		free(content);
+		if (cix_client_request(c, CIX_API_addTrustAnchor_METHOD, CIX_API_addTrustAnchor, w.buf,
+		                       &r) != 0) {
+			jw_free(&w);
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		jw_free(&w);
+		return emit(&r, json_mode, fmt_trust_anchors);
+	}
+	if (argc == 2 && strcmp(argv[0], "rm") == 0) {
+		snprintf(path, sizeof(path), CIX_API_removeTrustAnchor, argv[1]);
+		if (cix_client_request(c, CIX_API_removeTrustAnchor_METHOD, path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		if (r.status != 204) {
+			int rc = emit(&r, json_mode, NULL);
+
+			return rc != 0 ? rc : 1;
+		}
+		cix_response_free(&r);
+		printf("trust anchor %s removed\n", argv[1]);
+		return 0;
+	}
+	fputs(usage, stderr);
+	return 2;
+}
+
 /*
  * cixctl pkg upstream-keys ls NAME | add NAME --fingerprint=FPR --file=KEY.asc | rm NAME FPR
  * The fingerprint is the pin an operator checked out of band; the
@@ -19725,6 +19831,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_kmodconfig(client, json_mode, argc, argv);
 	if (strcmp(cmd, "kmod-policy") == 0)
 		return cmd_kmodpolicy(client, json_mode, argc, argv);
+	if (strcmp(cmd, "trust-anchors") == 0)
+		return cmd_trust_anchors(client, json_mode, argc, argv);
 	if (strcmp(cmd, "kmod-scan") == 0)
 		return cmd_kmodscan(client, json_mode, argc, argv);
 	if (strcmp(cmd, "kmod-build") == 0)

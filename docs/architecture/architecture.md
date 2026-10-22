@@ -93,7 +93,9 @@ flowchart LR
     upstream["Upstream projects<br/>release tarballs and tags"]
     pkgimg["Pkg / Image"]
     rolling["Rolling"]
+    anchors["Trust anchors<br/>public roots + the operator's CAs"]
 
+    anchors -. "every HTTPS fetch verifies against" .-> pkgimg
     forge -. "sync: recipes, keys" .-> pkgimg
     pkgimg -. "git first, then publish" .-> forge
     upstream -. "discovery" .-> rolling
@@ -104,6 +106,8 @@ flowchart LR
 - **Recipe sources** — a host takes recipes from any number of them ([ADR-0324](../adr/0324-many-recipe-sources-and-many-package-repositories.md)). Write is a property of the source, not the host; one package belongs to one source; a name offered by two halts until an operator chooses. A source may be signed, and then yields only what its `INDEX` lists. Upstream keys travel in the catalogue ([ADR-0326](../adr/0326-upstream-keys-travel-in-the-signed-catalogue.md)).
 - **Package repositories** — many mirrors. Their order is speed, never trust; what is accepted is decided by `artifact_sha256` and the signature.
 - **Upstream projects** — where a rolling package's new versions are discovered, authenticated by a signature, a signed checksum list, a signed tag, or declared origin trust ([ADR-0323](../adr/0323-every-package-can-roll-discovery-authentication-and-a-green-build.md)). A source with none of them stays pinned.
+
+- **Trust anchors** — every HTTPS fetch cixd makes, from all three of the above, verifies against the root's own trust store (the `ca-certificates` package's public roots, once ADR-0350's second release lands) plus the CAs the operator registers through `/v1/system/trust-anchors` ([ADR-0350](../adr/0350-a-host-trusts-its-operators-ca-by-registration.md)). The registered CAs live in the state directory and never enter the root, which is published inside the installer ISO.
 
 **Git is authoritative for recipes, and a change made on a box writes back.** A recipe authored on a host is committed to its source first and only then published.
 

@@ -123,6 +123,7 @@ const cache = {
 	kmodConfig: [],
 	kmodPolicy: null,
 	kmodScan: null,
+	trustAnchors: [],
 };
 
 const statusLeds = document.getElementById("status-leds");
@@ -2483,6 +2484,7 @@ const CATEGORY_VIEWS = {
 	"site": "view-configuration",
 	"daemon-config": "view-control-plane",
 	"host-swap": "view-configuration",
+	"trust-anchors": "view-configuration",
 	"rolling-restart": "view-deployment",
 	"build-overview": "view-integration",
 	"pkg-build-config": "view-integration",
@@ -13642,6 +13644,69 @@ async function refreshSwap() {
 	}
 }
 
+/*
+ * ADR-0350: the CAs this host's HTTPS fetches trust beyond the public
+ * roots. The table names each by its subject; the fingerprint, which is
+ * what the API and the config document key it by, is cut short by its
+ * class and whole in its tooltip. The add form is generated from the
+ * contract, and syncForm() leaves a half-pasted certificate alone
+ * across refreshes.
+ */
+async function refreshTrustAnchors() {
+	try {
+		const r = await apiRequest("GET", CIX_API.listTrustAnchors());
+
+		cache.trustAnchors = r.anchors || [];
+	} catch (e) {
+		/* The table keeps what it last showed; renderTable() says why
+		 * a read was refused (op listTrustAnchors). */
+	}
+	renderTrustAnchors();
+	syncForm(document.getElementById("trust-anchor-add-form"), "addTrustAnchor", {
+		submit: "Register", clear: true, saved: "CA registered",
+		failed: "Failed to register the CA", after: refreshTrustAnchors,
+	});
+}
+
+function renderTrustAnchors() {
+	renderTable(document.getElementById("trust-anchors"), "TrustAnchor", cache.trustAnchors, [
+		"subject",
+		{ field: "fingerprint", cls: "cell-identifier", title: (a) => a.fingerprint },
+		"root",
+		"not_after",
+		/* Marked only on the one row that is a problem; "no" stays the
+		 * ordinary word it is. */
+		{ field: "expired", badge: (v) => (v ? "error" : null) },
+		{ label: "", actions: (a) => {
+			const rm = document.createElement("button");
+
+			rm.textContent = "Remove";
+			rm.className = "button-danger button-small";
+			gateAction(rm, "removeTrustAnchor");
+			rm.addEventListener("click", () => removeTrustAnchor(a));
+			return [rm];
+		} },
+	], {
+		op: "listTrustAnchors",
+		what: "trust anchors",
+		empty: "No CAs registered: HTTPS fetches trust the public roots only.",
+	});
+}
+
+async function removeTrustAnchor(a) {
+	if (!confirm("Stop trusting " + a.subject + "? Servers only this CA certifies stop being " +
+	             "reachable over HTTPS from this host, at the next fetch."))
+		return;
+	try {
+		await apiRequest("DELETE", CIX_API.removeTrustAnchor(a.fingerprint));
+		clearStatus();
+		showStatus("CA removed", false);
+		await refreshTrustAnchors();
+	} catch (e) {
+		showStatus("Failed to remove the CA: " + e.message, true);
+	}
+}
+
 document.getElementById("swap-disable").addEventListener("click", async () => {
 	try {
 		await apiRequest("DELETE", CIX_API.deleteSystemSwap());
@@ -15052,6 +15117,7 @@ const VIEW_REFRESHERS = {
 	routes: [refreshRoutes],
 	sysctl: [refreshSysctl],
 	"host-swap": [refreshSwap, refreshZswap],
+	"trust-anchors": [refreshTrustAnchors],
 	"rolling-restart": [refreshRollingConfig],
 	"tls-throttle": [refreshTlsThrottleConfig, refreshTlsThrottleStatus],
 	backup: [refreshBackupConfig, refreshBackupStatus],
@@ -15086,7 +15152,7 @@ const ALL_REFRESHERS = [
 	refreshSiteConfig, refreshDaemonConfig, refreshRollingConfig,
 	refreshPkgBuildConfig, refreshRoutes, refreshSysctl, refreshKmod, refreshKmodConfig,
 	refreshKmodPolicy, refreshKmodScan,
-	refreshSwap, refreshTlsThrottleConfig, refreshTlsThrottleStatus,
+	refreshSwap, refreshTrustAnchors, refreshTlsThrottleConfig, refreshTlsThrottleStatus,
 ];
 
 const SWEEP_INTERVAL_MS = 30000;

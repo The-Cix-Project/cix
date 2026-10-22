@@ -654,6 +654,18 @@ static const struct cli_node n_kmod_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
+static const char *const n_trust_anchors_add_flags[] = {
+	"--file=",
+	NULL
+};
+
+static const struct cli_node n_trust_anchors_subs[] = {
+	{ "add", n_trust_anchors_add_flags, NULL },
+	{ "ls", NULL, NULL },
+	{ "rm", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
 static const char *const n_kmod_config_set_flags[] = {
 	"--autoload",
 	"--no-autoload",
@@ -1640,6 +1652,7 @@ static const struct cli_node CLI_TREE[] = {
 	{ "release-key", NULL, n_release_key_subs },
 	{ "catalogue-key", NULL, n_release_key_subs },
 	{ "signing-keys", NULL, n_signing_keys_subs },
+	{ "trust-anchors", NULL, n_trust_anchors_subs },
 	{ "sysctl", NULL, n_sysctl_subs },
 	{ "kmod", NULL, n_kmod_subs },
 	{ "kmod-config", NULL, n_kmod_config_subs },

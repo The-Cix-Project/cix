@@ -125,7 +125,7 @@ Services         (a group: no page of its own)
 Host             (a group: no page of its own)
   Health         (tabs: Stats / Processes / Log Store / Kernel Log)
   Identity       (tabs: Sessions / Permissions / Users / Groups)
-  Configuration  (tabs: Name / Running Config / Swap; Factory Reset below them)
+  Configuration  (tabs: Name / Running Config / Swap / Trust Anchors; Factory Reset below them)
   Control Plane  (tabs: Ports / Throttling / CPU & Memory / Stalls / Schedules)
   Devices        (tabs: Devices / Named Mappings / Kernel Modules)
   Kernel         (tabs: Kernel Line / Sysctl)
@@ -146,7 +146,7 @@ Container leaves are colored by live status (running/paused/stopped -- tinted ic
 
 **A child in the tree is a live thing, except under the three groups.** Under Containers sit the containers; under Networks the networks; under Storage the disks, their partitions and the volumes on them. A group's children are subjects instead, and Software's are its *stages*: Catalogue, Build, Deployment. That is deliberate: an operator asking "where did this stop?" is asking about a stage, so the stages are what the tree should offer. `test_web_tree` knows about this exception rather than being weakened for it.
 
-**Host holds the machine's own subjects**: Health (its stats, processes and both logs), Identity (who may log in), Configuration (its name, running config and swap), Control Plane (what the daemon does), Devices (what is plugged in), Kernel (what it boots with), and Bootloader (which slot, signed by whom, and what the last boot printed).
+**Host holds the machine's own subjects**: Health (its stats, processes and both logs), Identity (who may log in), Configuration (its name, running config, swap and the CAs its fetches trust), Control Plane (what the daemon does), Devices (what is plugged in), Kernel (what it boots with), and Bootloader (which slot, signed by whom, and what the last boot printed).
 
 **Boot Slots and Signing Keys are Bootloader, not Kernel.** Both were briefly filed under Kernel because they are boot-adjacent, but neither is about the kernel: an A/B slot is what the bootloader picks, and a signing key is what it will accept. Boot Console joins them because it is the record of what that choice produced.
 

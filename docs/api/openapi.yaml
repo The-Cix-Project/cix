@@ -2469,6 +2469,113 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /system/trust-anchors:
+    get:
+      summary: The CAs this host's operator registered for its HTTPS fetches (ADR-0350)
+      description: >
+        Every HTTPS fetch the daemon makes -- recipe sources, package
+        repositories, upstream projects, forge commits -- verifies
+        against the control-plane root's public roots plus these. An
+        operator registers a CA here when a server they run is
+        certified by a CA of their own, such as a site forge. The list
+        lives in the state directory and never enters the control-plane
+        root, which is published inside the installer ISO.
+      operationId: listTrustAnchors
+      x-cix-read: state
+      x-cix-permission: system:read
+      x-cix-expose: [cli, web]
+      responses:
+        "200":
+          description: The registered anchors
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [anchors]
+                properties:
+                  anchors:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TrustAnchor"
+    post:
+      summary: Register one CA certificate as a trust anchor (ADR-0350)
+      description: >
+        Takes effect for the next fetch, with no reassembly and no
+        reboot. The PEM must hold exactly one certificate and nothing
+        else, with basicConstraints CA:TRUE, not expired. Register the
+        root of the CA; an intermediate is accepted too. Nothing is
+        fetched: the operator supplies the certificate, because
+        fetching is what needs it. A registered anchor lets whoever
+        holds its key impersonate any server to this host, so it is
+        the most sensitive write after the signing keys.
+      operationId: addTrustAnchor
+      x-cix-invalidates: [listTrustAnchors]
+      x-cix-permission: system:write
+      x-cix-expose: [cli, web]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrustAnchorAddRequest"
+      responses:
+        "201":
+          description: Registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrustAnchor"
+        "400":
+          description: Not exactly one CA certificate, a private key alongside it, unparseable, or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Already registered, or 16 anchors are registered already
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not persist the store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /system/trust-anchors/{fingerprint}:
+    delete:
+      summary: Remove a trust anchor (ADR-0350)
+      description: >
+        Takes effect for the next fetch. A server certified only by
+        this CA stops being reachable over HTTPS from this host.
+      operationId: removeTrustAnchor
+      x-cix-invalidates: [listTrustAnchors]
+      x-cix-permission: system:write
+      x-cix-expose: [cli, web]
+      parameters:
+        - name: fingerprint
+          in: path
+          required: true
+          description: The anchor's SHA-256 fingerprint, 64 lowercase hex characters.
+          schema:
+            type: string
+            pattern: '^[0-9a-f]{64}$'
+      responses:
+        "204":
+          description: Removed
+        "404":
+          description: No anchor with this fingerprint
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Could not persist the store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /system/signing-keys:
     get:
       summary: Whether this host holds a Secure Boot signing key pair (ADR-0212)
@@ -4723,8 +4830,9 @@ paths:
       summary: Re-ask kernel.org what each channel is at (issue #65)
       description: >
         Starts a fetch of kernel.org's `releases.json` and returns
-        immediately (202) -- the fetch is a forked curl watched by
-        pidfd, never a blocking call inside the event loop, because a
+        immediately (202) -- the fetch runs in a forked child, through the
+        daemon's in-process libcurl (#410) and watched by pidfd, never a
+        blocking call inside the event loop, because a
         host with no upstream resolvers configured would otherwise stall
         the entire control plane behind a DNS timeout.
 
@@ -16090,10 +16198,10 @@ components:
 
           `x-cix-config-apply` -- `replace` when one setter replaces
           the whole section, `reconcile` when applying it means
-          creating, updating and deleting individual live resources.
-          Only `replace` sections can be applied today; a `reconcile`
-          section with real changes refuses the whole request rather
-          than applying half of it.
+          creating, updating and deleting individual live resources,
+          and `manual` when only its own endpoints may change it. A
+          `manual` section with real changes refuses the whole request
+          rather than applying half of it.
       properties:
         site:
           description: Host identity -- instance, site, domain. First because everything else is named relative to it.
@@ -16107,6 +16215,16 @@ components:
           description: The host's own /etc/resolv.conf nameservers (ADR-0076).
           x-cix-config-kind: object
           x-cix-config-apply: replace
+        trust_anchors:
+          description: >
+            The CAs this host's HTTPS fetches trust beyond the public
+            roots (ADR-0350), each with its PEM. Before anything that
+            fetches. A certificate is public and its PEM describes it
+            completely, so the document can create and remove anchors.
+          x-cix-config-kind: array
+          x-cix-config-key: "fingerprint"
+          x-cix-config-apply: reconcile
+          x-cix-config-state: "subject,issuer,not_after,root,expired,added_at"
         time:
           description: NTP configuration -- upstream sources and whether stepping is allowed.
           x-cix-config-kind: object
@@ -17322,6 +17440,15 @@ components:
         pkg_installed:
           type: string
           description: Raw content of pkg_installed.json (which packages are installed, into which images, at which version).
+        trust_anchors:
+          type: string
+          description: >
+            Raw content of trust_anchors.json, the CAs this host's HTTPS
+            fetches trust beyond the public roots (ADR-0350). Public
+            certificates, not key material, so they are configuration
+            and travel with it: a restore onto new hardware has to reach
+            the operator's own servers again. Takes effect at the next
+            daemon start, like the rest of a restore.
         pkg_recipes:
           type: object
           additionalProperties:
@@ -18559,6 +18686,47 @@ components:
           type: array
           items:
             type: string
+    TrustAnchor:
+      type: object
+      required: [fingerprint, subject, issuer, not_after, root, expired, added_at]
+      description: One CA an operator registered for this host's HTTPS fetches (ADR-0350).
+      properties:
+        fingerprint:
+          title: Fingerprint
+          type: string
+          description: SHA-256 of the certificate's DER, 64 lowercase hex characters. Names the anchor everywhere.
+        subject:
+          title: Subject
+          type: string
+        issuer:
+          title: Issued by
+          type: string
+          description: The same as the subject for a root.
+        not_after:
+          title: Expires
+          type: integer
+          format: unix-seconds
+        root:
+          title: Root
+          type: boolean
+          description: Self-signed. A root is what to register; an intermediate is accepted too.
+        expired:
+          title: Expired
+          type: boolean
+          description: Past not_after. An anchor that expired after it was registered stays listed until it is removed, and verifies nothing.
+        added_at:
+          title: Added
+          type: integer
+          format: unix-seconds
+    TrustAnchorAddRequest:
+      type: object
+      required: [pem]
+      properties:
+        pem:
+          title: CA certificate (PEM)
+          x-cix-ui: textarea
+          type: string
+          description: Exactly one certificate ("-----BEGIN CERTIFICATE-----"), with basicConstraints CA:TRUE. Never a private key.
     SigningKeys:
       type: object
       required: [key_set, cert_set]

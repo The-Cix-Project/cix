@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-22, for #591. The owner chose the approach on 2026-10-20 (option 1 on #591: an operator-registered trust anchor, on the `pkg upstream-keys` precedent) and asked for an ADR and a price before any work. On 2026-10-22 the owner chose that the combined bundle takes effect at runtime as well as at assembly, and that the owner registers the site CA. A review of the first draft then found that writing anchors into the root would put the owner's private CA into the published installer ISO (rule 4), so this text narrows that choice to runtime only and asks for acceptance again.
+Accepted by the owner, 2026-10-22, for #591. The owner chose the approach on 2026-10-20 (option 1 on #591: an operator-registered trust anchor, on the `pkg upstream-keys` precedent) and asked for an ADR and a price before any work. On 2026-10-22 the owner chose that the combined bundle takes effect at runtime as well as at assembly, and that the owner registers the site CA. A review of the first draft then found that writing anchors into the root would put the owner's private CA into the published installer ISO (rule 4), so this text narrows that choice to runtime only, and the owner accepted it in that form the same day.
 
 ## Context
 

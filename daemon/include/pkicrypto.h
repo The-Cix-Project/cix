@@ -65,6 +65,29 @@ struct pkicrypto_cert_fields {
 int pkicrypto_cert_fields(const char *cert_path, struct pkicrypto_cert_fields *out, char *err,
                           size_t err_size);
 
+/*
+ * ADR-0350: what an operator's trust anchor is, read from the PEM they
+ * supplied. The PEM must be exactly one certificate and nothing else --
+ * a private key, or a second block of any kind, is refused -- and the
+ * certificate must carry basicConstraints CA:TRUE. fingerprint is the
+ * SHA-256 of the DER as 64 lowercase hex characters, with no
+ * separators; not_after is unix seconds; root is 1 for a self-signed
+ * certificate; expired is 1 when not_after has passed, which the caller
+ * decides about (a new anchor is refused, a stored one stays listed).
+ * Returns 0, or -1 with the reason in err.
+ */
+struct pkicrypto_anchor {
+	char fingerprint[65];
+	char subject[256];
+	char issuer[256];
+	long long not_after;
+	int root;
+	int expired;
+};
+
+int pkicrypto_anchor_inspect(const char *pem, size_t pem_len, struct pkicrypto_anchor *out,
+                             char *err, size_t err_size);
+
 /* 1 if the private key at key_path is the one cert_path certifies,
  * 0 if not, -1 if either cannot be read. */
 int pkicrypto_key_matches_cert(const char *key_path, const char *cert_path, char *err,

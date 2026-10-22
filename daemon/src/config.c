@@ -74,6 +74,7 @@
 #include "swap.h"
 #include "sysctlconfig.h"
 #include "syslogfwd.h"
+#include "trustanchor.h"
 #include "volume.h"
 #include "zswap.h"
 
@@ -90,6 +91,17 @@ static const char *g_containers_dir;
 static void cfg_site(struct json_writer *w) { siteconfig_write_json(w); }
 static void cfg_daemon(struct json_writer *w) { daemon_config_write_json(w); }
 static void cfg_resolver(struct json_writer *w) { resolv_write_json(w); }
+
+/* ADR-0350: each anchor with its PEM, which is what recreates it. */
+static void cfg_trust_anchors(struct json_writer *w)
+{
+	int i;
+
+	jw_arr_open(w);
+	for (i = 0; i < trustanchor_count(); i++)
+		trustanchor_write_json(w, trustanchor_get(i), 1);
+	jw_arr_close(w);
+}
 static void cfg_time(struct json_writer *w) { ntp_write_json_config(w); }
 static void cfg_ntp_servers(struct json_writer *w) { ntp_server_write_json_list(w); }
 static void cfg_sysctl(struct json_writer *w) { sysctlconfig_write_json_list(w); }

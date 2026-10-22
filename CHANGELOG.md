@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A host trusts its operator's CA by registration (ADR-0350 release one, #591)
+
+- **What changed:**
+  - **A trust-anchor store:** `GET`/`POST /v1/system/trust-anchors` and `DELETE /v1/system/trust-anchors/{fingerprint}`, `cixctl trust-anchors ls|add|rm`, and a Trust Anchors tab on Host › Configuration. An anchor is exactly one CA certificate (`basicConstraints CA:TRUE`): a server certificate, a private key alongside it, two certificates, an expired one, a duplicate and a seventeenth are each refused with the reason. It is keyed by the SHA-256 of its DER as 64 lowercase hex, and persisted in the state directory.
+  - **Every fetch uses it:** cixd writes the root's public roots followed by every anchor to a bundle in the state directory, and `curlfetch_perform()`, the one libcurl handle, hands it to libcurl as `CURLOPT_CAINFO`. A new anchor takes effect for the next fetch, with no reassembly and no reboot. With no anchors, or when the public roots cannot be read, no bundle is written and fetches use libcurl's default, exactly as before.
+  - **Never in the root:** the control-plane root is published inside the installer ISO, so a registered CA stays in this host's state directory.
+  - **Config, backup and reset:** a `trust_anchors` section in the config document, applied by reconcile (a create checks that the element's fingerprint is its PEM's); a `trust_anchors` field in the system backup bundle; and a factory reset removes it with the rest of the state directory.
+  - **Unchanged in this release:** the root's own bundle is still copied off the build host. Release two switches it to the `ca-certificates` package, after the owner has registered the site CA (ADR-0350 rule 6).
+  - **Contract text:** `kernel-policy/refresh` no longer says it forks curl (it runs the in-process libcurl in a forked child, #410), the config document's description of `manual` and `reconcile` is corrected, and the `pkg.sync` action reads "every configured source" rather than "the configured repo".
+- **Verified:** `test_trustanchor` (in `SELFTESTS`) makes a real root CA, intermediate and server certificate with `pkicrypto.c` and checks what is accepted and refused, the fingerprint against `pkicrypto_cert_fields()`, persistence across a restart, the bundle's contents and both fallbacks, and the limit of 16.
+
 ### A build no longer deletes the previous build's tree on the event loop (#626)
 
 - **What changed:** a build container that exits is unmounted and left on disk, so its slot (`__pkgbuild-<n>`) still holds the previous build's whole tree until the next build there resets it. That reset was an `rmtree()` on the event loop, because a slot is a plain directory rather than a subvolume. It now sets the tree aside with one rename into the containers directory's `.discard`, and ADR-0341's queue deletes it in a helper child, the same way a deleted container's base goes. `rootfs_discard()` is exported to `pkg.c` for this through `rootfsdiscard.h`, so there is still one delete queue. The reset is also its own step, "build prep: set the previous build aside", so a slow one is named apart from the staging.

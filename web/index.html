@@ -1133,6 +1133,7 @@
 				<button type="button" class="tab-button active" data-tab="site">Name</button>
 				<button type="button" class="tab-button" data-tab="running-config">Running Config</button>
 				<button type="button" class="tab-button" data-tab="host-swap">Swap</button>
+				<button type="button" class="tab-button" data-tab="trust-anchors">Trust Anchors</button>
 			</div>
 <div class="tab-panel" data-tab="site">
 			<p class="hint">
@@ -1176,6 +1177,26 @@
 			<p class="hint" id="zswap-divergence" hidden></p>
 			<form id="zswap-form"></form>
 			<table class="detail-table"><tbody id="zswap-kernel"></tbody></table>
+		</div>
+<div class="tab-panel" data-tab="trust-anchors" hidden>
+			<p class="hint">
+				Every HTTPS fetch this host makes trusts the public roots it ships with, plus the
+				CAs registered here (ADR-0350). Register a CA when a server you run, such as a
+				site forge, is certified by a CA of your own. It takes effect for the next fetch,
+				with no reboot, and stays on this host: it never enters the installer image.
+			</p>
+			<table id="trust-anchors">
+				<tbody>
+					<tr><td colspan="6" class="empty">Reading&hellip;</td></tr>
+				</tbody>
+			</table>
+			<h3>Register a CA</h3>
+			<p class="hint">
+				Paste the CA's certificate, or load it from a file: exactly one certificate, never
+				a private key. Register the root of the CA; an intermediate also works. A
+				registered CA can vouch for any server to this host, so register only your own.
+			</p>
+			<form id="trust-anchor-add-form"></form>
 		</div>
 			<!--
 			     Factory Reset is an ACTION, not a destination (the

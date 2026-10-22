@@ -70,6 +70,9 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/signing-keys` | Whether this host holds a Secure Boot signing key pair, and which identity |
 | PUT | `/system/signing-keys` | Install an operator-supplied signing key pair (two PEM blocks) |
 | DELETE | `/system/signing-keys` | Remove this host's signing key pair |
+| GET | `/system/trust-anchors` | The CAs the operator registered for this host's HTTPS fetches, beside the public roots ([ADR-0350](../adr/0350-a-host-trusts-its-operators-ca-by-registration.md)) |
+| POST | `/system/trust-anchors` | Register one CA certificate (PEM); takes effect for the next fetch |
+| DELETE | `/system/trust-anchors/{fingerprint}` | Remove a registered CA |
 | GET | `/system/release-key` | Whether this host holds an Ed25519 release-signing key, and its publishable public half |
 | PUT | `/system/release-key` | Install the operator's Ed25519 release key (one PEM block) |
 | DELETE | `/system/release-key` | Remove this host's release key |
@@ -1631,7 +1634,7 @@ Five actions are registered:
 | `system.roll` | ADR-0327: bring the host to its newest packages. Hostbuild the kernel and then cix when a newer recipe exists (kernel first; the root carries its modules), assemble the root, stage root and kernel together on the inactive slot, and reboot, all within the job's window. Finished after the window, it stays staged and the next window reboots. A failure stops the roll, stages nothing, and logs why. The A/B boot counter is the rollback. A fresh host runs it as `host-roll`, daily at 03:00 for 3h |
 | `system.backup` | Write a system backup to the configured disk |
 | `volume.backup` | Snapshot every volume that opted in |
-| `pkg.sync` | Fetch recipes from the configured repo |
+| `pkg.sync` | Fetch recipes from every configured source (ADR-0324) |
 
 **The three interval fields are gone.** `backup-config`, `volume-backup-config` and the repo config (now the source list, ADR-0324) each lost their `interval_*`, and sending one is now a **400 naming its replacement** rather than being ignored — a caller who thought it had set a schedule and hadn't is worse off than one that was told. Those configs now answer only *where* and *whether*, never *when*.
 
@@ -3950,6 +3953,23 @@ The asymmetry is the point. A recipe's build instructions must not change under 
 Only absent → present is accepted. Two approvals naming different bytes are a divergence and are refused, because one version naming two different byte sequences is exactly what immutability protects against — and it is the failure [#145](https://git.home.arpa/itdlabs/cix/issues/145) documents, where an edited checksum silently stops matching and every install falls back to source with an error that never mentions checksums.
 
 An `artifact_sha256` still approves one specific byte sequence, and still may only be computed over something a Cix host actually produced (see the Build Provenance Mandate).
+
+## Trust anchors: the operator's own CAs (ADR-0350)
+
+```
+GET    /v1/system/trust-anchors
+POST   /v1/system/trust-anchors                 {"pem": "-----BEGIN CERTIFICATE-----..."}
+DELETE /v1/system/trust-anchors/{fingerprint}
+```
+
+Every HTTPS fetch the daemon makes (recipe sources, package repositories, upstream projects, forge commits) verifies against the control-plane root's public roots plus the CAs registered here. Register a CA when a server you run is certified by a CA of your own, such as a site forge. A fresh install registers none, and the public catalogue and cache need none.
+
+- **What is accepted:** exactly one certificate with `basicConstraints CA:TRUE`, not expired. A private key alongside it, a second certificate, a server certificate and an unparseable PEM are each `400` with the reason. Register the CA's root; an intermediate is accepted too, because libcurl on OpenSSL accepts a partial chain. A duplicate, or a seventeenth anchor, is `409`.
+- **The fingerprint** is the SHA-256 of the certificate's DER as 64 lowercase hex characters. It names the anchor in the list, in `DELETE` and in the config document.
+- **Takes effect for the next fetch.** The daemon writes the public roots followed by every anchor to a bundle in the state directory and hands it to libcurl, so there is no reassembly and no reboot. With no anchors, or when the root's public roots cannot be read, no bundle is written and fetches use libcurl's default, the root's own trust store.
+- **Never in the root.** The control-plane root is published inside the installer ISO, so a registered CA stays in this host's state directory. It travels in the system backup (`trust_anchors`) and in the config document (`trust_anchors`, applied by reconcile), and a factory reset removes it.
+- **An anchor that expires after it was registered** stays listed with `expired: true` until it is removed; it verifies nothing.
+- **Sensitive.** A registered CA lets whoever holds its key impersonate any server to this host, recipe sync included. Both changes need `system:write`, and both are audited.
 
 ## The Secure Boot signing key pair
 

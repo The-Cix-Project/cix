@@ -104,4 +104,14 @@ struct curlfetch_opts {
 int curlfetch_perform(const struct curlfetch_opts *opts, long *out_http_status, char *err,
                       size_t err_size);
 
+/*
+ * ADR-0350: the CA bundle every transfer verifies against -- the root's
+ * public roots plus the operator's registered anchors, written by
+ * trustanchor.c. NULL, or a file that is not readable when a transfer
+ * starts, leaves libcurl's compiled-in default, the root's public
+ * bundle. Set by cixd before it forks the children that call
+ * curlfetch_perform(), so each child inherits the path in force.
+ */
+void curlfetch_set_ca_bundle(const char *path);
+
 #endif /* CURLFETCH_H */

@@ -974,6 +974,7 @@ static void check_architecture_components(void)
 		{ "kmodpolicy.c", "Module policy" },
 		{ "procfuse.c", "procfuse" },
 		{ "esp.c", "ESP" },
+		{ "trustanchor.c", "Trust anchors" },
 	};
 	char *doc = slurp("docs/architecture/architecture.md");
 	size_t i;

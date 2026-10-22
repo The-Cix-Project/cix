@@ -405,12 +405,14 @@ int main(void)
 	 *     coldplug sweep's report.
 	 * 347 as of ADR-0348 release two: POST /system/kmod-scan, a sweep on
 	 *     request.
+	 * 350 as of ADR-0350: GET, POST and DELETE /system/trust-anchors, the
+	 *     CAs an operator registers for this host's HTTPS fetches.
 	 */
 	status = run_apigen("docs/api/openapi.yaml", NULL, out, sizeof(out));
 	if (status != 0)
 		fail("apigen rejected the real spec: %.300s", out);
-	else if (atoi(out) != 347)
-		fail("apigen found %d operations in the real spec, expected 347 -- if the spec "
+	else if (atoi(out) != 350)
+		fail("apigen found %d operations in the real spec, expected 350 -- if the spec "
 		     "genuinely changed, update this number deliberately; a silently different "
 		     "count is how a lost route hides",
 		     atoi(out));
@@ -645,7 +647,7 @@ int main(void)
 	 * reads it makes stale. The events stream announces from these, so
 	 * a gap is a page that stays stale with nothing saying so -- a
 	 * build failure, as a missing permission is. The real spec passing
-	 * above is the positive control: all 146 reads and 201 changes.
+	 * above is the positive control: all 147 reads and 203 changes.
 	 */
 	expect_refusal("a read with no x-cix-read",
 	               VOCAB
@@ -917,9 +919,9 @@ int main(void)
 			}
 			fclose(f);
 			unlink(routes_path);
-			if (rows != 347 || with_permission != rows)
+			if (rows != 350 || with_permission != rows)
 				fail("the generated route table has %d rows and %d carry a permission; "
-				     "expected 347 and 347 (ADR-0317)",
+				     "expected 350 and 350 (ADR-0317)",
 				     rows, with_permission);
 		}
 	}
@@ -931,8 +933,8 @@ int main(void)
 		 * these lists, so a slot out of range would write past the
 		 * vector and a missing change row would announce nothing --
 		 * both silently. Counted here against the contract itself:
-		 * one slot per announced read (146 reads, less 10 streams and
-		 * 11 derived reads, is 125), one row per change (201).
+		 * one slot per announced read (147 reads, less 10 streams and
+		 * 11 derived reads, is 126), one row per change (203).
 		 */
 		char slots_path[256], table_path[256];
 		char buf[4096];
@@ -997,13 +999,13 @@ int main(void)
 		}
 		unlink(slots_path);
 		unlink(table_path);
-		if (count != 125 || defines != count || read_rows != count)
+		if (count != 126 || defines != count || read_rows != count)
 			fail("the events slots say %d reads, define %d EV_ constants and the table has "
-			     "%d read rows; all three should be 125 (ADR-0339)",
+			     "%d read rows; all three should be 126 (ADR-0339)",
 			     count, defines, read_rows);
-		if (change_count != 201 || change_rows != change_count)
+		if (change_count != 203 || change_rows != change_count)
 			fail("the events table declares %d changes and has %d change rows; both should "
-			     "be 201, one per non-GET operation (ADR-0339)",
+			     "be 203, one per non-GET operation (ADR-0339)",
 			     change_count, change_rows);
 		if (stream_count != 7 || stream_rows != stream_count)
 			fail("the events table declares %d subscribable reads and has %d stream rows; "
@@ -1108,10 +1110,10 @@ int main(void)
 			fclose(f);
 			unlink(hdr_path);
 		}
-		if (defines != 347)
-			fail("CLI header has %d path defines, expected one per operation (347)", defines);
-		if (methods != 347)
-			fail("CLI header has %d method defines, expected one per operation (347)", methods);
+		if (defines != 350)
+			fail("CLI header has %d path defines, expected one per operation (350)", defines);
+		if (methods != 350)
+			fail("CLI header has %d method defines, expected one per operation (350)", methods);
 		if (braces != 0)
 			fail("%d CLI path define(s) still contain '{' -- a parameter was not converted "
 			     "to %%s and would put a literal brace in the URL",
@@ -1438,8 +1440,8 @@ int main(void)
 			fclose(f);
 			unlink(js_path);
 		}
-		if (shapes != 347)
-			fail("web api.js has %d _SHAPE entries, expected one per operation (347)",
+		if (shapes != 350)
+			fail("web api.js has %d _SHAPE entries, expected one per operation (350)",
 			     shapes);
 		if (!saw_fields)
 			fail("web api.js has no FIELDS table -- the renderers have nothing to render "
@@ -1664,8 +1666,8 @@ int main(void)
 			     "raise it rather than check a prefix of them%s",
 			     "APIGEN_TEST_MAX_REQ", "");
 		if (n_names == 0)
-			fail("no operation in api.js names a request schema -- 125 of the "
-			     "contract's 347 carry a requestBody, so this is a reader that "
+			fail("no operation in api.js names a request schema -- 126 of the "
+			     "contract's 350 carry a requestBody, so this is a reader that "
 			     "resolved none of them");
 		if (dangling > 0)
 			fail("%d operation(s) name a request schema with no FIELDS entry, the first "

@@ -9,6 +9,7 @@
 #include "pkicrypto.h"
 
 #include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -379,6 +380,100 @@ int pkicrypto_cert_fields(const char *cert_path, struct pkicrypto_cert_fields *o
 	                       sizeof(out->sha1_fingerprint)) == 0;
 	ok = ok && fingerprint(cert, EVP_sha256(), out->sha256_fingerprint,
 	                       sizeof(out->sha256_fingerprint)) == 0;
+	X509_free(cert);
+	if (!ok) {
+		fail(err, err_size, "cannot read the certificate's fields");
+		memset(out, 0, sizeof(*out));
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * How many PEM blocks `pem` holds, and how many of them are
+ * certificates. Counted on the text, because PEM_read_bio_X509() reads
+ * the first certificate and skips anything before it: a PEM holding a
+ * key and a certificate would otherwise inspect as a clean certificate.
+ */
+static void pem_block_counts(const char *pem, size_t len, int *blocks, int *certs)
+{
+	static const char begin[] = "-----BEGIN ";
+	static const char cert[] = "-----BEGIN CERTIFICATE-----";
+	size_t i;
+
+	*blocks = 0;
+	*certs = 0;
+	for (i = 0; i + sizeof(begin) - 1 <= len; i++) {
+		if (i > 0 && pem[i - 1] != '\n')
+			continue;
+		if (memcmp(pem + i, begin, sizeof(begin) - 1) != 0)
+			continue;
+		(*blocks)++;
+		if (i + sizeof(cert) - 1 <= len && memcmp(pem + i, cert, sizeof(cert) - 1) == 0)
+			(*certs)++;
+	}
+}
+
+int pkicrypto_anchor_inspect(const char *pem, size_t pem_len, struct pkicrypto_anchor *out,
+                             char *err, size_t err_size)
+{
+	unsigned char md[EVP_MAX_MD_SIZE];
+	unsigned int md_len = 0, i;
+	int blocks, certs, ok;
+	uint32_t flags;
+	struct tm tm;
+	X509 *cert;
+	BIO *b;
+
+	memset(out, 0, sizeof(*out));
+	pem_block_counts(pem, pem_len, &blocks, &certs);
+	if (certs != 1 || blocks != 1) {
+		snprintf(err, err_size, "%s",
+		         certs == 0 ? "not a PEM certificate"
+		         : blocks > certs
+		             ? "the PEM holds something besides the certificate, such as a private "
+		               "key -- send the CA certificate alone"
+		             : "the PEM holds more than one certificate -- register each CA on its own");
+		return -1;
+	}
+	b = BIO_new_mem_buf(pem, (int)pem_len);
+	cert = b != NULL ? PEM_read_bio_X509(b, NULL, NULL, NULL) : NULL;
+	BIO_free(b);
+	if (cert == NULL) {
+		fail(err, err_size, "the certificate does not parse");
+		return -1;
+	}
+
+	flags = X509_get_extension_flags(cert);
+	if (!(flags & EXFLAG_BCONS) || !(flags & EXFLAG_CA)) {
+		snprintf(err, err_size,
+		         "not a CA certificate (no basicConstraints CA:TRUE) -- a trust anchor is the "
+		         "CA that issues server certificates, not a server certificate");
+		X509_free(cert);
+		return -1;
+	}
+	out->expired = X509_cmp_current_time(X509_get0_notAfter(cert)) <= 0;
+
+	ok = X509_digest(cert, EVP_sha256(), md, &md_len) == 1 && md_len == 32;
+	for (i = 0; ok && i < md_len; i++)
+		snprintf(out->fingerprint + i * 2, 3, "%02x", md[i]);
+
+	b = BIO_new(BIO_s_mem());
+	ok = ok && b != NULL &&
+	     X509_NAME_print_ex(b, X509_get_subject_name(cert), 0, XN_FLAG_ONELINE) >= 0 &&
+	     bio_text(b, out->subject, sizeof(out->subject)) == 0;
+	BIO_free(b);
+	b = BIO_new(BIO_s_mem());
+	ok = ok && b != NULL &&
+	     X509_NAME_print_ex(b, X509_get_issuer_name(cert), 0, XN_FLAG_ONELINE) >= 0 &&
+	     bio_text(b, out->issuer, sizeof(out->issuer)) == 0;
+	BIO_free(b);
+
+	memset(&tm, 0, sizeof(tm));
+	ok = ok && ASN1_TIME_to_tm(X509_get0_notAfter(cert), &tm) == 1;
+	if (ok)
+		out->not_after = (long long)timegm(&tm);
+	out->root = (flags & EXFLAG_SS) != 0;
 	X509_free(cert);
 	if (!ok) {
 		fail(err, err_size, "cannot read the certificate's fields");

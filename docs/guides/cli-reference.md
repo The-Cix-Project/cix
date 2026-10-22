@@ -144,6 +144,9 @@ Nine sections are replaced whole, the ones a single setter owns: site, daemon, r
 | `signing-keys [show]` | Whether this host holds the Secure Boot signing key pair `iso build` needs, and the certificate's identity |
 | `signing-keys set --key=PATH --cert=PATH` | Install the pair ([ADR-0212](../adr/0212-signing-keys-over-rest.md)). The private key is never returned by any endpoint |
 | `signing-keys clear` | Remove it from this host |
+| `trust-anchors [ls]` | The CAs registered for this host's HTTPS fetches, beside the public roots ([ADR-0350](../adr/0350-a-host-trusts-its-operators-ca-by-registration.md)) |
+| `trust-anchors add --file=CA.pem` | Register one CA certificate (never a key); it takes effect for the next fetch, with no reboot |
+| `trust-anchors rm FINGERPRINT` | Remove one, by the 64-hex fingerprint `ls` shows |
 | `release-key [show]` | Whether this host holds the Ed25519 release-signing key, and its public half |
 | `release-key set --key=PATH` | Install it ([ADR-0220](../adr/0220-a-separate-release-signing-key.md)) |
 | `release-key clear` | Remove it from this host |

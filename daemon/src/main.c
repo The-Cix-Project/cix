@@ -61,6 +61,7 @@
 #include "srctrust.h"
 #include "pkgbad.h"
 #include "upstreamkeys.h"
+#include "trustanchor.h"
 #include "srcupstream.h"
 #include "api_srcpolicy.h"
 #include "ksm.h"
@@ -105,6 +106,7 @@
 #include "api_ntp.h"
 #include "api_sysctl.h"
 #include "api_syslog.h"
+#include "api_trust.h"
 #include "api_resolv.h"
 #include "api_keys.h"
 #include "api_route.h"
@@ -296,6 +298,8 @@ char SRCPOLICY_STATE_PATH[PATH_MAX];    /* ADR-0255 -- which upstream release pa
 char SRCTRUST_STATE_PATH[PATH_MAX];     /* ADR-0323 -- origins trusted to authenticate a release */
 char PKGBAD_STATE_PATH[PATH_MAX];       /* ADR-0323 answer 4 -- package versions that failed at runtime */
 char UPSTREAMKEYS_STATE_PATH[PATH_MAX]; /* ADR-0318 -- keys that may authenticate an upstream release */
+char TRUST_ANCHORS_STATE_PATH[PATH_MAX]; /* ADR-0350 -- CAs the operator registered */
+char TRUST_BUNDLE_PATH[PATH_MAX];        /* ADR-0350 -- public roots + anchors, for fetches */
 char SCHEDULER_STATE_PATH[PATH_MAX];    /* ADR-0257 -- everything this host does on a clock */
 char KERNEL_RELEASES_PATH[PATH_MAX];    /* issue #65 -- cached kernel.org releases.json */
 char ZSWAP_STATE_PATH[PATH_MAX];        /* issue #51 -- compressed swap cache settings */
@@ -483,6 +487,9 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(PKGBAD_STATE_PATH, sizeof(PKGBAD_STATE_PATH), "%s/bad_versions.json", STATE_DIR);
 	snprintf(UPSTREAMKEYS_STATE_PATH, sizeof(UPSTREAMKEYS_STATE_PATH), "%s/upstream_keys.json",
 	         STATE_DIR);
+	snprintf(TRUST_ANCHORS_STATE_PATH, sizeof(TRUST_ANCHORS_STATE_PATH), "%s/trust_anchors.json",
+	         STATE_DIR);
+	snprintf(TRUST_BUNDLE_PATH, sizeof(TRUST_BUNDLE_PATH), "%s/trust_bundle.pem", STATE_DIR);
 	snprintf(SCHEDULER_STATE_PATH, sizeof(SCHEDULER_STATE_PATH), "%s/schedules.json",
 	         STATE_DIR);
 	/*
@@ -4047,6 +4054,17 @@ static void do_system_backup(struct json_writer *w)
 		jw_str(w, "");
 	}
 
+	/* ADR-0350: the operator's CAs are public certificates, so they are
+	 * configuration and travel with it -- a restore onto new hardware
+	 * has to reach the operator's own servers again. */
+	jw_key(w, "trust_anchors");
+	if (persist_read_file(TRUST_ANCHORS_STATE_PATH, &buf, &len) == 0 && buf != NULL) {
+		jw_str(w, buf);
+		free(buf);
+	} else {
+		jw_str(w, "");
+	}
+
 	/*
 	 * Issue #88: the volume REGISTRY -- which volumes exist and where
 	 * they are placed. That is configuration, so it belongs here; a
@@ -4220,6 +4238,7 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 {
 	struct json_value *root;
 	const struct json_value *jcontainer_defs, *jnetworks, *jdns_records, *jpkg_installed;
+	const struct json_value *jtrust_anchors;
 	const struct json_value *jpkg_recipes, *jsite_config, *jvolumes;
 	size_t i;
 	int have_any = 0;
@@ -4237,6 +4256,7 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 	jpkg_recipes = json_object_get(root, "pkg_recipes");
 	jsite_config = json_object_get(root, "site_config");
 	jvolumes = json_object_get(root, "volumes"); /* issue #88 */
+	jtrust_anchors = json_object_get(root, "trust_anchors"); /* ADR-0350 */
 
 	/* Each present field must be a string whose own content is valid
 	 * JSON -- checked for every field before any file is touched. */
@@ -4342,12 +4362,20 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 			return 400;
 		}
 	}
+	if (jtrust_anchors != NULL) {
+		have_any = 1;
+		if (!json_string_field_is_valid(jtrust_anchors)) {
+			json_free(root);
+			snprintf(out_errmsg, out_errmsg_size, "trust_anchors is not valid JSON");
+			return 400;
+		}
+	}
 
 	if (!have_any) {
 		json_free(root);
 		snprintf(out_errmsg, out_errmsg_size,
 		         "at least one of container_defs/networks/dns_records/pkg_installed/pkg_recipes/"
-		         "site_config/volumes required");
+		         "site_config/volumes/trust_anchors required");
 		return 400;
 	}
 
@@ -4386,6 +4414,12 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 	    restore_write_field(VOLUMES_STATE_PATH, json_as_string(jvolumes)) != 0) {
 		json_free(root);
 		snprintf(out_errmsg, out_errmsg_size, "failed to write volumes.json");
+		return 500;
+	}
+	if (jtrust_anchors != NULL &&
+	    restore_write_field(TRUST_ANCHORS_STATE_PATH, json_as_string(jtrust_anchors)) != 0) {
+		json_free(root);
+		snprintf(out_errmsg, out_errmsg_size, "failed to write trust_anchors.json");
 		return 500;
 	}
 	if (jpkg_recipes != NULL) {
@@ -28113,6 +28147,23 @@ static void op_createNtpServer(const struct api_ctx *ctx)
 	handle_ntp_server_create(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
+/* GET/POST /v1/system/trust-anchors (ADR-0350) */
+static void op_listTrustAnchors(const struct api_ctx *ctx)
+{
+	handle_trust_anchor_list(ctx->fd);
+}
+
+static void op_addTrustAnchor(const struct api_ctx *ctx)
+{
+	handle_trust_anchor_add(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* DELETE /v1/system/trust-anchors/{fingerprint} */
+static void op_removeTrustAnchor(const struct api_ctx *ctx)
+{
+	handle_trust_anchor_remove(ctx->fd, ctx->p[0]);
+}
+
 /* GET /v1/syslog/targets */
 static void op_listSyslogTargets(const struct api_ctx *ctx)
 {
@@ -37140,6 +37191,12 @@ static int cixd_main(int argc, char **argv)
 	srctrust_init(SRCTRUST_STATE_PATH);         /* ADR-0323 */
 	pkgbad_init(PKGBAD_STATE_PATH);             /* ADR-0323 answer 4 */
 	upstreamkeys_init(UPSTREAMKEYS_STATE_PATH); /* ADR-0318 */
+	/* ADR-0350: before anything fetches. A store that cannot be read is
+	 * logged and leaves fetches on libcurl's default bundle. */
+	trustanchor_on_bundle(curlfetch_set_ca_bundle);
+	if (trustanchor_init(TRUST_ANCHORS_STATE_PATH, TRUST_BUNDLE_PATH,
+	                     TRUSTANCHOR_PUBLIC_BUNDLE) != 0)
+		curlfetch_set_ca_bundle(NULL);
 	scheduler_init(SCHEDULER_STATE_PATH);       /* ADR-0257 */
 	scheduler_register_action("pkg.discover",
 	                           "find what upstream has published, authenticate it and write "
@@ -37155,7 +37212,7 @@ static int cixd_main(int argc, char **argv)
 	                           "build what is newer of the kernel and cix, stage it and reboot "
 	                           "into it within the window (ADR-0327)",
 	                           action_system_roll);
-	scheduler_register_action("pkg.sync", "fetch recipes from the configured repo",
+	scheduler_register_action("pkg.sync", "fetch recipes from every configured source",
 	                           action_pkg_sync);
 	migrate_legacy_intervals();
 	seed_default_schedules(); /* ADR-0316 -- after migration, so a migrated interval wins */

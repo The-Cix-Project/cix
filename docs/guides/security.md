@@ -135,6 +135,18 @@ cixctl daemon-config set --enable-https
 
 Starts a second, independent listener on `--https-port=` (default `443`), live immediately. `daemon-config` owns only the ports and HTTP/HTTPS exposure; *where* `cixd` listens off-box is the management address ([`networking.md`](networking.md#the-management-network)). Full contract: [`docs/api/README.md`](../api/README.md#http-https-and-the-listen-port).
 
+## Letting this host trust your own CA
+
+The section below is about your devices trusting this host. This is the other direction: this host reaching servers of yours that a CA of your own certifies, such as a site forge serving recipes over HTTPS ([ADR-0350](../adr/0350-a-host-trusts-its-operators-ca-by-registration.md)). Out of the box the host trusts public roots only, which is all the public catalogue and cache need.
+
+```sh
+cixctl trust-anchors add --file=site-root-ca.pem   # the CA's certificate, never its key
+cixctl trust-anchors ls                            # fingerprint, kind, expiry, subject
+cixctl trust-anchors rm <fingerprint>
+```
+
+or **Host › Configuration › Trust Anchors** on the dashboard. Register the CA's root; an intermediate also works. It takes effect for the next fetch, with no reboot, and stays on this host: it never enters the installer image. A registered CA can vouch for any server to this host, so register only CAs you control. It is kept in the system backup and the config document, and a factory reset removes it.
+
 ## Trusting the CA on your own device
 
 This install's root CA is private and self-signed — nothing trusts it by default, so a browser or OS hitting `https://<box>:<https-port>/` (the web dashboard, or a direct API call) shows a certificate warning until you trust it once, on each device you connect from. This is expected, not a bug: it's the same reason `curl` needs `--cacert` for a self-signed endpoint. An untrusted browser doesn't just show a warning once — every poll the dashboard's own JavaScript makes (every 2 seconds, and this daemon never does HTTP keep-alive, so each one is a fresh TLS handshake) fails the same way, which can flood `GET /system/logs` and the physical console with `https handshake failed` warnings fast enough to crowd out everything else (ADR-0134 rate-limits the logging itself, but trusting the cert is what actually stops the failures).

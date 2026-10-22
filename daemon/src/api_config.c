@@ -66,6 +66,7 @@
 #include "resolv.h"
 #include "siteconfig.h"
 #include "swap.h"
+#include "trustanchor.h"
 #include "zswap.h"
 
 #include "generated/config_sections.h"
@@ -1420,6 +1421,60 @@ static int cfg_disk_roles_remove(const struct json_value *el, int dry_run, char 
 	}
 	return 0;
 }
+
+/*
+ * ADR-0350: an anchor is its certificate, so a create needs the pem and
+ * nothing else, and the fingerprint the element names must be that
+ * PEM's -- a document naming one certificate and carrying another is
+ * refused rather than registering whichever the PEM is. No update: the
+ * key is a hash of the content, so a changed certificate is a
+ * different key, which reconcile_list() turns into a remove and a
+ * create.
+ */
+static int cfg_trust_anchors_create(const struct json_value *el, int dry_run, char *err,
+                                    size_t errsz)
+{
+	struct pkicrypto_anchor info;
+	const char *pem, *fp;
+	char added[65];
+
+	if (need_string(el, "fingerprint", &fp, err, errsz) != 0 ||
+	    need_string(el, "pem", &pem, err, errsz) != 0)
+		return -1;
+	if (pkicrypto_anchor_inspect(pem, strlen(pem), &info, err, errsz) != 0)
+		return -1;
+	if (strcmp(info.fingerprint, fp) != 0) {
+		snprintf(err, errsz, "trust anchor %.16s...: the pem is a different certificate (%.16s...)",
+		         fp, info.fingerprint);
+		return -1;
+	}
+	if (info.expired) {
+		snprintf(err, errsz, "trust anchor %.16s...: the certificate has expired", fp);
+		return -1;
+	}
+	if (dry_run)
+		return 0;
+	return trustanchor_add(pem, strlen(pem), added, err, errsz) == TRUSTANCHOR_OK ? 0 : -1;
+}
+
+static int cfg_trust_anchors_remove(const struct json_value *el, int dry_run, char *err,
+                                    size_t errsz)
+{
+	const char *fp;
+
+	if (need_string(el, "fingerprint", &fp, err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	if (trustanchor_remove(fp) != TRUSTANCHOR_OK) {
+		snprintf(err, errsz, "trust anchor %.16s... could not be removed", fp);
+		return -1;
+	}
+	return 0;
+}
+
+static const struct cfg_elem_ops cfg_ops_trust_anchors = { cfg_trust_anchors_create, NULL,
+                                                           cfg_trust_anchors_remove };
 
 static const struct cfg_elem_ops cfg_ops_disk_roles = { cfg_disk_roles_create, NULL,
                                                         cfg_disk_roles_remove };
