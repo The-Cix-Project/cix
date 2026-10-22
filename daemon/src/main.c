@@ -14880,6 +14880,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	*out_has_follow_rolling_jitter = 0;
 	*out_follow_rolling_jitter_seconds = 0;
 
+	stallwatch_step("container create: parse the body");
 	root = json_parse(body, body_len);
 	if (root == NULL) {
 		snprintf(err_msg, err_msg_size, "invalid JSON body");
@@ -15350,6 +15351,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 			route_specs[i].gateway_be = via_addr.s_addr;
 		}
 	}
+	stallwatch_step("container create: resolve the devices");
 	if (jdevices != NULL) {
 		if (jdevices->type != JSON_ARRAY || jdevices->u.array.count > CONTAINER_MAX_DEVICES) {
 			json_free(root);
@@ -15555,6 +15557,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 			}
 		}
 	}
+	stallwatch_step("container create: resolve the interfaces");
 	if (jinterfaces != NULL) {
 		if (jinterfaces->type != JSON_ARRAY || jinterfaces->u.array.count > CONTAINER_MAX_INTERFACES) {
 			json_free(root);
@@ -16024,6 +16027,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 			return 400;
 		}
 	}
+	stallwatch_step("container create: resolve the image version");
 	image_version_rootfs_path(image, resolved_image_version, lowerdir, sizeof(lowerdir));
 	if (stat(lowerdir, &st) != 0) {
 		json_free(root);
@@ -16088,6 +16092,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		return 409;
 	}
 
+	stallwatch_step("container create: attach networks");
 	if (jnetworks != NULL) {
 		net_count = (int)jnetworks->u.array.count;
 		for (i = 0; i < (size_t)net_count; i++) {
@@ -16269,6 +16274,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 	}
 
+	stallwatch_step("container create: place the base");
 	if (disk_name != NULL && disk_name[0] != '\0') {
 		int drc = resolve_container_disk_root(disk_name, container_root, sizeof(container_root));
 
@@ -16338,6 +16344,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	jdisk_quota = json_object_get(root, "disk_quota_bytes");
 	disk_quota_bytes = jdisk_quota != NULL ? (long long)json_as_number(jdisk_quota) : 0;
 
+	stallwatch_step("container create: snapshot the rootfs");
 	/*
 	 * ADR-0341: a container's rootfs is a snapshot of its image version,
 	 * at container_rootfs_dir(), beside the image store -- not under
@@ -16364,6 +16371,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		return 500;
 	}
 
+	stallwatch_step("container create: id-map the rootfs");
 	/*
 	 * ADR-0179 phase 2c option (a): a userns container does not use an
 	 * overlay -- it gets its own per-container rootfs, which
@@ -16626,6 +16634,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 			stage_id_offset = rootfs_st.st_uid;
 	}
 
+	stallwatch_step("container create: stage the declared files");
 	if (jfiles != NULL) {
 		/*
 		 * #419: if this container declares itself an LDAP server, the
@@ -16699,6 +16708,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 		file_count = (int)jfiles->u.array.count;
 	}
+	stallwatch_step("container create: LDAP client files");
 	if (ldap_client) {
 		/* Rendered from the daemon's own LDAP client config (validated
 		 * present above). nslcd.conf holds the bind credential -> 0600.
@@ -16846,6 +16856,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s", "/etc/nslcd.conf");
 		file_count++;
 	}
+	stallwatch_step("container create: DHCP and DNS server files");
 	/*
 	 * ADR-0197: a container that is already a registered DNS server is
 	 * also a DHCP server, so it gets its own rendered DHCP files staged
@@ -16902,6 +16913,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 	}
 
+	stallwatch_step("container create: PKI certificate");
 	/*
 	 * The container's TLS identity, staged before clone3() rather than
 	 * pushed in after the container is already running (#414).
@@ -17119,6 +17131,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 			                            (gid_t)-1, stage_id_offset);
 	}
 
+	stallwatch_step("container create: stage the platform files");
 	/*
 	 * ADR-0333: the rest of what pkg_seed_image_baseline() used to put
 	 * into every image -- nsswitch.conf and this host's CA bundle.
@@ -17242,6 +17255,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		spec.userns_len = SUBID_RANGE_LEN;
 	}
 	spec.ns.hostname = name;
+	stallwatch_step("container create: cgroup limits");
 	/* Issue #86: leaves live under the workload parent, so their
 	 * COLLECTIVE demand is bounded and the control plane keeps a real
 	 * reservation rather than whatever happens to be left over. */
@@ -17405,6 +17419,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	for (i = 0; i < (size_t)cap_add_count; i++)
 		snprintf(spec.cap_add[i], sizeof(spec.cap_add[i]), "%s", cap_add_names[i]);
 	spec.envp = envp_ptrs;
+	stallwatch_step("container create: init transport and cix-init");
 	/*
 	 * ADR-0260: pid 1 is cix-init. Its transport is opened and its
 	 * table written now, its binary staged into the tree, and its argv
@@ -17458,6 +17473,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		output_pipe[1] = -1;
 	}
 
+	stallwatch_step("container create: clone, enter and wait for exec");
 	rerr = registry_create(name, image, resolved_image_version, &spec, net_attachments, net_count,
 	                        ip_forward,
 	                        device_attachments, device_count, file_paths, file_count, disk_name,
@@ -17623,6 +17639,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		return 500;
 	}
 
+	stallwatch_step("container create: register and announce");
 	register_container_pidfd(entry);
 
 	/* ADR-0260: the daemon's ends of cix-init's transport, and one
@@ -17657,6 +17674,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		register_container_output(entry);
 	}
 
+	stallwatch_step("container create: DNS registration");
 	if (dns_register) {
 		/* entry->name, not the local `name`, which pointed into
 		 * root and is no longer valid after json_free() above.
@@ -17682,6 +17700,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 			        entry->name, (int)derr);
 	}
 
+	stallwatch_step("container create: LDAP provisioning");
 	/*
 	 * pki_issue / pki_cert are handled at STAGING time, well above --
 	 * the certificate is written into the container's tree before
@@ -17769,6 +17788,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 	}
 
+	stallwatch_step("container create: sync the DNS servers");
 	/*
 	 * Re-apply anything this daemon PROJECTS into a container, now that
 	 * it is running (#253).
