@@ -30351,7 +30351,7 @@ static const char *ws_selected_protocol(const struct http_request *req)
  * polling without a session produces every few seconds -- auditing
  * those would be the #490 wall again, server-side. A 403 on a read IS
  * audited: that is a logged-in user reaching past their grants. Also
- * called, through authorize_upgrade_route(), by the two WebSocket
+ * called, through authorize_upgrade_route(), by the three WebSocket
  * upgrades that are answered before dispatch().
  *
  * Returns 1 when the handler may run; otherwise the response has been
