@@ -1208,9 +1208,10 @@ paths:
                   build_version:
                     type: string
                     description: >
+                      The release the recipe passed as `CIX_VERSION`
+                      (e.g. `0.2.57-358`, ADR-0312); without one,
                       `git describe --tags --always --dirty` at build
-                      time (e.g. `v1.6.0-7-g66265a5-dirty`), or
-                      `unknown` if built outside a git checkout.
+                      time, or `unknown` if built outside a git checkout.
                   build_time:
                     type: string
                     description: UTC build timestamp, RFC 3339 (e.g. `2026-08-08T00:00:00Z`).
@@ -3419,8 +3420,8 @@ paths:
       summary: Build a kernel with extra in-tree modules (ADR-0159 Phase B)
       description: >
         An ordinary hostbuild against the "kernel" recipe itself --
-        the exact same mechanism POST /pkg/hostbuild drives (same v1
-        single-job-in-flight slot, same 409/PkgEntry shape via
+        the exact same mechanism POST /pkg/hostbuild drives (same
+        shared package job slots, same 409/PkgEntry shape via
         GET /pkg/hostbuild/kernel) -- gaining only an optional list of
         extra CONFIG_* symbols, merged into the same curated kernel
         config this platform already builds, each forced to `=m`. The
@@ -6024,7 +6025,7 @@ paths:
         takes the **newest installed version across every image** that
         it can actually produce bytes for -- one whose artifact is
         already in this host's local cache, or one whose recipe carries
-        an approved `pkg_artifact_sha256`, in which case the artifact is
+        an approved `artifact_sha256`, in which case the artifact is
         fetched from the configured artifact cache and checked against
         that approval before it reaches the media. It used to take
         whichever entry the package table held first, which is whichever
@@ -6507,8 +6508,8 @@ paths:
       summary: Status of the most recent (or currently running) format+mount job for this disk
       description: >
         Only one format job may be in flight at this daemon at a time
-        (the same v1 single-job constraint pkg install/hostbuild, ISO
-        assembly, and pkg bootstrap's toolchain_url fetch already have).
+        (the same v1 single-job constraint ISO assembly and pkg
+        bootstrap's toolchain_url fetch already have).
         Reports `{"state":"none"}` if no job has ever run for this
         specific disk_name this daemon lifetime -- including when a
         job ran/is running for a *different* disk, since a status check
@@ -10262,20 +10263,19 @@ paths:
       summary: >
         Stages a real build toolchain (gcc/make/ld/as/cc1/sh/tar and their real headers
         and shared libraries) into the sandboxed build image. No body (or an empty one):
-        copies live from this daemon's own host -- works when cixd happens to be
-        running somewhere with a real toolchain (dev/test), produces an empty,
-        non-functional toolchain on a real minimal install (nothing under its own /usr
-        beyond cixd/cixctl and their bare runtime libs). toolchain_path: imports a
+        refused with 400 since issue #168 -- it used to copy this daemon's own host's
+        /usr live, which on a real host is another operating system's files, and on a
+        real minimal install was an empty, non-functional toolchain. toolchain_path: imports a
         real, portable artifact (built once, elsewhere, with image/src/mktoolchainimage.c)
         via a local path the operator has already transferred it to (e.g. scp), the same
         "local path, not an upload" precedent /system/update's image_path/kernel_path
         already established. toolchain_url (+ required toolchain_sha256): the daemon
         fetches the artifact itself, host-side, the same real curl primitive every
-        recipe's own pkg_source already uses (ADR-0065) -- closes a real gap the other
-        two modes both rest on: a genuinely fresh, minimal Cix install has no SSH
+        recipe's declared sources already use (ADR-0065) -- closes a real gap the
+        toolchain_path mode rests on: a genuinely fresh, minimal Cix install has no SSH
         server and no general shell at all (ADR-0034), so "the operator transfers it
-        onto the box" was never actually possible without this. The no-body and
-        toolchain_path modes stay synchronous (204 on success, unchanged); toolchain_url
+        onto the box" was never actually possible without this. The
+        toolchain_path mode stays synchronous (204 on success, unchanged); toolchain_url
         is async (202, poll GET /pkg/bootstrap) since a real network fetch of a real,
         large artifact cannot block this daemon's single-threaded event loop. All modes
         are idempotent -- safe to call again. Not automatic at daemon startup; an
@@ -10296,10 +10296,9 @@ paths:
                   title: Toolchain path
                   description: >
                     A toolchain squashfs already on this host, by path.
-                    Leave every field here blank only on a rich dev
-                    host: the daemon then copies the toolchain live
-                    from its own filesystem, which is empty on a real
-                    minimal install. Build a portable artifact with
+                    Leaving every field here blank is refused (#168):
+                    the daemon no longer copies a toolchain live from
+                    its own filesystem. Build a portable artifact with
                     mktoolchainimage, put it on the box, and name it
                     here.
                 toolchain_url:
@@ -10319,7 +10318,7 @@ paths:
                     ever staged. Required alongside toolchain_url.
       responses:
         "204":
-          description: Build toolchain image staged (or already was) -- no-body or toolchain_path modes only
+          description: Build toolchain image staged (or already was) -- toolchain_path mode only
         "202":
           description: toolchain_url fetch started -- poll GET /pkg/bootstrap
           content:
@@ -10327,7 +10326,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/PkgBootstrapStatus"
         "400":
-          description: toolchain_path given but missing/unreadable/not a regular file, or toolchain_url given without a valid 64-char toolchain_sha256
+          description: No body or neither field set (#168), toolchain_path given but missing/unreadable/not a regular file, or toolchain_url given without a valid 64-char toolchain_sha256
           content:
             application/json:
               schema:
@@ -11412,13 +11411,13 @@ paths:
         minisign's global signature covers the comment, so none of the
         three can be edited afterwards. This is what lets a host that
         did not build the package install it without rebuilding, and
-        without the recipe needing a pkg_artifact_sha256 line that only
+        without the recipe needing an `artifact_sha256` line that only
         ever reached the publishing host (#403).
 
 
         On the install side a signature is an approval in its own
         right: the artifact tier is tried when either the recipe
-        carries a pkg_artifact_sha256 or this host holds a trusted key,
+        carries an `artifact_sha256` or this host holds a trusted key,
         and where both exist both must pass. A recipe with a checksum
         behaves exactly as ADR-0122 made it, so the artifacts published
         unsigned stay installable; a recipe with none now has a way in
@@ -11810,7 +11809,7 @@ paths:
     get:
       summary: The discovery kinds a recipe may declare, and their channels (ADR-0255)
       description: >
-        A recipe declares `pkg_upstream="<kind>"`. The kind knows how to
+        A recipe declares `upstream "<kind>"`. The kind knows how to
         enumerate that project's releases and which channels -- if any --
         it publishes in parallel.
 
@@ -12047,7 +12046,7 @@ paths:
         position. That last rule is a fix (#371): before it, an ok
         position could not displace the starting one, and the starting
         one is `discover/not-implemented` for every package with no
-        `pkg_upstream=`. Measured on a live host, glibc -- installed and
+        `upstream`. Measured on a live host, glibc -- installed and
         healthy in eleven images -- reported `discover/not-implemented`,
         as did 121 of 122 packages.
 
@@ -12643,7 +12642,7 @@ paths:
         empty resolution. Those read completely differently to whoever
         has to fix it, and only one of them names the mistake.
 
-        A package whose recipe declares no `pkg_upstream` cannot roll
+        A package whose recipe declares no `upstream` cannot roll
         and cannot take a channel: it is pinned, which ADR-0255 treats
         as a permanent first-class answer rather than a gap.
 
@@ -13026,13 +13025,13 @@ paths:
       summary: >
         The "automagic" package half of Phase 16 (ADR-0031). Finds the
         first installed package (across every image) whose recipe's
-        pkg_version= has drifted from what's installed (the same check
+        version has drifted from what's installed (the same check
         GET /pkg's own available_version field already reports) and
         starts an upgrade for it, reusing /pkg/install --upgrade's
-        entire existing mechanism. Starts at most one job -- the
-        existing v1 single-install-in-flight constraint still applies,
-        honestly, not parallelized around. Call again once that job
-        finishes to pick up the next drifted package.
+        entire existing mechanism. Starts at most one job -- this
+        endpoint's own choice, not a build-system limit: builds run
+        concurrently up to max_concurrent_jobs (ADR-0157). Call again
+        once that job finishes to pick up the next drifted package.
       operationId: pkgUpdateAll
       x-cix-invalidates: [getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg, listImages, getImage, listSoftware, listBuildLogs, getPipeline, getPipelineRuns]
       x-cix-permission: packages:write
@@ -13074,16 +13073,16 @@ paths:
         Starts a hostbuild job (ADR-0056): a second mode of the same fetch/build
         pipeline /pkg/install uses, except the completed output is harvested to
         a host artifact directory instead of being merged into any image. The
-        build container is composed from the recipe's own pkg_build_depends=,
+        build container is composed from the recipe's own `requires { build }`,
         exactly as it is for an ordinary install (ADR-0199) -- it used to be
         rooted on a named build image instead, and that field is retired
         (ADR-0304, issue #482), because testing it first meant a hostbuild
         never read its own declared build tools at all. The named recipe MAY
         declare runtime requires, which are carried onto the entry and never
         resolved here (ADR-0303, issue #465): resolution installs a closure
-        into an image and a hostbuild has none. Subject to the same v1
-        single-job-in-flight constraint as /pkg/install (they share one job
-        slot).
+        into an image and a hostbuild has none. Only one hostbuild runs at a
+        time (#362), and it takes one of the package job slots /pkg/install
+        uses.
       operationId: pkgHostbuild
       x-cix-invalidates: [getPkgArtifactExport, listPkgUpstreamKeys, getPkgHostbuild, listPkg, getPkg, listImages, getImage, listSoftware, listBuildLogs, getPipeline, getPipelineRuns, getSystemAssembly]
       x-cix-permission: packages:write
@@ -13113,7 +13112,7 @@ paths:
                     PKG_STATE_INSTALLED makes every later call a bare 409, with
                     no way to rebuild from fresh source under the same recipe
                     name. true re-runs the build if the recipe's own
-                    pkg_version= genuinely differs from what's installed --
+                    version genuinely differs from what's installed --
                     still 409 if the version is unchanged, since nothing would
                     actually be different (mirrors /pkg/install's own upgrade
                     field exactly).
@@ -13166,7 +13165,7 @@ paths:
         (optionally different, newly-fixed) recipe version, instead of a full
         fetch+extract+build restart (ADR-0177, issue #46). No fetch subprocess runs at
         all -- the already-extracted source tree inside the preserved container's own
-        overlay is left completely untouched; only the recipe.sh staged inside it and
+        overlay is left completely untouched; only the recipe.cbs staged inside it and
         the previous attempt's partial install destination are refreshed. name/image
         must address an entry currently in the "failed" state with a non-null
         kept_build_container (GET /pkg/{name} or /pkg/hostbuild/{name} shows this) --
@@ -13564,8 +13563,10 @@ paths:
         persisted definition that has never once managed to autostart,
         due to a depends_on cycle or an unknown dependency) -- 404 only
         if neither a live instance nor a persisted definition exists for
-        this name. Also unmounts and recursively removes the container's
-        own overlay directories (upper/work/merged, ADR-0106) -- best-
+        this name. Also removes the container's on-disk storage -- its
+        rootfs beside the image store (ADR-0341) and its base, which holds
+        an overlay container's upper/work/merged (ADR-0106), each set aside
+        and deleted by a helper child -- best-
         effort: a cleanup failure is logged but never turns this into an
         error response, since the registry/definition state, not the
         disk, is the one source of truth for whether a container exists.
@@ -14545,9 +14546,11 @@ paths:
 
         Path resolution mirrors GET's own running/not-running split:
         while running, written through /proc/<pid>/root/<path> (the
-        overlay's own copy-up lands the result in the container's real
-        upperdir, same as any in-container process writing that path
-        would produce); once stopped or exited, written directly into
+        result lands in the container's own rootfs, or by copy-up in an
+        overlay container's upperdir, same as any in-container process
+        writing that path would produce; a userns container refused
+        there with EOVERFLOW is written host-side into its rootfs
+        instead, #333); once stopped or exited, written directly into
         the container's own writable tree. Same traversal-free,
         absolute-path validation as GET's own "path" parameter.
 
@@ -16531,7 +16534,9 @@ components:
           format: int64
           description: >
             Real, kernel-enforced hard limit in bytes for this
-            container's own overlay upperdir. The enforcement
+            container's own writes -- its overlay upperdir, or, for a
+            container whose rootfs is a snapshot of its image
+            (ADR-0341), the bytes exclusive to that snapshot. The enforcement
             mechanism is chosen automatically from the backing
             filesystem's own type -- no separate flag needed. On ext4
             (the default for a real installed system's containers
@@ -16541,7 +16546,7 @@ components:
             own mkfs.ext4 -O quota -E quotatype=prjquota); writes past
             the limit fail with EDQUOT at the filesystem level. On
             btrfs (see ADR-0103), this is a qgroup hard limit set
-            directly on the container's own upperdir subvolume via
+            directly on the container's own rootfs or upperdir subvolume via
             BTRFS_IOC_QGROUP_LIMIT, with the same real, kernel-enforced
             (not advisory) semantics. Either way, if the backing
             filesystem can't support the requested enforcement,
@@ -16573,9 +16578,9 @@ components:
           description: >
             Nameservers staged as this container's /etc/resolv.conf, at most three; with none it resolves no names at all.
             IPv4 nameserver addresses (ADR-0143) to stage as a real
-            /etc/resolv.conf inside this container's own overlay,
+            /etc/resolv.conf inside this container's own filesystem,
             before its process ever starts -- the same "written
-            directly into the upperdir pre-clone3()" mechanism `files`
+            directly into the writable tree pre-clone3()" mechanism `files`
             above already uses, a dedicated field rather than requiring
             hand-constructed resolv.conf content via `files`. Up to 3
             (matches glibc's own resolv.conf MAXNS). 400 if combined
@@ -17063,7 +17068,8 @@ components:
             otherwise permanently restricted to, right before its cmd is
             execve()'d (issue #29 -- see that issue and
             src/container_caps.c for the full default list and why: in
-            short, containers run as real root with no user namespace, so
+            short, a container without a user namespace (userns off; on
+            by default, ADR-0171) runs as real root, so
             an untrimmed capability set -- CAP_SYS_MODULE chief among
             them -- is a straight line from any container to host-kernel
             compromise with no exploit needed). Only a capability that's
@@ -17079,16 +17085,17 @@ components:
           maxItems: 16
           description: >
             Files written into this container before its services start.
-            Config files (or scripts -- see cmd) to write into this
+            Config files (or scripts -- see services) to write into this
             container's own filesystem before its process ever starts,
             so multiple containers built from the same image can each
             run their own configuration. Written directly into this
-            container's own private overlay upperdir on the daemon's
+            container's own writable tree (its rootfs, or an overlay
+            container's upperdir) by the daemon's
             own host process, entirely before the container is created
-            -- unlike a running container's filesystem (no operator-
-            facing way to reach that at all today), the file is already
-            there the moment cmd execve()s, so it can safely be cmd
-            itself (e.g. ["/bin/bash", "/usr/local/bin/pbr.sh"]). Each
+            -- unlike a live write (PUT /containers/{name}/files,
+            ADR-0153), the file is already
+            there the moment a service's cmd execve()s, so it can safely
+            be that cmd itself (e.g. ["/usr/bin/bash", "/usr/local/bin/pbr.sh"]). Each
             `path` must be absolute and contain no "." or ".."
             component (400 otherwise -- the one real security boundary
             in this field, since a validated path becomes a real host
@@ -17262,8 +17269,8 @@ components:
           description: >
             Persistent volumes to bind-mount into this container
             (issue #88, ADR-0183). Unlike everything else the container
-            writes -- which lives in its overlay upper layer and is
-            removed by DELETE (ADR-0106) -- a volume's data outlives the
+            writes -- which lives in its rootfs (an overlay container's
+            upper layer) and is removed by DELETE (ADR-0106) -- a volume's data outlives the
             container entirely, so it is what a home directory, a
             database or anything else worth keeping across a recreate
             belongs on. Naming a volume that does not exist is a hard
@@ -18332,7 +18339,7 @@ components:
           nullable: true
           description: >
             The disk (see ContainerCreateRequest.disk) this
-            container's own overlay storage lives on, or null for the
+            container's base lives on, or null for the
             default OS-disk placement (task #638, ADR-0102).
         dns_servers:
           type: array
@@ -18443,7 +18450,7 @@ components:
           type: integer
           nullable: true
           description: >
-            The overlay-upperdir disk quota requested at creation
+            The disk quota requested at creation
             (issue #49). Mirrored from the creation request rather than
             read live -- a project quota has no per-container kernel
             file to consult, and nothing changes a container's quota
@@ -22671,13 +22678,12 @@ components:
           type: string
           nullable: true
           description: >
-            ADR-0176 (issue #44). Optional pkg_changelog= from the recipe -- a
+            ADR-0176 (issue #44). Optional `metadata { changelog }` from the recipe -- a
             short, single-line, free-text summary of what changed in this
             specific published version. null for any recipe that doesn't set
             it (every recipe published before this field existed, and any
-            recipe author who simply hasn't added one). Deliberately
-            single-line by construction (the daemon reads up to the closing
-            quote or a newline, whichever comes first) -- not a place for a
+            recipe author who simply hasn't added one). Capped at 511 bytes
+            (a longer one is refused at publish, #493) -- not a place for a
             real multi-paragraph release note.
 
 
@@ -23260,7 +23266,7 @@ components:
           type: string
         available_version:
           type: string
-          description: The pkg_version= of the recipe currently on disk.
+          description: The version of the recipe currently on disk.
 
     PkgCacheStatus:
       type: object
@@ -23903,7 +23909,7 @@ components:
           description: >
             Only meaningful when state is "installed": null if the installed version
             matches the recipe currently on disk, otherwise the recipe's current
-            pkg_version= -- re-read fresh on every response, not cached. The concrete
+            version -- re-read fresh on every response, not cached. The concrete
             answer to "is this out of date."
         files:
           type: array
