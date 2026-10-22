@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Its whole-rootfs artifact fast path is superseded by [ADR-0209](0209-derived-images-and-one-container-mechanism.md): an image is derived from its packages, never fetched whole.
 
 ## Context
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Superseded on two points by [ADR-0345](0345-a-record-id-says-where-a-device-is-a-mapping-says-which-device-it-is.md): what a mapping kind may select, and when a selector that matches more than one device is an error. Mappings themselves stand.
 
 ## Context
 

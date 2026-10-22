@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Its layout is superseded by [ADR-0308](0308-recipes-are-their-own-repository-flat.md): recipes live in their own repository, one flat `<name>@<version>.<ext>` file each. Image recipes keep their version history.
 
 ## Context
 

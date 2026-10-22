@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Supersedes [ADR-0162](0162-project-rename-and-its-blast-radius.md): the earlier identity that ADR was written for is replaced by Cix, and what it recorded about a rename's reach is the precedent this one follows.
 
 ## Context
 
