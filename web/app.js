@@ -13670,7 +13670,9 @@ async function refreshTrustAnchors() {
 
 function renderTrustAnchors() {
 	renderTable(document.getElementById("trust-anchors"), "TrustAnchor", cache.trustAnchors, [
-		"subject",
+		/* Both long values share the spare width, one line each, whole
+		 * on hover; a subject left to wrap ran to nine lines. */
+		{ field: "subject", cls: "cell-identifier", title: (a) => a.subject },
 		{ field: "fingerprint", cls: "cell-identifier", title: (a) => a.fingerprint },
 		"root",
 		"not_after",

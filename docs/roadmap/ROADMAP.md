@@ -2445,6 +2445,21 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 310: a host trusts its operator's CA by registration, release one (ADR-0350, #591, 0.2.57-576)
+
+A trust-anchor store: `GET`/`POST /v1/system/trust-anchors`, `DELETE /v1/system/trust-anchors/{fingerprint}`, `cixctl trust-anchors`, a Trust Anchors tab on Host › Configuration, a reconcile section of the config document and a field of the system backup. cixd writes the root's public roots plus every anchor to a bundle in the state directory, and `curlfetch_perform()` hands it to libcurl as `CURLOPT_CAINFO`. The root's own bundle is unchanged in this release.
+
+**Gated:** compile probe `0.2.57-591` failed one gate, because `test_web_tree` scans `app.js` as text and a comment named `renderTable()`; reworded. `0.2.57-592` was green: `test_trustanchor` (real root, intermediate and server certificates made with `pkicrypto.c`), `test_apigen` at 350 operations, `test_api_surfaces`, `test_docindex`, `test_web_tree`, `test_lint`.
+
+**Measured on 192.168.15.95, 2026-10-22, on 0.2.57-576** (slot a, 12 containers running, `ar-1` `hostapd:running`):
+- The empty store lists as such. jump's own server certificate is refused (`not a CA certificate (no basicConstraints CA:TRUE)`, 400), and so is text that is not a certificate (`not a PEM certificate`, 400).
+- The COMODO ECC root, taken from jump's own CA bundle, registers as a root expiring 2038-01-18 with fingerprint `1793927a0614549789adce2f8f34f7f0b66d0f3ae3a3b84d21ec15dbba4fadc7`, which is that root's published SHA-256. Adding it again is 409.
+- With it registered, `GET /v1/config` carries it under `trust_anchors`, `GET /v1/system/backup` carries the store, and a recipe sync against the forge, which a private CA certifies, ended `state=success` with 1582 recipes skipped. So the combined bundle breaks no fetch. Whether libcurl reads it rather than its default is release two's negative check.
+- Removing it answers 204, a second removal 404, and the config document returns to `[]`.
+- The tab rendered in Chromium from the box's own files with that list. The subject then wrapped to nine lines beside the 64-character fingerprint, so both now share the row's spare width, one line each, whole on hover (in release two).
+
+**Next:** the owner registers the site CA; release two then switches the root's bundle to the `ca-certificates` package (ADR-0350 rule 6).
+
 ## Part 309: a container's /proc/loadavg is its own load average (ADR-0349, #625, 0.2.57-572)
 
 procfuse's own process samples every cgroup under `cix-workload` every 5 s, counting R and D threads over each cgroup's subtree, and applies the kernel's `calc_load()`. The averages live in a page shared with cixd, keyed by cgroup path and restarted when the subtree's oldest thread changes. A container's `/proc/loadavg` and `GET /v1/containers/{name}/stats` (`load`) serve that one figure. The container page's Summary tab and `cixctl container stats` show it. `/proc/stat` and `/proc/uptime` use the same thread scan, in place of `cgroup.procs` and the leaf.
