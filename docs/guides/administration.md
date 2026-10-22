@@ -4,7 +4,7 @@ Day-2 operations for an already-installed box: watching it, backing it up, and m
 
 ## Monitoring
 
-**Host-wide resource usage** — `cixctl host-stats` (`GET /system/stats`, ADR-0073/ADR-0074): load average, CPU/memory/disk usage, per-interface network counters, and cgroup v2 pressure-stall (PSI) figures for CPU/memory/disk. Raw cumulative counters, no server-side history — call it again for a fresh point-in-time snapshot, or watch it live on the web dashboard's System > Monitoring > Host Stats page (four graphs, no charting library, polls only while that page is open). A single container's own usage is the equivalent `cixctl container stats NAME` (`GET /containers/{name}/stats`).
+**Host-wide resource usage** — `cixctl host-stats` (`GET /system/stats`, ADR-0073/ADR-0074): load average, CPU/memory/disk usage, per-interface network counters, and cgroup v2 pressure-stall (PSI) figures for CPU/memory/disk. Raw cumulative counters, no server-side history — call it again for a fresh point-in-time snapshot, or watch it live on the web dashboard's System > Monitoring > Host Stats page (four graphs, no charting library, read live only while that page is open). A single container's own usage is the equivalent `cixctl container stats NAME` (`GET /containers/{name}/stats`).
 
 **Every real process on the box** — `cixctl process ls` (`GET /system/processes`, ADR-0131): a direct `/proc` scan, each process correlated to a container if any (by walking its real host ppid chain against every running container's own root pid). `cixctl process kill PID` sends a real, immediate `SIGKILL` — refuses pid 1 and this daemon's own pid outright, since either would crash or reboot the whole host on a real installed system. Killing a pid that happens to belong to a running container is exactly equivalent to that container crashing on its own; the container's own restart policy still applies. The web dashboard's System > Monitoring > Processes page is fetch-on-demand (a Refresh button, not folded into the poll loop) since a real process table churns too fast for a 2s auto-refresh to be anything but noisy.
 
@@ -23,7 +23,7 @@ cixctl pipeline approve roll base    # let that one through
 cixctl pipeline revoke roll base     # take it back, if it has not gone through yet
 ```
 
-An approval covers one `(gate, target)` and is consumed when that change goes through, so approving is not the same as switching the gate off. Until then `cixctl pipeline revoke` takes it back -- the only way to clear a `deploy` approval you no longer want, since nothing else ever drops one (#381). A target nothing is holding is refused — you cannot approve in advance. Held items also show up in `cixctl pipeline` as `blocked`, naming `approval` as what they wait on. Note the same person may request and approve; a gate holds automation, not a person (roles are #304).
+An approval covers one `(gate, target)` and is consumed when that change goes through, so approving is not the same as switching the gate off. Until then `cixctl pipeline revoke` takes it back -- the only way to clear a `deploy` approval you no longer want, since nothing else ever drops one (#381). A target nothing is holding is refused — you cannot approve in advance. Held items also show up in `cixctl pipeline` as `blocked`, naming `approval` as what they wait on. Note the same person may request and approve; a gate holds automation, not a person (approving needs `packages:write`, [ADR-0317](../adr/0317-permissions-are-declared-by-the-api-contract.md)).
 
 **Optional external syslog forwarding** — if you already run syslog tooling and want this platform's container logs to also reach it, register a running syslog-server container (e.g. `syslog-1` running `sysklogd`) as a forward target: `cixctl syslog target register --container=NAME` (ADR-0127). Every container-sourced log line is then also sent as a real RFC 3164 UDP datagram — alongside, never instead of, the consolidated log store above, which stays the one source of truth this API and the web UI ever read from.
 
@@ -35,7 +35,7 @@ cixctl sysctl set net.ipv4.ip_local_port_range --value=32768 --value=60999
 cixctl sysctl show
 ```
 
-Direct, live tuning of the host's own `/proc/sys` — no key allowlist (fully open, matching this platform's own "no curated sysctl schema" scope decision), and distinct from the per-container `--sysctl=` flag at `run`/`POST /v1/containers` time, which is `net.*`-only and scoped to that container's own netns. Repeat `--value=` for a tuple-shaped key (`ip_local_port_range` above); a single-token key takes one `--value=`. Persists by default for reapply at every boot, right after configured kernel modules load and before the management network comes up — pass `--no-persist` for a one-shot change that shouldn't survive a reboot. `cixctl sysctl rm KEY` drops a key from the boot-apply list only; it never touches the live value. Full detail: [`docs/api/README.md`](../api/README.md#host-level-sysctl-adr-0160).
+Direct, live tuning of the host's own `/proc/sys` — no key allowlist (fully open, matching this platform's own "no curated sysctl schema" scope decision), and distinct from the per-container `--sysctl=` flag at `run`/`POST /v1/containers` time, which is `net.*`-only and scoped to that container's own netns. Repeat `--value=` for a tuple-shaped key (`ip_local_port_range` above); a single-token key takes one `--value=`. Persists by default for reapply at every boot, right after the boot NIC drivers load and before the management network comes up — pass `--no-persist` for a one-shot change that shouldn't survive a reboot. `cixctl sysctl rm KEY` drops a key from the boot-apply list only; it never touches the live value. Full detail: [`docs/api/README.md`](../api/README.md#host-level-sysctl-adr-0160).
 
 ## Kernel modules
 
@@ -55,7 +55,7 @@ A failed load or unload reports **modprobe's own words**, not a fixed sentence -
 
 **Changing a loaded module's parameters means unloading it first.** Module parameters are set when a module is inserted, so `kmod load NAME --option=...` against a module that is already loaded is refused with `409` rather than reporting a success that changed nothing -- `modprobe` on a loaded module exits 0 and does nothing at all. Unload it, then load it with the options you want. A bare `kmod load NAME` of something already loaded is still fine and does nothing: it means "make sure this is loaded", and it is.
 
-Which drivers are modules at all is a deliberate split (#347): a driver for a *particular device* -- a GPU, a wireless chipset -- is a module, while everything needed to reach the root filesystem or the network is built in. That is not a stylistic preference. This platform's kernel is an EFI stub with **no initramfs**, so a storage controller or NIC driver that is not built in cannot be loaded from a disk the kernel cannot yet see.
+Which drivers are modules at all is a deliberate split (#347): a driver for a *particular device* -- a GPU, a wireless chipset -- is a module, as are the boot NIC drivers, while everything needed to reach the root filesystem is built in. That is not a stylistic preference. This platform's kernel is an EFI stub with **no initramfs**, so a storage controller driver that is not built in cannot be loaded from a disk the kernel cannot yet see.
 
 ### Drivers load by themselves, and one policy decides every load
 
@@ -77,9 +77,9 @@ The kernel's own route for loading a module by name (`request_module()`) loads n
 ## Device hotplug
 
 ```sh
-cixctl container run --name=printer --image=base --optional-device=usb:04b8:0202:12345 --service=print-daemon=/usr/bin/print-daemon
-cixctl container device attach printer usb:04b8:0202:12345
-cixctl container device detach printer usb:04b8:0202:12345
+cixctl container run --name=printer --image=base --optional-device=usb:04b8:0202@0000:00:14.0-usb2-1 --service=print-daemon=/usr/bin/print-daemon
+cixctl container device attach printer usb:04b8:0202@0000:00:14.0-usb2-1
+cixctl container device detach printer usb:04b8:0202@0000:00:14.0-usb2-1
 cixctl device ls
 ```
 

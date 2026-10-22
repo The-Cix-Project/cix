@@ -47,7 +47,8 @@ sudo build/mkinstalleriso build/iso_stage build/cix-install build/cix-recover \
      /path/to/isotools-artifact \
      /path/to/seed \
      /path/to/kernel-hostbuild-artifact/lib/modules \
-     /path/to/kmod-usr-bin
+     /path/to/kmod-usr-bin \
+     <gpt-disk-guid>
 ```
 
 `mkbootroot` takes nine arguments. Three of the last four may be `""`; the fourth may not:
@@ -56,11 +57,13 @@ sudo build/mkinstalleriso build/iso_stage build/cix-install build/cix-recover \
 - **modules dir** and **kmod bin dir**: see **Kernel modules** below; `""` skips them.
 - **host-tools rootfs**: the rootfs of the `cix-hosttools` image (ADR-0078). **Required** — every program and every library in the root comes from it, and `""` is refused, because a root with no `cbs` cannot install a package and a root with no `mksquashfs` cannot assemble its own successor. It was a tolerant default until cix#350 ([ADR-0337](../adr/0337-the-root-is-derived-from-one-list-with-no-build-host-fallback.md)), and what the fallback actually did was copy the assembling host's own files — which on a Cix host is the running control-plane root, so each assembly carried the previous one's forward indefinitely.
 
-`mkinstalleriso` takes fifteen. The last four are worth a word. **isotools-root** is the harvested `isotools` hostbuild artifact (ADR-0064) holding `grub-mkrescue`, `xorriso`, `sbsign`, `mokutil`, shim and their libraries. It is an argument so this tool can run on a Cix host, which has none of those at Debian's paths.
+`mkinstalleriso` takes sixteen. The last five are worth a word. **isotools-root** is the harvested `isotools` hostbuild artifact (ADR-0064) holding `grub-mkrescue`, `xorriso`, `sbsign`, `mokutil`, shim and their libraries. It is an argument so this tool can run on a Cix host, which has none of those at Debian's paths.
 
-**kernel-modules-dir** and **kmod-bin-dir** are the same two inputs `mkbootroot` takes, and here they supply the installer's NIC drivers (#429). The five NIC drivers this platform supports are kernel *modules*, so without them `cix-install` can list only interfaces whose driver is built into the kernel, which in practice is `virtio_net` alone. Only the NIC modules and their dependency closure are staged, read from the tree's own `modules.dep` (`ixgbe`, `r8169` and `tg3` all pull in `libphy`/`mdio_bus`), plus `modprobe` to load them. With both `""` the media still installs on virtio, and `cix-install` says on screen which of the two it lacks.
+**kernel-modules-dir** and **kmod-bin-dir** are the same two inputs `mkbootroot` takes, and here they supply the installer's NIC drivers (#429). The six NIC drivers this platform supports are kernel *modules*, so without them `cix-install` can list only interfaces whose driver is built into the kernel, which in practice is `virtio_net` alone. Only the NIC modules and their dependency closure are staged, read from the tree's own `modules.dep` (`ixgbe`, `r8169` and `tg3` all pull in `libphy`/`mdio_bus`), plus `modprobe` to load them. With both `""` the media still installs on virtio, and `cix-install` says on screen which of the two it lacks.
 
 **seed** is optional (`""` for none) and is what makes a freshly installed box able to run a container without a network: a directory of `recipes/` and `artifacts/` copied onto the installed system's own package directories, from which the daemon installs a C library into the default image at first boot (#189). Without it, a fresh install comes up healthy but its default image has no C library, and `POST /v1/containers` refuses with a message naming what to install.
+
+**gpt-disk-guid** is required: the media's GPT disk GUID, as 8-4-4-4-12 lowercase hex, from which `mkinstalleriso` derives the PARTUUID the USB entries boot from (below). `cixd` derives it from the release string with the fourth group's low byte zeroed (`iso_disk_guid_derive()`); a hand-built ISO needs that byte low enough to add the partition number to.
 
 The generated media carries a "Cix Recovery" entry per media kind — a break-glass tool for resetting host-auth admin_groups on an already-installed system if you're ever locked out of the API; see [`security.md`'s recovery section](security.md#break-glass-recovery-adr-0146) and [ADR-0146](../adr/0146-ldap-startup-resync-and-break-glass-recovery.md). It never reformats or reinstalls anything, so keeping this same ISO around after a normal install is worthwhile on its own.
 
@@ -82,7 +85,7 @@ Supply real values in that argument instead to build media that installs one spe
 
 **Why an interface name at all**: this is a one-time bootstrap value, used to attach a physical NIC to the network `cixd`'s management address sits on at first boot. It does *not* need to be perfect. That network is an ordinary, API-managed network afterward (`GET /v1/networks`), and its interfaces can be changed without reinstalling.
 
-**Kernel modules** (ADR-0061): the modules-dir and kmod-bin-dir arguments stage a kernel module tree and `kmod`'s tools onto the installed system, so `cixd`'s boot-time `modprobe` (a curated set of common NICs and USB controllers; see the ADR) has something to load on hardware whose driver is not built into the kernel. Both come from Cix build artifacts: `/path/to/kernel-hostbuild-artifact/lib/modules` is the `kernel` package's hostbuild output (`cixctl pkg hostbuild kernel --wait`, see [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md)); `/path/to/kmod-usr-bin` is the `usr/bin` of an image carrying the `kmod` package (`kmod`, `modprobe`, `depmod`, …), such as `cix-kmod`. Pass `""` for both for a QEMU/CI boot test, where nothing needs a driver module.
+**Kernel modules** (ADR-0061): the modules-dir and kmod-bin-dir arguments stage a kernel module tree and `kmod`'s tools onto the installed system, so `cixd`'s boot-time `modprobe` (a curated set of common NICs; see the ADR) has something to load on hardware whose driver is not built into the kernel. Both come from Cix build artifacts: `/path/to/kernel-hostbuild-artifact/lib/modules` is the `kernel` package's hostbuild output (`cixctl pkg hostbuild kernel --wait`, see [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md)); `/path/to/kmod-usr-bin` is the `usr/bin` of an image carrying the `kmod` package (`kmod`, `modprobe`, `depmod`, …), such as `cix-kmod`. Pass `""` for both for a QEMU/CI boot test, where nothing needs a driver module.
 
 **Target disk**: **VirtIO Block** (`/dev/vda`), **VirtIO SCSI** and **SATA/PATA** (`/dev/sda`) disks work, as do NVMe (`/dev/nvme0n1`) and software RAID (`/dev/mdN`). The kernel config (`image/kernel/qemu-part1.config`) builds in `CONFIG_SCSI_VIRTIO` and the common hardware RAID/HBA drivers, since a kernel with no initramfs cannot load a module off a disk it cannot yet see.
 
@@ -117,7 +120,7 @@ cixctl routes add --default --gateway=192.168.15.1
 
 `management-address set` requires the address to fall inside an existing network's subnet, and the network follows from the address ([ADR-0287](../adr/0287-the-management-address-is-the-single-truth.md)). It applies immediately and persists across reboots, and it is also how an addressed box moves to another address later. The default route is separate, under `routes`. This is the route to take whenever the port you want is not in the installer's list: install on loopback, boot, and set it then.
 
-The installer stages the five NIC drivers and `modprobe` and loads them before it lists interfaces (#429). If the list still shows no real NIC, the installer says which of three things happened: the media carries no module tools (a media defect — it was built on a host with no `cix-kmod` image), a driver load failed and here is what `modprobe` said (a media defect — the module tree is missing, is for another kernel release, or was built from another config), or all five loaded cleanly and this machine's Ethernet simply is not one of them (not a media defect at all). The recorded driver gaps are Broadcom NetXtreme II (`bnx2`, needs a firmware blob) and Intel I225/I226 2.5G (`igc`, absent from the kernel config).
+The installer stages the six NIC drivers and `modprobe` and loads them before it lists interfaces (#429). If the list still shows no real NIC, the installer says which of three things happened: the media carries no module tools (a media defect — it was built on a host with no `cix-kmod` image), a driver load failed and here is what `modprobe` said (a media defect — the module tree is missing, is for another kernel release, or was built from another config), or all six loaded cleanly and this machine's Ethernet simply is not one of them (not a media defect at all). The recorded driver gap is Broadcom NetXtreme II (`bnx2`, needs a firmware blob).
 
 ### Installing over a serial console
 
@@ -174,7 +177,7 @@ The host fetches the catalogue at first boot and every 6 hours after, through th
 
 To use your own sources, set them; to use none, clear them with `--url=` (an empty value). To change how often it syncs, or stop it, edit or delete the schedule (`cixctl schedule`). Each of these is saved and survives reboots and upgrades, and a cleared source or deleted schedule stays that way. The defaults apply only to a host that has never saved that setting.
 
-**Console login**: the installed system drops straight into an interactive `cixctl` shell on both the video console and the serial console once boot completes, with no username or password to start it ([ADR-0034](../adr/0034-console-login-via-supervised-cixctl.md)). The shell is an ordinary API client on `127.0.0.1`: once host-auth write-gating is active ([ADR-0144](../adr/0144-host-authentication-and-real-ldap.md)), mutating commands there need `login` like anywhere else. Typing `exit`/`quit`/Ctrl-D ends the session and a fresh one starts automatically a couple of seconds later.
+**Console login**: the installed system drops straight into an interactive `cixctl` shell on both the video console and the serial console once boot completes, with no username or password to start it ([ADR-0034](../adr/0034-console-login-via-supervised-cixctl.md)). The shell is an ordinary API client on `127.0.0.1`: once host-auth write-gating is active ([ADR-0144](../adr/0144-host-authentication-and-real-ldap.md)), commands there, reads included, need `login` like anywhere else. Typing `exit`/`quit`/Ctrl-D ends the session and a fresh one starts automatically a couple of seconds later.
 
 ## Changing the address, port, or enabling HTTPS after install
 
@@ -197,7 +200,7 @@ curl -X PUT http://<install-ip>:80/v1/system/daemon-config \
      -d '{"https_enabled": true}'
 ```
 
-Once write-gating is active, a `curl` write needs `-H "Authorization: Bearer <token>"`.
+Once write-gating is active, every `curl` call here, read or write, needs `-H "Authorization: Bearer <token>"`.
 
 Every change here is applied live (no reboot, no restart — `cixd` runs as real PID 1 on an installed system, so there is no restart to fall back on) and persisted, so it survives a real one too. `https_enabled` (and `http_enabled`) both already default to `true` on a fresh install (ADR-0171), on ports 80/443 — but HTTPS has nothing to actually serve TLS with until a PKI root CA is bootstrapped (`POST /v1/pki/ca`, which also auto-issues the `"host"` leaf certificate HTTPS reuses), so a genuinely fresh install's own first boot just has the HTTPS listener silently not come up (logged, non-fatal). Once PKI is bootstrapped, re-running `daemon-config set --enable-https` (even though it's already logically enabled) brings the listener up immediately, live, with no reboot needed — the handler checks whether the listener is actually running, not just the persisted flag. `management-address set` needs an existing network whose subnet contains the new address, and refuses (400) otherwise. Check that you can reach the new address before relying on it: a mistake here has no remote undo, only the console (above), which always answers on `127.0.0.1`.
 

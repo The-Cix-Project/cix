@@ -8,7 +8,7 @@ The root `Makefile` is what the `cix` recipe runs inside its build container. `m
 
 - `cixd` and `cixctl`
 - `cix-init`, the freestanding PID 1 of every container ([ADR-0260](../adr/0260-a-container-declares-services-not-a-command.md))
-- the installer tools: `mkbootroot`, `mkinstalleriso`, `cix-install`, `cix-recover`, `mktoolchainimage`, and `cix-boot.efi` (built with gcc, because a PE/COFF EFI image needs the MS ABI, which TCC does not emit)
+- the installer tools: `mkbootroot`, `mkinstalleriso`, `cix-install`, `cix-recover`, `mktoolchainimage`, `cix-xorriso`, and `cix-boot.efi` (built with gcc, because a PE/COFF EFI image needs the MS ABI, which TCC does not emit)
 - one test binary per feature, each forking its own `cixd` against a scratch `--data-dir`
 
 There is no `make install`. The named targets beyond `all` and `clean`:
@@ -38,7 +38,7 @@ One optional image and one required one change what the assembled root contains.
 
 #### `cix-hosttools` (REQUIRED since cix#350, ADR-0337 — ADR-0078 introduced it as optional)
 
-Every program the control-plane root carries comes from this image, and so does every library. `mkbootroot` refuses to assemble a root without it, because a root with no `cbs` cannot install a package (ADR-0307 clause 6) and a root with no `mksquashfs` cannot assemble its own successor.
+Every host tool the control-plane root carries comes from this image, and so does every library. `mkbootroot` refuses to assemble a root without it, because a root with no `cbs` cannot install a package (ADR-0307 clause 6) and a root with no `mksquashfs` cannot assemble its own successor.
 
 ```
 cixctl image create --name=cix-hosttools
@@ -49,7 +49,7 @@ cixctl pkg install --name=e2fsprogs --image=cix-hosttools
 cixctl pkg install --name=btrfs-progs --image=cix-hosttools
 ```
 
-Those five supply the nine programs `include/controlplane_programs.h` declares — and that list is what `mkbootroot` stages from, so a program added there is staged with no second edit, and one missing from this image fails the assembly naming the install that fixes it. The image's full recipe is `recipes/image/cix-hosttools@<version>.json` in cix-recipes; it declares more than these five, because `coreutils`, `bash` and `perl` are build tools other work needs from the same image.
+Those five supply the nine programs `include/controlplane_programs.h` assigns to this image — and that list is what `mkbootroot` stages from, so a program added there is staged with no second edit, and one missing from this image fails the assembly naming the install that fixes it. The image's full recipe is `recipes/image/cix-hosttools@<version>.json` in cix-recipes; it declares more than these five, because `coreutils`, `bash` and `perl` are build tools other work needs from the same image.
 
 `cix-hosttools` is `HOST_TOOLS_IMAGE` in `daemon/src/main.c`; `spawn_cix_bootroot_assembly()` passes its rootfs to `mkbootroot` as the host-tools directory. `mkbootroot` also runs that image's `mksquashfs` to seal the root, with the image's own libraries on its search path ([ADR-0154](../adr/0154-host-tools-mksquashfs-ld-library-path.md)).
 
@@ -73,7 +73,7 @@ Install only what the hardware needs — the two above are what an 802.11ac acce
 
 ### 2. Point the `cix` recipe at a tagged source snapshot
 
-The `cix` recipe lives in the [cix-recipes](https://git.home.arpa/itdlabs/cix-recipes) repository, one flat file per version: `recipes/package/cix@<tag>[-<release>].cbs` ([ADR-0308](../adr/0308-recipes-are-their-own-repository-flat.md); older versions are `.sh`). Its source is this repository's own archive-download endpoint, pinned to a tag, never a floating branch:
+The `cix` recipe lives in the [cix-recipes](https://git.home.arpa/itdlabs/cix-recipes) repository, one flat file per version: `recipes/package/cix@<tag>[-<release>].cbs` ([ADR-0308](../adr/0308-recipes-are-their-own-repository-flat.md)). Its source is this repository's own archive-download endpoint, pinned to a tag, never a floating branch:
 
 ```
 url "https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archive/<tag>.tar.gz"
@@ -81,7 +81,7 @@ url "https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archiv
 
 `{{REPO_TOKEN}}` is replaced at fetch time, host-side, with the token of the source that owns the recipe, set by `cixctl pkg source set NAME --token=…` (ADR-0324) ([writing-recipes.md](writing-recipes.md#required-metadata-fields), issue #60), so no credential is ever written into a recipe or reaches the build container. The repository is private, so an unauthenticated fetch gets Gitea's `404`, not a `401`.
 
-To make a newer self-build available: tag this repository, then publish a new `cix` recipe for that tag with `cixctl pkg recipe add --name=cix --file=cix@<tag>.cbs` (the `.cbs` suffix selects the CBS format). A new tag's archive has a new `sha256`; learn it from the box rather than downloading it elsewhere, with a throwaway `probe-*` recipe that declares a deliberately wrong hash. The fetch then fails and the daemon logs the real one as `computed=<64 hex>` (`probe-cix-tarball@1.sh` in cix-recipes is the template).
+To make a newer self-build available: tag this repository, then publish a new `cix` recipe for that tag with `cixctl pkg recipe commit --name=cix --file=cix@<tag>.cbs`, which commits it to cix-recipes first and only then publishes it (ADR-0323). A new tag's archive has a new `sha256`; learn it from the box rather than downloading it elsewhere, with a throwaway `probe-*` recipe that declares a deliberately wrong hash. The fetch then fails and the daemon logs the real one as `computed=<64 hex>` (`probe-cix-tarball` in cix-recipes is the template).
 
 ### 3. Run the hostbuild
 
@@ -150,12 +150,12 @@ cixctl iso publish --wait
 
 That uploads the **signature first, then the ISO** — the artifact cache refuses an ISO with no signature beside it, so an unsigned installer is never downloadable. Without a release key this step refuses and says so.
 
-Published as `cix-installer-<version>-1-<arch>.iso`, alongside its `.minisig`. On the far side, with no Cix software involved:
+Published as `cix-installer-<version>-<arch>.iso`, alongside its `.minisig`. On the far side, with no Cix software involved:
 
 ```
-curl -fsSLO http://<cache>:8080/cix-installer-<version>-1-<arch>.iso
-curl -fsSLO http://<cache>:8080/cix-installer-<version>-1-<arch>.iso.minisig
-minisign -Vm cix-installer-<version>-1-<arch>.iso -p cix-release-2026-09.pub
+curl -fsSLO http://<cache>:8080/cix-installer-<version>-<arch>.iso
+curl -fsSLO http://<cache>:8080/cix-installer-<version>-<arch>.iso.minisig
+minisign -Vm cix-installer-<version>-<arch>.iso -p cix-release-2026-09.pub
 ```
 
 Verify on a machine you already trust, before writing the stick. An installer that checks its own signature is the code being checked doing the checking — a substituted ISO would report success.

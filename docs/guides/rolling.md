@@ -35,7 +35,7 @@ cixctl pkg source-policy clear NAME
   `n-0.1` and `n-1` are spelled differently on purpose: on that channel they differ by a whole release line. A depth that cannot be satisfied is an error with a reason, never a fallback to whatever exists.
 - **Pinned**: a hold. The package keeps the version it has until the hold is lifted, and `clear` keeps the hold.
 
-The hourly `pkg.discover` schedule applies this policy to the upstream's release list, authenticates what it finds by the recipe's declared method, and hands the chosen version to step 2. `cixctl pkg source-catalogue` shows where each package's roll stands, and where it stopped and why.
+A `pkg.discover` schedule applies this policy to the upstream's release list, authenticates what it finds by the recipe's declared method, and hands the chosen version to step 2. `cixctl pkg source-catalogue` shows where each package's roll stands, and where it stopped and why.
 
 ## 2. How it is built: the recipe, and where CBS comes in
 
