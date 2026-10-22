@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The root's trust store is the ca-certificates package (ADR-0350 release two, #591)
+
+- **What changed:**
+  - **`mkbootroot` stages `/etc/ssl/certs/ca-certificates.crt` from the `cix-hosttools` image**, as `stage_controlplane_files()` already does for `openssl.cnf`, and no longer copies the build host's. An absent file stops the assembly and names `pkg install --image=cix-hosttools ca-certificates`. It was the last file in the control-plane root copied off the build host, which on an installed host is the previous root, so the trust store had been whatever a Debian dev machine first put there.
+  - **The root now trusts Mozilla's roots and nothing else.** The site's CA reaches cixd only as a registered trust anchor. The installer ISO therefore carries public roots only.
+  - **Order kept:** the site CA (its root and its intermediate, since the forge sends only its own certificate) was registered on 192.168.15.95 before this release, as ADR-0350 rule 6 requires.
+  - **Dashboard:** the trust-anchor table's subject and fingerprint each stay on one line, with the full value on hover.
+
 ### A host trusts its operator's CA by registration (ADR-0350 release one, #591)
 
 - **What changed:**

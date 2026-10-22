@@ -868,18 +868,22 @@ static int stage_controlplane_programs(const char *image_root, const char *host_
  * cix#350: the FILES the control plane needs that are not programs and
  * not libraries, from the same image and for the same reason.
  *
- * THE CA BUNDLE IS DELIBERATELY NOT HERE, and that is a measurement
- * rather than an omission -- see the block in main() that still copies
- * it from the build host, and cix#591 for the decision it needs. The
- * short version: `git.home.arpa`'s certificate is issued by a PRIVATE
- * CA (`O=itdlabs, OU=Root Authority, CN=gibnet Intermediate CA`,
- * measured 2026-10-10), no package can ship a site's own CA, and
- * `curlfetch.c`/`forgecommit.c` set no CURLOPT_CAINFO -- so that one
- * file is the whole trust store for every HTTPS fetch this host makes.
- * Replacing it with a public-roots package would have broken the
- * forge, which is to say broken the box's ability to fetch its own
- * next fix. That is the 0.2.57-481 failure exactly, and this time it
- * was caught before shipping rather than after.
+ * THE CA BUNDLE IS PUBLIC ROOTS ONLY, and that is the point (ADR-0350).
+ * It is Mozilla's set as the ca-certificates package ships it. A site's
+ * own CA is never written here, because this root is embedded in the
+ * published installer ISO and would make every public install trust it.
+ * An operator's CA is a trust anchor in the state directory instead:
+ * cixd writes those plus this file into one bundle and hands it to
+ * libcurl as CURLOPT_CAINFO (trustanchor.c, curlfetch.c). This file is
+ * also what cixd falls back to when that bundle is absent, since it is
+ * curl's compiled-in default path (ADR-0096).
+ *
+ * The order mattered: until 0.2.57-576 this file was the build host's
+ * copy, which carried the site's CA (`CN=gibnet Intermediate CA` issues
+ * git.home.arpa's certificate, measured 2026-10-10), and swapping it
+ * for public roots before an anchor existed would have cut the box off
+ * from its own forge -- the 0.2.57-481 failure again. The anchors were
+ * registered on 192.168.15.95 on 2026-10-23, before this change.
  *
  * openssl.cnf belongs here for two reasons, the second stronger than
  * provenance: the config has to MATCH the library that reads it. #351
@@ -902,6 +906,10 @@ static int stage_controlplane_files(const char *image_root, const char *host_too
 		  "config of the openssl this platform BUILT rather than a build machine's -- "
 		  "found originally by a real `pki ca bootstrap` failing with \"req -x509 "
 		  "failed: Can't open /usr/lib/ssl/openssl.cnf\", not guessed at" },
+		{ "/etc/ssl/certs/ca-certificates.crt", "ca-certificates",
+		  "the public roots every HTTPS fetch cixd makes verifies against, alone or "
+		  "with the registered trust anchors (ADR-0350); without it no source, "
+		  "forge or cache over HTTPS can be reached" },
 	};
 	size_t i;
 
@@ -1391,63 +1399,14 @@ int main(int argc, char **argv)
 		}
 
 		/*
-		 * openssl.cnf, from this same image (cix#350). It used to be
-		 * copied off the build host here, which on an installed host
-		 * is the control-plane root -- stage_controlplane_files()
-		 * above carries the argument.
+		 * openssl.cnf and the CA bundle, from this same image (cix#350,
+		 * ADR-0350). Both used to be copied off the build host here,
+		 * which on an installed host is the control-plane root --
+		 * stage_controlplane_files() above carries the argument.
 		 */
 		if (stage_controlplane_files(image_root, host_tools_dir) != 0)
 			return 1;
 
-		/*
-		 * THE CA BUNDLE STILL COMES FROM THE BUILD HOST, and after
-		 * cix#350 it is the last content in this root that does. It
-		 * stays because the obvious fix is measurably WRONG, not
-		 * because nobody has got to it (cix#591).
-		 *
-		 * ADR-0096's finding, which is why it is staged at all:
-		 * curl.recipe's ./configure auto-detects a CA bundle path at
-		 * build time and compiles it in as its default
-		 * (/etc/ssl/certs/ca-certificates.crt), and nothing used to
-		 * put a bundle there -- so every host-side HTTPS pkg_source
-		 * fetch had no way to verify a certificate, which surfaced as
-		 * "curl: (77) error setting certificate file".
-		 *
-		 * WHY A PACKAGE CANNOT REPLACE IT. Measured on 2026-10-10,
-		 * before writing the change that would have: `git.home.arpa`'s
-		 * certificate is issued by a private CA -- `O=itdlabs,
-		 * OU=Root Authority, CN=gibnet Intermediate CA` -- so it is in
-		 * no public root program, and `ca-certificates@2026.09.03-2`
-		 * (Mozilla's set as curl.se publishes it, which the owner
-		 * chose) does not contain it and never can. The file this line
-		 * copies works precisely BECAUSE the build host's copy has the
-		 * site's own CA added to it. And curlfetch.c and
-		 * forgecommit.c set no CURLOPT_CAINFO, so this single file is
-		 * the entire trust store for every HTTPS fetch cixd makes.
-		 * Swapping it for public roots alone would therefore have
-		 * broken the forge -- i.e. broken the box's ability to fetch
-		 * its own next fix, which is what 0.2.57-481 did for a
-		 * different reason in the same place.
-		 *
-		 * So the real question is how a host trusts its OPERATOR's CA,
-		 * which is not a packaging decision and is cix#591's subject.
-		 * ca-certificates IS now installed in cix-hosttools (image
-		 * 2.4.4) so that whatever lands there has its public half
-		 * ready; it is deliberately not staged from there yet.
-		 */
-		if (ensure_dir_under(image_root, "etc") != 0)
-			return 1;
-		if (ensure_dir_under(image_root, "etc/ssl") != 0)
-			return 1;
-		if (ensure_dir_under(image_root, "etc/ssl/certs") != 0)
-			return 1;
-		{
-			char dst[PATH_MAX];
-
-			snprintf(dst, sizeof(dst), "%s/etc/ssl/certs/ca-certificates.crt", image_root);
-			if (test_image_fixture_copy_file("/etc/ssl/certs/ca-certificates.crt", dst) != 0)
-				return 1;
-		}
 	}
 
 	/*
