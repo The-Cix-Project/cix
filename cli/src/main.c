@@ -6797,6 +6797,22 @@ static void fmt_container_stats(const struct json_value *v)
 			       (long long)json_as_number(json_object_get(n, "tx_packets")));
 		}
 	}
+
+	/* ADR-0349: absent until procfuse has sampled the container, which
+	 * is said rather than printed as zeros it never had. */
+	{
+		const struct json_value *load = json_object_get(v, "load");
+
+		if (load == NULL)
+			printf("load=not sampled yet\n");
+		else
+			printf("load1=%.2f load5=%.2f load15=%.2f running=%lld threads=%lld\n",
+			       json_as_number(json_object_get(load, "load1")),
+			       json_as_number(json_object_get(load, "load5")),
+			       json_as_number(json_object_get(load, "load15")),
+			       (long long)json_as_number(json_object_get(load, "running")),
+			       (long long)json_as_number(json_object_get(load, "threads")));
+	}
 }
 
 static int cmd_container_stats(const struct cix_client *c, int json_mode, int argc, char **argv)

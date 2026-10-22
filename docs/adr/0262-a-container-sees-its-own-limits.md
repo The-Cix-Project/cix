@@ -141,6 +141,11 @@ Synthesised per requester, from that requester's cgroup:
   when a quota narrows it further. Not a synthetic vendor and model: something reads those.
 - **`/proc/stat`**, **`/proc/uptime`**, **`/proc/loadavg`**, **`/proc/swaps`** — from `cpu.stat`,
   the container's own start time, and `memory.swap.*`.
+  *Correction, 2026-10-22:* `/proc/loadavg` was never derived from any of those. It passed the
+  host's figure through, because the kernel keeps no load average per cgroup. Since
+  [ADR-0349](0349-a-containers-load-average-is-sampled-from-its-own-threads.md) it is the
+  container's own figure, sampled every 5 s by the server, which makes it the one file here that
+  is not computed fresh at read.
 
 ### Mounted by default, refusable per container
 

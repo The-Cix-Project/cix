@@ -359,6 +359,15 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Say every outcome, once.** Loads, refusals and failures log one line; unclaimed aliases and already-loaded modules go in the scan report only.
 - **Test data directories start with the policy saved as `off`**, so a test daemon never sweeps a build container.
 
+## A container's load average is sampled from its own threads
+
+**procfuse's own process samples every cgroup under the workload parent every 5 s, by the kernel's `calc_load()`, and `/proc/loadavg` and `GET /v1/containers/{name}/stats` serve that one figure.** That is [ADR-0349](docs/adr/0349-a-containers-load-average-is-sampled-from-its-own-threads.md), for #625. The owner agreed the mechanism on 2026-10-21.
+
+- **One thread scan.** `cgroup_threads_walk()` counts R and D threads over a cgroup's subtree for `/proc/stat`, `/proc/uptime` and the sampler alike. Never add a second count over `cgroup.procs`.
+- **One shared page, stallwatch's convention:** every field `volatile`, a per-entry seq that is odd while the child writes. Only the server writes it. cixd reads it through `procfuse_load_get()` and never waits on the server.
+- **Absent, never zero.** A cgroup not sampled yet reads the host's line in `/proc/loadavg` and has no `load` in stats.
+- **The status bar's load stays the host's.**
+
 ## One way to make an image
 
 **An image is made by `POST /v1/images` (`cixctl image create --name=NAME`) and by nothing else.** `POST /v1/pkg/install` naming an image that does not exist is a 400 naming that fix, and creates nothing (#500) -- the owner's decision of 2026-09-30, chosen over documenting the implicit create an install used to perform, which is how `--image=jump`, a typo for `jumpbox`, became a new image.

@@ -28,10 +28,12 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <linux/fuse.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
@@ -483,9 +485,20 @@ static size_t render_cpuinfo(const char *cg, char *out, size_t cap)
  */
 
 /*
- * Walks the cgroup's process list ONCE and answers everything that
- * needs it: when the oldest process in this container started, and how
- * many of its tasks are running or blocked right now.
+ * Walks the cgroup's threads ONCE, its own and every descendant
+ * cgroup's, and answers everything that needs them: when the oldest
+ * thread in this container started, how many of its threads are
+ * running or blocked right now, and how many there are.
+ *
+ * THREADS, NOT PROCESSES, AND THE SUBTREE, NOT THE LEAF (ADR-0349).
+ * The kernel's procs_running, procs_blocked and load average all count
+ * tasks, which are threads, so a walk of cgroup.procs undercounts every
+ * multi-threaded process. And a container that delegates sub-cgroups
+ * (CLONE_NEWCGROUP) keeps its threads below its root, where its own
+ * cgroup.threads is empty. One walk serves /proc/stat, /proc/uptime and
+ * the load-average sampler, so the three cannot disagree. The oldest
+ * thread is the oldest process's main thread, so uptime is unchanged
+ * by the switch.
  *
  * WHY THE OLDEST PROCESS AND NOT THE CGROUP DIRECTORY'S mtime. The
  * first version anchored container uptime on the cgroup directory's
@@ -504,25 +517,45 @@ static size_t render_cpuinfo(const char *cg, char *out, size_t cap)
  * by counting from the start: field 2 is the executable name, it is not
  * escaped, and a process really can be called "foo) 1 2 3 (bar".
  */
-struct cgroup_procs_info {
+struct cgroup_threads_info {
 	long long oldest_starttime_ticks; /* -1 when nothing was readable */
 	long long running;
 	long long blocked;
+	long long threads;
 };
 
-static void cgroup_procs_scan(const char *cg, struct cgroup_procs_info *out)
+/* A delegated tree deeper than this is not walked further: the bound
+ * keeps a hostile container from making the walk unbounded, and no
+ * real nesting comes near it. */
+#define CGROUP_WALK_DEPTH_MAX 16
+
+static void threads_info_clear(struct cgroup_threads_info *t)
+{
+	t->oldest_starttime_ticks = -1;
+	t->running = 0;
+	t->blocked = 0;
+	t->threads = 0;
+}
+
+static void threads_info_add(struct cgroup_threads_info *into, const struct cgroup_threads_info *t)
+{
+	into->running += t->running;
+	into->blocked += t->blocked;
+	into->threads += t->threads;
+	if (t->oldest_starttime_ticks >= 0 &&
+	    (into->oldest_starttime_ticks < 0 ||
+	     t->oldest_starttime_ticks < into->oldest_starttime_ticks))
+		into->oldest_starttime_ticks = t->oldest_starttime_ticks;
+}
+
+/* The threads listed in one cgroup's own cgroup.threads, added to out. */
+static void cgroup_threads_own(const char *cg, struct cgroup_threads_info *out)
 {
 	char path[PATH_MAX];
 	char line[64];
 	FILE *f;
 
-	out->oldest_starttime_ticks = -1;
-	out->running = 0;
-	out->blocked = 0;
-
-	if (cg == NULL)
-		return;
-	if (snprintf(path, sizeof(path), "%s/cgroup.procs", cg) >= (int)sizeof(path))
+	if (snprintf(path, sizeof(path), "%s/cgroup.threads", cg) >= (int)sizeof(path))
 		return;
 	f = fopen(path, "r");
 	if (f == NULL)
@@ -575,12 +608,65 @@ static void cgroup_procs_scan(const char *cg, struct cgroup_procs_info *out)
 			while (*p != '\0' && *p != ' ')
 				p++;
 		}
+		out->threads++;
 		if (state == 'R')
 			out->running++;
 		else if (state == 'D')
 			out->blocked++;
 	}
 	fclose(f);
+}
+
+struct load_pass;
+static void load_record(struct load_pass *pass, const char *dir,
+                        const struct cgroup_threads_info *t);
+
+/*
+ * `dir` is a PATH_MAX buffer holding the cgroup's directory; each child
+ * is appended in place and cut off again, so a walk allocates nothing.
+ * The subtree's totals are summed bottom-up, so every thread is read
+ * once per walk however deep it sits. With `pass` set, every cgroup on
+ * the way is recorded for the load-average sampler (ADR-0349).
+ */
+static void cgroup_threads_walk(char *dir, int depth, struct cgroup_threads_info *out,
+                                struct load_pass *pass)
+{
+	size_t len = strlen(dir);
+	DIR *d;
+	struct dirent *de;
+
+	threads_info_clear(out);
+	cgroup_threads_own(dir, out);
+	if (depth < CGROUP_WALK_DEPTH_MAX) {
+		d = opendir(dir);
+		while (d != NULL && (de = readdir(d)) != NULL) {
+			struct cgroup_threads_info child;
+
+			if (de->d_type != DT_DIR || de->d_name[0] == '.')
+				continue;
+			if (len + 1 + strlen(de->d_name) >= PATH_MAX)
+				continue;
+			dir[len] = '/';
+			strcpy(dir + len + 1, de->d_name);
+			cgroup_threads_walk(dir, depth + 1, &child, pass);
+			dir[len] = '\0';
+			threads_info_add(out, &child);
+		}
+		if (d != NULL)
+			closedir(d);
+	}
+	if (pass != NULL)
+		load_record(pass, dir, out);
+}
+
+static void cgroup_threads_scan(const char *cg, struct cgroup_threads_info *out)
+{
+	char dir[PATH_MAX];
+
+	threads_info_clear(out);
+	if (cg == NULL || snprintf(dir, sizeof(dir), "%s", cg) >= (int)sizeof(dir))
+		return;
+	cgroup_threads_walk(dir, 0, out, NULL);
 }
 
 /* The host's own uptime in seconds, which every fallback here needs. */
@@ -600,11 +686,11 @@ static double host_uptime_seconds(void)
 /*
  * How long this container has been up, in seconds.
  *
- * Falls back to the cgroup directory's mtime when the process list
+ * Falls back to the cgroup directory's mtime when the thread list
  * cannot be read, and to the host's uptime when there is no cgroup at
  * all -- an unconfined reader is genuinely looking at the host.
  */
-static double container_uptime(const char *cg, const struct cgroup_procs_info *procs)
+static double container_uptime(const char *cg, const struct cgroup_threads_info *procs)
 {
 	long ticks = sysconf(_SC_CLK_TCK);
 	double host_up = host_uptime_seconds();
@@ -782,7 +868,7 @@ struct idle_cache_entry {
 static struct idle_cache_entry g_idle_cache[IDLE_CACHE_MAX];
 static unsigned long long g_idle_clock;
 
-static long long idle_monotonic(const char *cg, const struct cgroup_procs_info *procs,
+static long long idle_monotonic(const char *cg, const struct cgroup_threads_info *procs,
                                  double allowance, long long idle)
 {
 	struct idle_cache_entry *slot = NULL;
@@ -833,7 +919,7 @@ struct cpu_times {
 	double uptime; /* seconds */
 };
 
-static void cgroup_cpu_times(const char *cg, const struct cgroup_procs_info *procs,
+static void cgroup_cpu_times(const char *cg, const struct cgroup_threads_info *procs,
                               struct cpu_times *t)
 {
 	long long user_usec = cgroup_stat_key(cg, "cpu.stat", "user_usec", 0);
@@ -879,7 +965,7 @@ static void cgroup_cpu_times(const char *cg, const struct cgroup_procs_info *pro
  */
 static size_t render_uptime(const char *cg, char *out, size_t cap)
 {
-	struct cgroup_procs_info procs;
+	struct cgroup_threads_info procs;
 	struct cpu_times t;
 	long ticks = sysconf(_SC_CLK_TCK);
 
@@ -888,7 +974,7 @@ static size_t render_uptime(const char *cg, char *out, size_t cap)
 	if (cg == NULL)
 		return (size_t)snprintf(out, cap, "%.2f %.2f\n", host_uptime_seconds(), 0.0);
 
-	cgroup_procs_scan(cg, &procs);
+	cgroup_threads_scan(cg, &procs);
 	cgroup_cpu_times(cg, &procs, &t);
 	return (size_t)snprintf(out, cap, "%.2f %.2f\n", t.uptime, (double)t.idle / (double)ticks);
 }
@@ -923,14 +1009,14 @@ static size_t render_uptime(const char *cg, char *out, size_t cap)
  */
 static size_t render_stat(const char *cg, char *out, size_t cap)
 {
-	struct cgroup_procs_info procs;
+	struct cgroup_threads_info procs;
 	struct cpu_times t;
 	FILE *f;
 	char line[4096];
 	size_t len = 0;
 	int i;
 
-	cgroup_procs_scan(cg, &procs);
+	cgroup_threads_scan(cg, &procs);
 	cgroup_cpu_times(cg, &procs, &t);
 
 	f = fopen("/proc/stat", "r");
@@ -984,25 +1070,289 @@ static size_t render_stat(const char *cg, char *out, size_t cap)
 	return len < cap ? len : cap;
 }
 
+/* ------------------------------------------------------------------ */
+/* load average: sampled, not computed at read (ADR-0349)              */
+/* ------------------------------------------------------------------ */
+
 /*
- * Load average is a host-wide kernel figure with no per-cgroup
- * equivalent, so this reports the host's own rather than inventing one.
- * Serving it at all is what keeps the mount uniform; lying about it
- * would be worse than the host's true number.
+ * The kernel keeps no load average per cgroup, so the server keeps one,
+ * by the kernel's own arithmetic (kernel/sched/loadavg.c): every
+ * LOAD_FREQ (5 s) each average moves toward the count of running plus
+ * uninterruptible tasks, in 11-bit fixed point.
  */
-static size_t render_loadavg(const char *cg, char *out, size_t cap)
+#define LOAD_FSHIFT 11
+#define LOAD_FIXED_1 (1UL << LOAD_FSHIFT)
+static const unsigned long g_load_exp[3] = { 1884, 2014, 2037 }; /* EXP_1, EXP_5, EXP_15 */
+
+static unsigned long load_calc(unsigned long load, unsigned long exp, unsigned long active)
+{
+	unsigned long newload = load * exp + active * (LOAD_FIXED_1 - exp);
+
+	if (active >= load)
+		newload += LOAD_FIXED_1 - 1;
+	return newload / LOAD_FIXED_1;
+}
+
+/*
+ * The table cixd and the server share, mapped before the fork exactly
+ * as stallwatch maps its page (stallwatch.c), and with that file's
+ * convention: every field volatile, no atomics.
+ *
+ * Only the server writes. Each entry's seq is odd while it does, so a
+ * reader copies an entry between two reads of seq and keeps the copy
+ * only when both are the same even number. That is correct on x86-64
+ * because stores are not reordered with other stores and loads are not
+ * reordered with other loads, and volatile keeps the compiler from
+ * reordering either. `used` is a high-water mark, so a lookup and a
+ * pass touch only the entries ever used, not all of them.
+ */
+#define LOAD_ENTRIES 4096
+#define LOAD_PATH_MAX 128
+#define LOAD_READ_TRIES 64
+
+struct load_entry {
+	volatile unsigned long long seq;
+	volatile unsigned long long pass; /* the pass that last saw it; 0 is free */
+	volatile long long starttime;     /* the subtree's oldest, the reset rule */
+	volatile unsigned long avenrun[3];
+	volatile long long running;
+	volatile long long threads;
+	volatile char path[LOAD_PATH_MAX]; /* relative to the base */
+};
+
+struct load_page {
+	volatile unsigned long long passes;
+	volatile long long unrecorded;
+	volatile int used;
+	struct load_entry e[LOAD_ENTRIES];
+};
+
+static struct load_page *g_load;
+static char g_load_base[PATH_MAX];
+
+struct load_pass {
+	unsigned long long number;
+	size_t base_len;
+	long long unrecorded;
+};
+
+static int vpath_eq(const volatile char *a, const char *b)
+{
+	size_t i;
+
+	for (i = 0; i < LOAD_PATH_MAX; i++) {
+		if (a[i] != b[i])
+			return 0;
+		if (b[i] == '\0')
+			return 1;
+	}
+	return 0;
+}
+
+int procfuse_load_attach(const char *cgroup_base)
+{
+	void *p;
+
+	if (g_load != NULL)
+		return 0;
+	if (snprintf(g_load_base, sizeof(g_load_base), "%s", cgroup_base) >= (int)sizeof(g_load_base))
+		return -1;
+	p = mmap(NULL, sizeof(*g_load), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	if (p == MAP_FAILED)
+		return -1;
+	memset(p, 0, sizeof(*g_load));
+	g_load = p;
+	return 0;
+}
+
+/*
+ * One cgroup's sample. A new entry, and an entry whose subtree's oldest
+ * start time changed, start from zero: the latter is a recreated or
+ * restarted container, which must not inherit its predecessor's load.
+ * That is the rule idle_monotonic() already uses for /proc/stat.
+ */
+static void load_record(struct load_pass *pass, const char *dir,
+                        const struct cgroup_threads_info *t)
+{
+	const char *rel = dir + pass->base_len;
+	struct load_entry *slot = NULL;
+	struct load_entry *free_slot = NULL;
+	unsigned long active;
+	int fresh;
+	int i;
+
+	if (*rel == '/')
+		rel++;
+	if (strlen(rel) >= LOAD_PATH_MAX) {
+		pass->unrecorded++;
+		return;
+	}
+	for (i = 0; i < g_load->used; i++) {
+		struct load_entry *e = &g_load->e[i];
+
+		if (e->pass == 0) {
+			if (free_slot == NULL)
+				free_slot = e;
+		} else if (vpath_eq(e->path, rel)) {
+			slot = e;
+			break;
+		}
+	}
+	if (slot == NULL)
+		slot = free_slot;
+	if (slot == NULL) {
+		if (g_load->used >= LOAD_ENTRIES) {
+			pass->unrecorded++;
+			return;
+		}
+		slot = &g_load->e[g_load->used];
+		g_load->used++;
+	}
+
+	fresh = slot->pass == 0 || slot->starttime != t->oldest_starttime_ticks;
+	active = (unsigned long)(t->running + t->blocked) * LOAD_FIXED_1;
+	slot->seq++;
+	if (fresh) {
+		for (i = 0; rel[i] != '\0'; i++)
+			slot->path[i] = rel[i];
+		slot->path[i] = '\0';
+		slot->starttime = t->oldest_starttime_ticks;
+		for (i = 0; i < 3; i++)
+			slot->avenrun[i] = 0;
+	}
+	for (i = 0; i < 3; i++)
+		slot->avenrun[i] = load_calc(slot->avenrun[i], g_load_exp[i], active);
+	slot->running = t->running;
+	slot->threads = t->threads;
+	slot->pass = pass->number;
+	slot->seq++;
+}
+
+void procfuse_load_pass(const char *top)
+{
+	struct load_pass pass;
+	struct cgroup_threads_info total;
+	char dir[PATH_MAX];
+	int i;
+
+	if (g_load == NULL || top == NULL)
+		return;
+	if (snprintf(dir, sizeof(dir), "%s/%s", g_load_base, top) >= (int)sizeof(dir))
+		return;
+	pass.number = g_load->passes + 1;
+	pass.base_len = strlen(g_load_base);
+	pass.unrecorded = 0;
+	cgroup_threads_walk(dir, 0, &total, &pass);
+
+	/* A cgroup this pass did not see is gone; its entry is freed. */
+	for (i = 0; i < g_load->used; i++) {
+		struct load_entry *e = &g_load->e[i];
+
+		if (e->pass != 0 && e->pass != pass.number) {
+			e->seq++;
+			e->pass = 0;
+			e->path[0] = '\0';
+			e->seq++;
+		}
+	}
+	g_load->unrecorded = pass.unrecorded;
+	g_load->passes = pass.number;
+}
+
+int procfuse_load_get(const char *cgroup_rel, struct procfuse_load *out)
+{
+	int used;
+	int i;
+
+	if (g_load == NULL || cgroup_rel == NULL)
+		return -1;
+	used = g_load->used;
+	for (i = 0; i < used && i < LOAD_ENTRIES; i++) {
+		const struct load_entry *e = &g_load->e[i];
+		int tries;
+
+		for (tries = 0; tries < LOAD_READ_TRIES; tries++) {
+			unsigned long long s1 = e->seq;
+			unsigned long avenrun[3];
+			long long running, threads;
+			int match;
+			int k;
+
+			if (s1 & 1)
+				continue;
+			match = e->pass != 0 && vpath_eq(e->path, cgroup_rel);
+			for (k = 0; k < 3; k++)
+				avenrun[k] = e->avenrun[k];
+			running = e->running;
+			threads = e->threads;
+			if (e->seq != s1)
+				continue;
+			if (!match)
+				break;
+			/* Formatted as the kernel formats /proc/loadavg: round
+			 * to the hundredth, then split (fs/proc/loadavg.c). */
+			for (k = 0; k < 3; k++) {
+				unsigned long x = avenrun[k] + LOAD_FIXED_1 / 200;
+
+				out->avg_int[k] = x >> LOAD_FSHIFT;
+				out->avg_frac[k] = ((x & (LOAD_FIXED_1 - 1)) * 100) >> LOAD_FSHIFT;
+			}
+			out->running = running;
+			out->threads = threads;
+			return 0;
+		}
+	}
+	return -1;
+}
+
+long long procfuse_load_unrecorded(void)
+{
+	return g_load != NULL ? g_load->unrecorded : 0;
+}
+
+/* The host's own line, for a reader the sampler has no figure for. */
+static size_t host_loadavg(char *out, size_t cap, char *last_pid, size_t last_pid_cap)
 {
 	char buf[256];
 	FILE *f;
+	char *sp;
 
-	(void)cg;
+	snprintf(last_pid, last_pid_cap, "1");
 	f = fopen("/proc/loadavg", "r");
 	if (f == NULL)
 		return (size_t)snprintf(out, cap, "0.00 0.00 0.00 1/1 1\n");
 	if (fgets(buf, sizeof(buf), f) == NULL)
 		buf[0] = '\0';
 	fclose(f);
+	sp = strrchr(buf, ' ');
+	if (sp != NULL) {
+		snprintf(last_pid, last_pid_cap, "%s", sp + 1);
+		last_pid[strcspn(last_pid, "\n")] = '\0';
+	}
 	return (size_t)snprintf(out, cap, "%s", buf);
+}
+
+/*
+ * The reader's own cgroup's sampled figure (ADR-0349). Field 5, the
+ * most recently created pid, stays the host's: the container's own is
+ * ns_last_pid, readable only from inside its pid namespace, so serving
+ * it would cost a fork per read, and uptime, top and w do not read it.
+ * A reader with no figure -- outside the sampled tree, or in a cgroup
+ * not sampled yet -- gets the host's line, as it did before.
+ */
+static size_t render_loadavg(const char *cg, char *out, size_t cap)
+{
+	struct procfuse_load l;
+	char last_pid[32];
+	size_t base_len = strlen(g_load_base);
+	size_t n = host_loadavg(out, cap, last_pid, sizeof(last_pid));
+
+	if (cg == NULL || base_len == 0 || strncmp(cg, g_load_base, base_len) != 0 ||
+	    cg[base_len] != '/' || procfuse_load_get(cg + base_len + 1, &l) != 0)
+		return n;
+	return (size_t)snprintf(out, cap, "%lu.%02lu %lu.%02lu %lu.%02lu %lld/%lld %s\n",
+	                        l.avg_int[0], l.avg_frac[0], l.avg_int[1], l.avg_frac[1],
+	                        l.avg_int[2], l.avg_frac[2], l.running, l.threads, last_pid);
 }
 
 /* The cgroup's own swap accounting, in /proc/swaps' shape. An empty
@@ -1504,16 +1854,52 @@ static void handle_statfs(int fd, const struct fuse_in_header *hdr)
  * it is a separate process: ADR-0247 refuses a blocking read anywhere in
  * the reactor, and being forked is what makes blocking here correct
  * rather than a violation.
+ *
+ * With a load top it also samples every PROCFUSE_LOAD_PERIOD_MS
+ * (ADR-0349), waiting in poll() for whichever comes first, a request or
+ * the next deadline. An on-time pass keeps the cadence exact; a late one
+ * sets the next deadline from now, so passes never pile up.
  */
-static void procfuse_main(int fd)
+static long long monotonic_ms(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static void procfuse_main(int fd, const char *load_top)
 {
 	static char buf[PROCFUSE_BUF_MAX];
+	long long next_pass = monotonic_ms() + PROCFUSE_LOAD_PERIOD_MS;
 
 	for (;;) {
-		ssize_t n = read(fd, buf, sizeof(buf));
+		ssize_t n;
 		const struct fuse_in_header *hdr;
 		const void *body;
 
+		if (load_top != NULL) {
+			long long now = monotonic_ms();
+			struct pollfd pfd;
+			int r;
+
+			if (now >= next_pass) {
+				procfuse_load_pass(load_top);
+				next_pass += PROCFUSE_LOAD_PERIOD_MS;
+				if (next_pass <= now)
+					next_pass = now + PROCFUSE_LOAD_PERIOD_MS;
+				continue;
+			}
+			pfd.fd = fd;
+			pfd.events = POLLIN;
+			pfd.revents = 0;
+			r = poll(&pfd, 1, (int)(next_pass - now));
+			/* The deadline, or EINTR. Any other failure falls through
+			 * to read(), whose error ends the server below. */
+			if (r == 0 || (r < 0 && errno == EINTR))
+				continue;
+		}
+		n = read(fd, buf, sizeof(buf));
 		if (n < 0) {
 			if (errno == EINTR || errno == EAGAIN)
 				continue;
@@ -1582,7 +1968,7 @@ const char *procfuse_mount_path(void)
 	return g_mounted ? g_mount_path : NULL;
 }
 
-int procfuse_start(const char *state_dir)
+int procfuse_start(const char *state_dir, const char *load_top)
 {
 	char opts[256];
 	int fd;
@@ -1639,6 +2025,17 @@ int procfuse_start(const char *state_dir)
 		return -1;
 	}
 
+	/* Before the fork, so cixd and the server share the page
+	 * (ADR-0349). Without it containers read the host's load, as they
+	 * did before that ADR, and everything else is served as usual. */
+	if (load_top != NULL && procfuse_load_attach(CGROUP_ROOT) != 0) {
+		logstore_write("cixd", "error",
+		                "procfuse: cannot map the load-average page (%s) -- containers "
+		                "will read the host's load average",
+		                strerror(errno));
+		load_top = NULL;
+	}
+
 	pid = fork();
 	if (pid < 0) {
 		logstore_write("cixd", "error", "procfuse: fork failed: %s", strerror(errno));
@@ -1678,7 +2075,7 @@ int procfuse_start(const char *state_dir)
 		 * string: without this the child reports the daemon's own
 		 * "/bin/cixd --init-mode ..." inherited across the fork. */
 		proctitle_set("cixd [procfuse]");
-		procfuse_main(keep);
+		procfuse_main(keep, load_top);
 		_exit(0);
 	}
 

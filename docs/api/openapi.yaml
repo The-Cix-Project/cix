@@ -20466,6 +20466,37 @@ components:
           items:
             $ref: "#/components/schemas/ContainerNetworkStats"
           description: One entry per network this container is attached to, same order as Container.networks.
+        load:
+          type: object
+          required: [load1, load5, load15, running, threads]
+          description: >
+            This container's own load average (ADR-0349), the figure its
+            own /proc/loadavg shows, to the hundredth. The kernel keeps
+            no load average per cgroup, so the daemon samples the
+            container's running and uninterruptible threads every 5 s
+            and applies the kernel's own averaging. Like a host after
+            boot, a new or restarted container starts at 0 and climbs
+            over the first minutes.
+
+
+            **Absent until the container has been sampled**, which is
+            normally within 5 s of it starting, and absent for good
+            when the daemon cannot sample at all (no FUSE). Never
+            reported as 0 for "not sampled".
+          properties:
+            load1:
+              type: number
+              description: 1-minute average, as /proc/loadavg's first field.
+            load5:
+              type: number
+            load15:
+              type: number
+            running:
+              type: integer
+              description: Threads running at the last sample, as /proc/loadavg's fourth field before the slash.
+            threads:
+              type: integer
+              description: All this container's threads at the last sample, as the fourth field after the slash.
 
     ContainerNetworkStats:
       type: object

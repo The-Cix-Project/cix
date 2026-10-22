@@ -21,10 +21,12 @@
  */
 #include "procfuse.h"
 
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <fcntl.h>
 #include <sys/time.h>
 #include <time.h>
@@ -91,7 +93,7 @@ static void age_dir(int secs)
  *
  * That is not merely a test artefact. It is exactly the instability
  * that moved the production anchor off the directory's mtime and onto
- * the oldest starttime in cgroup.procs (#359): src/cgroup.c records
+ * the oldest starttime in cgroup.threads (#359): src/cgroup.c records
  * that a nested cixd creates cgroups under its own, and that would
  * reset a real container's uptime the same way this reset the test's.
  */
@@ -150,6 +152,129 @@ static int cpu_line(const char *text, const char *name, long long *out)
 	return -1;
 }
 
+/*
+ * ADR-0349: the load average is sampled per cgroup by the kernel's own
+ * arithmetic, over the cgroup's whole subtree, and an entry starts over
+ * when its occupant changes.
+ *
+ * The expected figures are the kernel's calc_load() worked by hand from
+ * 0 with one active thread: 164 after one pass ("0.08"), 1299 after
+ * twelve ("0.63", a minute of one busy thread), then 1194 after one
+ * idle pass ("0.58"). A pass is driven directly rather than by the
+ * clock, so this takes no time at all.
+ *
+ * pid 1 is listed as the oldest thread so that what is running can
+ * change without changing the occupant: the rise and the decay happen
+ * under one fingerprint, and swapping pid 1 out is what a recreated
+ * container looks like. This process is R while it reads its own stat;
+ * the forked sleeper is S.
+ */
+static void put_at(const char *dir, const char *name, const char *content)
+{
+	char path[1024];
+	FILE *f;
+
+	snprintf(path, sizeof(path), "%s/%s", dir, name);
+	f = fopen(path, "w");
+	if (f == NULL) {
+		fprintf(stderr, "FAIL: cannot write %s\n", path);
+		exit(1);
+	}
+	fputs(content, f);
+	fclose(f);
+}
+
+static void test_load_average(void)
+{
+	char base[256], top[300], c1[320], sub[340], c2[320], longdir[512];
+	char line[64], buf[512];
+	struct procfuse_load l;
+	pid_t sleeper;
+	size_t n;
+	int i;
+
+	printf("9. /proc/loadavg: sampled per cgroup, by the kernel's arithmetic (ADR-0349)\n");
+	snprintf(base, sizeof(base), "/tmp/procfuse_load_%d", (int)getpid());
+	snprintf(top, sizeof(top), "%s/cix-workload", base);
+	snprintf(c1, sizeof(c1), "%s/c1", top);
+	snprintf(sub, sizeof(sub), "%s/sub", c1);
+	snprintf(c2, sizeof(c2), "%s/c2", top);
+	snprintf(longdir, sizeof(longdir), "%s/%0130d", top, 0);
+	if (mkdir(base, 0755) != 0 || mkdir(top, 0755) != 0 || mkdir(c1, 0755) != 0 ||
+	    mkdir(sub, 0755) != 0 || mkdir(c2, 0755) != 0 || mkdir(longdir, 0755) != 0) {
+		perror("mkdir");
+		g_failures++;
+		return;
+	}
+	sleeper = fork();
+	if (sleeper == 0) {
+		pause();
+		_exit(0);
+	}
+	usleep(200000); /* until the sleeper has reached pause() */
+
+	snprintf(line, sizeof(line), "1\n%ld\n", (long)getpid());
+	put_at(sub, "cgroup.threads", line);
+	snprintf(line, sizeof(line), "%ld\n", (long)sleeper);
+	put_at(c2, "cgroup.threads", line);
+
+	CHECK(procfuse_load_attach(base) == 0, "the shared page maps");
+	CHECK(procfuse_load_get("cix-workload/c1", &l) != 0,
+	      "a cgroup has no figure before the first pass -- absent, never zero");
+
+	procfuse_load_pass("cix-workload");
+	CHECK(procfuse_load_get("cix-workload/c1", &l) == 0 && l.avg_int[0] == 0 &&
+	          l.avg_frac[0] == 8 && l.avg_frac[1] == 2 && l.avg_frac[2] == 1,
+	      "one pass of one running thread is 0.08 0.02 0.01, as the kernel's first 5 s");
+	CHECK(l.running == 1 && l.threads == 2,
+	      "the container counts the threads of its sub-cgroup: 1 running of 2");
+	CHECK(procfuse_load_get("cix-workload/c2", &l) == 0 && l.avg_frac[0] == 0 &&
+	          l.running == 0 && l.threads == 1,
+	      "a container whose only thread sleeps reads 0.00, 0/1");
+	CHECK(procfuse_load_get("cix-workload", &l) == 0 && l.running == 1 && l.threads == 3,
+	      "a parent's figure covers its whole subtree");
+	CHECK(procfuse_load_unrecorded() == 1,
+	      "a cgroup whose path does not fit is counted as unrecorded, not truncated");
+
+	for (i = 1; i < 12; i++)
+		procfuse_load_pass("cix-workload");
+	CHECK(procfuse_load_get("cix-workload/c1", &l) == 0 && l.avg_int[0] == 0 &&
+	          l.avg_frac[0] == 63,
+	      "a minute of one busy thread reads 0.63, as uptime does on a host");
+
+	n = procfuse_render_for_cgroup(4, c1, buf, sizeof(buf));
+	buf[n < sizeof(buf) ? n : sizeof(buf) - 1] = '\0';
+	CHECK(strncmp(buf, "0.63 0.", 7) == 0 && strstr(buf, " 1/2 ") != NULL,
+	      "/proc/loadavg serves the same figure, with the subtree's running/threads");
+	printf("     (%s)\n", strtok(buf, "\n"));
+
+	put_at(sub, "cgroup.threads", "1\n");
+	procfuse_load_pass("cix-workload");
+	CHECK(procfuse_load_get("cix-workload/c1", &l) == 0 && l.avg_frac[0] == 58,
+	      "with nothing running it decays (0.63 to 0.58), under the same occupant");
+
+	snprintf(line, sizeof(line), "%ld\n", (long)sleeper);
+	put_at(sub, "cgroup.threads", line);
+	procfuse_load_pass("cix-workload");
+	CHECK(procfuse_load_get("cix-workload/c1", &l) == 0 && l.avg_frac[0] == 0 &&
+	          l.avg_int[0] == 0,
+	      "a new occupant (a different oldest thread) starts from zero, not 0.58");
+
+	snprintf(buf, sizeof(buf), "%s/cgroup.threads", c2);
+	if (unlink(buf) != 0 || rmdir(c2) != 0 || rmdir(longdir) != 0)
+		perror("rmdir");
+	procfuse_load_pass("cix-workload");
+	CHECK(procfuse_load_get("cix-workload/c2", &l) != 0,
+	      "a cgroup that is gone loses its entry");
+	CHECK(procfuse_load_unrecorded() == 0, "the unrecorded count is per pass");
+
+	kill(sleeper, SIGKILL);
+	waitpid(sleeper, NULL, 0);
+	snprintf(buf, sizeof(buf), "rm -rf %s", base);
+	if (system(buf) != 0)
+		fprintf(stderr, "  (could not remove %s)\n", base);
+}
+
 int main(void)
 {
 	char buf[65536];
@@ -169,7 +294,7 @@ int main(void)
 	 * A tool must derive 50%. The shipped renderer derived 100%,
 	 * because idle was zero and the denominator was the busy time.
 	 *
-	 * The directory's mtime IS the uptime here -- cgroup.procs lists no
+	 * The directory's mtime IS the uptime here -- cgroup.threads lists no
 	 * live pid, so container_uptime() takes its documented fallback --
 	 * so the directory is aged 15 seconds deliberately. Without that it
 	 * would be zero seconds old, capacity would be zero, and idle would
@@ -188,7 +313,7 @@ int main(void)
 	    "file_writeback 524288\nfile_mapped 2097152\nshmem 1048576\nslab 4194304\n"
 	    "slab_reclaimable 3145728\nslab_unreclaimable 1048576\nkernel_stack 262144\n"
 	    "pagetables 524288\nunevictable 0\n");
-	put("cgroup.procs", "");
+	put("cgroup.threads", "");
 
 	printf("1. /proc/stat: idle is real, so a percentage is derivable\n");
 	n = procfuse_render_for_cgroup(2, g_dir, buf, sizeof(buf));
@@ -322,7 +447,7 @@ int main(void)
 		 * slots are named after the slot index and reused constantly
 		 * (src/cgroup.c), so without keying on the occupant a new
 		 * container would report its predecessor's idle for its whole
-		 * life. A different oldest-starttime in cgroup.procs is what
+		 * life. A different oldest-starttime in cgroup.threads is what
 		 * marks a different occupant; a live pid of our own supplies
 		 * one, where the empty file used everywhere else does not.
 		 */
@@ -330,7 +455,7 @@ int main(void)
 			char pidline[32];
 
 			snprintf(pidline, sizeof(pidline), "%ld\n", (long)getpid());
-			put("cgroup.procs", pidline);
+			put("cgroup.threads", pidline);
 			put("cpu.stat", "usage_usec 1000000\nuser_usec 1000000\nsystem_usec 0\n");
 			n = procfuse_render_for_cgroup(2, g_dir, buf, sizeof(buf));
 			buf[n < sizeof(buf) ? n : sizeof(buf) - 1] = '\0';
@@ -339,7 +464,7 @@ int main(void)
 			      "a recycled cgroup name does not inherit the previous occupant's idle floor");
 			printf("     (new occupant idle=%lld, previous floor was %lld)\n", cc[3],
 			       second_idle);
-			put("cgroup.procs", "");
+			put("cgroup.threads", "");
 		}
 
 		/* Restored, so the cases below see the scenario they describe. */
@@ -551,6 +676,8 @@ int main(void)
 		if (system(cmd) != 0)
 			fprintf(stderr, "  (could not remove %s)\n", g_dir);
 	}
+
+	test_load_average();
 
 	if (g_failures != 0) {
 		printf("PROCFUSE RESULT: FAIL (%d)\n", g_failures);

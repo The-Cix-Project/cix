@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container's /proc/loadavg is its own load average (ADR-0349, #625)
+
+- **What changed:**
+  - **procfuse samples load:** every 5 s, procfuse's own process walks every cgroup under `cix-workload` and counts each one's running and uninterruptible threads, over its whole subtree. It applies the kernel's own `calc_load()` and keeps the three averages in a page it shares with cixd. Before this, `render_loadavg()` passed the host's figure through, so `uptime`, `top` and `make -l` inside a container saw the whole box's load.
+  - **`/proc/loadavg`:** a container reads its own figure, with its own `running/threads` in field 4. Field 5 stays the host's. A cgroup with no figure yet reads the host's line, as before.
+  - **One thread scan:** `/proc/stat`'s `procs_running`/`procs_blocked` and `/proc/uptime` now use the same scan over `cgroup.threads` and the subtree, in place of `cgroup.procs` and the leaf. They count threads, as the host's do, and a container that delegates sub-cgroups is counted whole.
+  - **Contract:** `ContainerStats` gains `load` (`load1`, `load5`, `load15`, `running`, `threads`). It is absent until the first sample, never zero.
+  - **Dashboard and cixctl:** the container page's Summary tab shows the load-average line the host page already has, or "not sampled yet". `cixctl container stats` prints it too. The status bar's load stays the host's.
+  - **Docs:** ADR-0262's file list said `/proc/loadavg` came from `cpu.stat`, which it never did. That is corrected in place.
+- **Verified:** `test_procfuse` (in `SELFTESTS`) drives passes over a crafted cgroup tree and asserts the kernel's figures worked by hand: 0.08 after one pass of one running thread, 0.63 after twelve, 0.58 after one idle pass. It also asserts the subtree counts, the reset when the occupant changes, a freed entry and the unrecorded count.
+
 ### The dashboard shows the module policy, the device scan and the blacklisted mark (ADR-0348 release three, #143)
 
 - **What changed:**

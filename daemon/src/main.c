@@ -21024,6 +21024,50 @@ static void container_disk_measure_start(const char *name, const char *upperdir)
  * leaves are never rmdir()'d, see cgroup_create()'s own comment) --
  * only a fully-removed entry (DELETE'd, or never existed) is a 404.
  */
+/*
+ * ADR-0349: the load average procfuse sampled for this container, the
+ * same figure its own /proc/loadavg shows. The cgroup's path comes from
+ * the container's own cgroup descriptor, so a build container under
+ * cix-pkgbuild is found as surely as a service under the workload
+ * parent. Absent, never zero, when nothing has been sampled yet.
+ */
+static void write_container_load_json(struct json_writer *w, const struct registry_entry *e)
+{
+	static int unrecorded_logged;
+	char fdpath[64];
+	char dir[PATH_MAX];
+	struct procfuse_load l;
+	ssize_t n;
+	int k;
+	static const char *const keys[3] = { "load1", "load5", "load15" };
+
+	if (!unrecorded_logged && procfuse_load_unrecorded() > 0) {
+		unrecorded_logged = 1;
+		logstore_write("cixd", "warn",
+		                "procfuse: %lld cgroups have no load-average entry -- their "
+		                "containers read the host's load average (ADR-0349)",
+		                procfuse_load_unrecorded());
+	}
+	snprintf(fdpath, sizeof(fdpath), "/proc/self/fd/%d", e->handle.cgroup_fd);
+	n = readlink(fdpath, dir, sizeof(dir) - 1);
+	if (n <= 0)
+		return;
+	dir[n] = '\0';
+	if (strncmp(dir, "/sys/fs/cgroup/", 15) != 0 || procfuse_load_get(dir + 15, &l) != 0)
+		return;
+	jw_key(w, "load");
+	jw_obj_open(w);
+	for (k = 0; k < 3; k++) {
+		jw_key(w, keys[k]);
+		jw_num(w, (double)l.avg_int[k] + (double)l.avg_frac[k] / 100.0);
+	}
+	jw_key(w, "running");
+	jw_int(w, l.running);
+	jw_key(w, "threads");
+	jw_int(w, l.threads);
+	jw_obj_close(w);
+}
+
 static void handle_container_stats(int fd, const char *name)
 {
 	struct registry_entry *e = registry_find(name);
@@ -21275,6 +21319,7 @@ static void handle_container_stats(int fd, const char *name)
 		jw_obj_close(&w);
 	}
 	jw_arr_close(&w);
+	write_container_load_json(&w, e);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -37970,7 +38015,7 @@ static int cixd_main(int argc, char **argv)
 	 * /proc, which is what they read before this existed. The reason is
 	 * logged with a real errno rather than left to be guessed at.
 	 */
-	procfuse_start(STATE_DIR);
+	procfuse_start(STATE_DIR, CGROUP_WORKLOAD_PARENT);
 
 	{
 		/* #551: trees set aside because a reused version was wrong. No

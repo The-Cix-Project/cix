@@ -137,8 +137,13 @@
  * untouched and containers reading the host's real /proc, which is what
  * they read today. Returns 0 when the server is running, -1 otherwise
  * with errno set and the reason logged.
+ *
+ * `load_top` is the cgroup, relative to /sys/fs/cgroup, under which the
+ * server samples every cgroup's load average (ADR-0349) -- the workload
+ * parent. NULL samples nothing, and every reader then gets the host's
+ * /proc/loadavg, as before that ADR.
  */
-int procfuse_start(const char *state_dir);
+int procfuse_start(const char *state_dir, const char *load_top);
 
 /*
  * The absolute path of the mounted directory, or NULL when the server is
@@ -179,5 +184,49 @@ size_t procfuse_render_for_cgroup(int index, const char *cg, char *out, size_t c
 size_t procfuse_render_partitions_from(const char *mountinfo_path,
                                        const char *partitions_path, char *out,
                                        size_t cap);
+
+/*
+ * ADR-0349: one cgroup's load average, as the server last sampled it.
+ * avg_int/avg_frac are the 1, 5 and 15 minute figures split exactly as
+ * the kernel's /proc/loadavg prints them (LOAD_INT, LOAD_FRAC), so a
+ * caller printing "%lu.%02lu" and the file the container reads show the
+ * same two decimals. running and threads cover the cgroup's subtree.
+ */
+struct procfuse_load {
+	unsigned long avg_int[3];
+	unsigned long avg_frac[3];
+	long long running;
+	long long threads;
+};
+
+/*
+ * Maps the page the sampler writes and the readers read, and records
+ * which directory stands for /sys/fs/cgroup. procfuse_start() calls it
+ * before the fork, so cixd and the server share the page; a test calls
+ * it with a crafted directory. Returns 0, or -1 when the page cannot be
+ * mapped, in which case nothing is sampled and every reader gets the
+ * host's figure.
+ */
+int procfuse_load_attach(const char *cgroup_base);
+
+/*
+ * One sampling pass over every cgroup under `top` (relative to the
+ * base given to procfuse_load_attach()). The server runs it every
+ * PROCFUSE_LOAD_PERIOD_MS; exposed so a test can drive passes against a
+ * crafted tree instead of waiting for the clock.
+ */
+void procfuse_load_pass(const char *top);
+#define PROCFUSE_LOAD_PERIOD_MS 5000
+
+/*
+ * The figure for the cgroup at `cgroup_rel` (relative to the base,
+ * e.g. "cix-workload/ar-1"). Returns 0 and fills `out`, or -1 when that
+ * cgroup has not been sampled. Safe to call from cixd while the server
+ * writes: it never blocks and never waits on the server.
+ */
+int procfuse_load_get(const char *cgroup_rel, struct procfuse_load *out);
+
+/* How many cgroups the last pass could not record (ADR-0349 rule 7). */
+long long procfuse_load_unrecorded(void);
 
 #endif /* PROCFUSE_H */

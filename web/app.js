@@ -4584,6 +4584,23 @@ function renderStatsCharts() {
 	});
 	document.getElementById("cd-stats-mem-pressure-label").textContent =
 		memPressureValues[memPressureValues.length - 1].toFixed(1) + "% (some, avg10)";
+
+	/* ADR-0349: the container's own load, the figure its /proc/loadavg
+	 * shows. Absent until procfuse has sampled it, which is said rather
+	 * than shown as a zero the container never had. */
+	const lastLoad = h[h.length - 1].load;
+
+	document.getElementById("cd-stats-load").textContent = lastLoad
+		? formatLoadAverage(lastLoad) + "  ·  " + lastLoad.running + " of " + lastLoad.threads +
+		  " threads running"
+		: "Load average: not sampled yet (the first sample comes within 5 s of the start)";
+}
+
+/* One line for a load average, host's or container's: both carry
+ * load1/load5/load15, the names GET /v1/system/stats uses. */
+function formatLoadAverage(load) {
+	return "Load average: " + load.load1.toFixed(2) + " (1m)  " + load.load5.toFixed(2) + " (5m)  " +
+		load.load15.toFixed(2) + " (15m)";
 }
 
 /* One sample of GET /v1/containers/{name}/stats, pushed or polled
@@ -4627,6 +4644,7 @@ function ingestContainerStats(name, stats) {
 		workloadPressure: stats.workload_memory
 			? stats.workload_memory.pressure.some.avg10
 			: null,
+		load: stats.load || null,
 	});
 	if (statsHistory.length > STATS_HISTORY_MAX)
 		statsHistory.shift();
@@ -4793,9 +4811,7 @@ function renderHostStatsCharts() {
 
 	const last = h[h.length - 1];
 
-	document.getElementById("hs-stats-load").textContent =
-		"Load average: " + last.load1.toFixed(2) + " (1m)  " + last.load5.toFixed(2) + " (5m)  " +
-		last.load15.toFixed(2) + " (15m)";
+	document.getElementById("hs-stats-load").textContent = formatLoadAverage(last);
 
 	/* PSI avg10 is already a 0-100 rolling percentage straight from the
 	 * kernel (cgroup-root cpu.pressure/memory.pressure "some" line) --
