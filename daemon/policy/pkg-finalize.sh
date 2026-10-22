@@ -7,10 +7,10 @@
 # clause 2). It was sourced until then, reading $PKG_DESTDIR out of the
 # environment. The change is not cosmetic: CBS runs an embedder's
 # finalizer as `execlp(command, command, staged_root, NULL)`
-# (cix-build-system src/main.c:514), so a PBS build can only reach this
-# policy as a program taking one argument -- and ADR-0251's rules have
-# to stay ONE definition across both recipe languages rather than
-# growing a second expression for the PBS side.
+# (cix-build-system src/main.c:514), so a CBS build can only reach this
+# policy as a program taking one argument -- and ADR-0251's rules stay
+# ONE definition, here, rather than growing a second expression inside
+# CBS.
 #
 # #!/usr/bin/bash and not /bin/bash: this project's own images ship
 # bin/sh and usr/bin/bash and no /bin/bash at all, and a bad

@@ -64,7 +64,7 @@ static const char *const g_globs[] = {
 	"client/src/*.c",  "init/src/*.c",       "test/*.c",       "test/*.h",
 	"docs/*.md",       "docs/api/*.yaml",    "docs/api/*.md",  "docs/adr/*.md",
 	"docs/guides/*.md", "docs/roadmap/*.md", "docs/mission/*.md",
-	"web/*.js",        "*.md",               "Makefile",
+	"web/*.js",        "*.md",               "Makefile",         "daemon/policy/*.sh",
 };
 #define NGLOBS ((int)(sizeof(g_globs) / sizeof(g_globs[0])))
 
