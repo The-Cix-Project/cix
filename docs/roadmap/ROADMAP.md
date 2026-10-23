@@ -2445,6 +2445,21 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 315: a backup carries only the recipes no source gives back (ADR-0351, #632, 0.2.57-581)
+
+`GET /v1/system/backup`'s `pkg_recipes` holds every stored version of a package no recipe source owns, decided per name by `pkgsource_owner_of()`, and nothing of a package a source owns. The bundle says so with `source_recipes_included: false`. `POST /v1/system/restore` starts a recipe sync through the scheduler's `action_pkg_sync()` and reports it in `recipe_sync`; `cixctl restore` prints it.
+
+**Why:** git is authoritative for a package its source owns (ADR-0324). On .95, 1558 of the 1620 stored versions were in git. The other 62 were 50 probes and 12 withdrawn or superseded revisions, none installed or referenced. The owner decided they need not be kept. A first count said 355, because it compared store keys with filenames: 293 stored versions are filed release-less, as `rtw88-firmware@3.cbs` for `3-1`.
+
+**Gated:** `test_system_backup` asserts `source_recipes_included` and the restore's `recipe_sync`, and with no source configured it still proves every unowned recipe is carried. Compile probe 0.2.57-597: `SELFTEST: PASS`.
+
+**Measured on 192.168.15.95, 2026-10-23, on 0.2.57-581** (slot b, 12 containers running):
+- The bundle is 5,312,570 bytes, down from 18.5 MB.
+- It holds 14 recipe versions across the 9 package names no source owns, all of them probes.
+- `pki_included` and `source_recipes_included` are both `false`.
+- `POST /v1/system/restore {"pkg_recipes":{}}`, which writes nothing, answered `{"status":"restored","recipe_sync":"started a recipe sync"}`, and `pkg sync-status` showed the sync running.
+- The loop's worst pass since boot was `POST /v1/login (7 ms)`.
+
 ## Part 314: the chart series palette is computed and gated (#601, 0.2.57-580)
 
 `--series-1` and `--series-2` are chosen per theme, both derived from Bus Blue the way `--phosphor-ink` derives from Phosphor: light `#1384b7`/`#414a94`, dark `#449ccc`/`#5460b3`. They were Bus Blue, Nickel and Copper for both themes; Nickel is the dark theme's `--muted`, Copper is `--accent`, and Bus Blue as specified is under 3:1 on the light `--bg`, under the chroma floor and outside the dark theme's lightness band. `--series-3` is gone, since nothing drew a third series. The network chart drew received and sent in one colour; sent is slot 2 now, with a legend (`seriesKey()`). The host's workload chart, one series, uses slot 1; the storage allocation chart's OS partition, which was Nickel beside free space in `--muted`, is slot 2.
