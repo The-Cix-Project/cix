@@ -14,6 +14,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - `fsck.fat` joins the root's program set, from dosfstools in cix-hosttools 2.4.5.
   - The log store holds what is written before `logstore_init()` and writes it when the store opens (0.2.57-592). `boot_init()` runs first, so 591's check logged nothing anywhere, and neither have boot_init()'s efivarfs and `/etc/resolv.conf` failures ever. The kmod start-up hold (`kmodscan_say()`, `kmodscan_log_held()`) did the same job for one module and is removed.
 - **Why:** every boot on 192.168.15.95 logged "FAT-fs (vdb1): Volume was not properly unmounted" (293 boots). The shutdown change alone did not stop it. The kernel never clears a dirty bit it found at mount: `fat_set_state()` returns early when `sbi->dirty` is set (kernel 7.2.12, read by `probe-fatdirty@1-1`). So a volume left dirty once stays dirty through every clean shutdown after it, and only fsck.fat clears it. In `-a` mode it clears the boot-sector bit and FAT32's clean-shutdown flag (dosfstools 4.2, read by `probe-fsckfat@1-2`).
+- **Verified:** on 192.168.15.95, two boots into 591 and one into 592 logged no warning, and 592's boot logged `boot: fsck.fat /dev/vdb1: clean`.
 
 ### A release proves its A/B fallback and a staged update boot (#584)
 

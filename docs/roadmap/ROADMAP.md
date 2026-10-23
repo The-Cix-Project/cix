@@ -2445,6 +2445,18 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 321: the ESP is checked at every boot and left clean at every reboot (#638, 0.2.57-589 to 592)
+
+Every boot of 192.168.15.95 warned `FAT-fs (vdb1): Volume was not properly unmounted` (293 boots). The kernel never clears a FAT dirty bit it found at mount (`fat_set_state()` returns early when `sbi->dirty` is set, kernel 7.2.12, read by `probe-fatdirty@1-1`), so no shutdown can repair a volume already dirty. Now:
+
+- **At boot**, cixd runs `fsck.fat -a` on the ESP before mounting it (`diskpart_fsck_fat()`), and logs whether it was clean, repaired or not checked. A failure never stops the boot. In `-a` mode fsck.fat clears the boot-sector bit and FAT32's clean-shutdown flag (dosfstools 4.2, read by `probe-fsckfat@1-2`). `fsck.fat` joins `controlplane_programs.h` from dosfstools, which cix-hosttools 2.4.5 declares.
+- **At reboot**, cixd remounts the ESP read-only and then unmounts it (589 and 590), so a clean ESP stays clean.
+- **The log store holds what is written before `logstore_init()`** and writes it when the store opens (592). `boot_init()` runs first, so 591's check logged nothing, and neither had boot_init()'s efivarfs and `/etc/resolv.conf` failures ever. kmodscan's private copy of this hold is removed. `test_logread` checks a pre-init line lands.
+
+**Measured on 192.168.15.95, 2026-10-23:** the boot into 590 still warned (ts 1792787383). Two boots into 591 (ts 1792791727, 1792791887) logged no warning: the first because fsck repaired the volume, the second because the shutdown left it clean. The boot into 592 logged `boot: fsck.fat /dev/vdb1: clean (#638): ... /dev/vdb1: 14 files, 9316/32687 clusters`, with no warning and 12 containers running. Compile probes 0.2.57-609 and 610 and both release builds: `SELFTEST: PASS`, all five boot tests.
+
+**Seen in passing:** fsck.fat prints `Cannot initialize conversion from codepage 850 to ANSI_X3.4-1968` and falls back to its internal CP850 table, because the root carries no gconv modules. The check is unaffected.
+
 ## Part 320: certificate keys are generated ahead of need (ADR-0353, #637, 0.2.57-588)
 
 cixd keeps four RSA-2048 keys ready, filled one at a time in a helper child while a CA exists, and `pki.c` writes a pooled key in place of generating one (`pki_key_create()`). `test_pkicrypto` proves a pooled key lands mode 0600 and signs a CA it matches.
