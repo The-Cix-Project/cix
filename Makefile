@@ -223,7 +223,8 @@ DAEMON_SELFTESTS_2 = \
 	$(BUILD)/test_userns_run \
 	$(BUILD)/test_volume \
 	\
-	$(FLOOR_SELFTESTS)
+	$(FLOOR_SELFTESTS) \
+	$(BOOT_SELFTESTS)
 
 #
 # The tests that need the ADR-0209 artifact floor (#485). The first three were in
@@ -254,6 +255,25 @@ FLOOR_SELFTESTS = \
 	$(BUILD)/test_pkg \
 	$(BUILD)/test_pkg_cache \
 	$(BUILD)/test_rolling_restart
+
+#
+# The tests that BOOT what this tree builds (#584), the owner's decision
+# of 2026-10-23: a release whose own control-plane root does not boot is
+# refused. test_boot assembles a root with build/mkbootroot, partitions
+# a disk image, and boots it under qemu and OVMF to "cixd listening on".
+# It first passed on a Cix host on 2026-10-23 (probe-cix-bootest@14-1,
+# 45.8 s under TCG; no host here has KVM).
+#
+# Like the floor, these run only with their inputs, and the recipe and
+# this list move together. The recipe stages the kernel artifact as
+# build-inputs/bzImage, and declares qemu, ovmf, dosfstools and mtools
+# plus everything mkbootroot takes from the host-tools root: the test
+# passes "/" as that root, so the composed build container must carry
+# the cix-hosttools set (cbs, squashfs-tools, util-linux, e2fsprogs,
+# btrfs-progs, ca-certificates, openssl).
+#
+BOOT_SELFTESTS = \
+	$(BUILD)/test_boot
 #
 # Three tests were in this list and are deliberately NOT, because they
 # fail in a composed build container for reasons that are not defects.
@@ -328,6 +348,8 @@ FLOOR_SELFTESTS = \
 #
 SELFTEST_HELPERS = \
 	$(BUILD)/cix-init \
+	$(BUILD)/cix-boot.efi \
+	$(BUILD)/mkbootroot \
 	$(BUILD)/console_input_child \
 	$(BUILD)/console_term_child \
 	$(BUILD)/daemon_child \
