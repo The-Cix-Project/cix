@@ -173,14 +173,4 @@ typedef enum kmodscan_answer (*kmodscan_broker_fn)(const struct kmodscan_job *jo
 void kmodscan_set_broker(kmodscan_broker_fn fn);
 enum kmodscan_answer kmodscan_ask(const struct kmodscan_job *job, struct kmodscan_report **out);
 
-/*
- * One log line about a module load. The start-up loads run before
- * logstore_init(), and a line written then is dropped, so until
- * kmodscan_log_held() runs each line is held, and that call writes them
- * in order, the devicemap_log_skipped() pattern. After it, a line is
- * written at once.
- */
-void kmodscan_say(const char *level, const char *fmt, ...);
-void kmodscan_log_held(void);
-
 #endif

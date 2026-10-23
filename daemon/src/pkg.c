@@ -6382,9 +6382,9 @@ static void cbs_engine_version(char *out, size_t out_size)
 /*
  * What the sweep did, held for pkg_log_explain_sweep() to report.
  *
- * pkg_init() runs ~100 lines BEFORE logstore_init() in main(), so a
- * logstore_write() from here is dropped by write_entry()'s own
- * !g_initialized guard and the sweep says nothing anywhere. That was
+ * pkg_init() runs ~100 lines BEFORE logstore_init() in main(), and until
+ * #638 a logstore_write() from here was dropped by write_entry()'s own
+ * !g_initialized guard, so the sweep said nothing anywhere. That was
  * measured, not guessed: the first cut of this logged directly, the
  * documents on 192.168.15.95 were demonstrably re-derived, and
  * `GET /system/logs?regex=CPDL engine` returned `[]`.

@@ -8,7 +8,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,59 +55,6 @@ static struct kmodscan_report g_last = {
 	.not_run = "no sweep has run since the daemon started",
 };
 static int g_sweep_pending;
-
-/* Lines said before the log store opened, in order. Bounded: a host
- * whose sweep says more than this keeps the first lines and a count of
- * the rest, and the report holds every entry regardless. */
-#define KMODSCAN_HELD_MAX 512
-
-struct held_line {
-	char level[LOGSTORE_LEVEL_MAX];
-	char *msg;
-};
-
-static struct held_line g_held[KMODSCAN_HELD_MAX];
-static int g_held_count;
-static int g_held_dropped;
-static int g_log_open;
-
-void kmodscan_say(const char *level, const char *fmt, ...)
-{
-	char msg[LOGSTORE_MSG_MAX];
-	va_list ap;
-
-	va_start(ap, fmt);
-	vsnprintf(msg, sizeof(msg), fmt, ap);
-	va_end(ap);
-	if (g_log_open) {
-		logstore_write("cixd", level, "%s", msg);
-		return;
-	}
-	if (g_held_count == KMODSCAN_HELD_MAX || (g_held[g_held_count].msg = strdup(msg)) == NULL) {
-		g_held_dropped++;
-		return;
-	}
-	snprintf(g_held[g_held_count].level, sizeof(g_held[0].level), "%s", level);
-	g_held_count++;
-}
-
-void kmodscan_log_held(void)
-{
-	int i;
-
-	g_log_open = 1;
-	for (i = 0; i < g_held_count; i++) {
-		logstore_write("cixd", g_held[i].level, "%s", g_held[i].msg);
-		free(g_held[i].msg);
-		g_held[i].msg = NULL;
-	}
-	if (g_held_dropped > 0)
-		logstore_write("cixd", "warning",
-		               "kmod: %d more start-up line(s) were not kept; GET /v1/system/kmod-scan "
-		               "has every sweep entry",
-		               g_held_dropped);
-	g_held_count = g_held_dropped = 0;
-}
 
 const char *kmodscan_outcome_name(enum kmodscan_outcome o)
 {
@@ -635,10 +581,10 @@ void kmodscan_report_say(const struct kmodscan_report *r, enum kmod_origin origi
 
 	for (i = 0; i < r->alias_count; i++) {
 		if (r->alias_more[i])
-			kmodscan_say("warning",
-			             "kmod %s: more than %d modules claim %s; the first %d were decided",
-			             how, KMODSCAN_MODULES_PER_ALIAS, r->aliases[i],
-			             KMODSCAN_MODULES_PER_ALIAS);
+			logstore_write("cixd", "warning",
+			               "kmod %s: more than %d modules claim %s; the first %d were decided",
+			               how, KMODSCAN_MODULES_PER_ALIAS, r->aliases[i],
+			               KMODSCAN_MODULES_PER_ALIAS);
 	}
 	for (i = 0; i < r->entry_count; i++) {
 		const struct kmodscan_entry *e = &r->entries[i];
@@ -646,16 +592,16 @@ void kmodscan_report_say(const struct kmodscan_report *r, enum kmod_origin origi
 
 		switch (e->outcome) {
 		case KMODSCAN_LOADED:
-			kmodscan_say("info", "kmod %s: loaded %s for %s (%s)", how, e->module, alias,
-			             e->device);
+			logstore_write("cixd", "info", "kmod %s: loaded %s for %s (%s)", how, e->module,
+			               alias, e->device);
 			break;
 		case KMODSCAN_REFUSED:
-			kmodscan_say("info", "kmod %s: refused %s for %s (%s): %s", how, e->module, alias,
-			             e->device, e->reason);
+			logstore_write("cixd", "info", "kmod %s: refused %s for %s (%s): %s", how,
+			               e->module, alias, e->device, e->reason);
 			break;
 		case KMODSCAN_FAILED:
-			kmodscan_say("error", "kmod %s: %s for %s (%s) failed: %s", how, e->module, alias,
-			             e->device, e->reason);
+			logstore_write("cixd", "error", "kmod %s: %s for %s (%s) failed: %s", how,
+			               e->module, alias, e->device, e->reason);
 			break;
 		default:
 			break;
@@ -689,20 +635,20 @@ void kmodscan_adopt(struct kmodscan_report *r)
 	events_announce(EV_getKmodScan);
 
 	if (!g_last.ran) {
-		kmodscan_say("error", "kmod sweep (%s) did not run: %s", trigger_name(g_last.trigger),
-		             g_last.not_run);
+		logstore_write("cixd", "error", "kmod sweep (%s) did not run: %s",
+		               trigger_name(g_last.trigger), g_last.not_run);
 		return;
 	}
 	kmodscan_report_say(&g_last, sweep_origin(g_last.trigger));
 	for (i = 0; i < g_last.entry_count; i++)
 		counts[g_last.entries[i].outcome]++;
-	kmodscan_say("info",
-	             "kmod sweep (%s): %d aliases in %lld ms -- %d loaded, %d already loaded, "
-	             "%d builtin, %d unclaimed, %d refused, %d failed%s (ADR-0348)",
-	             trigger_name(g_last.trigger), g_last.alias_count, g_last.duration_ms,
-	             counts[KMODSCAN_LOADED], counts[KMODSCAN_ALREADY_LOADED],
-	             counts[KMODSCAN_BUILTIN], counts[KMODSCAN_UNCLAIMED], counts[KMODSCAN_REFUSED],
-	             counts[KMODSCAN_FAILED], g_last.truncated ? ", truncated at the alias limit" : "");
+	logstore_write("cixd", "info",
+	               "kmod sweep (%s): %d aliases in %lld ms -- %d loaded, %d already loaded, "
+	               "%d builtin, %d unclaimed, %d refused, %d failed%s (ADR-0348)",
+	               trigger_name(g_last.trigger), g_last.alias_count, g_last.duration_ms,
+	               counts[KMODSCAN_LOADED], counts[KMODSCAN_ALREADY_LOADED],
+	               counts[KMODSCAN_BUILTIN], counts[KMODSCAN_UNCLAIMED], counts[KMODSCAN_REFUSED],
+	               counts[KMODSCAN_FAILED], g_last.truncated ? ", truncated at the alias limit" : "");
 }
 
 void kmodscan_not_run(const char *why)

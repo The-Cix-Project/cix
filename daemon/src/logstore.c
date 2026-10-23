@@ -575,6 +575,8 @@ void logstore_repoint(const char *new_dir, const char *new_state_path)
 	snprintf(g_state_path, sizeof(g_state_path), "%s", new_state_path);
 }
 
+static void replay_early(void);
+
 int logstore_init(const char *dir, const char *state_path)
 {
 	if (snprintf(g_dir, sizeof(g_dir), "%s", dir) >= (int)sizeof(g_dir))
@@ -591,6 +593,7 @@ int logstore_init(const char *dir, const char *state_path)
 		return -1;
 
 	g_initialized = 1;
+	replay_early();
 	return 0;
 }
 
@@ -752,6 +755,27 @@ static void hold_entry(const char *src, const char *lvl, const char *cont, const
 static void write_entry(const char *source, const char *level, const char *container,
                          const char *msg);
 
+/*
+ * What was written before logstore_init(), in the same format as a
+ * helper's hold. boot_init(), pkg_init(), hostauth_init(),
+ * devicemap_init() and the start-up module loads all run before it, and
+ * a line written then used to be dropped: the ESP check's outcome
+ * (#638), and boot_init()'s efivarfs and resolv.conf failures, never
+ * reached the store. Replayed by logstore_init(), so it is a held line's
+ * replay time, seconds after it was said, that its ts records.
+ */
+static char g_early_buf[131072];
+
+static void replay_early(void)
+{
+	size_t len = g_hold_len;
+
+	if (g_hold_buf != g_early_buf)
+		return;
+	g_hold_buf = NULL;
+	logstore_replay(g_early_buf, len);
+}
+
 void logstore_replay(const char *held, size_t len)
 {
 	uint32_t dropped;
@@ -781,7 +805,7 @@ void logstore_replay(const char *held, size_t len)
 	if (dropped > 0) {
 		char msg[96];
 
-		snprintf(msg, sizeof(msg), "a helper's held log was full -- %u more entr%s dropped",
+		snprintf(msg, sizeof(msg), "a held log was full -- %u more entr%s dropped",
 		         (unsigned)dropped, dropped == 1 ? "y was" : "ies were");
 		write_entry("cixd", "warn", NULL, msg);
 	}
@@ -800,14 +824,20 @@ static void write_entry(const char *source, const char *level, const char *conta
 	struct json_writer w;
 	long long now;
 
-	if (!g_initialized)
-		return;
 	snprintf(lvl, sizeof(lvl), "%s", level != NULL ? level : "info");
-	if (level_rank(lvl) > level_rank(g_min_level))
-		return; /* less severe than the configured floor -- dropped before any write */
-
 	snprintf(src, sizeof(src), "%s", source != NULL ? source : "cixd");
 	snprintf(cont, sizeof(cont), "%s", container != NULL ? container : "");
+	if (!g_initialized) {
+		/* Held, not dropped: replayed at the end of logstore_init(),
+		 * where the configured floor applies. The floor is not known
+		 * yet, so every level is kept. */
+		if (g_hold_buf == NULL)
+			logstore_hold(g_early_buf, sizeof(g_early_buf));
+		hold_entry(src, lvl, cont, msg);
+		return;
+	}
+	if (level_rank(lvl) > level_rank(g_min_level))
+		return; /* less severe than the configured floor -- dropped before any write */
 	if (g_hold_buf != NULL) {
 		hold_entry(src, lvl, cont, msg);
 		return;

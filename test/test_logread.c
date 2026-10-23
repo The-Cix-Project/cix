@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define MAX_ENTRIES 8000
@@ -432,6 +433,53 @@ static void check_rotation(void)
 	}
 }
 
+/*
+ * #638: a line written before logstore_init() reaches the store when
+ * it opens. boot_init() runs before it, and its lines used to be
+ * dropped. In a forked child, because this process's own store is
+ * opened later and must hold only what build_store() wrote.
+ */
+static void check_early(void)
+{
+	char dir[256], state[300], cmd[400];
+	pid_t pid;
+	int status;
+
+	snprintf(dir, sizeof(dir), "/tmp/cix_test_logearly_XXXXXX");
+	if (mkdtemp(dir) == NULL) {
+		fail("mkdtemp for the early store", "");
+		return;
+	}
+	snprintf(state, sizeof(state), "%s/state.json", dir);
+	pid = fork();
+	if (pid == 0) {
+		struct logread_query q;
+		struct json_writer w;
+		int found;
+
+		logstore_write("cixd", "info", "said before the store opened");
+		if (logstore_init(dir, state) != 0)
+			_exit(2);
+		if (logread_query_parse("/v1/system/logs?tail=5", &q) != 0)
+			_exit(3);
+		jw_init(&w);
+		logread_run(&q, &w);
+		found = w.len > 0 && memmem(w.buf, w.len, "said before the store opened", 28) != NULL;
+		jw_free(&w);
+		logstore_repoint(dir, state);
+		_exit(found ? 0 : 1);
+	}
+	if (pid < 0 || waitpid(pid, &status, 0) != pid || !WIFEXITED(status))
+		fail("the early-store child did not run", dir);
+	else if (WEXITSTATUS(status) == 1)
+		fail("a line written before logstore_init() is not in the store once it opens", dir);
+	else if (WEXITSTATUS(status) != 0)
+		fail("the early-store child could not open or read its store", dir);
+	snprintf(cmd, sizeof(cmd), "rm -rf %s", dir);
+	if (system(cmd) != 0)
+		fprintf(stderr, "note: could not remove %s\n", dir);
+}
+
 /* logread_write_to() writes exactly what logread_run() produces. */
 static void check_write_to(const char *path)
 {
@@ -504,6 +552,7 @@ int main(void)
 	size_t i;
 	int pass;
 
+	check_early();
 	snprintf(g_dir, sizeof(g_dir), "/tmp/cix_test_logread_XXXXXX");
 	if (mkdtemp(g_dir) == NULL) {
 		perror("mkdtemp");

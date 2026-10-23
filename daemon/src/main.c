@@ -2197,7 +2197,8 @@ static void load_boot_modules(void)
 		char why[256];
 
 		if (kmodscan_load(boot_modules[i], KMOD_ORIGIN_NIC, NULL, why, sizeof(why)) == KMODSCAN_REFUSED)
-			kmodscan_say("info", "kmod boot NIC list: refused %s: %s", boot_modules[i], why);
+			logstore_write("cixd", "info", "kmod boot NIC list: refused %s: %s",
+			               boot_modules[i], why);
 	}
 }
 
@@ -2254,17 +2255,15 @@ static void load_one_configured_module(const char *name, const char *options, vo
 	 * indistinguishable from one never configured. ADR-0348: the entry
 	 * asks the verdict first, and a refusal is said as well.
 	 *
-	 * Through kmodscan_say(), which holds the line until the log store
-	 * opens. This runs before logstore_init(), and write_entry() drops
-	 * anything written before it, so the logstore_write() that stood
-	 * here reached nowhere, read from the code on 2026-10-21.
+	 * This runs before logstore_init(); the store holds what is written
+	 * before it opens and writes it then (#638).
 	 */
 	switch (kmodscan_load(name, KMOD_ORIGIN_CONFIG, NULL, why, sizeof(why))) {
 	case KMODSCAN_REFUSED:
-		kmodscan_say("info", "kmod autoload: refused %s: %s", name, why);
+		logstore_write("cixd", "info", "kmod autoload: refused %s: %s", name, why);
 		break;
 	case KMODSCAN_FAILED:
-		kmodscan_say("error", "kmod autoload: %s failed: %s", name, why);
+		logstore_write("cixd", "error", "kmod autoload: %s failed: %s", name, why);
 		break;
 	default:
 		break;
@@ -38632,8 +38631,6 @@ static int cixd_main(int argc, char **argv)
 	hostauth_log_carried_sessions();
 	/* ADR-0345: and so does devicemap_init(). */
 	devicemap_log_skipped();
-	/* ADR-0348: and so do the start-up module loads and the sweep. */
-	kmodscan_log_held();
 	/*
 	 * Issue #40: after image_init (it produces a real image version)
 	 * AND after logstore_init, so what it did is visible where an

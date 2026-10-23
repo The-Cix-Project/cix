@@ -121,9 +121,9 @@ void logstore_kmsg_readable(void);
 /* Appends one entry. printf-style; msg is truncated to
  * LOGSTORE_MSG_MAX - 1 bytes, never a buffer overrun. source/level
  * are truncated to their own _MAX -1 similarly. Safe to call from
- * anywhere in the daemon, including before logstore_init() (a no-op
- * until initialized, so early startup prints before ensure_dir()
- * has run don't crash). */
+ * anywhere in the daemon, including before logstore_init(): an entry
+ * written then is held, in a bounded buffer, and written when the store
+ * opens (#638). Until then it was dropped. */
 void logstore_write(const char *source, const char *level, const char *fmt, ...)
 	__attribute__((format(printf, 3, 4)));
 
