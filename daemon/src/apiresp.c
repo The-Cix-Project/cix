@@ -2,6 +2,12 @@
 
 #include "http.h"
 
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 void respond_json(int fd, int status, const char *status_text, struct json_writer *w)
 {
 	http_set_blocking(fd);
@@ -67,6 +73,40 @@ void respond_error_hdrs(int fd, int status, const char *status_text, const char 
 		http_write_response_hdrs(fd, status, status_text, "application/json", extra_headers,
 		                         w.buf, w.len);
 	jw_free(&w);
+}
+
+void respond_json_from_fd(int fd, int rfd, const char *what)
+{
+	struct stat st;
+	char msg[160];
+	char *body;
+	size_t got = 0;
+
+	snprintf(msg, sizeof(msg), "%s's result could not be read", what);
+	/* The child's memory file, written from its start: the whole body. */
+	if (fstat(rfd, &st) != 0 || (body = malloc(st.st_size > 0 ? (size_t)st.st_size : 1)) == NULL) {
+		close(rfd);
+		respond_error(fd, 500, "Internal Server Error", msg);
+		return;
+	}
+	while (got < (size_t)st.st_size) {
+		ssize_t n = pread(rfd, body + got, (size_t)st.st_size - got, (off_t)got);
+
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			break;
+		got += (size_t)n;
+	}
+	close(rfd);
+	if (got != (size_t)st.st_size) {
+		free(body);
+		respond_error(fd, 500, "Internal Server Error", msg);
+		return;
+	}
+	http_set_blocking(fd);
+	http_write_response(fd, 200, "OK", "application/json", body, got);
+	free(body);
 }
 
 const char *http_status_text(int status)

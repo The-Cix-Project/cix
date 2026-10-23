@@ -66,4 +66,12 @@ void respond_error_hdrs(int fd, int status, const char *status_text, const char 
  */
 const char *http_status_text(int status);
 
+/*
+ * A 200 whose JSON body is the whole of rfd, the memory file a helper
+ * child wrote a parked request's result into (ADR-0342's log read,
+ * #630's backup). Closes rfd. A file that cannot be read is a 500 naming
+ * what: "the log read's result could not be read".
+ */
+void respond_json_from_fd(int fd, int rfd, const char *what);
+
 #endif /* APIRESP_H */

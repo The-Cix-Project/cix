@@ -511,6 +511,25 @@ static const char *const g_logread_calls[] = {
 	NULL,
 };
 
+/*
+ * A SIXTH COUNTED SET (#630): making a system backup. do_system_backup()
+ * reads every stored recipe -- 1620 of them, 13.2 MB of an 18.5 MB
+ * bundle on 192.168.15.95 -- which held the loop 0.45-0.5 s idle and
+ * 1168 ms under a build. Its one caller is backup_work(), the helper
+ * child that GET /v1/system/backup, the snapshot-now request and the
+ * system.backup schedule all reach through backup_ask() or
+ * backup_submit_daemon_job().
+ */
+static const struct call_budget g_backup_budgets[] = {
+	{ "main.c", "do_system_backup(", 2,
+	  "the definition, and backup_work(), which runs only in a helper child" },
+};
+
+static const char *const g_backup_calls[] = {
+	"do_system_backup(",
+	NULL,
+};
+
 struct call_set {
 	const char *what;
 	const struct call_budget *budgets;
@@ -535,6 +554,11 @@ static const struct call_set g_call_sets[] = {
 	  "A filtered log read can read the whole store, which the operator may size to 100 GB, "
 	  "and cixd has one event loop. Ask for it through logread_ask() (ADR-0342), which parks "
 	  "the request and reads in a helper child; only a read with no filter runs here." },
+	{ "system backup", g_backup_budgets,
+	  (int)(sizeof(g_backup_budgets) / sizeof(g_backup_budgets[0])), g_backup_calls,
+	  "A system backup reads every stored recipe, 18.5 MB on 192.168.15.95, and cixd has one "
+	  "event loop. Ask for one through backup_ask() or backup_submit_daemon_job() (#630), which "
+	  "make it in a helper child." },
 };
 
 #define CALL_SET_COUNT ((int)(sizeof(g_call_sets) / sizeof(g_call_sets[0])))

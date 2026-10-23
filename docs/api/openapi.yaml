@@ -1530,6 +1530,32 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SystemBackupBundle"
+        "500":
+          description: >
+            The bundle is made off the daemon's event loop (#630), and
+            that ended without a result. The daemon's log names the
+            helper's exit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            No backup could start (#630). A backup reads every stored
+            recipe, so it runs off the daemon's event loop, one at a time
+            with up to 4 more waiting their turn, this and the
+            snapshot-now request together; one arriving beyond that is
+            answered at once. Retry after the header's interval.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                enum: [5]
+              description: Seconds to wait before retrying.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /system/restore:
     post:
@@ -1691,11 +1717,11 @@ paths:
         keys/certs, the same scope GET /system/backup itself has always
         had) to "<mount_path>/backup.json" on the configured disk -- a
         single, always-current snapshot, not a timestamped history.
-        `400` if no disk is configured, the configured disk doesn't
-        carry the `backup` role, or it isn't currently mounted -- the
-        real reason is in GET .../status's own `error` field either
-        way, since this endpoint's own response is that same status
-        object.
+        No disk configured, a disk without the `backup` role, or one
+        not mounted is a failed attempt, answered 200 with the reason
+        in the status's `error`, the same object GET .../status returns.
+        The bundle is made and written off the daemon's event loop
+        (#630); the request is answered when that has finished.
       operationId: postBackupConfigSnapshotNow
       x-cix-invalidates: [getBackupConfig]
       x-cix-permission: system:write
@@ -1711,6 +1737,21 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BackupSnapshotStatus"
+        "503":
+          description: >
+            No backup could start (#630): one runs at a time with up to 4
+            more waiting, shared with GET /system/backup. Retry after the
+            header's interval.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                enum: [5]
+              description: Seconds to wait before retrying.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /system/site:
     get:

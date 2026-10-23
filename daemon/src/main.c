@@ -1380,14 +1380,31 @@ enum cred_state {
 	CRED_UNAVAILABLE,
 };
 
-/* ADR-0342: what a filtered log read left on its connection. */
-enum logread_state {
-	LOGREAD_STATE_NONE = 0,
-	LOGREAD_STATE_DONE,        /* logread_fd holds the response body */
-	LOGREAD_STATE_UNAVAILABLE, /* it could not start: the resumed pass answers busy */
-	LOGREAD_STATE_FAILED,      /* it ran and produced nothing */
-	LOGREAD_STATE_TAKEN,       /* the resumed pass took the body */
+/* What a parked request's helper left on its connection, for the kinds
+ * whose result is a response body: a filtered log read (ADR-0342) and a
+ * system backup (#630). */
+enum park_body_state {
+	PARK_BODY_NONE = 0,
+	PARK_BODY_DONE,        /* body_fd holds the result; -1 for a backup written to disk */
+	PARK_BODY_UNAVAILABLE, /* it could not start: the resumed pass answers busy */
+	PARK_BODY_FAILED,      /* it ran and produced nothing */
+	PARK_BODY_TAKEN,       /* the resumed pass took the result */
 };
+
+/* What a request whose result is a body may be told, by the two kinds
+ * that make one. */
+enum park_body_answer {
+	PARK_ANSWER_ASK,    /* nothing asked yet: the caller parks the work */
+	PARK_ANSWER_READY,  /* *result_fd holds the result, the caller's to close */
+	PARK_ANSWER_BUSY,   /* answer 503 */
+	PARK_ANSWER_FAILED, /* the work ran and produced nothing */
+};
+
+/* #630: a system backup runs in a helper child (backup_ask(), with the
+ * park records further down). */
+static enum park_body_answer park_body_take(int *result_fd);
+static enum park_body_answer backup_ask(const char *target, int *result_fd);
+static int backup_submit_daemon_job(const char *target);
 
 /* ADR-0348: what an explicit module load or unload left on its
  * connection. */
@@ -1521,13 +1538,13 @@ struct conn {
 	struct events_sub *ev_subs;
 	/*
 	 * CONN_CLIENT only (ADR-0340, ADR-0342). park is the work this
-	 * request is waiting for -- a credential check or a log read --
-	 * non-NULL exactly while it is parked; the record points back here,
-	 * and client_conn_teardown() breaks that link. logread_state and
-	 * logread_fd are what a finished log read left: the body, in a
-	 * memfd, valid only in LOGREAD_STATE_DONE (a calloc'd conn's 0 is a
-	 * real descriptor, so the state, not the fd, says whether it is
-	 * held). cred_state is what a check found, bound to cred_bind
+	 * request is waiting for -- a credential check, a log read, a system
+	 * backup or a module job -- non-NULL exactly while it is parked; the
+	 * record points back here, and client_conn_teardown() breaks that
+	 * link. body_state and body_fd are what a finished log read or
+	 * backup left: the body, in a memfd, valid only in PARK_BODY_DONE (a
+	 * calloc'd conn's 0 is a real descriptor, so the state, not the fd,
+	 * says whether it is held). cred_state is what a check found, bound to cred_bind
 	 * (credcheck_bind()) so it can answer for no other credential. A
 	 * connection carries one request, so it is checked at most once.
 	 * req_audited: dispatch() has written this request's audit line, so
@@ -1539,8 +1556,8 @@ struct conn {
 	 * until the resumed pass takes it.
 	 */
 	struct park *park;
-	enum logread_state logread_state;
-	int logread_fd;
+	enum park_body_state body_state;
+	int body_fd;
 	enum kmodjob_state kmod_state;
 	struct kmodscan_report *kmod_report;
 	enum cred_state cred_state;
@@ -3998,6 +4015,10 @@ static void handle_system_update(int fd, const char *body, size_t body_len)
  * way that should reject the request the way a bad squashfs/kernel
  * path can for /system/update; an individual unreadable recipe file
  * is skipped, not fatal to the whole bundle.
+ *
+ * Called only by backup_work(), in a helper child (#630): it reads
+ * every stored recipe, and so must never run on the loop. It reads and
+ * writes nothing else, and logs nothing.
  */
 static void do_system_backup(struct json_writer *w)
 {
@@ -4096,8 +4117,10 @@ static void do_system_backup(struct json_writer *w)
 	}
 
 	/* Every recipe version on disk, not just currently-installed
-	 * packages -- they're cheap, and the operator may want them all
-	 * preserved. ADR-0107's version-keyed layout (<name>/<version>/
+	 * packages, since the operator may want them all preserved. Not
+	 * cheap: 1620 recipes and 13.2 MB of an 18.5 MB bundle on
+	 * 192.168.15.95 (2026-10-23), which is why this whole function runs
+	 * in a helper child (#630). ADR-0107's version-keyed layout (<name>/<version>/
 	 * build.cbs) needs a two-level directory walk,
 	 * not the flat single-level opendir() this used before that
 	 * migration landed -- that old code silently stopped matching
@@ -4167,13 +4190,26 @@ static void do_system_backup(struct json_writer *w)
 	jw_obj_close(w);
 }
 
+/* #630: the bundle is made in a helper child while the request waits. */
 static void handle_system_backup(int fd)
 {
-	struct json_writer w;
+	int rfd = -1;
 
-	do_system_backup(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
+	switch (backup_ask("", &rfd)) {
+	case PARK_ANSWER_ASK:
+		return; /* parked */
+	case PARK_ANSWER_BUSY:
+		respond_error_hdrs(fd, 503, "Service Unavailable", "Retry-After: 5\r\n",
+		                   "system backups are busy -- try again shortly", 0);
+		return;
+	case PARK_ANSWER_FAILED:
+		respond_error(fd, 500, "Internal Server Error", "the system backup ended without a result");
+		return;
+	case PARK_ANSWER_READY:
+	default:
+		break;
+	}
+	respond_json_from_fd(fd, rfd, "the system backup");
 }
 
 
@@ -6887,7 +6923,7 @@ static int action_discover(const char *params, char *reason, size_t reason_size)
 /* All defined further down, next to the subsystems they belong to;
  * declared here so the actions that schedule them sit beside the
  * scheduler rather than being scattered across the file. */
-static void do_backup_snapshot_now(void);
+static int backup_snapshot_target(char *target_path, size_t target_size);
 static int volumebackup_sweep_now(void);
 static void register_pkg_sync_fetch_pidfd(pid_t pid, int pidfd);
 
@@ -6911,8 +6947,29 @@ static int action_system_backup(const char *params, char *reason, size_t reason_
 		snprintf(reason, reason_size, "no backup disk is configured");
 		return -1;
 	}
-	do_backup_snapshot_now();
-	snprintf(reason, reason_size, "wrote a system backup to %s", backupconfig_disk());
+	{
+		char target[PATH_MAX];
+
+		if (backup_snapshot_target(target, sizeof(target)) != 0) {
+			snprintf(reason, reason_size,
+			         "the backup disk %s cannot take a snapshot -- GET "
+			         "/v1/system/backup-config/status says why",
+			         backupconfig_disk());
+			return -1;
+		}
+		/* #630: written in a helper child; the backup status records how
+		 * it ended. */
+		if (backup_submit_daemon_job(target) != 0) {
+			backupconfig_record_attempt(0, "the snapshot could not be started");
+			snprintf(reason, reason_size, "the snapshot to %s could not be started",
+			         backupconfig_disk());
+			return -1;
+		}
+	}
+	snprintf(reason, reason_size,
+	         "started a system backup to %s -- GET /v1/system/backup-config/status says how "
+	         "it ended",
+	         backupconfig_disk());
 	return 0;
 }
 
@@ -12738,18 +12795,22 @@ static int volumebackup_sweep_now(void)
 	return volumebackup_sweep(time(NULL), api_volume_backup_hooks());
 }
 
-static void do_backup_snapshot_now(void)
+/*
+ * Where a snapshot goes: backup.json on the configured backup disk. 0
+ * with the path in target_path, or -1 when there is nowhere to write it,
+ * which is recorded as the attempt's failure. The bundle itself is made
+ * and written in a helper child (backup_ask(), #630).
+ */
+static int backup_snapshot_target(char *target_path, size_t target_size)
 {
 	const char *disk_name = backupconfig_disk();
 	struct discovered_disk disks[DISK_ENUM_MAX];
 	int n, i;
 	const struct discovered_disk *found = NULL;
-	char target_path[PATH_MAX];
-	struct json_writer w;
 
 	if (disk_name == NULL) {
 		backupconfig_record_attempt(0, "no backup disk configured");
-		return;
+		return -1;
 	}
 
 	n = disk_enumerate(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
@@ -12761,7 +12822,7 @@ static void do_backup_snapshot_now(void)
 	}
 	if (found == NULL) {
 		backupconfig_record_attempt(0, "configured backup disk is not currently present");
-		return;
+		return -1;
 	}
 	{
 		const char *role = diskrole_lookup(disk_name);
@@ -12769,24 +12830,15 @@ static void do_backup_snapshot_now(void)
 		if (role == NULL || strcmp(role, "backup") != 0) {
 			backupconfig_record_attempt(0,
 			                             "configured backup disk no longer carries the backup role");
-			return;
+			return -1;
 		}
 	}
 	if (!found->mounted) {
 		backupconfig_record_attempt(0, "configured backup disk is present but not currently mounted");
-		return;
+		return -1;
 	}
-
-	snprintf(target_path, sizeof(target_path), "%s/backup.json", found->mount_path);
-
-	do_system_backup(&w);
-	if (persist_atomic_write(target_path, w.buf, w.len) != 0) {
-		jw_free(&w);
-		backupconfig_record_attempt(0, "failed to write snapshot to disk");
-		return;
-	}
-	jw_free(&w);
-	backupconfig_record_attempt(1, NULL);
+	snprintf(target_path, target_size, "%s/backup.json", found->mount_path);
+	return 0;
 }
 
 static void handle_backup_config_status_get(int fd)
@@ -12799,18 +12851,46 @@ static void handle_backup_config_status_get(int fd)
 	jw_free(&w);
 }
 
+/*
+ * Answers when the snapshot has been written or has failed, with the
+ * backup status saying which, as it did when the write ran here: the
+ * request is parked meanwhile (#630). A disk that cannot take one is
+ * answered at once.
+ */
 static void handle_backup_config_snapshot_now_post(int fd)
 {
-	do_backup_snapshot_now();
+	char target[PATH_MAX];
+	struct json_writer w;
+	int rfd = -1;
+	enum park_body_answer a = park_body_take(&rfd);
 
-	{
-		struct json_writer w;
-
-		jw_init(&w);
-		backupconfig_write_status_json(&w);
-		respond_json(fd, 200, "OK", &w);
-		jw_free(&w);
+	/* The disk is checked once, on the first pass; the resumed pass only
+	 * takes the result. */
+	if (a == PARK_ANSWER_ASK) {
+		if (backup_snapshot_target(target, sizeof(target)) != 0)
+			a = PARK_ANSWER_FAILED;
+		else
+			a = backup_ask(target, &rfd);
 	}
+	switch (a) {
+	case PARK_ANSWER_ASK:
+		return; /* parked */
+	case PARK_ANSWER_BUSY:
+		respond_error_hdrs(fd, 503, "Service Unavailable", "Retry-After: 5\r\n",
+		                   "system backups are busy -- try again shortly", 0);
+		return;
+	case PARK_ANSWER_READY:
+		if (rfd >= 0)
+			close(rfd);
+		break;
+	case PARK_ANSWER_FAILED:
+	default:
+		break; /* the status carries the reason */
+	}
+	jw_init(&w);
+	backupconfig_write_status_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
 }
 
 static void handle_bootstrap_fetch_event(struct conn *cc)
@@ -32492,6 +32572,7 @@ enum park_kind {
 	PARK_CRED,
 	PARK_LOGREAD,
 	PARK_KMOD,
+	PARK_BACKUP,
 	PARK_KINDS
 };
 
@@ -32513,6 +32594,9 @@ struct park {
 	/* PARK_KMOD */
 	struct kmodscan_job job;
 	int daemon_job; /* the daemon's own work: no client, from the start */
+	/* PARK_BACKUP: where a snapshot goes on the backup disk; empty for
+	 * GET /v1/system/backup, whose bundle goes to the memfd */
+	char backup_target[PATH_MAX];
 };
 
 /*
@@ -32527,7 +32611,10 @@ struct park {
  * mostly the disk, and two at once already make the page cache work.
  * Module jobs: one `modprobe` at a time (ADR-0348 rule 5), and 256
  * waiting, because a hub plugged in is a burst of uevents, one job per
- * alias, and a dropped one is a device without its driver.
+ * alias, and a dropped one is a device without its driver. System
+ * backups: one at a time and 4 waiting (#630) -- each reads every stored
+ * recipe, 18.5 MB on 192.168.15.95, and two at once would only share
+ * the disk.
  */
 struct park_queue {
 	int running_max;
@@ -32542,16 +32629,19 @@ struct park_queue {
 #define LOGREAD_RUNNING_MAX 2
 #define LOGREAD_WAIT_MAX 16
 #define KMOD_WAIT_MAX 256
+#define BACKUP_WAIT_MAX 4
 static struct park_queue g_park_q[PARK_KINDS] = {
 	[PARK_CRED] = { .running_max = 1, .wait_max = CRED_WAIT_MAX },
 	[PARK_LOGREAD] = { .running_max = LOGREAD_RUNNING_MAX, .wait_max = LOGREAD_WAIT_MAX },
 	[PARK_KMOD] = { .running_max = 1, .wait_max = KMOD_WAIT_MAX },
+	[PARK_BACKUP] = { .running_max = 1, .wait_max = BACKUP_WAIT_MAX },
 };
 
 static void serve_request(struct conn *cc);
 static void cred_check_done(int exit_status, void *ctx);
 static void logread_done(int exit_status, void *ctx);
 static void kmod_job_done(int exit_status, void *ctx);
+static void backup_done(int exit_status, void *ctx);
 
 static struct park *park_new(enum park_kind kind, struct conn *cc)
 {
@@ -32606,16 +32696,26 @@ static void park_unlink_waiting(struct park *p)
  * removed and freed -- work for a client that has gone would be a fork
  * for nobody, and would hold a place in the queue. A running one keeps
  * its record until the helper finishes; it just loses its client, and a
- * running log read is killed so that it finishes now. A running module
- * job is not: a modprobe stopped half way through an insert leaves the
- * kernel's state unknown, and what it did is still logged and announced.
+ * running log read or backup download is killed so that it finishes
+ * now. A running module job is not: a modprobe stopped half way through
+ * an insert leaves the kernel's state unknown, and what it did is still
+ * logged and announced. Nor is a snapshot to the backup disk, whose
+ * outcome is recorded in the backup status whoever asked for it.
  */
 static void park_abandon(struct park *p)
 {
 	if (p->running) {
 		p->cc = NULL;
-		if (p->kind == PARK_LOGREAD && p->pid > 0)
+		if ((p->kind == PARK_LOGREAD ||
+		     (p->kind == PARK_BACKUP && p->backup_target[0] == '\0')) &&
+		    p->pid > 0)
 			kill(p->pid, SIGKILL);
+		return;
+	}
+	if (p->kind == PARK_BACKUP && p->backup_target[0] != '\0') {
+		/* Still waiting: it stays queued as the daemon's own job. */
+		p->cc = NULL;
+		p->daemon_job = 1;
 		return;
 	}
 	park_unlink_waiting(p);
@@ -32734,6 +32834,57 @@ static int kmod_job_start(struct park *p)
 	return 0;
 }
 
+/* The helper child of a system backup (#630): the bundle, into the
+ * memory file for a download or onto the backup disk for a snapshot. It
+ * only reads the daemon's state files and writes nothing the parent
+ * reads. */
+static int backup_work(void *arg)
+{
+	struct park *p = arg;
+	struct json_writer w;
+	int rc;
+
+	do_system_backup(&w);
+	if (p->backup_target[0] != '\0') {
+		rc = persist_atomic_write(p->backup_target, w.buf, w.len);
+	} else {
+		size_t off = 0;
+
+		rc = 0;
+		while (off < w.len) {
+			ssize_t n = write(p->memfd, w.buf + off, w.len - off);
+
+			if (n < 0 && errno == EINTR)
+				continue;
+			if (n <= 0) {
+				rc = -1;
+				break;
+			}
+			off += (size_t)n;
+		}
+	}
+	jw_free(&w);
+	return rc == 0 ? 0 : 1;
+}
+
+/* Forks a backup. A download gets a memfd for the same reason as a log
+ * read: the bundle is 18.5 MB on 192.168.15.95. */
+static int backup_start(struct park *p)
+{
+	if (p->backup_target[0] == '\0') {
+		p->memfd = memfd_create("cix-backup", MFD_CLOEXEC);
+		if (p->memfd < 0)
+			return -1;
+	}
+	if (helper_run_pid(backup_work, p, backup_done, p, "a system backup", &p->pid) != 0) {
+		if (p->memfd >= 0)
+			close(p->memfd);
+		p->memfd = -1;
+		return -1;
+	}
+	return 0;
+}
+
 static int park_start(struct park *p)
 {
 	int rc;
@@ -32744,6 +32895,9 @@ static int park_start(struct park *p)
 		break;
 	case PARK_LOGREAD:
 		rc = logread_start(p);
+		break;
+	case PARK_BACKUP:
+		rc = backup_start(p);
 		break;
 	case PARK_KMOD:
 	default:
@@ -32795,21 +32949,25 @@ static void park_unavailable(struct conn *cc, enum park_kind kind)
 	cc->park = NULL;
 	if (kind == PARK_CRED)
 		cc->cred_state = CRED_UNAVAILABLE;
-	else if (kind == PARK_LOGREAD)
-		cc->logread_state = LOGREAD_STATE_UNAVAILABLE;
+	else if (kind == PARK_LOGREAD || kind == PARK_BACKUP)
+		cc->body_state = PARK_BODY_UNAVAILABLE;
 	else
 		cc->kmod_state = KMODJOB_STATE_UNAVAILABLE;
 	serve_request(cc);
 }
 
 /*
- * The daemon's own module job cannot run after all (no fork). There is
- * no request to answer, so it is said: a plugged device left without its
- * driver, or a sweep that will not happen.
+ * The daemon's own job cannot run after all (no fork). There is no
+ * request to answer, so it is said: a plugged device left without its
+ * driver, a sweep that will not happen, or a snapshot not taken.
  */
-static void kmod_daemon_job_unavailable(struct park *p)
+static void park_daemon_job_unavailable(struct park *p)
 {
-	if (p->job.kind == KMODSCAN_JOB_SWEEP) {
+	if (p->kind == PARK_BACKUP) {
+		backupconfig_record_attempt(0, "the snapshot could not be started");
+		logstore_write("cixd", "error", "system backup: the snapshot to %s could not start: %s",
+		               p->backup_target, strerror(errno));
+	} else if (p->job.kind == KMODSCAN_JOB_SWEEP) {
 		kmodscan_set_sweep_pending(0);
 		logstore_write("cixd", "error",
 		               "kmod: the module queue could not start a sweep (%s) -- POST "
@@ -32846,7 +33004,7 @@ static void park_start_waiting(enum park_kind kind)
 		if (park_start(p) == 0)
 			continue;
 		if (cc == NULL)
-			kmod_daemon_job_unavailable(p);
+			park_daemon_job_unavailable(p);
 		park_free(p);
 		if (cc != NULL)
 			park_unavailable(cc, kind);
@@ -32993,58 +33151,58 @@ static void cred_check_done(int exit_status, void *ctx)
 }
 
 /*
- * ADR-0342: a filtered log read for the request being served. A
- * connection carries one request, and its resumed pass parses the same
- * bytes, so the result attached to it is the answer to the same query;
- * unlike a credential verdict it grants nothing, so it needs no bind.
+ * What the connection's finished work left, for the request being
+ * served. A connection carries one request, and its resumed pass parses
+ * the same bytes, so the result attached to it is the answer to the same
+ * request; unlike a credential verdict it grants nothing, so it needs no
+ * bind. An in-process read (events_run_get()) has no connection to park,
+ * and is told busy.
  */
-static enum logread_answer logread_broker(const struct logread_query *q, int *result_fd)
+static enum park_body_answer park_body_take(int *result_fd)
 {
 	struct conn *cc = g_response_conn;
-	struct park *p;
 
-	/* An in-process read (events_run_get()) has no connection to park.
-	 * The subscribe refuses a filtered log stream, so this is only an
-	 * answer for a read nothing should make. */
 	if (cc == NULL || cc->fd < 0 || cc->kind != CONN_CLIENT)
-		return LOGREAD_BUSY;
-	switch (cc->logread_state) {
-	case LOGREAD_STATE_NONE:
-		break;
-	case LOGREAD_STATE_DONE:
-		*result_fd = cc->logread_fd;
-		cc->logread_fd = -1;
-		cc->logread_state = LOGREAD_STATE_TAKEN;
-		return LOGREAD_READY;
-	case LOGREAD_STATE_UNAVAILABLE:
-		return LOGREAD_BUSY;
-	case LOGREAD_STATE_FAILED:
-	case LOGREAD_STATE_TAKEN:
+		return PARK_ANSWER_BUSY;
+	switch (cc->body_state) {
+	case PARK_BODY_NONE:
+		return cc->park != NULL ? PARK_ANSWER_BUSY : PARK_ANSWER_ASK; /* one park per request */
+	case PARK_BODY_DONE:
+		*result_fd = cc->body_fd;
+		cc->body_fd = -1;
+		cc->body_state = PARK_BODY_TAKEN;
+		return PARK_ANSWER_READY;
+	case PARK_BODY_UNAVAILABLE:
+		return PARK_ANSWER_BUSY;
+	case PARK_BODY_FAILED:
+	case PARK_BODY_TAKEN:
 	default:
-		return LOGREAD_FAILED;
+		return PARK_ANSWER_FAILED;
 	}
-	if (cc->park != NULL)
-		return LOGREAD_BUSY; /* one park per request */
-	p = park_new(PARK_LOGREAD, cc);
-	if (p == NULL)
-		return LOGREAD_BUSY;
-	p->q = *q;
+}
+
+/* Parks the request being served on p, which park_body_take() just
+ * answered ASK for. PARK_ANSWER_ASK while it waits, or PARK_ANSWER_BUSY when
+ * its queue is full (p is freed). */
+static enum park_body_answer park_body_submit(struct park *p)
+{
 	if (park_submit(p) != 0) {
 		park_free(p);
-		return LOGREAD_BUSY;
+		return PARK_ANSWER_BUSY;
 	}
-	cc->park = p;
-	return LOGREAD_PARKED;
+	p->cc->park = p;
+	return PARK_ANSWER_ASK;
 }
 
 /*
- * The read finished, or was killed because its client left. The memory
+ * The work finished, or was killed because its client left. The memory
  * file passes to the connection, and the request is served again; the
- * handler's same logread_ask() then answers from it.
+ * handler's same ask then answers from it. A result with no memory file
+ * (a snapshot written to the backup disk) is DONE with body_fd -1.
  */
-static void logread_done(int exit_status, void *ctx)
+static void park_body_done(struct park *p, int exit_status, const char *what)
 {
-	struct park *p = ctx;
+	enum park_kind kind = p->kind;
 
 	park_finished(p);
 	if (p->cc != NULL) {
@@ -33052,20 +33210,98 @@ static void logread_done(int exit_status, void *ctx)
 
 		cc->park = NULL;
 		if (exit_status == 0) {
-			cc->logread_fd = p->memfd;
+			cc->body_fd = p->memfd;
 			p->memfd = -1;
-			cc->logread_state = LOGREAD_STATE_DONE;
+			cc->body_state = PARK_BODY_DONE;
 		} else {
-			logstore_write("cixd", "error",
-			               "a log read ended without a result (helper exit %d)", exit_status);
-			cc->logread_state = LOGREAD_STATE_FAILED;
+			logstore_write("cixd", "error", "%s ended without a result (helper exit %d)", what,
+			               exit_status);
+			cc->body_state = PARK_BODY_FAILED;
 		}
 		park_free(p);
 		serve_request(cc);
 	} else {
 		park_free(p);
 	}
-	park_start_waiting(PARK_LOGREAD);
+	park_start_waiting(kind);
+}
+
+/* ADR-0342: a filtered log read for the request being served. */
+static enum logread_answer logread_broker(const struct logread_query *q, int *result_fd)
+{
+	struct park *p;
+
+	switch (park_body_take(result_fd)) {
+	case PARK_ANSWER_ASK:
+		break;
+	case PARK_ANSWER_READY:
+		return LOGREAD_READY;
+	case PARK_ANSWER_BUSY:
+		return LOGREAD_BUSY;
+	case PARK_ANSWER_FAILED:
+	default:
+		return LOGREAD_FAILED;
+	}
+	p = park_new(PARK_LOGREAD, g_response_conn);
+	if (p == NULL)
+		return LOGREAD_BUSY;
+	p->q = *q;
+	return park_body_submit(p) == PARK_ANSWER_ASK ? LOGREAD_PARKED : LOGREAD_BUSY;
+}
+
+static void logread_done(int exit_status, void *ctx)
+{
+	park_body_done(ctx, exit_status, "a log read");
+}
+
+/*
+ * #630: a system backup for the request being served -- the bundle for
+ * GET /v1/system/backup when target is empty, or a snapshot to target
+ * on the backup disk. do_system_backup() reads every stored recipe, 18.5
+ * MB on 192.168.15.95, which held the loop 0.45-0.5 s idle and 1168 ms
+ * under a build; so it runs in a helper child, like a filtered log read.
+ */
+static enum park_body_answer backup_ask(const char *target, int *result_fd)
+{
+	enum park_body_answer a = park_body_take(result_fd);
+	struct park *p;
+
+	if (a != PARK_ANSWER_ASK)
+		return a;
+	p = park_new(PARK_BACKUP, g_response_conn);
+	if (p == NULL)
+		return PARK_ANSWER_BUSY;
+	snprintf(p->backup_target, sizeof(p->backup_target), "%s", target);
+	return park_body_submit(p);
+}
+
+/* A snapshot's outcome is recorded here, in the parent, whoever asked
+ * for it; then a waiting request is answered as a log read's is. */
+static void backup_done(int exit_status, void *ctx)
+{
+	struct park *p = ctx;
+
+	if (p->backup_target[0] != '\0')
+		backupconfig_record_attempt(exit_status == 0,
+		                            exit_status == 0 ? NULL : "failed to write snapshot to disk");
+	park_body_done(p, exit_status, "a system backup");
+}
+
+/* The schedule's snapshot, with no request waiting for it. 0 when it is
+ * running or queued; -1 when it can be neither, which the caller says. */
+static int backup_submit_daemon_job(const char *target)
+{
+	struct park *p = park_new(PARK_BACKUP, NULL);
+
+	if (p == NULL)
+		return -1;
+	p->daemon_job = 1;
+	snprintf(p->backup_target, sizeof(p->backup_target), "%s", target);
+	if (park_submit(p) != 0) {
+		park_free(p);
+		return -1;
+	}
+	return 0;
 }
 
 /*
@@ -33273,9 +33509,10 @@ static void client_conn_teardown(struct conn *cc)
 		park_abandon(cc->park);
 		cc->park = NULL;
 	}
-	if (cc->logread_state == LOGREAD_STATE_DONE) {
-		close(cc->logread_fd);
-		cc->logread_state = LOGREAD_STATE_TAKEN;
+	if (cc->body_state == PARK_BODY_DONE) {
+		if (cc->body_fd >= 0)
+			close(cc->body_fd);
+		cc->body_state = PARK_BODY_TAKEN;
 	}
 	if (cc->kmod_report != NULL) {
 		kmodscan_report_free(cc->kmod_report);

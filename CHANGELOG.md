@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A system backup is made off the event loop (#630, #617)
+
+- **What changed:** `GET /v1/system/backup`, `POST /v1/system/backup-config/snapshot-now` and the `system.backup` schedule action make the bundle in a helper child instead of on the event loop. The request waits, parked like a filtered log read (ADR-0342), and is answered with the same bytes as before. One backup runs at a time with up to 4 waiting; beyond that, `503` with `Retry-After: 5`. A download whose client leaves is killed; a snapshot to the backup disk always finishes and records its outcome, whoever asked.
+- **Why:** the bundle carries every stored recipe. On 192.168.15.95 that is 1620 recipes, 13.2 MB of an 18.5 MB bundle, and making it held the loop 0.45-0.5 s idle and 1168 ms once under a build (the stall record, 2026-10-22).
+- **One result slot:** a parked request's body, from a log read or a backup, is one state on the connection (`body_state`, `body_fd`), and `respond_json_from_fd()` answers from it for both.
+- **The schedule action** now reports "started a system backup to DISK"; the backup status says how it ended.
+- **Contract:** both operations list their `503`; `getSystemBackup` its `500`. The snapshot-now description no longer claims a `400` it never returned.
+- **Verified:** `test_blocking_waits` counts `do_system_backup(` and allows only the definition and `backup_work()`, the helper child. `test_system_backup` and `test_backup_config` exercise the parked paths.
+
 ### A trust anchor is named by its CN (#629)
 
 - **What changed:** `TrustAnchor` gains `name`, the subject's commonName, or the whole subject when it has none. The dashboard's Trust Anchors table leads with it and keeps the subject on hover. Rendered from 0.2.57-577's own files, the table had cut the subject from its end, so the gibnet root and intermediate read the same: `C = GB, ST = London, L = London, O = itdlabs, OU = Root Authority, C…`. The config document reports `name` as state.

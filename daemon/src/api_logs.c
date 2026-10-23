@@ -111,10 +111,7 @@ void handle_logs_get(int fd, const struct http_request *req)
 {
 	struct logread_query q;
 	struct json_writer w;
-	struct stat st;
-	char *body;
 	int rfd;
-	size_t got = 0;
 
 	if (logread_query_parse(req->path, &q) != 0) {
 		respond_error(fd, 400, "Bad Request", "invalid regex pattern");
@@ -141,31 +138,7 @@ void handle_logs_get(int fd, const struct http_request *req)
 	case LOGREAD_READY:
 		break;
 	}
-
-	/* The child's memory file, written from its start: the whole body. */
-	if (fstat(rfd, &st) != 0 || (body = malloc(st.st_size > 0 ? (size_t)st.st_size : 1)) == NULL) {
-		close(rfd);
-		respond_error(fd, 500, "Internal Server Error", "the log read's result could not be read");
-		return;
-	}
-	while (got < (size_t)st.st_size) {
-		ssize_t n = pread(rfd, body + got, (size_t)st.st_size - got, (off_t)got);
-
-		if (n < 0 && errno == EINTR)
-			continue;
-		if (n <= 0)
-			break;
-		got += (size_t)n;
-	}
-	close(rfd);
-	if (got != (size_t)st.st_size) {
-		free(body);
-		respond_error(fd, 500, "Internal Server Error", "the log read's result could not be read");
-		return;
-	}
-	http_set_blocking(fd);
-	http_write_response(fd, 200, "OK", "application/json", body, got);
-	free(body);
+	respond_json_from_fd(fd, rfd, "the log read");
 }
 
 void handle_logs_config_get(int fd)
