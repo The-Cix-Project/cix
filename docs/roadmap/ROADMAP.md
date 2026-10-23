@@ -2445,6 +2445,14 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 312: a trust anchor is named by its CN (#629, 0.2.57-578)
+
+`TrustAnchor` gains `name`: the subject's commonName, or the whole subject when it has none. The Trust Anchors table leads with it and keeps the subject on hover, and the form hint, the contract and the API README now say to register the intermediate too when a server sends only its own certificate.
+
+**Gated:** compile probe `0.2.57-594` (commit 8d22fa89) green, `SELFTEST: PASS`; `test_trustanchor` checks that a root and an intermediate are each named by their CN.
+
+**Measured on 192.168.15.95, 2026-10-23, on 0.2.57-578** (slot a, 12 containers running): `GET /v1/system/trust-anchors` returns `"name":"gibnet Intermediate CA"` and `"name":"gibnet Root"`; the tab, rendered in Chromium from the box's own files with that live list, shows the two rows by name with each fingerprint whole at 1280 px, and the corrected hint; a forge recipe sync ended `state=success`.
+
 ## Part 311: the root's trust store is the ca-certificates package, release two (ADR-0350, #591, 0.2.57-577)
 
 `mkbootroot` stages `/etc/ssl/certs/ca-certificates.crt` from the `cix-hosttools` image's `ca-certificates` package through `stage_controlplane_files()`, beside `openssl.cnf`, and no longer copies the build host's. That was the last build-host file in the control-plane root. The root now trusts Mozilla's roots only; the site CA reaches cixd as a registered trust anchor and never enters the root or the installer ISO.
