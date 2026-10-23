@@ -297,9 +297,9 @@ int main(void)
 
 		snprintf(script, sizeof(script),
 		         "label: gpt\n"
-		         "size=%dMiB, type=uefi, name=\"ESP\"\n"
-		         "size=%dMiB, type=linux, name=\"root-a\"\n"
-		         "size=%dMiB, type=linux, name=\"root-b\"\n"
+		         "size=%dMiB, type=uefi, name=\"cix-esp\"\n"
+		         "size=%dMiB, type=linux, name=\"cix-root-a\"\n"
+		         "size=%dMiB, type=linux, name=\"cix-root-b\"\n"
 		         "size=%dMiB, type=linux, name=\"root-c\"\n"
 		         "size=%dMiB, type=linux, name=\"kernel-scratch\"\n",
 		         ESP_SIZE_MIB, ROOT_SLOT_SIZE_MIB, ROOT_SLOT_SIZE_MIB, ROOT_SLOT_SIZE_MIB,

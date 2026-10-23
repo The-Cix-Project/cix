@@ -171,10 +171,15 @@ int main(void)
 		char script[256];
 		char *sfdisk_argv[] = { (char *)SFDISK_BIN, disk_img, NULL };
 
+		/* The platform's own labels: cixd finds its partitions by GPT
+		 * name since #305, and an ESP named "ESP" resolved to nothing,
+		 * so the /boot mount failed and cixd stopped as PID 1.
+		 * Measured on 192.168.15.95, 2026-10-23 (probe-cix-bootest@12-1),
+		 * the first time this test ran on a Cix host. */
 		snprintf(script, sizeof(script),
 		         "label: gpt\n"
-		         "size=%dMiB, type=uefi, name=\"ESP\"\n"
-		         "type=linux, name=\"root\"\n",
+		         "size=%dMiB, type=uefi, name=\"cix-esp\"\n"
+		         "type=linux, name=\"cix-root-a\"\n",
 		         ESP_SIZE_MIB);
 		if (run_subprocess_stdin(SFDISK_BIN, sfdisk_argv, script) != 0)
 			return 1;

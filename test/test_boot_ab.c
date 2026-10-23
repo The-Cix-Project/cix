@@ -217,9 +217,9 @@ int main(void)
 		 * the script, which would leave nothing for root-b. */
 		snprintf(script, sizeof(script),
 		         "label: gpt\n"
-		         "size=%dMiB, type=uefi, name=\"ESP\"\n"
-		         "size=%dMiB, type=linux, name=\"root-a\"\n"
-		         "type=linux, name=\"root-b\"\n",
+		         "size=%dMiB, type=uefi, name=\"cix-esp\"\n"
+		         "size=%dMiB, type=linux, name=\"cix-root-a\"\n"
+		         "type=linux, name=\"cix-root-b\"\n",
 		         ESP_SIZE_MIB, ROOT_SLOT_SIZE_MIB);
 		if (run_subprocess_stdin(SFDISK_BIN, sfdisk_argv, script) != 0)
 			return 1;

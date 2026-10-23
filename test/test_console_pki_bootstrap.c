@@ -141,8 +141,8 @@ int main(void)
 
 		snprintf(script, sizeof(script),
 		         "label: gpt\n"
-		         "size=%dMiB, type=uefi, name=\"ESP\"\n"
-		         "type=linux, name=\"root\"\n",
+		         "size=%dMiB, type=uefi, name=\"cix-esp\"\n"
+		         "type=linux, name=\"cix-root-a\"\n",
 		         ESP_SIZE_MIB);
 		if (run_subprocess_stdin(SFDISK_BIN, sfdisk_argv, script) != 0)
 			return 1;
