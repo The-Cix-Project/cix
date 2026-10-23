@@ -2459,8 +2459,10 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 
 **Gated from 0.2.57-584**, the owner's decision of 2026-10-23. `BOOT_SELFTESTS` puts `test_boot` in `SELFTESTS`. The release recipe stages the kernel artifact as `build-inputs/bzImage` and declares qemu, ovmf, dosfstools, mtools and the host-tools set. Compile probe 0.2.57-600 and the 584 release build each logged `test_boot PASS` and `SELFTEST: PASS`. 584 booted on .95 slot b with 12 containers running.
 
+**Rollback and update gated from 0.2.57-585.** `test_boot_ab` (probe-cix-bootest@15-1) boots slot A three times with `--simulate-unhealthy-boot` and then comes up on slot B: the automatic fallback, 102.5 s. `test_boot_update` (@17-1) has slot A run `do_system_update()` through `--test-update-image=` (`status=200 slot=b`), then boots slot B: 101.6 s. Their fixtures needed `cix-config` (`config_partition_write()` in the harness now) and, for the update test, a host-tools root. Compile probe 0.2.57-601 and the 585 release build ran all three boot tests and passed. 585 booted on .95 slot a with 12 containers running.
+
 **Still open:**
-- The other six boot tests have not run.
+- `test_installer` and the three console tests have not run.
 - Other tcc-built packages may lay on-disk formats over packed structs (#635).
 
 ## Part 316: a system update writes the slot off the event loop (#631, 0.2.57-582)

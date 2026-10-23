@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A release proves its A/B fallback and a staged update boot (#584)
+
+- **What changed:** `test_boot_ab` and `test_boot_update` join `test_boot` in `BOOT_SELFTESTS`, from 0.2.57-585.
+  - `test_boot_ab` proves a slot whose tries run out falls back to the other.
+  - `test_boot_update` proves a slot written by `do_system_update()` boots.
+  - The harness gains `config_partition_write()`, and `test_boot_update` and `test_console_pki_bootstrap` give `mkbootroot` a host-tools root.
+- **Cost:** about 3.4 minutes more per release, measured at 102.5 s and 101.6 s.
+- **The artifact records its licence:** the release recipe declares `license "GPL-3.0-or-later"`.
+
 ### A release boots its own root before it ships (#584, #634)
 
 - **What changed:** `test_boot` is in `SELFTESTS` (`BOOT_SELFTESTS`). Every release assembles its control-plane root, partitions a disk image, and boots it under Cix's qemu and OVMF to `cixd listening on`, or the release is refused. The release recipe stages the kernel artifact and declares the emulator, the firmware and the host-tools set.
