@@ -2,7 +2,9 @@
 
 **Systems, directly.**
 
-The Cix source is available under the [Apache License, Version 2.0](LICENSE).
+The Cix source is free software under the [GNU General Public License,
+version 3](LICENSE), or (at your option) any later version
+(`GPL-3.0-or-later`).
 Contributions follow the [DCO-based contribution guide](CONTRIBUTING.md); the
 Cix name and marks are governed separately by [TRADEMARK.md](TRADEMARK.md).
 

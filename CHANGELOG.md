@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Cix is GPL-3.0-or-later (ADR-0352)
+
+- **What changed:** the Cix source moves from the Apache License 2.0 to the GNU General Public License, version 3 or (at your option) any later version. `LICENSE` holds the GPLv3 text verbatim. `README.md`, `CONTRIBUTING.md`, `TRADEMARK.md` and the banner `cixctl` prints name `GPL-3.0-or-later`.
+- **Why:** the owner's decision of 2026-10-23. Every commit is the owner's, so no other copyright holder had to agree.
+- **Not changed:** the marks policy, the DCO sign-off, and cix-recipes, which has no licence file and is a separate decision. Releases up to 0.2.57-583 were published under Apache-2.0.
+
 ### A system update writes the slot off the event loop (#631)
 
 - **What changed:** `POST /v1/system/update` does its `image_url` fetch, its checks and its writes in a helper child, and the request waits, parked like a system backup (ADR-0342's record, one more kind). The answer is the same and comes at the same moment, when the slot is written. The nightly host roll stages through the same child and reboots when it finishes.

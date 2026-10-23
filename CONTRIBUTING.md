@@ -5,10 +5,12 @@ code contributions. Cix is led and maintained by Omar Sakka.
 
 ## Copyright and licence
 
-Cix source is released under the Apache License, Version 2.0. Contributors
-retain copyright in their own contributions. By submitting a contribution for
-inclusion, you agree that it may be distributed as part of Cix under Apache-2.0
-and that your contribution is made under the terms of that licence.
+Cix source is released under the GNU General Public License, version 3, or (at
+your option) any later version (`GPL-3.0-or-later`). Contributors retain
+copyright in their own contributions. By submitting a contribution for
+inclusion, you agree that it may be distributed as part of Cix under
+GPL-3.0-or-later and that your contribution is made under the terms of that
+licence.
 
 The project uses the Developer Certificate of Origin (DCO), version 1.1. Every
 commit must include a sign-off line confirming that you have the right to submit

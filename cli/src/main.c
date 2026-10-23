@@ -20508,7 +20508,7 @@ static void print_shell_banner(const struct cix_client *client)
 	struct cix_response r;
 	int have_boot = 0, have_time = 0;
 
-	printf("Cix -- Systems, directly.    (c) The Cix Project -- Apache-2.0\n");
+	printf("Cix -- Systems, directly.    (c) The Cix Project -- GPL-3.0-or-later\n");
 	printf("cixctl %s\n", CIX_BUILD_VERSION);
 
 	if (cix_client_request(client, CIX_API_getSystemBoot_METHOD, CIX_API_getSystemBoot,
