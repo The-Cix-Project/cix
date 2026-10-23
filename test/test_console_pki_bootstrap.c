@@ -119,7 +119,7 @@ int main(void)
 	{
 		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir,
 			                     (char *)CIXD_BIN, (char *)CIXCTL_BIN, "web", root_squashfs,
-			                     "", "", "", "", NULL };
+			                     "", "", "", "/", NULL }; /* host-tools root: see test_boot.c */
 		if (run_subprocess(MKBOOTROOT_BIN, mkbootroot_argv) != 0)
 			return 1;
 	}
