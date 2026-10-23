@@ -1,9 +1,9 @@
 /*
  * Phase 11 part 1 demonstrable test: proves the actual boot chain works --
  * kernel -> cix-boot -> cixd --init-mode -- not just that each piece
- * builds. Assembles a throwaway 2-partition disk (ESP + one squashfs root
- * slot; the real 5-partition A/B layout is part 3's installer output, not
- * this test's job), boots it in QEMU (software-emulated -- no /dev/kvm in
+ * builds. Assembles a throwaway 3-partition disk (ESP, one squashfs root
+ * slot and cix-config; the real 5-partition A/B layout is part 3's
+ * installer output, not this test's job), boots it in QEMU (software-emulated -- no /dev/kvm in
  * this dev LXC), and scrapes the serial console for the exact same
  * "cixd listening on ..." line every other test in this suite already
  * treats as daemon-ready (daemon/src/main.c) -- proof this is the real
@@ -33,8 +33,13 @@
 #define BOOT_MANAGER_EFI "build/cix-boot.efi"
 #define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS.fd"
 
-#define DISK_SIZE_BYTES (256 * 1024 * 1024) /* 64MB ESP + ~192MB root -- root.squashfs measures well under 1MB */
+/* 64 MiB ESP + 256 MiB root + the rest as cix-config. root.squashfs
+ * measures well under 64 MiB; cix-config is btrfs, as cix-install makes
+ * it, and big enough not to need --mixed. */
+#define DISK_SIZE_BYTES (512 * 1024 * 1024)
 #define ESP_SIZE_MIB 64
+#define ROOT_SIZE_MIB 256
+#define MKFS_BTRFS_BIN "/usr/sbin/mkfs.btrfs"
 #define SECTOR_SIZE 512
 
 #define BOOT_TIMEOUT_SECONDS 120
@@ -93,11 +98,13 @@ int main(void)
 	char root_squashfs[600];
 	char disk_img[600];
 	char esp_img[600];
+	char config_img[600];
 	char ovmf_vars[600];
 	char sfdisk_dump[8192];
 	char captured[65536];
 	long esp_start_sec, esp_size_sec;
 	long root_start_sec, root_size_sec;
+	long config_start_sec, config_size_sec;
 	enum qemu_boot_outcome outcome;
 
 	if (mkdtemp(workdir) == NULL) {
@@ -108,6 +115,7 @@ int main(void)
 	snprintf(root_squashfs, sizeof(root_squashfs), "%s/root.squashfs", workdir);
 	snprintf(disk_img, sizeof(disk_img), "%s/disk.img", workdir);
 	snprintf(esp_img, sizeof(esp_img), "%s/esp.img", workdir);
+	snprintf(config_img, sizeof(config_img), "%s/config.img", workdir);
 	snprintf(ovmf_vars, sizeof(ovmf_vars), "%s/OVMF_VARS.fd", workdir);
 
 	/* 1. Build the minimal control-plane root (build/mkbootroot already
@@ -179,8 +187,9 @@ int main(void)
 		snprintf(script, sizeof(script),
 		         "label: gpt\n"
 		         "size=%dMiB, type=uefi, name=\"cix-esp\"\n"
-		         "type=linux, name=\"cix-root-a\"\n",
-		         ESP_SIZE_MIB);
+		         "size=%dMiB, type=linux, name=\"cix-root-a\"\n"
+		         "type=linux, name=\"cix-config\"\n",
+		         ESP_SIZE_MIB, ROOT_SIZE_MIB);
 		if (run_subprocess_stdin(SFDISK_BIN, sfdisk_argv, script) != 0)
 			return 1;
 	}
@@ -192,6 +201,8 @@ int main(void)
 		if (sfdisk_dump_offset(sfdisk_dump, 1, &esp_start_sec, &esp_size_sec) != 0)
 			return 1;
 		if (sfdisk_dump_offset(sfdisk_dump, 2, &root_start_sec, &root_size_sec) != 0)
+			return 1;
+		if (sfdisk_dump_offset(sfdisk_dump, 3, &config_start_sec, &config_size_sec) != 0)
 			return 1;
 	}
 
@@ -217,6 +228,30 @@ int main(void)
 	 * partition offset -- a single atomic block copy, exactly how
 	 * ADR-0014 describes every future A/B slot write working too. */
 	if (write_at_offset(disk_img, root_start_sec * SECTOR_SIZE, root_squashfs) != 0)
+		return 1;
+
+	/* 4b. cix-config, the one writable platform partition cixd cannot
+	 * boot without: STATE_DIR lives on it (ADR-0232), and with none
+	 * /config is the read-only squashfs. probe-cix-bootest@13-1
+	 * stopped there, with "/config/state: Read-only file system", on
+	 * 192.168.15.95, 2026-10-23. Made on a plain file and written at
+	 * its offset like the ESP, so no loop device is needed. */
+	{
+		int fd = open(config_img, O_CREAT | O_WRONLY, 0644);
+		char *mkfs_argv[] = { (char *)MKFS_BTRFS_BIN, "-q", "-f", "-L", "cix-config",
+			              config_img, NULL };
+
+		if (fd < 0 || ftruncate(fd, config_size_sec * SECTOR_SIZE) != 0) {
+			perror(config_img);
+			if (fd >= 0)
+				close(fd);
+			return 1;
+		}
+		close(fd);
+		if (run_subprocess(MKFS_BTRFS_BIN, mkfs_argv) != 0)
+			return 1;
+	}
+	if (write_at_offset(disk_img, config_start_sec * SECTOR_SIZE, config_img) != 0)
 		return 1;
 
 	/* 5. Boot it. Software-emulated (no /dev/kvm in this dev LXC) --
