@@ -46,10 +46,13 @@
 #define ESP_SIZE_MIB 64
 #define SECTOR_SIZE 512
 
-/* Generous over test_boot.c's own 120s: the respawn round-trip alone
- * costs a real, deliberate 2s wait (arm_console_respawn_timer()'s own
- * fixed delay), on top of normal software-emulated boot time. */
-#define BOOT_TIMEOUT_SECONDS 150
+/* The boot, the exit, the 2 s respawn (arm_console_respawn_timer()) and
+ * one health call, under TCG. Measured on 192.168.15.95, 2026-10-23: 59 s
+ * alone (probe-cix-bootest@20-1), but in the release selftest
+ * (probe-cix-compile@0.2.57-602) the respawned prompt arrived just as the
+ * old 150 s ran out, after the suite's earlier tests. 300 s, the same as
+ * test_console_pki_bootstrap, which passed in that run. */
+#define BOOT_TIMEOUT_SECONDS 300
 #define PANIC_MARKER "Kernel panic"
 /* `health` prints "ok" on a line of its own (fmt_health()), and the
  * console's cooked mode writes that line as "ok\r\n" after the "\r\n"
