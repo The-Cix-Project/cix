@@ -2445,6 +2445,18 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 313: a system backup is made off the event loop (#630, #617, 0.2.57-579)
+
+`GET /v1/system/backup`, `POST /v1/system/backup-config/snapshot-now` and the `system.backup` schedule action make the bundle in a helper child, a fourth park kind (`PARK_BACKUP`) beside the credential check, the log read and the module job. The request waits and is answered with the same bytes. A log read and a backup share one result slot on the connection (`body_state`/`body_fd`) and one responder (`respond_json_from_fd()`), rather than two copies.
+
+**Why:** the bundle carries every stored recipe -- 1620 on .95, 13.2 MB of 18.5 MB -- and making it on the loop held it 0.45-0.5 s idle and 1168 ms once under a build. Found working the stall record for #617, of whose 40 entries most were already fixed (log reads by ADR-0342, the build tree by #626, image gc by ADR-0343). The update stall is #631; the build-log and `ar-1` restart stalls are named by step on their next occurrence.
+
+**Gated:** compile probe `0.2.57-595` green; `test_blocking_waits` counts `do_system_backup(` and allows only its definition and `backup_work()`.
+
+**Measured on 192.168.15.95, 2026-10-23, on 0.2.57-579** (slot b, 12 containers running): before it, on 578, the loop's worst pass since boot was `GET /v1/system/backup (384 ms)`. After it, three backups (18,549,947 bytes each, 1.15 s cold then 0.39 and 0.40 s) left the worst pass at `GET /v1/system/backup (24 ms)`, the copy of the finished bundle into the response. The bundle has the same ten fields in the same order, with 1624 recipes.
+
+**Open with the owner:** whether a backup should carry every stored recipe. 1265 of 1620 are also in the forge; the other 355 (338 probes, 17 real revisions such as the withdrawn `cbs@v0.1.67`-`v0.1.70`) exist only on the box.
+
 ## Part 312: a trust anchor is named by its CN (#629, 0.2.57-578)
 
 `TrustAnchor` gains `name`: the subject's commonName, or the whole subject when it has none. The Trust Anchors table leads with it and keeps the subject on hover, and the form hint, the contract and the API README now say to register the intermediate too when a server sends only its own certificate.
