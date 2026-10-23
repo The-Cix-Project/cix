@@ -2445,6 +2445,16 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 320: certificate keys are generated ahead of need (ADR-0353, #637, 0.2.57-588)
+
+cixd keeps four RSA-2048 keys ready, filled one at a time in a helper child while a CA exists, and `pki.c` writes a pooled key in place of generating one (`pki_key_create()`). `test_pkicrypto` proves a pooled key lands mode 0600 and signs a CA it matches.
+
+**Found on the way:** the first compile probe (605) failed `test_pki` and `test_layout_upgrade`. A daemon restarted over an existing CA could not bind its port, because a fill child forked by the previous daemon still held its listening socket. Every helper child now closes the daemon's listening sockets before its work.
+
+**Measured on 192.168.15.95, 2026-10-23, on 588** (slot b, 12 containers running): five `POST /v1/pki/certs` back to back took 0.012, 0.008, 0.008, 0.009 and 0.511 s. Four came from the pool, and the fifth found it empty and generated in place. Before, every issue took 0.125-0.391 s. Compile probe 0.2.57-606 and the 588 release build: `SELFTEST: PASS`, all five boot tests.
+
+**Not fixed, by design:** a CA bootstrap (about 1 s once per install) and a reset reissuing more than four leaves.
+
 ## Part 319: a boot manager install fetches off the event loop (#633, 0.2.57-587)
 
 `POST /v1/system/boot-manager` runs its `url` fetch and the install in a helper child, parked as `PARK_BOOTMGR`, with one install at a time. It was the last `fetch_update_image()` caller on the loop, bounded only by the shared curl guards (minutes in the worst case). `test_blocking_waits` now counts that call too.
