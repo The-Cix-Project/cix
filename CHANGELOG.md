@@ -18,6 +18,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **Also visible now:** the OS disk's free space read 0 bytes through the tcc `sfdisk`; on 0.2.57-583 it reads 16.7 GB, which is right.
 - **Verified:** compile probe 0.2.57-600 and the 584 release build each ran `test_boot PASS`, `SELFTEST: PASS`. A boot takes about 46 s under TCG.
 
+### TRADEMARK.md says what an official Cix artifact is
+
+- **What changed:** two sections, at the owner's request (2026-10-23).
+  - An official Cix release, package, installer image or catalogue is one signed with the project's published keys and distributed from its channels. The signing keys, infrastructure, updates and support are not granted by any licence.
+  - The marks policy applies to every copy, whatever licence it was received under, Apache-2.0 included, which grants no trademark rights either (its §6).
+- cix-cache carries the same `TRADEMARK.md` and is GPL-3.0-or-later too.
+
 ### Cix is GPL-3.0-or-later (ADR-0352)
 
 - **What changed:** the Cix source moves from the Apache License 2.0 to the GNU General Public License, version 3 or (at your option) any later version. `LICENSE` holds the GPLv3 text verbatim. `README.md`, `CONTRIBUTING.md`, `TRADEMARK.md` and the banner `cixctl` prints name `GPL-3.0-or-later`.
