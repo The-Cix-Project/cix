@@ -1372,6 +1372,14 @@ paths:
         once ready to cut over; the existing boot-counter/
         confirm_boot() machinery, unchanged, decides whether the fresh
         slot sticks.
+        The fetch, the checks and the writes run in a helper child while
+        the request waits (#631), so the response comes when the slot is
+        written, as before, and the daemon serves everything else
+        meanwhile. One slot is written at a time: a second update, or
+        one arriving while the nightly host roll stages, is a 409. Every
+        boot entry for the slot is removed before the first write and
+        the new one is written after the last, so a reboot that arrives
+        part way through boots the running slot.
       operationId: updateSystem
       x-cix-invalidates: [getSystemBoot, getBootNext, getSystemAssembly]
       x-cix-permission: system:write
@@ -1471,7 +1479,9 @@ paths:
             kernel that do not match boot a host whose drivers cannot load.
             Also returned for a kernel_path given alone when the running
             root carries modules and none are for its release. The message
-            names both releases. The inactive slot is left
+            names both releases. Also returned (#631) while another update,
+            or the host roll's staging, is writing the inactive slot: retry
+            once it has answered. The inactive slot is left
             untouched in every case.
           content:
             application/json:
@@ -1482,7 +1492,26 @@ paths:
             A real disk write failed after validation passed: writing
             image_path to the inactive slot device, writing kernel_path
             to the ESP, or writing the fresh systemd-boot loader entry
-            itself. Whichever step failed is named in the error message.
+            itself. Also returned, before anything is written, when the
+            slot's PARTUUID cannot be read, since its boot entry names
+            it by that; and when the helper that wrote the slot ended
+            without a result. Whichever step failed is named in the
+            error message.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            No helper could be started to write the slot (#631). Nothing
+            was written and no deploy approval was spent; retry after the
+            header's interval.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                enum: [5]
+              description: Seconds to wait before retrying.
           content:
             application/json:
               schema:

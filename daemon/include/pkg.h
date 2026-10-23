@@ -798,6 +798,7 @@ int pkg_gate_set(const char *gate, int on);
 int pkg_target_is_queued(const char *gate, const char *target);
 int pkg_approval_grant(const char *gate, const char *target, const char *who);
 int pkg_approval_take_deploy(const char *target);
+int pkg_approval_has_deploy(const char *target);
 /*
  * #381: drops an outstanding grant, so its target is held again. Works
  * with the gate on or off -- a grant outlives a gate toggle. On success

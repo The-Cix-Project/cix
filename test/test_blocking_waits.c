@@ -532,6 +532,28 @@ static const char *const g_backup_calls[] = {
 	NULL,
 };
 
+/*
+ * A SEVENTH COUNTED SET (#631): staging a boot slot. do_system_update()
+ * copies a root image onto the inactive partition (a kernel-only update
+ * copies the whole active partition), writes a kernel onto the ESP and
+ * fsyncs both. Measured on 192.168.15.95, 2026-10-21, while it ran in the
+ * POST /v1/system/update handler: 946 ms of event loop for a
+ * 13,365,248-byte root. Its callers are update_stage(), in the helper
+ * child that a request and the host roll both reach through
+ * update_submit() or update_submit_daemon_job(), and main()'s
+ * --test-update-image= self-test, which runs before there is a loop.
+ */
+static const struct call_budget g_update_budgets[] = {
+	{ "main.c", "do_system_update(", 3,
+	  "the definition, update_stage() in a helper child, and main()'s --test-update-image= "
+	  "self-test, before the loop" },
+};
+
+static const char *const g_update_calls[] = {
+	"do_system_update(",
+	NULL,
+};
+
 struct call_set {
 	const char *what;
 	const struct call_budget *budgets;
@@ -561,6 +583,11 @@ static const struct call_set g_call_sets[] = {
 	  "A system backup walks the whole recipe store, and cixd has one event loop. Ask for one "
 	  "through backup_ask() or backup_submit_daemon_job() (#630), which make it in a helper "
 	  "child." },
+	{ "system update", g_update_budgets,
+	  (int)(sizeof(g_update_budgets) / sizeof(g_update_budgets[0])), g_update_calls,
+	  "Staging a slot copies a whole root image and a kernel and fsyncs both, and cixd has one "
+	  "event loop. Ask for it through update_submit() or update_submit_daemon_job() (#631), "
+	  "which stage it in a helper child." },
 };
 
 #define CALL_SET_COUNT ((int)(sizeof(g_call_sets) / sizeof(g_call_sets[0])))

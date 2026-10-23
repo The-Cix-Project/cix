@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A system update writes the slot off the event loop (#631)
+
+- **What changed:** `POST /v1/system/update` does its `image_url` fetch, its checks and its writes in a helper child, and the request waits, parked like a system backup (ADR-0342's record, one more kind). The answer is the same and comes at the same moment, when the slot is written. The nightly host roll stages through the same child and reboots when it finishes.
+- **Why:** `do_system_update()` copies the root onto the inactive partition and the kernel onto the ESP, each ending in `fsync`, on the loop. On 192.168.15.95 that held it 946 ms for a 13,365,248-byte root (the stall record, 2026-10-21), once per release and again at every host roll, and an `image_url` fetch held it for as long as the peer took.
+- **One slot at a time:** a second update, or one arriving while the host roll stages, is a `409`. `503` with `Retry-After: 5` means no helper could start; nothing was written and no deploy approval was spent, since the approval is now checked first and taken only once the helper has started.
+- **A reboot part way through boots the running slot:** every boot entry for the slot is removed before the first write, and the new one is written after the last. The removal used to come after the writes, so a slot interrupted mid-copy could still be named by an entry an earlier update had staged.
+- **Fixed on the way:** a PARTUUID that could not be read made `do_system_update()` return `-1`, which is not an HTTP status, with no message. It is now a `500` naming the device, read before anything is written. The boot-manager install's `url` fetch has its own file instead of sharing the update's, which the child could be writing at the same moment.
+- **Verified:** `test_blocking_waits` counts `do_system_update(` and allows only the definition, `update_stage()` in the child, and `main()`'s pre-loop self-test. `test_system_update`'s requests now all go through the parked path.
+
 ### A backup carries only the recipes no source gives back (ADR-0351, #632)
 
 - **What changed:** `GET /v1/system/backup`'s `pkg_recipes` now holds every stored version of a package no recipe source owns, and nothing of a package a source owns. The bundle says so with `source_recipes_included: false`. `POST /v1/system/restore` starts a recipe sync and reports it in `recipe_sync`.

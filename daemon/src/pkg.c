@@ -19572,6 +19572,19 @@ int pkg_approval_take_deploy(const char *target)
 	return 1;
 }
 
+/*
+ * #631: whether that grant is there, without spending it. A system
+ * update checks first and takes the grant only once its helper has
+ * started, so a request that cannot start does not spend an approval
+ * on nothing.
+ */
+int pkg_approval_has_deploy(const char *target)
+{
+	if (target == NULL || target[0] == '\0')
+		return 0;
+	return approval_index(PKG_GATE_DEPLOY, target) >= 0;
+}
+
 int pkg_approval_grant(const char *gate, const char *target, const char *who)
 {
 	if (gate_flag(gate) == NULL)

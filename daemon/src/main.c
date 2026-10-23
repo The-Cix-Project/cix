@@ -393,6 +393,10 @@ char PKGBUILD_TOOLCHAIN_FETCH_PATH[PATH_MAX];
  * offered it.
  */
 char SYSTEM_UPDATE_FETCH_PATH[PATH_MAX];
+/* POST /v1/system/boot-manager's url fetch: its own file, because an
+ * update's helper child may be fetching into the one above at the same
+ * moment (#631). */
+char BOOT_MANAGER_FETCH_PATH[PATH_MAX];
 /* ADR-0069: a single host-level swap file, off by default, enabled
  * on demand via POST /v1/system/swap. SWAP_DIR keeps the file and its
  * tiny persisted enabled/size state together, out of g_base_dir's own
@@ -573,6 +577,8 @@ static void compute_rebuildable_dir_relative_paths(void)
 	snprintf(BOOTROOT_DIR, sizeof(BOOTROOT_DIR), "%s/bootroot", REBUILDABLE_DIR);
 	snprintf(SYSTEM_UPDATE_FETCH_PATH, sizeof(SYSTEM_UPDATE_FETCH_PATH),
 	         "%s/system_update_image.squashfs", REBUILDABLE_DIR);
+	snprintf(BOOT_MANAGER_FETCH_PATH, sizeof(BOOT_MANAGER_FETCH_PATH), "%s/boot_manager.efi",
+	         REBUILDABLE_DIR);
 	snprintf(PKGBUILD_TOOLCHAIN_FETCH_PATH, sizeof(PKGBUILD_TOOLCHAIN_FETCH_PATH),
 	         "%s/bootstrap_toolchain.squashfs", PKG_DIR);
 }
@@ -1381,8 +1387,8 @@ enum cred_state {
 };
 
 /* What a parked request's helper left on its connection, for the kinds
- * whose result is a response body: a filtered log read (ADR-0342) and a
- * system backup (#630). */
+ * whose result is a response body: a filtered log read (ADR-0342), a
+ * system backup (#630), and a system update's verdict (#631). */
 enum park_body_state {
 	PARK_BODY_NONE = 0,
 	PARK_BODY_DONE,        /* body_fd holds the result; -1 for a backup written to disk */
@@ -1391,8 +1397,8 @@ enum park_body_state {
 	PARK_BODY_TAKEN,       /* the resumed pass took the result */
 };
 
-/* What a request whose result is a body may be told, by the two kinds
- * that make one. */
+/* What a request whose result is a body may be told, by the kinds that
+ * make one. */
 enum park_body_answer {
 	PARK_ANSWER_ASK,    /* nothing asked yet: the caller parks the work */
 	PARK_ANSWER_READY,  /* *result_fd holds the result, the caller's to close */
@@ -1405,6 +1411,12 @@ enum park_body_answer {
 static enum park_body_answer park_body_take(int *result_fd);
 static enum park_body_answer backup_ask(const char *target, int *result_fd);
 static int backup_submit_daemon_job(const char *target);
+
+/* #631: a system update writes the inactive slot in a helper child
+ * (update_submit(), with the park records further down). */
+static int update_running(void);
+static int update_submit(const char *body, size_t body_len);
+static int update_submit_daemon_job(const char *body);
 
 /* ADR-0348: what an explicit module load or unload left on its
  * connection. */
@@ -1539,10 +1551,11 @@ struct conn {
 	/*
 	 * CONN_CLIENT only (ADR-0340, ADR-0342). park is the work this
 	 * request is waiting for -- a credential check, a log read, a system
-	 * backup or a module job -- non-NULL exactly while it is parked; the
-	 * record points back here, and client_conn_teardown() breaks that
-	 * link. body_state and body_fd are what a finished log read or
-	 * backup left: the body, in a memfd, valid only in PARK_BODY_DONE (a
+	 * backup, a system update or a module job -- non-NULL exactly while it
+	 * is parked; the record points back here, and client_conn_teardown()
+	 * breaks that link. body_state and body_fd are what a finished log
+	 * read, backup or update left: the body (an update's is its verdict,
+	 * struct update_result), in a memfd, valid only in PARK_BODY_DONE (a
 	 * calloc'd conn's 0 is a real descriptor, so the state, not the fd,
 	 * says whether it is held). cred_state is what a check found, bound to cred_bind
 	 * (credcheck_bind()) so it can answer for no other credential. A
@@ -3351,6 +3364,13 @@ static int write_file_to_esp(const char *src_path, const char *esp_path)
  * Returns the HTTP status this operation resolves to (200 on success);
  * *out_slot/*out_updated_root/*out_updated_kernel are filled in only
  * on success, *out_errmsg only otherwise.
+ *
+ * Never on the event loop (#631): its two callers are update_stage(),
+ * in a helper child for both a request and the host roll, and main()'s
+ * --test-update-image= self-test, which runs before there is a loop.
+ * The writes come last, after every check, and a boot entry for the
+ * slot exists only once every write has finished, so a child stopped
+ * half way leaves a slot nothing boots.
  */
 static int do_system_update(const char *body, size_t body_len, char *out_slot,
                              size_t out_slot_size, int *out_updated_root, int *out_updated_kernel,
@@ -3579,32 +3599,27 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 	}
 
 	/*
-	 * write_file_to_device()'s own copy_bytes() loop reads until read()
-	 * returns 0 -- true at end-of-file for a plain file, equally true
-	 * at a block device's own real capacity for a raw device node, so
-	 * active_device works as a src_path here with no separate device-
-	 * to-device copy primitive needed.
+	 * The entry names the root by PARTUUID, not by the device path this
+	 * daemon happens to see it at (#305): `device` is still the path,
+	 * because writing the squashfs needs one, but a boot entry outlives
+	 * this boot and the name the kernel gives a disk does not. A
+	 * compiled-in /dev/vda2 in that line is what turned a healthy
+	 * install into a panic loop when its disk moved from virtio to
+	 * SATA. Read before anything is written (#631), so a slot whose
+	 * entry could not be written is not overwritten either.
 	 */
-	if (write_file_to_device(image_path != NULL ? image_path : active_device, device) != 0) {
+	if (partlabel_uuid_for_device(device, root_partuuid, sizeof(root_partuuid)) != 0) {
 		json_free(root);
 		snprintf(out_errmsg, out_errmsg_size,
-		         image_path != NULL ? "failed to write image to inactive slot"
-		                             : "failed to copy the active slot's own root forward");
-		return 500;
-	}
-	if (write_file_to_esp(kernel_path != NULL ? kernel_path : active_kernel_path, kernel_dest) !=
-	    0) {
-		json_free(root);
-		snprintf(out_errmsg, out_errmsg_size,
-		         kernel_path != NULL ? "failed to write kernel to inactive slot"
-		                              : "failed to copy the active slot's own kernel forward");
+		         "could not read the PARTUUID of %s, which its boot entry must name it by -- "
+		         "nothing was written",
+		         device);
 		return 500;
 	}
 
 	/*
-	 * One entry per slot. Any other entry for this slot is removed
-	 * first, because a slot with two entries cannot be rolled back
-	 * reliably.
+	 * One entry per slot. Every entry for this slot is removed before
+	 * the slot is written, and the new one is written last.
 	 *
 	 * Seen on 192.168.15.95 after a bad update: the ESP held both
 	 * cix-b+0-3.conf (this update's entry, its three boot attempts
@@ -3616,6 +3631,13 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 	 * down to how the two versions happened to compare. Automatic Boot
 	 * Assessment cannot mean anything while a second, un-counted door
 	 * into the same root is still open.
+	 *
+	 * Removed FIRST since #631. The writes below run in a helper child,
+	 * so a reboot can now arrive half way through them, and a staged
+	 * entry left by an earlier update (cix-b+3, the newest version, so
+	 * the one systemd-boot picks) would boot that half-written root.
+	 * With no entry naming the slot until the last write, a slot that
+	 * was interrupted cannot be booted at all.
 	 */
 	{
 		DIR *ed = opendir(g_esp_entries_dir);
@@ -3646,6 +3668,31 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 			}
 			closedir(ed);
 		}
+	}
+
+	/*
+	 * write_file_to_device()'s own copy_bytes() loop reads until read()
+	 * returns 0 -- true at end-of-file for a plain file, equally true
+	 * at a block device's own real capacity for a raw device node, so
+	 * active_device works as a src_path here with no separate device-
+	 * to-device copy primitive needed. That makes a kernel-only update
+	 * the bigger write: it copies the whole active partition, not just
+	 * the squashfs on it.
+	 */
+	if (write_file_to_device(image_path != NULL ? image_path : active_device, device) != 0) {
+		json_free(root);
+		snprintf(out_errmsg, out_errmsg_size,
+		         image_path != NULL ? "failed to write image to inactive slot"
+		                             : "failed to copy the active slot's own root forward");
+		return 500;
+	}
+	if (write_file_to_esp(kernel_path != NULL ? kernel_path : active_kernel_path, kernel_dest) !=
+	    0) {
+		json_free(root);
+		snprintf(out_errmsg, out_errmsg_size,
+		         kernel_path != NULL ? "failed to write kernel to inactive slot"
+		                              : "failed to copy the active slot's own kernel forward");
+		return 500;
 	}
 
 	snprintf(entry_path, sizeof(entry_path), "%s/cix-%s+%d.conf", g_esp_entries_dir,
@@ -3681,22 +3728,6 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		char console_opts[512];
 
 		bootconsole_render(console_opts, sizeof(console_opts));
-		/*
-		 * The entry names the root by PARTUUID, not by the device
-		 * path this daemon happens to see it at (#305). `device`
-		 * below is still the path -- writing the squashfs needs one
-		 * -- but a boot entry outlives this boot, and the name the
-		 * kernel gives a disk does not. A compiled-in /dev/vda2 in
-		 * exactly this line is what turned a healthy install into a
-		 * panic loop when its disk moved from virtio to SATA.
-		 */
-		if (partlabel_uuid_for_device(device, root_partuuid, sizeof(root_partuuid)) != 0) {
-			logstore_write("cixd", "error",
-			                "could not read the PARTUUID of %s -- refusing to write a boot "
-			                "entry naming a device path that may not survive a reboot",
-			                device);
-			return -1;
-		}
 		snprintf(entry_conf, sizeof(entry_conf),
 		         "title Cix (%s)\n"
 		         "sort-key cix\n"
@@ -3787,22 +3818,26 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 }
 
 /*
- * Issue #141: fetch an update image by URL, verify it, and hand back a
- * local path do_system_update() can use unchanged.
+ * Issue #141: fetch an update image by URL into out_path and verify it,
+ * so do_system_update() can use that path unchanged.
  *
- * Synchronous on purpose, unlike pkg bootstrap's async toolchain fetch.
- * An update image is ~10 MB on a LAN, not 1.4 GB, and the caller is an
- * operator waiting on a single deliberate action -- an async job with
- * its own polling endpoint would be more machinery than the problem
- * has. If that stops being true (a slow WAN, a much larger image), the
- * async pattern already exists next door to copy.
+ * Synchronous within its caller, unlike pkg bootstrap's async toolchain
+ * fetch. An update image is ~10 MB on a LAN, not 1.4 GB, and the caller
+ * is an operator waiting on a single deliberate action -- an async job
+ * with its own polling endpoint would be more machinery than the
+ * problem has. update_stage() calls it in a helper child, so the
+ * request waits and the event loop does not (#631).
+ *
+ * Each caller names its own out_path. The boot-manager install fetches
+ * with it too, on the loop, while an update's child may be fetching at
+ * the same moment, so the two must never share a file (#631).
  *
  * The checksum is required, not optional: this writes a boot slot, and
  * an image that arrives truncated or wrong would be discovered at the
  * next reboot, which is the worst possible time.
  */
-static int fetch_update_image(const char *url, const char *sha256, char *out_path,
-                              size_t out_path_size, char *err, size_t err_size)
+static int fetch_update_image(const char *url, const char *sha256, const char *out_path,
+                              char *err, size_t err_size)
 {
 	struct curlfetch_opts opts;
 	char curl_err[256];
@@ -3814,39 +3849,24 @@ static int fetch_update_image(const char *url, const char *sha256, char *out_pat
 		         "this writes a boot slot, so an unverified image is not accepted");
 		return -1;
 	}
-	snprintf(out_path, out_path_size, "%s", SYSTEM_UPDATE_FETCH_PATH);
 	unlink(out_path);
 
 	/*
-	 * #285: this one runs on the EVENT LOOP, which makes its guards a
-	 * different question from every other fetch here.
+	 * #285, then #631: where this runs decides what a silent peer costs.
 	 *
-	 * The rest are forked job children -- an unbounded fetch stalls
-	 * that job and nothing else. This is called straight from the
-	 * POST /v1/system/update handler and blocks the reactor for as
-	 * long as it runs (#410 removed the fork()+waitpid() this used to
-	 * do around curl -- there was nothing left for the fork to
-	 * isolate once the fetch itself no longer risks the double
-	 * exec/subprocess failure modes an external binary has, so this
-	 * calls curlfetch_perform() directly), so a peer that accepts the
-	 * connection and then says nothing does not stall a job, it stalls
-	 * the whole control plane, for as long as it likes, from one
-	 * unauthenticated-shaped API call. Nothing about the "synchronous
-	 * on purpose" reasoning above is wrong; it reasoned about SIZE
-	 * (~10 MB on a LAN) and not about a peer that never answers.
+	 * Until #631 it ran on the EVENT LOOP, called straight from the
+	 * POST /v1/system/update handler, so a peer that accepted the
+	 * connection and then said nothing stalled the whole control plane
+	 * for as long as the guards allowed. It now runs in update_work()'s
+	 * helper child, with the rest of staging, so the same peer holds
+	 * only that request -- and, since one slot is written at a time,
+	 * any other update, which is answered 409 meanwhile.
 	 *
-	 * So the retry count stays down. The shared guards bound one
-	 * attempt at roughly 20s of connect plus 60s of silence, and a
-	 * retry multiplies that: eight attempts is ten minutes of dead
-	 * control plane, which is not a bound worth having. Two attempts
-	 * is one real retry for a transient blip and a worst case of a
-	 * few minutes.
-	 *
-	 * That is a bound, not a fix. A synchronous fetch on the event
-	 * loop is still a control-plane pause for however long a genuinely
-	 * slow transfer takes, and the async pattern this function's own
-	 * comment points at next door remains the real answer if update
-	 * images stop being small and local.
+	 * The retry count stays down all the same. The shared guards bound
+	 * one attempt at roughly 20s of connect plus 60s of silence, and a
+	 * retry multiplies that: eight attempts is ten minutes of an
+	 * operator waiting on an answer, with every other update refused.
+	 * Two is one real retry for a transient blip.
 	 */
 	memset(&opts, 0, sizeof(opts));
 	opts.url = url;
@@ -3878,83 +3898,195 @@ static int fetch_update_image(const char *url, const char *sha256, char *out_pat
  * name who was refused (ADR-0271/ADR-0273). */
 static const char *audit_who(void);
 
-static void handle_system_update(int fd, const char *body, size_t body_len)
-{
+/*
+ * #631: what staging a slot found, from the helper child that did it
+ * to the parent. Fixed size, so the child writes it whole into the
+ * memory file the parent made before the fork and the parent reads it
+ * back at offset 0; held is logstore_hold()'s buffer, replayed by the
+ * parent, because a child must not write the store itself.
+ */
+#define UPDATE_HELD_LOG_MAX 4096
+struct update_result {
+	int status; /* the HTTP status staging resolved to */
+	int updated_root;
+	int updated_kernel;
+	long long took_ms; /* the fetch, the checks and every write */
 	char slot[8];
-	char errmsg[256];
-	int status;
-	int updated_root, updated_kernel;
-	struct json_writer w;
+	char errmsg[512];
+	char held[UPDATE_HELD_LOG_MAX];
+};
+
+/*
+ * #631: the whole of staging a slot, as one request or the host roll
+ * asks for it. HELPER CHILD ONLY, through update_work(): the fetch can
+ * take minutes, a root copy is the whole squashfs (or, for a kernel-only
+ * update, the whole active partition), and each write ends in fsync.
+ * Measured on 192.168.15.95, 2026-10-21, before this moved: 946 ms of
+ * event loop for a 13,365,248-byte root.
+ *
+ * Issue #141: image_url is rewritten into the image_path
+ * do_system_update() already understands, rather than teaching that
+ * function a second way to be given an image. One code path stages a
+ * slot; this just decides what file it stages from.
+ */
+static void update_stage(const char *body, size_t body_len, struct update_result *r)
+{
 	char fetched_body[PKG_URL_MAX + 512];
-	char fetched_path[PATH_MAX];
 	const char *use_body = body;
 	size_t use_body_len = body_len;
+	struct json_value *root = (body != NULL && body_len > 0) ? json_parse(body, body_len) : NULL;
 
-	/*
-	 * Issue #141: image_url is rewritten into the image_path
-	 * do_system_update() already understands, rather than teaching that
-	 * function a second way to be given an image. One code path stages
-	 * a slot; this just decides what file it stages from.
-	 */
-	{
-		struct json_value *root = (body != NULL && body_len > 0) ? json_parse(body, body_len) : NULL;
+	if (root != NULL) {
+		const char *url = json_as_string(json_object_get(root, "image_url"));
+		const char *sha = json_as_string(json_object_get(root, "image_sha256"));
+		const char *kpath = json_as_string(json_object_get(root, "kernel_path"));
 
-		if (root != NULL) {
-			const char *url = json_as_string(json_object_get(root, "image_url"));
-			const char *sha = json_as_string(json_object_get(root, "image_sha256"));
-			const char *kpath = json_as_string(json_object_get(root, "kernel_path"));
-
-			if (url != NULL && url[0] != '\0') {
-				if (fetch_update_image(url, sha, fetched_path, sizeof(fetched_path), errmsg,
-				                        sizeof(errmsg)) != 0) {
-					json_free(root);
-					respond_error(fd, 400, "Bad Request", errmsg);
-					return;
-				}
-				if (kpath != NULL && kpath[0] != '\0')
-					snprintf(fetched_body, sizeof(fetched_body),
-					         "{\"image_path\":\"%s\",\"kernel_path\":\"%s\"}", fetched_path,
-					         kpath);
-				else
-					snprintf(fetched_body, sizeof(fetched_body), "{\"image_path\":\"%s\"}",
-					         fetched_path);
-				use_body = fetched_body;
-				use_body_len = strlen(fetched_body);
-				logstore_write("cixd", "info",
-				                "system update: fetched and verified an image from %s", url);
+		if (url != NULL && url[0] != '\0') {
+			if (fetch_update_image(url, sha, SYSTEM_UPDATE_FETCH_PATH, r->errmsg,
+			                       sizeof(r->errmsg)) != 0) {
+				json_free(root);
+				r->status = 400;
+				return;
 			}
-			json_free(root);
+			if (kpath != NULL && kpath[0] != '\0')
+				snprintf(fetched_body, sizeof(fetched_body),
+				         "{\"image_path\":\"%s\",\"kernel_path\":\"%s\"}",
+				         SYSTEM_UPDATE_FETCH_PATH, kpath);
+			else
+				snprintf(fetched_body, sizeof(fetched_body), "{\"image_path\":\"%s\"}",
+				         SYSTEM_UPDATE_FETCH_PATH);
+			use_body = fetched_body;
+			use_body_len = strlen(fetched_body);
+			logstore_write("cixd", "info", "system update: fetched and verified an image from %s",
+			               url);
 		}
+		json_free(root);
+	}
+	r->status = do_system_update(use_body, use_body_len, r->slot, sizeof(r->slot),
+	                             &r->updated_root, &r->updated_kernel, r->errmsg,
+	                             sizeof(r->errmsg));
+}
+
+/*
+ * ADR-0273: what the deploy gate is asked to approve -- the image_path
+ * that would be written. An image_url is fetched to
+ * SYSTEM_UPDATE_FETCH_PATH (fetch_update_image()), so that path is the
+ * target: approving a URL and staging a file would be two different
+ * things wearing one name. Empty when the request names neither.
+ */
+static void update_gate_target(const char *body, size_t body_len, char *out, size_t out_size)
+{
+	struct json_value *root = (body != NULL && body_len > 0) ? json_parse(body, body_len) : NULL;
+	const char *url = root != NULL ? json_as_string(json_object_get(root, "image_url")) : NULL;
+	const char *ipath = root != NULL ? json_as_string(json_object_get(root, "image_path")) : NULL;
+
+	if (url != NULL && url[0] != '\0')
+		snprintf(out, out_size, "%s", SYSTEM_UPDATE_FETCH_PATH);
+	else
+		snprintf(out, out_size, "%s", ipath != NULL ? ipath : "");
+	json_free(root);
+}
+
+/* The resumed pass: what the child found, as the response. */
+static void update_respond(int fd, const struct update_result *r)
+{
+	struct json_writer w;
+
+	if (r->status != 200) {
+		respond_error(fd, r->status, http_status_text(r->status), r->errmsg);
+		return;
+	}
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "status");
+	jw_str(&w, "staged");
+	jw_key(&w, "slot");
+	jw_str(&w, r->slot);
+	jw_key(&w, "updated");
+	jw_arr_open(&w);
+	if (r->updated_root)
+		jw_str(&w, "root");
+	if (r->updated_kernel)
+		jw_str(&w, "kernel");
+	jw_arr_close(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * #631: the slot is written in a helper child while the request waits
+ * (ADR-0342's park, one more kind). Served twice: the first pass checks
+ * the gate and parks; the pass after the child exits only reports what
+ * it found. Everything with an effect -- the approval spent, the audit
+ * line, the slot written -- happens once, on the first pass or in the
+ * child.
+ */
+static void handle_system_update(int fd, const char *body, size_t body_len)
+{
+	static struct update_result r; /* past 4 KB: not on the stack */
+	char target[PATH_MAX];
+	int gated = 0;
+	int rfd = -1;
+	ssize_t got;
+
+	switch (park_body_take(&rfd)) {
+	case PARK_ANSWER_ASK:
+		break;
+	case PARK_ANSWER_READY:
+		got = pread(rfd, &r, sizeof(r), 0);
+		close(rfd);
+		if (got == (ssize_t)sizeof(r)) {
+			update_respond(fd, &r);
+			return;
+		}
+		respond_error(fd, 500, "Internal Server Error",
+		              "the system update ended without a result -- GET /v1/system/boot says "
+		              "what the slots hold now");
+		return;
+	case PARK_ANSWER_BUSY:
+		respond_error_hdrs(fd, 503, "Service Unavailable", "Retry-After: 5\r\n",
+		                   "no helper could be started to write the slot -- nothing was "
+		                   "written; try again shortly",
+		                   0);
+		return;
+	case PARK_ANSWER_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error",
+		              "the system update ended without a result -- GET /v1/system/boot says "
+		              "what the slots hold now");
+		return;
+	}
+
+	/* One write to a slot at a time: two would interleave on one
+	 * partition. The host roll's staging counts too. */
+	if (update_running()) {
+		respond_error(fd, 409, "Conflict",
+		              "a system update is already writing the inactive slot -- wait for it to "
+		              "answer, then retry");
+		return;
 	}
 
 	/*
 	 * ADR-0273: the deploy gate.
 	 *
-	 * Checked here, after image_url has been rewritten into an
-	 * image_path, so the target an operator is asked to approve is the
-	 * one that would actually be written -- approving a URL and
-	 * staging a file would be two different things wearing one name.
-	 *
-	 * Refused rather than queued: this is one synchronous request with
-	 * nothing behind it, so there is no queue to wait in. The refusal
-	 * names the exact target, because an operator cannot approve what
-	 * the error does not tell them.
+	 * Refused rather than queued: this is one request with nothing
+	 * behind it, so there is no queue to wait in. The refusal names the
+	 * exact target, because an operator cannot approve what the error
+	 * does not tell them. The grant is checked here and spent only once
+	 * the helper has started (#631), so a request that could not start
+	 * does not spend an approval on nothing.
 	 */
 	if (pkg_gate_enabled("deploy")) {
-		struct json_value *gr = json_parse(use_body, use_body_len);
-		const char *ipath = gr != NULL ? json_as_string(json_object_get(gr, "image_path")) : NULL;
-		char target[256];
-
-		snprintf(target, sizeof(target), "%s", ipath != NULL ? ipath : "");
-		json_free(gr);
+		update_gate_target(body, body_len, target, sizeof(target));
 		if (target[0] == '\0') {
 			respond_error(fd, 400, "Bad Request",
 			              "the deploy gate is on and this request names no image_path to "
 			              "approve");
 			return;
 		}
-		if (!pkg_approval_take_deploy(target)) {
-			char msg[512];
+		if (!pkg_approval_has_deploy(target)) {
+			char msg[2 * PATH_MAX + 256];
 
 			snprintf(msg, sizeof(msg),
 			         "the deploy gate is on and \"%s\" is not approved -- "
@@ -3962,35 +4094,24 @@ static void handle_system_update(int fd, const char *body, size_t body_len)
 			         "first. Nothing has been written to a boot slot",
 			         target, target);
 			logstore_write("audit", "warn", "%s system update HELD by the deploy gate: %s",
-			                audit_who(), target);
+			               audit_who(), target);
 			respond_error(fd, 409, "Conflict", msg);
 			return;
 		}
+		gated = 1;
 	}
 
-	status = do_system_update(use_body, use_body_len, slot, sizeof(slot), &updated_root,
-	                           &updated_kernel, errmsg, sizeof(errmsg));
-	if (status != 200) {
-		respond_error(fd, status, http_status_text(status), errmsg);
+	if (update_submit(body, body_len) != 0) {
+		respond_error_hdrs(fd, 503, "Service Unavailable", "Retry-After: 5\r\n",
+		                   "no helper could be started to write the slot -- nothing was "
+		                   "written; try again shortly",
+		                   0);
 		return;
 	}
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "status");
-	jw_str(&w, "staged");
-	jw_key(&w, "slot");
-	jw_str(&w, slot);
-	jw_key(&w, "updated");
-	jw_arr_open(&w);
-	if (updated_root)
-		jw_str(&w, "root");
-	if (updated_kernel)
-		jw_str(&w, "kernel");
-	jw_arr_close(&w);
-	jw_obj_close(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
+	if (gated)
+		pkg_approval_take_deploy(target);
+	/* Parked: nothing is written now, so dispatch() announces nothing
+	 * on this pass, and the 200 of the resumed one announces once. */
 }
 
 /*
@@ -10387,8 +10508,9 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
  */
 enum hostroll_step {
 	HOSTROLL_IDLE = 0,
-	HOSTROLL_BUILD,   /* waiting for g_hostroll.building's hostbuild */
-	HOSTROLL_ASSEMBLE /* waiting for the root assembly */
+	HOSTROLL_BUILD,    /* waiting for g_hostroll.building's hostbuild */
+	HOSTROLL_ASSEMBLE, /* waiting for the root assembly */
+	HOSTROLL_STAGE     /* waiting for the slot to be written (#631) */
 };
 
 static struct {
@@ -10477,12 +10599,12 @@ static void hostroll_tick(void)
 	hostroll_assemble();
 }
 
-/* handle_bootroot_assemble_event(): the root this roll waits for. */
+/* handle_bootroot_assemble_event(): the root this roll waits for. The
+ * slot is written in a helper child, as a request's is (#631), and the
+ * roll goes on in hostroll_staged(). */
 static void hostroll_assembly_done(int ok)
 {
-	char body[2 * PATH_MAX + 64], slot[8], errmsg[256];
-	int status, updated_root = 0, updated_kernel = 0;
-	long now = (long)time(NULL);
+	char body[2 * PATH_MAX + 64];
 
 	if (g_hostroll.step != HOSTROLL_ASSEMBLE)
 		return;
@@ -10496,8 +10618,29 @@ static void hostroll_assembly_done(int ok)
 		         BOOTROOT_DIR, ARTIFACTS_DIR);
 	else
 		snprintf(body, sizeof(body), "{\"image_path\":\"%s/cixd-root.squashfs\"}", BOOTROOT_DIR);
-	status = do_system_update(body, strlen(body), slot, sizeof(slot), &updated_root,
-	                          &updated_kernel, errmsg, sizeof(errmsg));
+	if (update_running()) {
+		hostroll_stop("error",
+		              "staging did not start: a system update is already writing the inactive "
+		              "slot%s%s",
+		              "", "");
+		return;
+	}
+	if (update_submit_daemon_job(body) != 0) {
+		hostroll_stop("error", "staging did not start: no helper could be forked (%s)%s",
+		              strerror(errno), "");
+		return;
+	}
+	g_hostroll.step = HOSTROLL_STAGE;
+}
+
+/* update_done(): the slot this roll waits for. The window is read now,
+ * not when the assembly finished: the write takes time of its own. */
+static void hostroll_staged(int status, const char *slot, int updated_kernel, const char *errmsg)
+{
+	long now = (long)time(NULL);
+
+	if (g_hostroll.step != HOSTROLL_STAGE)
+		return;
 	if (status != 200) {
 		hostroll_stop("error", "staging failed: %s%s", errmsg, "");
 		return;
@@ -10545,7 +10688,9 @@ static int action_system_roll(const char *params, char *reason, size_t reason_si
 		hostroll_tick();
 	if (g_hostroll.step != HOSTROLL_IDLE) {
 		snprintf(reason, reason_size, "a host roll is already in progress (%s)",
-		         g_hostroll.step == HOSTROLL_BUILD ? g_hostroll.building : "assembling");
+		         g_hostroll.step == HOSTROLL_BUILD   ? g_hostroll.building
+		         : g_hostroll.step == HOSTROLL_STAGE ? "staging"
+		                                             : "assembling");
 		return 0;
 	}
 	if (pkg_host_state("kernel", &kernel) != 0 || pkg_host_state("cix", &cix) != 0) {
@@ -24904,7 +25049,6 @@ static void handle_boot_manager_post(int fd, const char *body, size_t body_len)
 	const char *path;
 	const char *url;
 	const char *sha256_in;
-	char fetched_path[PATH_MAX];
 	char fetch_err[256];
 	const char *src;
 	enum esp_error err;
@@ -24926,20 +25070,20 @@ static void handle_boot_manager_post(int fd, const char *body, size_t body_len)
 	}
 
 	if (url != NULL && url[0] != '\0') {
-		if (fetch_update_image(url, sha256_in, fetched_path, sizeof(fetched_path), fetch_err,
+		if (fetch_update_image(url, sha256_in, BOOT_MANAGER_FETCH_PATH, fetch_err,
 		                       sizeof(fetch_err)) != 0) {
 			json_free(root);
 			respond_error(fd, 400, "Bad Request", fetch_err);
 			return;
 		}
-		src = fetched_path;
+		src = BOOT_MANAGER_FETCH_PATH;
 	} else {
 		src = path;
 	}
 
 	err = boot_manager_install(src);
 	if (url != NULL && url[0] != '\0')
-		unlink(fetched_path);
+		unlink(BOOT_MANAGER_FETCH_PATH);
 	json_free(root);
 
 	if (err == ESP_ERR_INVALID) {
@@ -32568,19 +32712,23 @@ static void conn_out_unlink(struct conn *cc)
 
 /* ---------- ADR-0340 (#609), ADR-0342 (#612): a request waits for work run off the loop ----------
  *
- * Three kinds of work make a request wait, and they share one mechanism:
+ * Five kinds of work make a request wait, and they share one mechanism:
  *
  *   - a credential check (ADR-0340): credcheck_ask() reaches
  *     cred_broker() below for the request being served;
  *   - a filtered log read (ADR-0342): logread_ask() reaches
  *     logread_broker();
  *   - an explicit module load or unload (ADR-0348): kmodscan_ask()
- *     reaches kmod_broker().
+ *     reaches kmod_broker();
+ *   - a system backup (#630): backup_ask();
+ *   - a system update (#631): handle_system_update() through
+ *     update_submit().
  *
- * The module queue also carries the daemon's own work, which no request
- * waits for: a plugged device's alias and a sweep. Such a record has no
- * connection from the start (daemon_job), and its done callback does
- * all of its work itself.
+ * The module, backup and update queues also carry the daemon's own
+ * work, which no request waits for: a plugged device's alias and a
+ * sweep, the scheduled snapshot, and the host roll's staging. Such a
+ * record has no connection from the start (daemon_job), and its done
+ * callback does all of its work itself.
  *
  * If the connection already carries the answer, that is returned.
  * Otherwise the request is PARKED: a park record is made, a helper child
@@ -32603,6 +32751,7 @@ enum park_kind {
 	PARK_LOGREAD,
 	PARK_KMOD,
 	PARK_BACKUP,
+	PARK_UPDATE,
 	PARK_KINDS
 };
 
@@ -32627,6 +32776,10 @@ struct park {
 	/* PARK_BACKUP: where a snapshot goes on the backup disk; empty for
 	 * GET /v1/system/backup, whose bundle goes to the memfd */
 	char backup_target[PATH_MAX];
+	/* PARK_UPDATE (#631): the body to stage from, the request's own or
+	 * the host roll's; its struct update_result goes to the memfd */
+	char *update_body;
+	size_t update_body_len;
 };
 
 /*
@@ -32643,7 +32796,11 @@ struct park {
  * waiting, because a hub plugged in is a burst of uevents, one job per
  * alias, and a dropped one is a device without its driver. System
  * backups: one at a time and 4 waiting (#630) -- each walks the whole
- * recipe store, and two at once would only share the disk.
+ * recipe store, and two at once would only share the disk. System
+ * updates: one at a time and none waiting (#631) -- there is one
+ * inactive slot, a second write would interleave with the first on it,
+ * and one queued behind would only overwrite what the first staged.
+ * handle_system_update() refuses a second with a 409 before it asks.
  */
 struct park_queue {
 	int running_max;
@@ -32664,6 +32821,7 @@ static struct park_queue g_park_q[PARK_KINDS] = {
 	[PARK_LOGREAD] = { .running_max = LOGREAD_RUNNING_MAX, .wait_max = LOGREAD_WAIT_MAX },
 	[PARK_KMOD] = { .running_max = 1, .wait_max = KMOD_WAIT_MAX },
 	[PARK_BACKUP] = { .running_max = 1, .wait_max = BACKUP_WAIT_MAX },
+	[PARK_UPDATE] = { .running_max = 1, .wait_max = 0 },
 };
 
 static void serve_request(struct conn *cc);
@@ -32671,6 +32829,7 @@ static void cred_check_done(int exit_status, void *ctx);
 static void logread_done(int exit_status, void *ctx);
 static void kmod_job_done(int exit_status, void *ctx);
 static void backup_done(int exit_status, void *ctx);
+static void update_done(int exit_status, void *ctx);
 
 static struct park *park_new(enum park_kind kind, struct conn *cc)
 {
@@ -32694,6 +32853,7 @@ static void park_free(struct park *p)
 	if (p->memfd >= 0)
 		close(p->memfd);
 	explicit_bzero(&p->rq, sizeof(p->rq));
+	free(p->update_body);
 	free(p);
 }
 
@@ -32729,7 +32889,11 @@ static void park_unlink_waiting(struct park *p)
  * now. A running module job is not: a modprobe stopped half way through
  * an insert leaves the kernel's state unknown, and what it did is still
  * logged and announced. Nor is a snapshot to the backup disk, whose
- * outcome is recorded in the backup status whoever asked for it.
+ * outcome is recorded in the backup status whoever asked for it. Nor,
+ * above all, is a system update (#631): a slot written half way is safe
+ * only because every boot entry for it is removed before the first
+ * write and the new one is written after the last (do_system_update()),
+ * and a write that finishes is what the operator asked for.
  */
 static void park_abandon(struct park *p)
 {
@@ -32915,6 +33079,49 @@ static int backup_start(struct park *p)
 	return 0;
 }
 
+/* The helper child of a system update (#631): update_stage(), its
+ * verdict and its held log lines into the memory file the parent made
+ * before the fork. It changes nothing the parent reads; what it writes
+ * is the inactive slot and its boot entry. */
+static int update_work(void *arg)
+{
+	struct park *p = arg;
+	static struct update_result r;
+	const char *b = (const char *)&r;
+	size_t off = 0;
+	long long t0 = monotonic_ms();
+
+	memset(&r, 0, sizeof(r));
+	logstore_hold(r.held, sizeof(r.held));
+	update_stage(p->update_body, p->update_body_len, &r);
+	r.took_ms = monotonic_ms() - t0;
+	while (off < sizeof(r)) {
+		ssize_t n = write(p->memfd, b + off, sizeof(r) - off);
+
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			return 1;
+		off += (size_t)n;
+	}
+	return 0;
+}
+
+/* Forks an update. A memfd, because the verdict carries its held log
+ * lines and is larger than a pipe takes in one write. */
+static int update_start(struct park *p)
+{
+	p->memfd = memfd_create("cix-update", MFD_CLOEXEC);
+	if (p->memfd < 0)
+		return -1;
+	if (helper_run_pid(update_work, p, update_done, p, "a system update", &p->pid) != 0) {
+		close(p->memfd);
+		p->memfd = -1;
+		return -1;
+	}
+	return 0;
+}
+
 static int park_start(struct park *p)
 {
 	int rc;
@@ -32928,6 +33135,9 @@ static int park_start(struct park *p)
 		break;
 	case PARK_BACKUP:
 		rc = backup_start(p);
+		break;
+	case PARK_UPDATE:
+		rc = update_start(p);
 		break;
 	case PARK_KMOD:
 	default:
@@ -32979,7 +33189,7 @@ static void park_unavailable(struct conn *cc, enum park_kind kind)
 	cc->park = NULL;
 	if (kind == PARK_CRED)
 		cc->cred_state = CRED_UNAVAILABLE;
-	else if (kind == PARK_LOGREAD || kind == PARK_BACKUP)
+	else if (kind == PARK_LOGREAD || kind == PARK_BACKUP || kind == PARK_UPDATE)
 		cc->body_state = PARK_BODY_UNAVAILABLE;
 	else
 		cc->kmod_state = KMODJOB_STATE_UNAVAILABLE;
@@ -32997,6 +33207,10 @@ static void park_daemon_job_unavailable(struct park *p)
 		backupconfig_record_attempt(0, "the snapshot could not be started");
 		logstore_write("cixd", "error", "system backup: the snapshot to %s could not start: %s",
 		               p->backup_target, strerror(errno));
+	} else if (p->kind == PARK_UPDATE) {
+		/* Not reached while updates never wait (wait_max 0), and said
+		 * if it ever is: the host roll is the update's daemon job. */
+		hostroll_staged(500, "", 0, "no helper could be forked to write the slot");
 	} else if (p->job.kind == KMODSCAN_JOB_SWEEP) {
 		kmodscan_set_sweep_pending(0);
 		logstore_write("cixd", "error",
@@ -33317,6 +33531,111 @@ static void backup_done(int exit_status, void *ctx)
 		backupconfig_record_attempt(exit_status == 0,
 		                            exit_status == 0 ? NULL : "failed to write snapshot to disk");
 	park_body_done(p, exit_status, "a system backup");
+}
+
+/* #631: whether a slot is being written now, by a request or the roll. */
+static int update_running(void)
+{
+	return g_park_q[PARK_UPDATE].running > 0;
+}
+
+/* A copy of the body to stage from, for the record: the request's
+ * buffer is not the child's to keep. */
+static struct park *update_park_new(struct conn *cc, const char *body, size_t body_len)
+{
+	struct park *p = park_new(PARK_UPDATE, cc);
+
+	if (p == NULL)
+		return NULL;
+	p->update_body = malloc(body_len + 1);
+	if (p->update_body == NULL) {
+		park_free(p);
+		return NULL;
+	}
+	if (body_len > 0)
+		memcpy(p->update_body, body, body_len);
+	p->update_body[body_len] = '\0';
+	p->update_body_len = body_len;
+	return p;
+}
+
+/*
+ * #631: parks the request being served on a helper that stages the slot.
+ * handle_system_update() has already been told ASK by park_body_take()
+ * and checked that no update is running. 0 when parked; -1 when no
+ * helper could start, and nothing was written.
+ */
+static int update_submit(const char *body, size_t body_len)
+{
+	struct park *p = update_park_new(g_response_conn, body, body_len);
+
+	if (p == NULL)
+		return -1;
+	return park_body_submit(p) == PARK_ANSWER_ASK ? 0 : -1;
+}
+
+/* The host roll's staging, with no request waiting for it. */
+static int update_submit_daemon_job(const char *body)
+{
+	struct park *p = update_park_new(NULL, body, strlen(body));
+
+	if (p == NULL)
+		return -1;
+	p->daemon_job = 1;
+	if (park_submit(p) != 0) {
+		park_free(p);
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * The slot is written, or the child failed. Its log lines are written
+ * here whoever asked, and the outcome is said once in one line with the
+ * time it took, because the stall record no longer can. A request still
+ * waiting is served again with the verdict (dispatch() announces its
+ * 200); the host roll goes on, and since no dispatch() announces for
+ * it, a staged slot is announced here; and a client that left is told
+ * nothing, so the line is all there is.
+ */
+static void update_done(int exit_status, void *ctx)
+{
+	struct park *p = ctx;
+	static struct update_result r;
+	int have = exit_status == 0 && p->memfd >= 0 &&
+	           pread(p->memfd, &r, sizeof(r), 0) == (ssize_t)sizeof(r);
+	const char *for_whom = p->daemon_job ? ", for the host roll"
+	                       : p->cc == NULL ? ", after the client had gone"
+	                                       : "";
+
+	if (have) {
+		logstore_replay(r.held, sizeof(r.held));
+		if (r.status == 200)
+			logstore_write("cixd", "info",
+			               "system update: staged root and kernel on slot %s in %lld ms%s (#631)",
+			               r.slot, r.took_ms, for_whom);
+		else if (for_whom[0] != '\0')
+			logstore_write("cixd", "error", "system update: nothing staged (%d): %s%s",
+			               r.status, r.errmsg, for_whom);
+	} else if (for_whom[0] != '\0') {
+		/* A request still waiting is told by park_body_done(). */
+		logstore_write("cixd", "error",
+		               "system update: the helper ended without a result (exit %d)%s -- GET "
+		               "/v1/system/boot says what the slots hold now",
+		               exit_status, for_whom);
+	}
+	/* Nothing will be served for these, so dispatch() cannot announce. */
+	if (have && r.status == 200 && for_whom[0] != '\0')
+		events_announce_change("updateSystem");
+	if (p->daemon_job) {
+		park_finished(p);
+		hostroll_staged(have ? r.status : 500, have ? r.slot : "", have ? r.updated_kernel : 0,
+		                have ? r.errmsg : "the helper that wrote the slot ended without a result");
+		park_free(p);
+		park_start_waiting(PARK_UPDATE);
+		return;
+	}
+	park_body_done(p, have ? 0 : (exit_status != 0 ? exit_status : 1), "a system update");
 }
 
 /* The schedule's snapshot, with no request waiting for it. 0 when it is
