@@ -2457,8 +2457,9 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 
 **Released as 0.2.57-583**, whose root carries the gcc `sfdisk` from `cix-hosttools`. Booted on 192.168.15.95 slot a, 12 containers running. **The old build misread too:** `GET /v1/storage/vdb/free-space` answered 0 free bytes through 582 and answers 16,713,235,968 on 583. That is right: the five partitions end at sector 34,465,792 of a 34.4 GB disk.
 
+**Gated from 0.2.57-584**, the owner's decision of 2026-10-23. `BOOT_SELFTESTS` puts `test_boot` in `SELFTESTS`. The release recipe stages the kernel artifact as `build-inputs/bzImage` and declares qemu, ovmf, dosfstools, mtools and the host-tools set. Compile probe 0.2.57-600 and the 584 release build each logged `test_boot PASS` and `SELFTEST: PASS`. 584 booted on .95 slot b with 12 containers running.
+
 **Still open:**
-- `test_boot` is in no release gate.
 - The other six boot tests have not run.
 - Other tcc-built packages may lay on-disk formats over packed structs (#635).
 

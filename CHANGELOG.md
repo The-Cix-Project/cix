@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A release boots its own root before it ships (#584, #634)
+
+- **What changed:** `test_boot` is in `SELFTESTS` (`BOOT_SELFTESTS`). Every release assembles its control-plane root, partitions a disk image, and boots it under Cix's qemu and OVMF to `cixd listening on`, or the release is refused. The release recipe stages the kernel artifact and declares the emulator, the firmware and the host-tools set.
+- **Why:** the owner's decision of 2026-10-23. The boot path was the one class of failure with no automated test anywhere, and the first run on a Cix host found five defects, all invisible until then:
+  - `sfdisk` built with tcc wrote GPTs no reader accepts (#634); util-linux 2.42.2-4 is built with gcc.
+  - The harness named Debian's `mkfs.vfat`, systemd-boot and `OVMF_VARS_4M.fd`.
+  - q35's default NIC needs a ROM Cix's qemu does not ship.
+  - Six fixtures still used partition names cixd stopped reading at #305.
+  - `test_boot` had no `cix-config`.
+- **Also visible now:** the OS disk's free space read 0 bytes through the tcc `sfdisk`; on 0.2.57-583 it reads 16.7 GB, which is right.
+- **Verified:** compile probe 0.2.57-600 and the 584 release build each ran `test_boot PASS`, `SELFTEST: PASS`. A boot takes about 46 s under TCG.
+
 ### Cix is GPL-3.0-or-later (ADR-0352)
 
 - **What changed:** the Cix source moves from the Apache License 2.0 to the GNU General Public License, version 3 or (at your option) any later version. `LICENSE` holds the GPLv3 text verbatim. `README.md`, `CONTRIBUTING.md`, `TRADEMARK.md` and the banner `cixctl` prints name `GPL-3.0-or-later`.
