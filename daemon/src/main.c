@@ -3842,16 +3842,20 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
  * next reboot, which is the worst possible time.
  */
 static int fetch_update_image(const char *url, const char *sha256, const char *out_path,
-                              char *err, size_t err_size)
+                              const char *url_field, const char *sha_field, char *err,
+                              size_t err_size)
 {
 	struct curlfetch_opts opts;
 	char curl_err[256];
 	char got[128];
 
 	if (sha256 == NULL || strlen(sha256) != 64) {
+		/* The request's own field names: an update's are image_url and
+		 * image_sha256, a boot manager's url and sha256 (#633). */
 		snprintf(err, err_size,
-		         "image_sha256 is required with image_url and must be 64 hex characters -- "
-		         "this writes a boot slot, so an unverified image is not accepted");
+		         "%s is required with %s and must be 64 hex characters -- this writes boot "
+		         "media, so an unverified image is not accepted",
+		         sha_field, url_field);
 		return -1;
 	}
 	unlink(out_path);
@@ -3882,7 +3886,7 @@ static int fetch_update_image(const char *url, const char *sha256, const char *o
 	opts.retry_count = 2;
 
 	if (curlfetch_perform(&opts, NULL, curl_err, sizeof(curl_err)) != 0) {
-		snprintf(err, err_size, "could not fetch image_url: %s", curl_err);
+		snprintf(err, err_size, "could not fetch %s: %s", url_field, curl_err);
 		unlink(out_path);
 		return -1;
 	}
@@ -3892,7 +3896,7 @@ static int fetch_update_image(const char *url, const char *sha256, const char *o
 		return -1;
 	}
 	if (strcasecmp(got, sha256) != 0) {
-		snprintf(err, err_size, "fetched image does not match image_sha256 (got %s)", got);
+		snprintf(err, err_size, "fetched image does not match %s (got %s)", sha_field, got);
 		unlink(out_path);
 		return -1;
 	}
@@ -3947,8 +3951,8 @@ static void update_stage(const char *body, size_t body_len, struct update_result
 		const char *kpath = json_as_string(json_object_get(root, "kernel_path"));
 
 		if (url != NULL && url[0] != '\0') {
-			if (fetch_update_image(url, sha, SYSTEM_UPDATE_FETCH_PATH, r->errmsg,
-			                       sizeof(r->errmsg)) != 0) {
+			if (fetch_update_image(url, sha, SYSTEM_UPDATE_FETCH_PATH, "image_url",
+			                       "image_sha256", r->errmsg, sizeof(r->errmsg)) != 0) {
 				json_free(root);
 				r->status = 400;
 				return;
@@ -14666,6 +14670,123 @@ static void image_retain_run(void)
 }
 
 /*
+ * ADR-0353 (#637): RSA keys generated before they are needed, so that
+ * issuing a certificate on the event loop costs a file write rather than
+ * a key generation -- 0.1-0.4 s a leaf on 192.168.15.95, 16-32 s for a
+ * CA bootstrap under qemu TCG.
+ *
+ * Filled one key at a time in a helper child, which hands its PEM back
+ * through a memfd, and only while a CA exists: a host with no CA, every
+ * boot test until it bootstraps one included, spends nothing. The fill
+ * starts after autostart, after a CA appears (the first take that finds
+ * it bootstrapped), and after every take. pki_key_create() takes one when
+ * there is one and generates in place when there is not, so a CA
+ * bootstrap still generates its root inline, and a reset reissuing more
+ * leaves than the pool holds generates the rest inline. The keys live
+ * only in this process's memory and are cleared when taken; a restart
+ * drops them and fills again. OpenSSL 3 reseeds its DRBG when the pid
+ * changes, so a child's keys are its own.
+ */
+#define KEYPOOL_SIZE 4
+static char *g_keypool[KEYPOOL_SIZE];
+static size_t g_keypool_len[KEYPOOL_SIZE];
+static int g_keypool_count;
+static int g_keypool_memfd = -1; /* >= 0 while a fill child runs */
+
+/* The fill child: one key, as PEM, into the memfd. */
+static int keypool_work(void *arg)
+{
+	int fd = *(const int *)arg;
+	char *pem = NULL;
+	size_t len = 0, off = 0;
+	int rc = 0;
+
+	if (pkicrypto_rsa_key_pem(&pem, &len, NULL, 0) != 0)
+		return 1;
+	while (off < len) {
+		ssize_t n = write(fd, pem + off, len - off);
+
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0) {
+			rc = 1;
+			break;
+		}
+		off += (size_t)n;
+	}
+	explicit_bzero(pem, len);
+	free(pem);
+	return rc;
+}
+
+static void keypool_fill(void);
+
+static void keypool_done(int exit_status, void *ctx)
+{
+	int fd = g_keypool_memfd;
+	struct stat st;
+	char *pem;
+
+	(void)ctx;
+	g_keypool_memfd = -1;
+	if (exit_status != 0 || fstat(fd, &st) != 0 || st.st_size <= 0 ||
+	    (pem = malloc((size_t)st.st_size)) == NULL) {
+		close(fd);
+		logstore_write("cixd", "warn",
+		               "pki key pool: a key could not be generated (helper exit %d) -- "
+		               "certificates generate their keys in place until the next fill",
+		               exit_status);
+		return; /* not retried here: the next take asks again */
+	}
+	if (pread(fd, pem, (size_t)st.st_size, 0) != st.st_size) {
+		explicit_bzero(pem, (size_t)st.st_size);
+		free(pem);
+		close(fd);
+		return;
+	}
+	close(fd);
+	g_keypool[g_keypool_count] = pem;
+	g_keypool_len[g_keypool_count] = (size_t)st.st_size;
+	g_keypool_count++;
+	keypool_fill();
+}
+
+/* Starts a fill child when the pool has room, none is running, and a CA
+ * exists. Never fails anyone: an empty pool only means generating in
+ * place. */
+static void keypool_fill(void)
+{
+	static int fd_arg;
+
+	if (g_keypool_memfd >= 0 || g_keypool_count >= KEYPOOL_SIZE || !pki_ca_bootstrapped())
+		return;
+	g_keypool_memfd = memfd_create("cix-keypool", MFD_CLOEXEC);
+	if (g_keypool_memfd < 0)
+		return;
+	fd_arg = g_keypool_memfd;
+	if (helper_run(keypool_work, &fd_arg, keypool_done, NULL, "a pki key pool fill") != 0) {
+		close(g_keypool_memfd);
+		g_keypool_memfd = -1;
+	}
+}
+
+/* pki_set_key_source()'s source: a pooled key, or -1 for none. */
+static int keypool_take(char **pem, size_t *len)
+{
+	if (g_keypool_count == 0) {
+		keypool_fill();
+		return -1;
+	}
+	g_keypool_count--;
+	*pem = g_keypool[g_keypool_count];
+	*len = g_keypool_len[g_keypool_count];
+	g_keypool[g_keypool_count] = NULL;
+	g_keypool_len[g_keypool_count] = 0;
+	keypool_fill();
+	return 0;
+}
+
+/*
  * ADR-0343: after a batch of deletes, whether quota accounting needs a
  * rescan. Two helper children, because each blocks for as long as the
  * kernel takes and a child must not write the log store (ADR-0340): the
@@ -25077,7 +25198,7 @@ static void bootmgr_stage(const char *body, size_t body_len, struct bootmgr_resu
 	const char *src = path;
 
 	if (url != NULL && url[0] != '\0') {
-		if (fetch_update_image(url, sha256_in, BOOT_MANAGER_FETCH_PATH, r->msg,
+		if (fetch_update_image(url, sha256_in, BOOT_MANAGER_FETCH_PATH, "url", "sha256", r->msg,
 		                       sizeof(r->msg)) != 0) {
 			r->fetch_failed = 1;
 			json_free(root);
@@ -38864,12 +38985,17 @@ static int cixd_main(int argc, char **argv)
 	rootfs_discard_sweep(CONTAINER_ROOTFS_DIR);
 	rootfs_discard_sweep(CONTAINERS_DIR);
 	rootfs_discard_sweep(IMAGES_DIR); /* ADR-0343 */
+	pki_set_key_source(keypool_take); /* ADR-0353 */
 	containerdef_autostart_all();
 	rearm_roll_watches(); /* ADR-0323 answer 4 */
 	/* ADR-0343: after autostart, so the registry holds every container
 	 * that will run; definitions are loaded already. Waits for the first
 	 * idle moment if a package job resumed at start. */
 	image_retain_run();
+	/* ADR-0353: after autostart too, so the fill's children do not
+	 * compete with the containers coming up; a host with no CA fills
+	 * nothing. */
+	keypool_fill();
 
 	/*
 	 * #373: rebuild the rolling-rebuild queue from what is actually

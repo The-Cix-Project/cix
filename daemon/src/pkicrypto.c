@@ -128,21 +128,80 @@ static int write_cert(const char *path, X509 *cert, char *err, size_t err_size)
 	return 0;
 }
 
-int pkicrypto_rsa_key_create(const char *key_path, char *err, size_t err_size)
+/* The one RSA key generation here: 2048 bits, as genpkey made them. */
+static EVP_PKEY *rsa_generate(char *err, size_t err_size)
 {
 	EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
 	EVP_PKEY *key = NULL;
-	FILE *f;
-	int ok;
 
 	if (ctx == NULL || EVP_PKEY_keygen_init(ctx) <= 0 ||
 	    EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048) <= 0 || EVP_PKEY_keygen(ctx, &key) <= 0) {
 		fail(err, err_size, "RSA key generation failed");
 		EVP_PKEY_CTX_free(ctx);
-		return -1;
+		return NULL;
 	}
 	EVP_PKEY_CTX_free(ctx);
+	return key;
+}
 
+int pkicrypto_rsa_key_pem(char **out_pem, size_t *out_len, char *err, size_t err_size)
+{
+	EVP_PKEY *key = rsa_generate(err, err_size);
+	BIO *bio;
+	char *data = NULL;
+	long len;
+
+	*out_pem = NULL;
+	*out_len = 0;
+	if (key == NULL)
+		return -1;
+	bio = BIO_new(BIO_s_mem());
+	/* PKCS#8, unencrypted: "BEGIN PRIVATE KEY", as genpkey wrote. */
+	if (bio == NULL || PEM_write_bio_PrivateKey(bio, key, NULL, NULL, 0, NULL, NULL) != 1 ||
+	    (len = BIO_get_mem_data(bio, &data)) <= 0 || (*out_pem = malloc((size_t)len)) == NULL) {
+		fail(err, err_size, "cannot encode private key");
+		BIO_free(bio);
+		EVP_PKEY_free(key);
+		return -1;
+	}
+	memcpy(*out_pem, data, (size_t)len);
+	*out_len = (size_t)len;
+	/* The memory BIO's own copy is cleared before it is freed. */
+	OPENSSL_cleanse(data, (size_t)len);
+	BIO_free(bio);
+	EVP_PKEY_free(key);
+	return 0;
+}
+
+int pkicrypto_key_file_write(const char *key_path, const char *pem, size_t len, char *err,
+                             size_t err_size)
+{
+	FILE *f = open_with_mode(key_path, 0600, "w");
+	int ok;
+
+	if (f == NULL) {
+		fail(err, err_size, "cannot create private key file");
+		return -1;
+	}
+	ok = fwrite(pem, 1, len, f) == len;
+	if (fclose(f) != 0)
+		ok = 0;
+	if (!ok) {
+		fail(err, err_size, "cannot write private key");
+		unlink(key_path);
+		return -1;
+	}
+	return 0;
+}
+
+int pkicrypto_rsa_key_create(const char *key_path, char *err, size_t err_size)
+{
+	EVP_PKEY *key = rsa_generate(err, err_size);
+	FILE *f;
+	int ok;
+
+	if (key == NULL)
+		return -1;
 	f = open_with_mode(key_path, 0600, "w");
 	if (f == NULL) {
 		fail(err, err_size, "cannot create private key file");

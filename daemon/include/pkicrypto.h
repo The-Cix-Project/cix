@@ -32,6 +32,14 @@
  * rsa_keygen_bits:2048` wrote. */
 int pkicrypto_rsa_key_create(const char *key_path, char *err, size_t err_size);
 
+/* ADR-0353: the same key, as PEM in memory (*out_pem malloc'd, the
+ * caller's to clear and free), for the daemon's key pool to generate in
+ * a helper child; and a PEM written to key_path exactly as
+ * pkicrypto_rsa_key_create() writes one, mode 0600. */
+int pkicrypto_rsa_key_pem(char **out_pem, size_t *out_len, char *err, size_t err_size);
+int pkicrypto_key_file_write(const char *key_path, const char *pem, size_t len, char *err,
+                             size_t err_size);
+
 /* A self-signed root CA for key_path, subject CN=common_name, valid
  * for days -- what `req -x509 -new -subj /CN=...` wrote. */
 int pkicrypto_ca_create(const char *key_path, const char *common_name, int days,

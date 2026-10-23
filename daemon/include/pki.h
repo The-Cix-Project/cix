@@ -58,6 +58,15 @@ int pki_repoint(const char *new_pki_dir, const char *new_certs_state_path);
 
 int pki_ca_bootstrapped(void);
 
+/*
+ * ADR-0353: where a new private key comes from. take() hands over one
+ * PEM key, malloc'd, that pki writes, clears and frees, and returns 0;
+ * or returns -1 when it has none, and pki generates the key in place,
+ * which is all it does with no source set (every test binary). Each of
+ * the three keys pki makes -- root, intermediate, leaf -- asks it.
+ */
+void pki_set_key_source(int (*take)(char **pem, size_t *len));
+
 /* common_name must not contain '/' or control characters -- see
  * common_name_is_valid() in pki.c for why the rule outlived the
  * `-subj` argument it was written for. */

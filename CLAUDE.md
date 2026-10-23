@@ -393,6 +393,14 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **A restore's sync is reported, never fatal** (`recipe_sync`). Its files are already written.
 - **Store keys and corpus filenames differ:** the store's `rtw88-firmware@3-1` is the corpus file `rtw88-firmware@3.cbs` (`release 1` inside), and 293 of .95's stored versions are filed that way. Compare versions, never names, or the count is wrong (it said 355 box-only where there were 62).
 
+## A certificate key comes from the pool when one is ready
+
+**Every new PKI key goes through `pki_key_create()` in `pki.c`, which writes a pooled key when the daemon's pool has one and generates in place when it does not** -- [ADR-0353](docs/adr/0353-certificate-keys-are-generated-ahead-of-need.md), #637. Key generation measured 0.1-0.4 s a leaf on .95, on the loop.
+
+- **Never call `pkicrypto_rsa_key_create()` from `pki.c` directly**; the three key sites ask the source first.
+- **The pool fills only while a CA exists**, one key at a time in a helper child, after autostart and after each take. Never fill at daemon start regardless of the CA: a boot test under TCG would pay seconds a key.
+- **A CA bootstrap and a large reset still generate in place.** That is a stated limit, not a defect to chase.
+
 ## One way to make an image
 
 **An image is made by `POST /v1/images` (`cixctl image create --name=NAME`) and by nothing else.** `POST /v1/pkg/install` naming an image that does not exist is a 400 naming that fix, and creates nothing (#500) -- the owner's decision of 2026-09-30, chosen over documenting the implicit create an install used to perform, which is how `--image=jump`, a typo for `jumpbox`, became a new image.

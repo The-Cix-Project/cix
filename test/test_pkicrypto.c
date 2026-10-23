@@ -409,6 +409,40 @@ static void test_sha256(void)
 	CHECK(pkicrypto_sha256_hex("abc", 3, out, 64) != 0, "a buffer one byte short was accepted");
 }
 
+/*
+ * ADR-0353: a key made in memory, as the daemon's key pool makes them in
+ * a helper child, and written where pki wants it, must be the same thing
+ * pkicrypto_rsa_key_create() writes: PKCS#8 PEM, mode 0600, and a key
+ * that signs what it is asked to.
+ */
+static void test_pooled_key(void)
+{
+	char err[256] = "";
+	char *pem = NULL;
+	size_t len = 0;
+	struct stat st;
+
+	printf("a pooled key\n");
+	CHECK(pkicrypto_rsa_key_pem(&pem, &len, err, sizeof(err)) == 0 && pem != NULL && len > 0,
+	      "pem: %s", err);
+	if (pem == NULL)
+		return;
+	CHECK(len > 28 && memcmp(pem, "-----BEGIN PRIVATE KEY-----", 27) == 0,
+	      "the PEM is not PKCS#8 (\"BEGIN PRIVATE KEY\")");
+	CHECK(pkicrypto_key_file_write(path_in("pool.key"), pem, len, err, sizeof(err)) == 0,
+	      "write: %s", err);
+	explicit_bzero(pem, len);
+	free(pem);
+	CHECK(stat(path_in("pool.key"), &st) == 0 && (st.st_mode & 0777) == 0600,
+	      "pool.key mode is %o, not 0600", (unsigned)(st.st_mode & 0777));
+	CHECK(pkicrypto_ca_create(path_in("pool.key"), "Pooled Root", 30, path_in("pool.crt"), err,
+	                          sizeof(err)) == 0,
+	      "a CA from the pooled key: %s", err);
+	CHECK(pkicrypto_key_matches_cert(path_in("pool.key"), path_in("pool.crt"), err,
+	                                 sizeof(err)) == 1,
+	      "the pooled key does not match the certificate it signed: %s", err);
+}
+
 int main(void)
 {
 	char cmd[96];
@@ -424,6 +458,7 @@ int main(void)
 	test_export();
 	test_ed25519();
 	test_sha256();
+	test_pooled_key();
 	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_dir);
 	if (system(cmd) != 0)
 		printf("  (could not remove %s)\n", g_dir);

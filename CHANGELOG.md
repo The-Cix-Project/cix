@@ -27,6 +27,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **Also visible now:** the OS disk's free space read 0 bytes through the tcc `sfdisk`; on 0.2.57-583 it reads 16.7 GB, which is right.
 - **Verified:** compile probe 0.2.57-600 and the 584 release build each ran `test_boot PASS`, `SELFTEST: PASS`. A boot takes about 46 s under TCG.
 
+### Certificate keys are generated ahead of need (ADR-0353, #637)
+
+- **What changed:** cixd keeps four RSA-2048 keys ready, generated one at a time in a helper child while a CA exists. `pki.c` writes a pooled key when it needs a new one, and generates one in place when the pool is empty.
+- **Why:** key generation ran on the event loop for every root, intermediate and leaf: 0.1-0.4 s a leaf on 192.168.15.95, and 16-32 s for a CA bootstrap under qemu. A container's first create paid it on the loop, and no park can resume a create from its PKI step.
+- **Not changed:** a CA bootstrap still generates its keys in place, about 1 s once per install, and a reset reissuing more than four leaves generates the rest in place.
+- **Also:** a boot-image fetch failure no longer names `image_url` to a boot-manager request (#633's follow-up).
+
 ### A boot manager install fetches off the event loop (#633)
 
 - **What changed:** `POST /v1/system/boot-manager` runs its `url` fetch and the install in a helper child, parked like a system update (`PARK_BOOTMGR`). Its answers are unchanged, and it now has a `409` when another install is running and a `503` with `Retry-After` when no helper starts.

@@ -70,6 +70,33 @@ int pki_ca_bootstrapped(void)
 	return stat(g_ca_cert_path, &st) == 0 && stat(g_ca_key_path, &st) == 0;
 }
 
+static int (*g_key_take)(char **pem, size_t *len);
+
+void pki_set_key_source(int (*take)(char **pem, size_t *len))
+{
+	g_key_take = take;
+}
+
+/*
+ * ADR-0353: a new private key at key_path. A key from the source costs a
+ * file write; generating one costs RSA-2048 key generation, measured at
+ * 0.1-0.4 s per leaf on 192.168.15.95 (#637), which is why the daemon
+ * keeps a pool generated off its event loop.
+ */
+static int pki_key_create(const char *key_path, char *err, size_t err_size)
+{
+	char *pem = NULL;
+	size_t len = 0;
+	int rc;
+
+	if (g_key_take == NULL || g_key_take(&pem, &len) != 0 || pem == NULL)
+		return pkicrypto_rsa_key_create(key_path, err, err_size);
+	rc = pkicrypto_key_file_write(key_path, pem, len, err, err_size);
+	explicit_bzero(pem, len);
+	free(pem);
+	return rc;
+}
+
 static struct pki_cert_record *cert_find(const char *name)
 {
 	int i;
@@ -257,7 +284,7 @@ enum pki_error pki_ca_create(const char *common_name, int days)
 		return PKI_ERR_PERSIST_FAILED;
 
 	/* #351: in-process; it was `openssl genpkey` then `req -x509 -new`. */
-	if (pkicrypto_rsa_key_create(g_ca_key_path, errbuf, sizeof(errbuf)) != 0) {
+	if (pki_key_create(g_ca_key_path, errbuf, sizeof(errbuf)) != 0) {
 		fprintf(stderr, "pki: CA key generation failed: %s\n", errbuf);
 		unlink(g_ca_key_path);
 		return PKI_ERR_OPENSSL_FAILED;
@@ -342,7 +369,7 @@ enum pki_error pki_intermediate_create(const char *common_name, int days)
 	if (pki_intermediate_bootstrapped())
 		return PKI_ERR_ALREADY_BOOTSTRAPPED;
 
-	if (pkicrypto_rsa_key_create(g_intermediate_key_path, errbuf, sizeof(errbuf)) != 0) {
+	if (pki_key_create(g_intermediate_key_path, errbuf, sizeof(errbuf)) != 0) {
 		fprintf(stderr, "pki: intermediate key generation failed: %s\n", errbuf);
 		unlink(g_intermediate_key_path);
 		return PKI_ERR_OPENSSL_FAILED;
@@ -465,7 +492,7 @@ enum pki_error pki_cert_create(const char *name, const char *const *sans, int sa
 	}
 
 	/* 1. leaf keypair */
-	if (pkicrypto_rsa_key_create(key_path, errbuf, sizeof(errbuf)) != 0) {
+	if (pki_key_create(key_path, errbuf, sizeof(errbuf)) != 0) {
 		fprintf(stderr, "pki: key generation (leaf %s) failed: %s\n", name, errbuf);
 		unlink(key_path);
 		return PKI_ERR_OPENSSL_FAILED;
