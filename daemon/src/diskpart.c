@@ -1003,6 +1003,21 @@ static int run_tool_argv(const char *bin, char *const argv[])
 }
 
 /*
+ * -a is fsck.fat's non-interactive repair, the same mode as -y. Read
+ * from dosfstools 4.2's source by probe-fsckfat@1-2 on 192.168.15.95,
+ * 2026-10-23: in that mode check_dirty_bits() takes its default answer
+ * and clears both the boot sector's dirty bit and FAT32's clean-shutdown
+ * flag, and main() returns 1 when it wrote a change and 0 when there
+ * was none.
+ */
+int diskpart_fsck_fat(const char *dev_path)
+{
+	char *argv[] = { (char *)DISKPART_FSCK_FAT_BIN, "-a", (char *)dev_path, NULL };
+
+	return run_tool_argv(DISKPART_FSCK_FAT_BIN, argv);
+}
+
+/*
  * The pure size arithmetic of a grow, split out so it can be tested
  * without a block device (the sandbox has none). See the header for the
  * contract; the one subtlety is that want == current is allowed and

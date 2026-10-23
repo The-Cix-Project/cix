@@ -55,6 +55,11 @@
 #define DISKPART_RESIZE2FS_BIN "/usr/sbin/resize2fs"
 #define DISKPART_E2FSCK_BIN "/usr/sbin/e2fsck"
 /*
+ * #638: the FAT checker, run on the ESP at every boot. The kernel never
+ * clears a FAT dirty bit it found at mount, so only this can.
+ */
+#define DISKPART_FSCK_FAT_BIN "/usr/sbin/fsck.fat"
+/*
  * Issue #163: the btrfs multi-tool, for the other half of the same
  * two-step growth.
  *
@@ -175,6 +180,15 @@ int diskpart_os_layout_untouchable(const char *name, int is_os_disk, int is_part
  * Only meaningful immediately after a DISKPART_ERR_SFDISK_FAILED.
  */
 const char *diskpart_last_tool_error(void);
+
+/*
+ * Checks and repairs the FAT filesystem on dev_path, which must not be
+ * mounted (#638). fsck.fat's own status: 0 nothing to repair, 1 repairs
+ * written, anything else a failure; -1 when it could not be run, -2
+ * when it is not present. What it printed is in
+ * diskpart_last_tool_error() either way.
+ */
+int diskpart_fsck_fat(const char *dev_path);
 
 enum diskpart_error diskpart_create_table(const char *disk_name, const char *os_containers_dir);
 

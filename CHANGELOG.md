@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The ESP is checked at every boot and left clean at every reboot (#638)
+
+- **What changed:**
+  - At boot, cixd runs `fsck.fat -a` on the ESP before mounting it, and logs whether it was clean, repaired or not checked. A failure never stops the boot.
+  - Before `reboot(2)`, cixd remounts the ESP read-only and then unmounts it (0.2.57-589 and 590).
+  - `fsck.fat` joins the root's program set, from dosfstools in cix-hosttools 2.4.5.
+- **Why:** every boot on 192.168.15.95 logged "FAT-fs (vdb1): Volume was not properly unmounted" (293 boots). The shutdown change alone did not stop it. The kernel never clears a dirty bit it found at mount: `fat_set_state()` returns early when `sbi->dirty` is set (kernel 7.2.12, read by `probe-fatdirty@1-1`). So a volume left dirty once stays dirty through every clean shutdown after it, and only fsck.fat clears it. In `-a` mode it clears the boot-sector bit and FAT32's clean-shutdown flag (dosfstools 4.2, read by `probe-fsckfat@1-2`).
+
 ### A release proves its A/B fallback and a staged update boot (#584)
 
 - **What changed:** `test_boot_ab` and `test_boot_update` join `test_boot` in `BOOT_SELFTESTS`, from 0.2.57-585.
@@ -26,11 +34,6 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - `test_boot` had no `cix-config`.
 - **Also visible now:** the OS disk's free space read 0 bytes through the tcc `sfdisk`; on 0.2.57-583 it reads 16.7 GB, which is right.
 - **Verified:** compile probe 0.2.57-600 and the 584 release build each ran `test_boot PASS`, `SELFTEST: PASS`. A boot takes about 46 s under TCG.
-
-### A reboot leaves the ESP clean (#638)
-
-- **What changed:** before `reboot(2)`, cixd unmounts the ESP after its `sync()`, or remounts it read-only if something still holds it open.
-- **Why:** nothing did either, so vfat's dirty bit was never cleared. Every boot logged "FAT-fs (vdb1): Volume was not properly unmounted. Some data may be corrupt. Please run fsck." That is 293 boots and 293 lines on 192.168.15.95. The data was already flushed by the `sync()`, so this was a fault reported on every boot that was not one.
 
 ### Certificate keys are generated ahead of need (ADR-0353, #637)
 

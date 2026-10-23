@@ -62,6 +62,8 @@
 	X(BTRFS, "/usr/sbin/btrfs", CP_HOSTTOOLS, "btrfs-progs")                                    \
 	X(MKFS_EXT4, "/usr/sbin/mkfs.ext4", CP_HOSTTOOLS, "e2fsprogs")                              \
 	X(MKFS_BTRFS, "/usr/sbin/mkfs.btrfs", CP_HOSTTOOLS, "btrfs-progs")                          \
+	/* the ESP's check at every boot (#638) */                                                  \
+	X(FSCK_FAT, "/usr/sbin/fsck.fat", CP_HOSTTOOLS, "dosfstools")                               \
 	/* kernel modules */                                                                        \
 	X(MODPROBE, "/usr/bin/modprobe", CP_KMOD, "kmod")                                           \
 	X(MODINFO, "/usr/bin/modinfo", CP_KMOD, "kmod")

@@ -2793,7 +2793,33 @@ static int boot_init(void)
 	}
 	/* Needed to reach the loader entry confirm_boot() renames once this
 	 * boot proves healthy (Phase 11 part 2) -- writable, not read-only
-	 * like the root mounts, since that rename is a real write. */
+	 * like the root mounts, since that rename is a real write.
+	 *
+	 * Checked first, at every boot (#638). The kernel never clears a
+	 * FAT dirty bit it found at mount: fat_set_state() returns early
+	 * when sbi->dirty is set (fs/fat/inode.c, kernel 7.2.12, read by
+	 * probe-fatdirty@1-1), so a volume left dirty once stays dirty
+	 * through every clean shutdown after it, and .95's ESP warned
+	 * "Volume was not properly unmounted" at every boot. Only fsck.fat
+	 * clears it. Never fatal: this ESP booted while dirty, and refusing
+	 * a boot over the check would be worse than the bit. */
+	{
+		int frc = diskpart_fsck_fat(ESP_DEVICE);
+
+		if (frc == 0 || frc == 1)
+			logstore_write("cixd", "info", "boot: fsck.fat %s: %s (#638): %s", ESP_DEVICE,
+			                frc == 1 ? "repaired" : "clean", diskpart_last_tool_error());
+		else if (frc == -2)
+			logstore_write("cixd", "warn",
+			                "boot: " DISKPART_FSCK_FAT_BIN " is not present, so %s is "
+			                "mounted unchecked (#638)",
+			                ESP_DEVICE);
+		else
+			logstore_write("cixd", "warn",
+			                "boot: fsck.fat %s failed (status %d), mounting it as it is "
+			                "(#638): %s",
+			                ESP_DEVICE, frc, diskpart_last_tool_error());
+	}
 	if (mount_or_fail(ESP_DEVICE, ESP_DIR, "vfat", MS_NOSUID | MS_NODEV | MS_NOEXEC) != 0)
 		return -1;
 

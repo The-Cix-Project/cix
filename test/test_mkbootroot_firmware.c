@@ -50,9 +50,9 @@ static int run_mkbootroot2(const char *firmware_dir, const char *modules_dir,
 	 *
 	 * "/" is that root wherever this test legitimately runs. ADR-0078
 	 * defines the argument as an image's installed rootfs, and both a
-	 * real Cix host (whose own root carries exactly these nine
-	 * programs) and a composed build container that declares them are
-	 * one.
+	 * real Cix host (whose own root carries exactly the cix-hosttools
+	 * programs that list names) and a composed build container that
+	 * declares them are one.
 	 */
 	char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN,   (char *)STAGE_DIR,
 		                     (char *)"build/cixd",   (char *)"build/cixctl",
