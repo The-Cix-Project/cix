@@ -2445,6 +2445,20 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 316: a system update writes the slot off the event loop (#631, 0.2.57-582)
+
+`POST /v1/system/update` does its `image_url` fetch, its checks and its writes in a helper child, `update_work()`, and the request waits, parked as one more kind of ADR-0342's record (`PARK_UPDATE`). The child's verdict and held log lines come back through the connection's one `body_fd` slot. The nightly host roll stages through the same child (`HOSTROLL_STAGE`) and reboots from its completion. One slot is written at a time: a second update is a `409`, and `503` means no helper started, with the deploy approval checked first and spent only once the helper has started. Every boot entry for the slot is removed before the first write and the new one is written after the last, so a reboot part way through boots the running slot. An unreadable PARTUUID returned `-1` with no message; it is a `500` now, before any write. The boot-manager install's `url` fetch has its own file, because the update's child may be writing the shared one.
+
+**Why:** the stall record on .95 held `POST /v1/system/update (946 ms)` (2026-10-21), once per release and again at every host roll. It was the only reproducible loop stall left: `ar-1`'s creates stopped reproducing at 573 (#624), and nothing had stalled since 581 booted.
+
+**Gated:** `test_blocking_waits` has a seventh counted set, allowing `do_system_update(` only in its definition, `update_stage()` in the child, and `main()`'s pre-loop self-test. Every request in `test_system_update` now goes through the parked path. Compile probe 0.2.57-598: `SELFTEST: PASS`.
+
+**Measured on 192.168.15.95, 2026-10-23:**
+- 582 was staged by 581's old path onto slot a and booted there, with all 12 containers running.
+- Re-staging 582's own image onto slot b through the new path answered `staged slot=b updated=root,kernel`. The daemon logged `esp: removed a previous boot entry for slot b: cix-b.conf`, then `system update: staged root and kernel on slot b in 66 ms (#631)`: the child's lines, replayed in order.
+- `GET /v1/system/stalls` gained no record; its newest is still from before 581.
+- A reboot into slot b, the copy the child wrote, came up as 0.2.57-582, with its entry confirmed as `cix-b.conf` and all 12 containers running. Both slots hold 582 now, so 581 is no longer on the box as a rollback.
+
 ## Part 315: a backup carries only the recipes no source gives back (ADR-0351, #632, 0.2.57-581)
 
 `GET /v1/system/backup`'s `pkg_recipes` holds every stored version of a package no recipe source owns, decided per name by `pkgsource_owner_of()`, and nothing of a package a source owns. The bundle says so with `source_recipes_included: false`. `POST /v1/system/restore` starts a recipe sync through the scheduler's `action_pkg_sync()` and reports it in `recipe_sync`; `cixctl restore` prints it.
