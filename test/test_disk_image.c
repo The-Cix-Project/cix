@@ -20,6 +20,7 @@ extern char **environ;
  * on 192.168.15.95, 2026-10-23, by probe-cix-bootest@10-1, which died
  * here on "/usr/sbin/mkfs.vfat: No such file or directory" (cix#584). */
 #define MKFS_FAT_BIN "/usr/sbin/mkfs.fat"
+#define MKFS_BTRFS_BIN "/usr/sbin/mkfs.btrfs"
 #define MCOPY_BIN "/usr/bin/mcopy"
 #define MMD_BIN "/usr/bin/mmd"
 #define MREN_BIN "/usr/bin/mren"
@@ -297,6 +298,25 @@ int esp_mkfs(const char *esp_img)
 	char *argv[] = { (char *)MKFS_FAT_BIN, "-n", "ESP", (char *)esp_img, NULL };
 
 	return run_subprocess(MKFS_FAT_BIN, argv);
+}
+
+int config_partition_write(const char *disk_img, const char *img_path, long start_sectors,
+                           long size_sectors)
+{
+	char *argv[] = { (char *)MKFS_BTRFS_BIN, "-q", "-f", "-L", "cix-config", (char *)img_path,
+		         NULL };
+	int fd = open(img_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+
+	if (fd < 0 || ftruncate(fd, size_sectors * 512) != 0) {
+		perror(img_path);
+		if (fd >= 0)
+			close(fd);
+		return -1;
+	}
+	close(fd);
+	if (run_subprocess(MKFS_BTRFS_BIN, argv) != 0)
+		return -1;
+	return write_at_offset(disk_img, start_sectors * 512, img_path);
 }
 
 int esp_mmd(const char *esp_img, const char *esp_dir_path)

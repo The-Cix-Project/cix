@@ -39,7 +39,6 @@
 #define DISK_SIZE_BYTES (512 * 1024 * 1024)
 #define ESP_SIZE_MIB 64
 #define ROOT_SIZE_MIB 256
-#define MKFS_BTRFS_BIN "/usr/sbin/mkfs.btrfs"
 #define SECTOR_SIZE 512
 
 #define BOOT_TIMEOUT_SECONDS 120
@@ -230,28 +229,8 @@ int main(void)
 	if (write_at_offset(disk_img, root_start_sec * SECTOR_SIZE, root_squashfs) != 0)
 		return 1;
 
-	/* 4b. cix-config, the one writable platform partition cixd cannot
-	 * boot without: STATE_DIR lives on it (ADR-0232), and with none
-	 * /config is the read-only squashfs. probe-cix-bootest@13-1
-	 * stopped there, with "/config/state: Read-only file system", on
-	 * 192.168.15.95, 2026-10-23. Made on a plain file and written at
-	 * its offset like the ESP, so no loop device is needed. */
-	{
-		int fd = open(config_img, O_CREAT | O_WRONLY, 0644);
-		char *mkfs_argv[] = { (char *)MKFS_BTRFS_BIN, "-q", "-f", "-L", "cix-config",
-			              config_img, NULL };
-
-		if (fd < 0 || ftruncate(fd, config_size_sec * SECTOR_SIZE) != 0) {
-			perror(config_img);
-			if (fd >= 0)
-				close(fd);
-			return 1;
-		}
-		close(fd);
-		if (run_subprocess(MKFS_BTRFS_BIN, mkfs_argv) != 0)
-			return 1;
-	}
-	if (write_at_offset(disk_img, config_start_sec * SECTOR_SIZE, config_img) != 0)
+	/* 4b. cix-config (config_partition_write()). */
+	if (config_partition_write(disk_img, config_img, config_start_sec, config_size_sec) != 0)
 		return 1;
 
 	/* 5. Boot it. Software-emulated (no /dev/kvm in this dev LXC) --

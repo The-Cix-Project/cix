@@ -41,7 +41,9 @@
 #define BOOT_MANAGER_EFI "build/cix-boot.efi"
 #define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS.fd"
 
-#define DISK_SIZE_BYTES (384 * 1024 * 1024) /* 64MiB ESP + two 160MiB root slots */
+/* 64 MiB ESP, two 160 MiB root slots, and the rest as cix-config, which
+ * cixd cannot boot without (config_partition_write(), cix#584). */
+#define DISK_SIZE_BYTES (576 * 1024 * 1024)
 #define ESP_SIZE_MIB 64
 #define ROOT_SLOT_SIZE_MIB 160
 #define SECTOR_SIZE 512
@@ -149,6 +151,7 @@ int main(void)
 	char root_squashfs[600];
 	char disk_img[600];
 	char esp_img[600];
+	char config_img[600];
 	char ovmf_vars[600];
 	char sfdisk_dump[8192];
 	char captured[65536];
@@ -156,6 +159,7 @@ int main(void)
 	long esp_start_sec, esp_size_sec;
 	long a_start_sec, a_size_sec;
 	long b_start_sec, b_size_sec;
+	long config_start_sec, config_size_sec;
 	int attempt;
 	int saw_a = 0, saw_b = 0;
 	int b_confirmed_before_a_exhausted = 0;
@@ -169,6 +173,7 @@ int main(void)
 	snprintf(root_squashfs, sizeof(root_squashfs), "%s/root.squashfs", workdir);
 	snprintf(disk_img, sizeof(disk_img), "%s/disk.img", workdir);
 	snprintf(esp_img, sizeof(esp_img), "%s/esp.img", workdir);
+	snprintf(config_img, sizeof(config_img), "%s/config.img", workdir);
 	snprintf(ovmf_vars, sizeof(ovmf_vars), "%s/OVMF_VARS.fd", workdir);
 
 	/* 1. One root squashfs, shared by both slots -- see this file's own
@@ -219,8 +224,9 @@ int main(void)
 		         "label: gpt\n"
 		         "size=%dMiB, type=uefi, name=\"cix-esp\"\n"
 		         "size=%dMiB, type=linux, name=\"cix-root-a\"\n"
-		         "type=linux, name=\"cix-root-b\"\n",
-		         ESP_SIZE_MIB, ROOT_SLOT_SIZE_MIB);
+		         "size=%dMiB, type=linux, name=\"cix-root-b\"\n"
+		         "type=linux, name=\"cix-config\"\n",
+		         ESP_SIZE_MIB, ROOT_SLOT_SIZE_MIB, ROOT_SLOT_SIZE_MIB);
 		if (run_subprocess_stdin(SFDISK_BIN, sfdisk_argv, script) != 0)
 			return 1;
 	}
@@ -234,6 +240,8 @@ int main(void)
 		if (sfdisk_dump_offset(sfdisk_dump, 2, &a_start_sec, &a_size_sec) != 0)
 			return 1;
 		if (sfdisk_dump_offset(sfdisk_dump, 3, &b_start_sec, &b_size_sec) != 0)
+			return 1;
+		if (sfdisk_dump_offset(sfdisk_dump, 4, &config_start_sec, &config_size_sec) != 0)
 			return 1;
 	}
 
@@ -268,6 +276,8 @@ int main(void)
 	if (write_at_offset(disk_img, a_start_sec * SECTOR_SIZE, root_squashfs) != 0)
 		return 1;
 	if (write_at_offset(disk_img, b_start_sec * SECTOR_SIZE, root_squashfs) != 0)
+		return 1;
+	if (config_partition_write(disk_img, config_img, config_start_sec, config_size_sec) != 0)
 		return 1;
 
 	if (test_image_fixture_copy_file(OVMF_VARS_TEMPLATE, ovmf_vars) != 0)

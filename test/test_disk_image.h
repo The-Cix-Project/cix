@@ -83,6 +83,15 @@ int esp_mcopy_in(const char *esp_img, const char *host_src_path, const char *esp
 int esp_mcopy_out(const char *esp_img, const char *esp_src_path, const char *host_dst_path);
 int esp_mren(const char *esp_img, const char *esp_old_path, const char *esp_new_path);
 
+/* Makes cix-config, the one writable platform partition cixd cannot
+ * boot without (STATE_DIR is on it, ADR-0232): a btrfs filesystem
+ * labelled cix-config, made on a plain file at img_path and written into
+ * disk_img at start_sectors, the way cix-install makes it but with no
+ * loop device. probe-cix-bootest@13-1 stopped on a fixture without one,
+ * with "/config/state: Read-only file system" (cix#584). */
+int config_partition_write(const char *disk_img, const char *img_path, long start_sectors,
+                           long size_sectors);
+
 /* Squashes image_root into out_path via the real mksquashfs -- used by
  * any test that needs to build a bootable squashfs image beyond
  * build/mkbootroot's own control-plane one (e.g. test_installer.c's
