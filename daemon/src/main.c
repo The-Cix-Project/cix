@@ -31518,6 +31518,27 @@ static int helper_run_pid(int (*work)(void *), void *work_arg, void (*done)(int,
 		return -1;
 	}
 	if (pid == 0) {
+		/*
+		 * A helper never serves a request, so it must not hold the
+		 * daemon's listening sockets. SOCK_CLOEXEC does nothing here,
+		 * since a helper forks without exec'ing. A daemon restarted
+		 * while one of its helpers was still running found its port taken:
+		 * "create_listen_socket: bind: Address already in use", and
+		 * test_pki and test_layout_upgrade failed with "restarted daemon
+		 * never accepted connections" (probe-cix-compile@0.2.57-605,
+		 * 192.168.15.95, 2026-10-23). The key pool's fill child, which
+		 * runs right after a start (ADR-0353), was the first helper to
+		 * be alive at that moment routinely; any helper could be. The
+		 * fds are -1 when a listener is not open (main()).
+		 */
+		struct conn *const listeners[] = { &g_listener_conn, &g_https_listener_conn,
+			                           &g_lo_listener_conn, &g_lo_https_listener_conn };
+		size_t li;
+
+		for (li = 0; li < sizeof(listeners) / sizeof(listeners[0]); li++) {
+			if (listeners[li]->fd >= 0)
+				close(listeners[li]->fd);
+		}
 		/* The child must never return through the caller's stack: it
 		 * shares every fd and every atexit handler with a daemon that
 		 * is pid 1. _exit(), always. */
