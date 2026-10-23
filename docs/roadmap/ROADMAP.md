@@ -2445,6 +2445,16 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 314: the chart series palette is computed and gated (#601, 0.2.57-580)
+
+`--series-1` and `--series-2` are chosen per theme, both derived from Bus Blue the way `--phosphor-ink` derives from Phosphor: light `#1384b7`/`#414a94`, dark `#449ccc`/`#5460b3`. They were Bus Blue, Nickel and Copper for both themes; Nickel is the dark theme's `--muted`, Copper is `--accent`, and Bus Blue as specified is under 3:1 on the light `--bg`, under the chroma floor and outside the dark theme's lightness band. `--series-3` is gone, since nothing drew a third series. The network chart drew received and sent in one colour; sent is slot 2 now, with a legend (`seriesKey()`). The host's workload chart, one series, uses slot 1; the storage allocation chart's OS partition, which was Nickel beside free space in `--muted`, is slot 2.
+
+**Chosen how:** in OKLCH, against the dataviz method's thresholds, by hand arithmetic, and then measured by the gate rather than trusted.
+
+**Gated:** `test_web_palette`, new in `SELFTESTS`, computes per theme: lightness band and chroma floor; adjacent slots >= 15 apart (OKLab ΔE×100) under normal vision and >= 8 under protanopia and deuteranopia (Machado 2009); >= 3:1 against `--bg`; >= 8 from `--text`, `--muted`, `--accent`, `--ok`, `--paused` and `--error`; and both copies of each theme agreeing. Compile probe `0.2.57-596`: `test_web_palette PASS`, `SELFTEST: PASS`. The selftest runner prints a test's output only on failure, so the figures themselves are not in that log; running the binary prints them.
+
+**Measured on 192.168.15.95, 2026-10-23, on 0.2.57-580** (slot a, 12 containers running): the served `style.css` carries the four series declarations, and the container page rendered in Chromium from the box's own files, fed 30 synthetic samples, shows the network chart's two lines in distinct colours with the legend "received … / sent …" in both themes. The storage allocation chart was not rendered.
+
 ## Part 313: a system backup is made off the event loop (#630, #617, 0.2.57-579)
 
 `GET /v1/system/backup`, `POST /v1/system/backup-config/snapshot-now` and the `system.backup` schedule action make the bundle in a helper child, a fourth park kind (`PARK_BACKUP`) beside the credential check, the log read and the module job. The request waits and is answered with the same bytes. A log read and a backup share one result slot on the connection (`body_state`/`body_fd`) and one responder (`respond_json_from_fd()`), rather than two copies.
