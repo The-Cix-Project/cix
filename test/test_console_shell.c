@@ -51,12 +51,19 @@
  * fixed delay), on top of normal software-emulated boot time. */
 #define BOOT_TIMEOUT_SECONDS 150
 #define PANIC_MARKER "Kernel panic"
-/* Confirmed via a real full boot log grep: the bare word "ok" never
- * otherwise appears -- safe as a success marker precisely because the
- * script below never triggers "health" on the *first* shell instance,
- * only the respawned one, so its first-ever appearance in the captured
- * buffer can only mean the respawned instance answered a real API call. */
-#define SUCCESS_MARKER "ok"
+/* `health` prints "ok" on a line of its own (fmt_health()), and the
+ * console's cooked mode writes that line as "ok\r\n" after the "\r\n"
+ * that ends the echoed command -- so the marker is the line, not the
+ * word. It used to be the bare "ok", which this comment called safe
+ * because the word "never otherwise appears". It does: the boot prints
+ * ": Can't lookup blockdev" before any shell runs, "lookup" contains
+ * "ok", and probe-cix-bootest@18-1 on 192.168.15.95 (2026-10-23)
+ * reported CONSOLE SHELL RESULT: PASS on a console where every
+ * command's output was being lost to a pager that could not start
+ * (#636). Since the script triggers "health" only on the respawned
+ * shell, this line appearing means that instance answered a real API
+ * call. */
+#define SUCCESS_MARKER "\nok\r"
 
 static int build_esp_image(const char *esp_img, const char *workdir)
 {

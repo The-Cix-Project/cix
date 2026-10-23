@@ -19032,19 +19032,42 @@ static void pager_begin(int json_mode)
 {
 	const char *pager;
 	int fds[2];
+	int status_fds[2];
 	pid_t pid;
+	char failed;
+	ssize_t n;
 
 	if (g_pager_pid != -1 || json_mode || !isatty(STDOUT_FILENO))
 		return;
 	if (!pager_enabled_pref())
 		return;
 	pager = getenv("PAGER");
-	if (pager == NULL || pager[0] == '\0')
-		pager = "less -FRX";
 	/* An explicitly empty PAGER is the conventional way to say "no
-	 * pager", and is honoured rather than overridden. */
+	 * pager", and is honoured rather than overridden; only an unset one
+	 * gets the default. */
+	if (pager == NULL)
+		pager = "less -FRX";
+	if (pager[0] == '\0')
+		return;
 	if (pipe(fds) != 0)
 		return;
+	/*
+	 * #636: the child says whether it exec'd. A pager that cannot start
+	 * used to take every byte of the command's output with it: the
+	 * child exited 127, stdout was a pipe nobody read, and since cixd
+	 * runs the console shell with SIGPIPE ignored, the writes failed
+	 * with EPIPE and nothing said so. On a Cix host, which has no
+	 * /bin/sh, that was every command typed at the console --
+	 * measured by probe-cix-bootest@18-1 and @19-1, where
+	 * "pki ca bootstrap" printed nothing at all. The status pipe is
+	 * close-on-exec, so EOF means the exec succeeded and a byte means
+	 * it did not.
+	 */
+	if (pipe2(status_fds, O_CLOEXEC) != 0) {
+		close(fds[0]);
+		close(fds[1]);
+		return;
+	}
 
 	/*
 	 * #439: save the real stdout so pager_end() can put it back. The
@@ -19059,6 +19082,8 @@ static void pager_begin(int json_mode)
 	if (g_pager_saved_stdout < 0) {
 		close(fds[0]);
 		close(fds[1]);
+		close(status_fds[0]);
+		close(status_fds[1]);
 		return;
 	}
 
@@ -19066,18 +19091,36 @@ static void pager_begin(int json_mode)
 	if (pid < 0) {
 		close(fds[0]);
 		close(fds[1]);
+		close(status_fds[0]);
+		close(status_fds[1]);
 		close(g_pager_saved_stdout);
 		g_pager_saved_stdout = -1;
 		return; /* no pager is a fine outcome; failing the command is not */
 	}
 	if (pid == 0) {
 		close(fds[1]);
+		close(status_fds[0]);
 		dup2(fds[0], STDIN_FILENO);
 		close(fds[0]);
 		execl("/bin/sh", "sh", "-c", pager, (char *)NULL);
+		failed = 1;
+		(void)write(status_fds[1], &failed, 1);
 		_exit(127);
 	}
 	close(fds[0]);
+	close(status_fds[1]);
+	do {
+		n = read(status_fds[0], &failed, 1);
+	} while (n < 0 && errno == EINTR);
+	close(status_fds[0]);
+	if (n != 0) {
+		/* The pager never started: page nothing, and keep the output. */
+		close(fds[1]);
+		waitpid(pid, NULL, 0);
+		close(g_pager_saved_stdout);
+		g_pager_saved_stdout = -1;
+		return;
+	}
 	dup2(fds[1], STDOUT_FILENO);
 	close(fds[1]);
 	g_pager_pid = pid;
