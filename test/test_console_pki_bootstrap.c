@@ -40,7 +40,11 @@
 #define ESP_SIZE_MIB 64
 #define SECTOR_SIZE 512
 
-#define BOOT_TIMEOUT_SECONDS 120
+/* The boot AND the CA bootstrap, under TCG: probe-cix-bootest@18-1 timed
+ * out at 120 s with POST /v1/pki/ca still holding the loop 16142 ms
+ * after a ~60 s boot (192.168.15.95, 2026-10-23). 300 s is a measurement
+ * ceiling for @19-1, which records when the certificate arrives. */
+#define BOOT_TIMEOUT_SECONDS 300
 #define PANIC_MARKER "Kernel panic"
 /* cmd_pki_ca_bootstrap's own fmt_pki_ca formatter prints the real PEM
  * certificate on success -- this exact marker only ever appears if
