@@ -27,6 +27,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **Also visible now:** the OS disk's free space read 0 bytes through the tcc `sfdisk`; on 0.2.57-583 it reads 16.7 GB, which is right.
 - **Verified:** compile probe 0.2.57-600 and the 584 release build each ran `test_boot PASS`, `SELFTEST: PASS`. A boot takes about 46 s under TCG.
 
+### A boot manager install fetches off the event loop (#633)
+
+- **What changed:** `POST /v1/system/boot-manager` runs its `url` fetch and the install in a helper child, parked like a system update (`PARK_BOOTMGR`). Its answers are unchanged, and it now has a `409` when another install is running and a `503` with `Retry-After` when no helper starts.
+- **Why:** the fetch is bounded only by the shared curl guards, minutes in the worst case, and it held the whole control plane. It was the last `fetch_update_image()` caller on the loop.
+- **Shared:** the park record's body field and its constructor serve both kinds (`job_body`, `park_new_with_body()`).
+- **Gated:** `test_blocking_waits` counts `fetch_update_image(`, which is allowed only in its definition and the two staging functions.
+
 ### The console shows command output again (#636), and two console boot tests gate releases
 
 - **What changed:** cixctl's pager detects a pager that cannot start and pages nothing in that case, so the output reaches the terminal. On a Cix host, which has no `/bin/sh`, every console command's output had been lost. An empty `PAGER` now means no pager.

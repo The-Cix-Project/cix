@@ -1418,6 +1418,10 @@ static int update_running(void);
 static int update_submit(const char *body, size_t body_len);
 static int update_submit_daemon_job(const char *body);
 
+/* #633: a boot manager install runs in a helper child the same way. */
+static int bootmgr_running(void);
+static int bootmgr_submit(const char *body, size_t body_len);
+
 /* ADR-0348: what an explicit module load or unload left on its
  * connection. */
 enum kmodjob_state {
@@ -3829,8 +3833,9 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
  * request waits and the event loop does not (#631).
  *
  * Each caller names its own out_path. The boot-manager install fetches
- * with it too, on the loop, while an update's child may be fetching at
- * the same moment, so the two must never share a file (#631).
+ * with it too, in its own helper child since #633, and that child and an
+ * update's may run at the same moment, so the two must never share a
+ * file (#631).
  *
  * The checksum is required, not optional: this writes a boot slot, and
  * an image that arrives truncated or wrong would be discovered at the
@@ -25043,16 +25048,89 @@ static void handle_boot_manager_get(int fd)
 	jw_free(&w);
 }
 
+/*
+ * #633: what installing a boot manager found, from the helper child that
+ * did it. Fixed size, written whole into the memfd; held is
+ * logstore_hold()'s buffer, replayed by the parent.
+ */
+#define BOOTMGR_HELD_LOG_MAX 2048
+struct bootmgr_result {
+	int fetch_failed; /* the url could not be fetched or verified: msg says why */
+	int esp_err;      /* boot_manager_install()'s enum esp_error */
+	char msg[256];
+	char held[BOOTMGR_HELD_LOG_MAX];
+};
+
+/*
+ * #633: the whole install, fetch included. HELPER CHILD ONLY, through
+ * bootmgr_work(): a url fetch is bounded only by the shared curl guards,
+ * two attempts of up to 20 s connect plus 60 s silence, and it ran on
+ * the event loop until this moved, the last fetch_update_image() caller
+ * that did. The body was validated by handle_boot_manager_post().
+ */
+static void bootmgr_stage(const char *body, size_t body_len, struct bootmgr_result *r)
+{
+	struct json_value *root = json_parse(body, body_len);
+	const char *path = root != NULL ? json_as_string(json_object_get(root, "path")) : NULL;
+	const char *url = root != NULL ? json_as_string(json_object_get(root, "url")) : NULL;
+	const char *sha256_in = root != NULL ? json_as_string(json_object_get(root, "sha256")) : NULL;
+	const char *src = path;
+
+	if (url != NULL && url[0] != '\0') {
+		if (fetch_update_image(url, sha256_in, BOOT_MANAGER_FETCH_PATH, r->msg,
+		                       sizeof(r->msg)) != 0) {
+			r->fetch_failed = 1;
+			json_free(root);
+			return;
+		}
+		src = BOOT_MANAGER_FETCH_PATH;
+	}
+	r->esp_err = (int)boot_manager_install(src);
+	if (url != NULL && url[0] != '\0')
+		unlink(BOOT_MANAGER_FETCH_PATH);
+	json_free(root);
+}
+
+/* The resumed pass: what the child found, as the response it always was. */
+static void bootmgr_respond(int fd, const struct bootmgr_result *r)
+{
+	struct json_writer w;
+
+	if (r->fetch_failed) {
+		respond_error(fd, 400, "Bad Request", r->msg);
+		return;
+	}
+	if (r->esp_err == ESP_ERR_INVALID) {
+		respond_error(fd, 400, "Bad Request",
+		              "not a plausible boot manager binary (must start with the PE \"MZ\" "
+		              "magic and be a few KB to a few MB)");
+		return;
+	}
+	if (r->esp_err != ESP_OK) {
+		respond_esp_error(fd, (enum esp_error)r->esp_err, NULL);
+		return;
+	}
+	jw_init(&w);
+	write_boot_manager_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/*
+ * #633: the install runs in a helper child while the request waits
+ * (ADR-0342's park, one more kind), as a system update's staging does
+ * (#631). The body is checked on every pass, which costs nothing and
+ * writes nothing; the first pass then parks, and the pass after the
+ * child exits only reports what it found.
+ */
 static void handle_boot_manager_post(int fd, const char *body, size_t body_len)
 {
+	static struct bootmgr_result r; /* past 2 KB: not on the stack */
 	struct json_value *root = NULL;
 	const char *path;
 	const char *url;
-	const char *sha256_in;
-	char fetch_err[256];
-	const char *src;
-	enum esp_error err;
-	struct json_writer w;
+	int rfd = -1;
+	ssize_t got;
 
 	if (body == NULL || body_len == 0 || (root = json_parse(body, body_len)) == NULL) {
 		respond_error(fd, 400, "Bad Request", "body must be JSON");
@@ -25061,46 +25139,56 @@ static void handle_boot_manager_post(int fd, const char *body, size_t body_len)
 	}
 	path = json_as_string(json_object_get(root, "path"));
 	url = json_as_string(json_object_get(root, "url"));
-	sha256_in = json_as_string(json_object_get(root, "sha256"));
-
 	if ((path == NULL || path[0] == '\0') && (url == NULL || url[0] == '\0')) {
 		json_free(root);
 		respond_error(fd, 400, "Bad Request", "give either \"path\" or \"url\"+\"sha256\"");
 		return;
 	}
-
-	if (url != NULL && url[0] != '\0') {
-		if (fetch_update_image(url, sha256_in, BOOT_MANAGER_FETCH_PATH, fetch_err,
-		                       sizeof(fetch_err)) != 0) {
-			json_free(root);
-			respond_error(fd, 400, "Bad Request", fetch_err);
-			return;
-		}
-		src = BOOT_MANAGER_FETCH_PATH;
-	} else {
-		src = path;
-	}
-
-	err = boot_manager_install(src);
-	if (url != NULL && url[0] != '\0')
-		unlink(BOOT_MANAGER_FETCH_PATH);
 	json_free(root);
 
-	if (err == ESP_ERR_INVALID) {
-		respond_error(fd, 400, "Bad Request",
-		               "not a plausible boot manager binary (must start with the PE \"MZ\" "
-		               "magic and be a few KB to a few MB)");
+	switch (park_body_take(&rfd)) {
+	case PARK_ANSWER_ASK:
+		break;
+	case PARK_ANSWER_READY:
+		got = pread(rfd, &r, sizeof(r), 0);
+		close(rfd);
+		if (got == (ssize_t)sizeof(r)) {
+			bootmgr_respond(fd, &r);
+			return;
+		}
+		respond_error(fd, 500, "Internal Server Error",
+		              "the boot manager install ended without a result -- GET "
+		              "/v1/system/boot-manager says what is installed now");
 		return;
-	}
-	if (err != ESP_OK) {
-		respond_esp_error(fd, err, NULL);
+	case PARK_ANSWER_BUSY:
+		respond_error_hdrs(fd, 503, "Service Unavailable", "Retry-After: 5\r\n",
+		                   "no helper could be started to install the boot manager -- "
+		                   "nothing was written; try again shortly",
+		                   0);
+		return;
+	case PARK_ANSWER_FAILED:
+	default:
+		respond_error(fd, 500, "Internal Server Error",
+		              "the boot manager install ended without a result -- GET "
+		              "/v1/system/boot-manager says what is installed now");
 		return;
 	}
 
-	jw_init(&w);
-	write_boot_manager_json(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
+	/* One install at a time: two would race on BOOTX64.EFI.new and on
+	 * the fetch file. */
+	if (bootmgr_running()) {
+		respond_error(fd, 409, "Conflict",
+		              "a boot manager install is already running -- wait for it to answer, "
+		              "then retry");
+		return;
+	}
+	if (bootmgr_submit(body, body_len) != 0)
+		respond_error_hdrs(fd, 503, "Service Unavailable", "Retry-After: 5\r\n",
+		                   "no helper could be started to install the boot manager -- "
+		                   "nothing was written; try again shortly",
+		                   0);
+	/* Otherwise parked: nothing written now, so dispatch() announces
+	 * nothing on this pass, and the 200 of the resumed one does. */
 }
 
 static void handle_dns_provision(int fd, const char *body, size_t body_len)
@@ -32712,7 +32800,7 @@ static void conn_out_unlink(struct conn *cc)
 
 /* ---------- ADR-0340 (#609), ADR-0342 (#612): a request waits for work run off the loop ----------
  *
- * Five kinds of work make a request wait, and they share one mechanism:
+ * Six kinds of work make a request wait, and they share one mechanism:
  *
  *   - a credential check (ADR-0340): credcheck_ask() reaches
  *     cred_broker() below for the request being served;
@@ -32722,7 +32810,9 @@ static void conn_out_unlink(struct conn *cc)
  *     reaches kmod_broker();
  *   - a system backup (#630): backup_ask();
  *   - a system update (#631): handle_system_update() through
- *     update_submit().
+ *     update_submit();
+ *   - a boot manager install (#633): handle_boot_manager_post() through
+ *     bootmgr_submit().
  *
  * The module, backup and update queues also carry the daemon's own
  * work, which no request waits for: a plugged device's alias and a
@@ -32752,6 +32842,7 @@ enum park_kind {
 	PARK_KMOD,
 	PARK_BACKUP,
 	PARK_UPDATE,
+	PARK_BOOTMGR,
 	PARK_KINDS
 };
 
@@ -32776,10 +32867,11 @@ struct park {
 	/* PARK_BACKUP: where a snapshot goes on the backup disk; empty for
 	 * GET /v1/system/backup, whose bundle goes to the memfd */
 	char backup_target[PATH_MAX];
-	/* PARK_UPDATE (#631): the body to stage from, the request's own or
-	 * the host roll's; its struct update_result goes to the memfd */
-	char *update_body;
-	size_t update_body_len;
+	/* PARK_UPDATE (#631) and PARK_BOOTMGR (#633): the request body the
+	 * child works from (the host roll's, for its staging); the child's
+	 * verdict, struct update_result or bootmgr_result, goes to the memfd */
+	char *job_body;
+	size_t job_body_len;
 };
 
 /*
@@ -32801,6 +32893,8 @@ struct park {
  * inactive slot, a second write would interleave with the first on it,
  * and one queued behind would only overwrite what the first staged.
  * handle_system_update() refuses a second with a 409 before it asks.
+ * Boot manager installs: the same, one and none waiting (#633), since
+ * two would race on BOOTX64.EFI.new.
  */
 struct park_queue {
 	int running_max;
@@ -32822,6 +32916,7 @@ static struct park_queue g_park_q[PARK_KINDS] = {
 	[PARK_KMOD] = { .running_max = 1, .wait_max = KMOD_WAIT_MAX },
 	[PARK_BACKUP] = { .running_max = 1, .wait_max = BACKUP_WAIT_MAX },
 	[PARK_UPDATE] = { .running_max = 1, .wait_max = 0 },
+	[PARK_BOOTMGR] = { .running_max = 1, .wait_max = 0 },
 };
 
 static void serve_request(struct conn *cc);
@@ -32830,6 +32925,7 @@ static void logread_done(int exit_status, void *ctx);
 static void kmod_job_done(int exit_status, void *ctx);
 static void backup_done(int exit_status, void *ctx);
 static void update_done(int exit_status, void *ctx);
+static void bootmgr_done(int exit_status, void *ctx);
 
 static struct park *park_new(enum park_kind kind, struct conn *cc)
 {
@@ -32853,7 +32949,7 @@ static void park_free(struct park *p)
 	if (p->memfd >= 0)
 		close(p->memfd);
 	explicit_bzero(&p->rq, sizeof(p->rq));
-	free(p->update_body);
+	free(p->job_body);
 	free(p);
 }
 
@@ -33093,7 +33189,7 @@ static int update_work(void *arg)
 
 	memset(&r, 0, sizeof(r));
 	logstore_hold(r.held, sizeof(r.held));
-	update_stage(p->update_body, p->update_body_len, &r);
+	update_stage(p->job_body, p->job_body_len, &r);
 	r.took_ms = monotonic_ms() - t0;
 	while (off < sizeof(r)) {
 		ssize_t n = write(p->memfd, b + off, sizeof(r) - off);
@@ -33122,6 +33218,45 @@ static int update_start(struct park *p)
 	return 0;
 }
 
+/* The helper child of a boot manager install (#633): bootmgr_stage(),
+ * its verdict and held log lines into the memfd. What it writes is the
+ * ESP's boot manager and the fetch file. */
+static int bootmgr_work(void *arg)
+{
+	struct park *p = arg;
+	static struct bootmgr_result r;
+	const char *b = (const char *)&r;
+	size_t off = 0;
+
+	memset(&r, 0, sizeof(r));
+	logstore_hold(r.held, sizeof(r.held));
+	bootmgr_stage(p->job_body, p->job_body_len, &r);
+	while (off < sizeof(r)) {
+		ssize_t n = write(p->memfd, b + off, sizeof(r) - off);
+
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			return 1;
+		off += (size_t)n;
+	}
+	return 0;
+}
+
+static int bootmgr_start(struct park *p)
+{
+	p->memfd = memfd_create("cix-bootmgr", MFD_CLOEXEC);
+	if (p->memfd < 0)
+		return -1;
+	if (helper_run_pid(bootmgr_work, p, bootmgr_done, p, "a boot manager install", &p->pid) !=
+	    0) {
+		close(p->memfd);
+		p->memfd = -1;
+		return -1;
+	}
+	return 0;
+}
+
 static int park_start(struct park *p)
 {
 	int rc;
@@ -33138,6 +33273,9 @@ static int park_start(struct park *p)
 		break;
 	case PARK_UPDATE:
 		rc = update_start(p);
+		break;
+	case PARK_BOOTMGR:
+		rc = bootmgr_start(p);
 		break;
 	case PARK_KMOD:
 	default:
@@ -33189,7 +33327,8 @@ static void park_unavailable(struct conn *cc, enum park_kind kind)
 	cc->park = NULL;
 	if (kind == PARK_CRED)
 		cc->cred_state = CRED_UNAVAILABLE;
-	else if (kind == PARK_LOGREAD || kind == PARK_BACKUP || kind == PARK_UPDATE)
+	else if (kind == PARK_LOGREAD || kind == PARK_BACKUP || kind == PARK_UPDATE ||
+	         kind == PARK_BOOTMGR)
 		cc->body_state = PARK_BODY_UNAVAILABLE;
 	else
 		cc->kmod_state = KMODJOB_STATE_UNAVAILABLE;
@@ -33541,21 +33680,22 @@ static int update_running(void)
 
 /* A copy of the body to stage from, for the record: the request's
  * buffer is not the child's to keep. */
-static struct park *update_park_new(struct conn *cc, const char *body, size_t body_len)
+static struct park *park_new_with_body(enum park_kind kind, struct conn *cc, const char *body,
+                                      size_t body_len)
 {
-	struct park *p = park_new(PARK_UPDATE, cc);
+	struct park *p = park_new(kind, cc);
 
 	if (p == NULL)
 		return NULL;
-	p->update_body = malloc(body_len + 1);
-	if (p->update_body == NULL) {
+	p->job_body = malloc(body_len + 1);
+	if (p->job_body == NULL) {
 		park_free(p);
 		return NULL;
 	}
 	if (body_len > 0)
-		memcpy(p->update_body, body, body_len);
-	p->update_body[body_len] = '\0';
-	p->update_body_len = body_len;
+		memcpy(p->job_body, body, body_len);
+	p->job_body[body_len] = '\0';
+	p->job_body_len = body_len;
 	return p;
 }
 
@@ -33567,7 +33707,7 @@ static struct park *update_park_new(struct conn *cc, const char *body, size_t bo
  */
 static int update_submit(const char *body, size_t body_len)
 {
-	struct park *p = update_park_new(g_response_conn, body, body_len);
+	struct park *p = park_new_with_body(PARK_UPDATE, g_response_conn, body, body_len);
 
 	if (p == NULL)
 		return -1;
@@ -33577,7 +33717,7 @@ static int update_submit(const char *body, size_t body_len)
 /* The host roll's staging, with no request waiting for it. */
 static int update_submit_daemon_job(const char *body)
 {
-	struct park *p = update_park_new(NULL, body, strlen(body));
+	struct park *p = park_new_with_body(PARK_UPDATE, NULL, body, strlen(body));
 
 	if (p == NULL)
 		return -1;
@@ -33636,6 +33776,50 @@ static void update_done(int exit_status, void *ctx)
 		return;
 	}
 	park_body_done(p, have ? 0 : (exit_status != 0 ? exit_status : 1), "a system update");
+}
+
+/* #633: whether a boot manager install is running now. */
+static int bootmgr_running(void)
+{
+	return g_park_q[PARK_BOOTMGR].running > 0;
+}
+
+/* #633: parks the request being served on a helper that installs the boot
+ * manager; handle_boot_manager_post() has been told ASK and checked that
+ * none is running. 0 when parked; -1 when no helper could start. */
+static int bootmgr_submit(const char *body, size_t body_len)
+{
+	struct park *p = park_new_with_body(PARK_BOOTMGR, g_response_conn, body, body_len);
+
+	if (p == NULL)
+		return -1;
+	return park_body_submit(p) == PARK_ANSWER_ASK ? 0 : -1;
+}
+
+/* The install finished. Its log lines are written here, and a client
+ * that left is told nothing, so its outcome is said; a waiting request
+ * is served again with the verdict. */
+static void bootmgr_done(int exit_status, void *ctx)
+{
+	struct park *p = ctx;
+	static struct bootmgr_result r;
+	int have = exit_status == 0 && p->memfd >= 0 &&
+	           pread(p->memfd, &r, sizeof(r), 0) == (ssize_t)sizeof(r);
+
+	if (have) {
+		logstore_replay(r.held, sizeof(r.held));
+		if (p->cc == NULL) {
+			logstore_write("cixd", r.fetch_failed || r.esp_err != ESP_OK ? "error" : "info",
+			               "boot manager install, after the client had gone: %s",
+			               r.fetch_failed        ? r.msg
+			               : r.esp_err == ESP_OK ? "installed"
+			                                     : "refused or failed");
+			/* Nothing will be served, so dispatch() cannot announce. */
+			if (!r.fetch_failed && r.esp_err == ESP_OK)
+				events_announce_change("setBootManager");
+		}
+	}
+	park_body_done(p, have ? 0 : (exit_status != 0 ? exit_status : 1), "a boot manager install");
 }
 
 /* The schedule's snapshot, with no request waiting for it. 0 when it is

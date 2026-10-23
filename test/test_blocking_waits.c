@@ -543,14 +543,24 @@ static const char *const g_backup_calls[] = {
  * update_submit() or update_submit_daemon_job(), and main()'s
  * --test-update-image= self-test, which runs before there is a loop.
  */
+/*
+ * The fetch of a boot image is in the same set (#633): fetch_update_image()
+ * is bounded only by the shared curl guards, two attempts of up to 20 s
+ * connect plus 60 s silence. Its callers are update_stage() and
+ * bootmgr_stage(), each run only in its kind's helper child; the
+ * boot-manager install fetched on the loop until #633.
+ */
 static const struct call_budget g_update_budgets[] = {
 	{ "main.c", "do_system_update(", 3,
 	  "the definition, update_stage() in a helper child, and main()'s --test-update-image= "
 	  "self-test, before the loop" },
+	{ "main.c", "fetch_update_image(", 3,
+	  "the definition, and update_stage() and bootmgr_stage(), each in a helper child" },
 };
 
 static const char *const g_update_calls[] = {
 	"do_system_update(",
+	"fetch_update_image(",
 	NULL,
 };
 
@@ -585,9 +595,10 @@ static const struct call_set g_call_sets[] = {
 	  "child." },
 	{ "system update", g_update_budgets,
 	  (int)(sizeof(g_update_budgets) / sizeof(g_update_budgets[0])), g_update_calls,
-	  "Staging a slot copies a whole root image and a kernel and fsyncs both, and cixd has one "
-	  "event loop. Ask for it through update_submit() or update_submit_daemon_job() (#631), "
-	  "which stage it in a helper child." },
+	  "Staging a slot copies a whole root image and a kernel and fsyncs both, and fetching a "
+	  "boot image can take minutes, and cixd has one event loop. Ask for a slot through "
+	  "update_submit() or update_submit_daemon_job() (#631) and for a boot manager through "
+	  "bootmgr_submit() (#633), which do the work in a helper child." },
 };
 
 #define CALL_SET_COUNT ((int)(sizeof(g_call_sets) / sizeof(g_call_sets[0])))

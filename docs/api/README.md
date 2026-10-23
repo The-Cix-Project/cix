@@ -4126,6 +4126,8 @@ This is the one file every future boot depends on, for **both** A/B slots at onc
 
 Refused (`400`) unless the resolved file starts with the PE `MZ` magic and falls in a plausible size range — a shallow check, not a real PE parse, matching the same gate `cix`'s own recipe already applies to its own build output. Deliberately does **not** reboot, same as `update`: `GET /system/boot-manager` reports what is now installed (size, sha256, whether a backup exists) so an operator can verify before committing to a reboot that actually exercises it.
 
+The fetch and the install run off the daemon's event loop (#633): a `url` fetch is bounded only by the shared curl guards, which is minutes in the worst case, and it used to hold the whole control plane for that long. The request waits in a helper child and is answered when the binary is installed. One install runs at a time, so a second is `409`; a `503` with `Retry-After` means no helper could start, and nothing was written.
+
 `cixctl boot-manager [--path=FILE | --url=URL --sha256=HEX]` is the CLI surface; with no argument it reports what is currently installed.
 
 ## Host + package updates

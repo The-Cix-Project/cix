@@ -5207,10 +5207,13 @@ paths:
         squashfs and kernel, so it is written atomically (staged
         alongside the target, then renamed over it) and the outgoing
         binary is kept as \EFI\BOOT\BOOTX64.EFI.bak rather than deleted.
-        Deliberately synchronous and deliberately does NOT reboot --
-        call GET first to compare against what is about to be replaced,
-        and reboot separately once ready to actually exercise the new
-        binary.
+        Deliberately does NOT reboot -- call GET first to compare
+        against what is about to be replaced, and reboot separately
+        once ready to actually exercise the new binary. The fetch and
+        the install run in a helper child while the request waits
+        (#633), so the response still comes when the binary is
+        installed and the daemon serves everything else meanwhile; one
+        install runs at a time.
 
         Refused outright unless the resolved file starts with the PE
         "MZ" magic and falls within a plausible size range for this
@@ -5261,13 +5264,30 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: The ESP is mounted read-only
+          description: >
+            The ESP is mounted read-only, or another boot manager install
+            is still running (#633): retry once it has answered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The helper that installed the binary ended without a result
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "503":
-          description: No EFI System Partition is mounted on this host
+          description: >
+            No EFI System Partition is mounted on this host, or no helper
+            could be started to do the install (#633; then with
+            Retry-After, and nothing was written)
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                enum: [5]
+              description: Seconds to wait before retrying, when no helper could start.
           content:
             application/json:
               schema:
