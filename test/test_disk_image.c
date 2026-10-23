@@ -446,6 +446,17 @@ enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char
 		qemu_argv[argc++] = "user,id=n0";
 		qemu_argv[argc++] = "-device";
 		qemu_argv[argc++] = "virtio-net-pci,netdev=n0";
+	} else {
+		/*
+		 * And without one, q35 still makes its default e1000e, whose
+		 * ROM is missing the same way: test_boot, asking for no NIC,
+		 * died on `failed to find romfile "efi-e1000e.rom"` on
+		 * 192.168.15.95, 2026-10-23 (probe-cix-bootest@11-1). -nic
+		 * none removes the default device, which is how
+		 * probe-qemu-boot@4-1 booted.
+		 */
+		qemu_argv[argc++] = "-nic";
+		qemu_argv[argc++] = "none";
 	}
 	if (opts->direct_kernel != NULL) {
 		qemu_argv[argc++] = "-kernel";
