@@ -378,7 +378,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Never write an anchor into the root.** The root is published inside the installer ISO, so an anchor there would make every public install trust the owner's private CA. Anchors live in the state directory, in a bundle cixd writes and hands to libcurl as `CURLOPT_CAINFO`.
 - **`curlfetch_perform()` is the one TLS verifier against the default path.** A new HTTPS client in cixd goes through it, or it does not see the anchors.
 - **An anchor is never fetched,** because fetching is what needs it, and the catalogue cannot carry one for the same reason.
-- **The root's bundle switches to the package only after the site CA is registered on .95** (ADR-0350 rule 6), and that switch is verified by a pair: a forge commit succeeds, and a fetch from a host no anchor covers fails.
+- **The root's bundle is the `ca-certificates` package** since 0.2.57-577, staged by `stage_controlplane_files()`. On .95 the site CA is two anchors, the gibnet root and its intermediate, because the forge sends only its leaf. Removing them makes a forge sync fail with `unable to get local issuer certificate (20)` (measured 2026-10-23), so never remove them without adding them back in the same action. The two files are in `/usr/local/share/ca-certificates/gibnet-im-root.crt` here, intermediate first.
 
 ## One way to make an image
 

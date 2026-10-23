@@ -2445,6 +2445,21 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 311: the root's trust store is the ca-certificates package, release two (ADR-0350, #591, 0.2.57-577)
+
+`mkbootroot` stages `/etc/ssl/certs/ca-certificates.crt` from the `cix-hosttools` image's `ca-certificates` package through `stage_controlplane_files()`, beside `openssl.cnf`, and no longer copies the build host's. That was the last build-host file in the control-plane root. The root now trusts Mozilla's roots only; the site CA reaches cixd as a registered trust anchor and never enters the root or the installer ISO.
+
+**Order (ADR-0350 rule 6):** the site CA was registered on 192.168.15.95 before the release, as two anchors: `CN=gibnet Intermediate CA` (`90e7ba6a…bd44`) and `CN=gibnet Root` (`e395cb1c…d24d`). Both are needed. Measured with curl from the sandbox against `git.home.arpa`: trusting the intermediate alone verifies, the root alone fails with exit 60, because the forge sends only its own certificate. ADR-0350 rule 2 and the security guide carry the correction.
+
+**Gated:** compile probe `0.2.57-593` (commit 76efacf6) green, `SELFTEST: PASS`. No selftest assembles a root from a host-tools tree carrying `openssl.cnf`, so the new required file changes no gate.
+
+**Measured on 192.168.15.95, 2026-10-23, on 0.2.57-577** (slot b, 12 containers running). The assembly log reads `staged 2 control-plane files` where every earlier one read 1.
+- **The forge:** `pkg recipe commit` of two new probe recipes landed through the forge (commits `3bf86286`, `e54aaebc`), and a recipe sync ended `state=success`.
+- **The pair:** `probe-tls-public@1-1` fetched `https://badssl.com/` (11673 bytes, then the deliberate zero-checksum failure), and `probe-tls-untrusted@1-1` was refused: `https://untrusted-root.badssl.com/: SSL certificate OpenSSL verify result: self-signed certificate in certificate chain (19)`.
+- **What the anchors do:** with both anchors removed, a sync failed with `unable to get local issuer certificate (20)`; with them added back, under the same fingerprints, the next sync ended `state=success`. So the root's bundle carries public roots only, and the anchors are what reach the forge.
+
+**Next:** the Trust Anchors table cut the subject from its end, so the two gibnet rows read identically, and the form hint still said a root alone is enough. Both are fixed in the next part.
+
 ## Part 310: a host trusts its operator's CA by registration, release one (ADR-0350, #591, 0.2.57-576)
 
 A trust-anchor store: `GET`/`POST /v1/system/trust-anchors`, `DELETE /v1/system/trust-anchors/{fingerprint}`, `cixctl trust-anchors`, a Trust Anchors tab on Host › Configuration, a reconcile section of the config document and a field of the system backup. cixd writes the root's public roots plus every anchor to a bundle in the state directory, and `curlfetch_perform()` hands it to libcurl as `CURLOPT_CAINFO`. The root's own bundle is unchanged in this release.

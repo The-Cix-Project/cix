@@ -145,7 +145,7 @@ cixctl trust-anchors ls                            # fingerprint, kind, expiry, 
 cixctl trust-anchors rm <fingerprint>
 ```
 
-or **Host › Configuration › Trust Anchors** on the dashboard. Register the CA's root; an intermediate also works. It takes effect for the next fetch, with no reboot, and stays on this host: it never enters the installer image. A registered CA can vouch for any server to this host, so register only CAs you control. It is kept in the system backup and the config document, and a factory reset removes it.
+or **Host › Configuration › Trust Anchors** on the dashboard. Register the CA's root and, unless the server sends its intermediate itself, the intermediate as well, one certificate per `add`. A server that sends only its own certificate cannot be verified from the root alone: measured against `git.home.arpa` on 2026-10-23, the root alone failed with curl exit 60 and the intermediate made it verify. It takes effect for the next fetch, with no reboot, and stays on this host: it never enters the installer image. A registered CA can vouch for any server to this host, so register only CAs you control. It is kept in the system backup and the config document, and a factory reset removes it.
 
 ## Trusting the CA on your own device
 

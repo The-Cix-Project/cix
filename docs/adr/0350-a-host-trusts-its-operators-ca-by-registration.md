@@ -32,6 +32,7 @@ Read from the code at `78cd9145`.
 
 2. **What the store refuses.** The PEM must be exactly one X.509 certificate with `basicConstraints CA:TRUE`. A private key, an expired certificate, a duplicate and anything past a fixed count (16) are refused with the reason. Nothing fetches a certificate: the operator supplies the bytes. Inspection reuses `pkicrypto.c`'s certificate reading and fingerprinting.
    - **A root is what to register.** An intermediate is accepted too, because libcurl on OpenSSL accepts a partial chain unless `CURLSSLOPT_NO_PARTIALCHAIN` is set, and cixd does not set it. Release one's verification measures this against the forge rather than relying on the documentation.
+   - *Correction, 2026-10-23, measured:* against `git.home.arpa` the root alone is not enough. The forge sends only its own certificate, so with only `CN=gibnet Root` trusted curl fails with exit 60, and with `CN=gibnet Intermediate CA` trusted it verifies. Both are registered on .95, as two anchors, since an anchor is one certificate. Register the intermediate too whenever the server does not send it.
 
 3. **The root's bundle is the package's.** `mkbootroot` stages `/etc/ssl/certs/ca-certificates.crt` from the `ca-certificates` package in `cix-hosttools`, as ADR-0337 does every other root file, and no longer copies the build host's. No anchor is ever written into the root, so the installer ISO carries public roots only.
 
