@@ -2445,6 +2445,23 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 317: test_boot passes on a Cix host, and the root's sfdisk writes GPTs readers accept (#584, #634, 0.2.57-583)
+
+**`test_boot` ran on a Cix host for the first time and passed.** `probe-cix-bootest@14-1` built it from commit aed0790a and booted under Cix's qemu and OVMF: cix-boot, kernel 7.2.9, the squashfs root, and cixd as PID 1 with `cix-config` mounted from `/dev/vda3`, ending `cixd listening on` and `BOOT RESULT: PASS` in 45.8 s. Earlier revisions each stopped on a cause the next one fixed:
+
+- **sfdisk (#634).** util-linux was built with tcc, which ignores `packed`, and libfdisk lays the protective MBR over a packed struct. The partition record landed at 448 instead of 446, and the `0x55AA` signature was missing, so `sfdisk -d` found no table in an image `sfdisk` had just written (`od` of the image, `@9-1`). util-linux 2.42.2-4 is built with gcc (ADR-0226).
+- **Debian names in the harness.** It used `mkfs.vfat` (Cix's dosfstools ships `mkfs.fat`), systemd-boot (replaced by `cix-boot.efi`, ADR-0215) and `OVMF_VARS_4M.fd` (ovmf installs `OVMF_VARS.fd`).
+- **q35's default NIC** needs `efi-e1000e.rom`, which Cix's qemu does not ship (#587). The harness passes `-nic none` when it asks for no NIC.
+- **Partition labels.** cixd finds its partitions by GPT label since #305, and six boot fixtures still named them `ESP`/`root`, so the ESP mount failed with cixd as PID 1.
+- **cix-config.** STATE_DIR is on it (ADR-0232), and `test_boot` had none, so `/config/state` was read-only. The fixture makes a btrfs one on a plain file and writes it at its offset.
+
+**Released as 0.2.57-583**, whose root carries the gcc `sfdisk` from `cix-hosttools`. Booted on 192.168.15.95 slot a, 12 containers running. **The old build misread too:** `GET /v1/storage/vdb/free-space` answered 0 free bytes through 582 and answers 16,713,235,968 on 583. That is right: the five partitions end at sector 34,465,792 of a 34.4 GB disk.
+
+**Still open:**
+- `test_boot` is in no release gate.
+- The other six boot tests have not run.
+- Other tcc-built packages may lay on-disk formats over packed structs (#635).
+
 ## Part 316: a system update writes the slot off the event loop (#631, 0.2.57-582)
 
 `POST /v1/system/update` does its `image_url` fetch, its checks and its writes in a helper child, `update_work()`, and the request waits, parked as one more kind of ADR-0342's record (`PARK_UPDATE`). The child's verdict and held log lines come back through the connection's one `body_fd` slot. The nightly host roll stages through the same child (`HOSTROLL_STAGE`) and reboots from its completion. One slot is written at a time: a second update is a `409`, and `503` means no helper started, with the deploy approval checked first and spent only once the helper has started. Every boot entry for the slot is removed before the first write and the new one is written after the last, so a reboot part way through boots the running slot. An unreadable PARTUUID returned `-1` with no message; it is a `500` now, before any write. The boot-manager install's `url` fetch has its own file, because the update's child may be writing the shared one.
