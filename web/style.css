@@ -92,10 +92,20 @@
 	 * is in. These say which SERIES it is, and nothing more. Bus Blue
 	 * leads because the guidelines already give it "informational,
 	 * network/data-path emphasis".
+	 *
+	 * They are per theme, so they live in the four theme blocks below,
+	 * not here (#601). Two slots, both derived from Bus Blue the way
+	 * --phosphor-ink derives from Phosphor: Bus Blue as specified sits
+	 * outside the dark-theme lightness band and under the chroma floor,
+	 * and on light --bg it is under 3:1. Slot 2 turns toward indigo so
+	 * the pair differs in hue as well as lightness. Nickel and Copper
+	 * were slots 2 and 3, and are not series colours: Nickel is --muted
+	 * in the dark theme and Copper is --accent. test_web_palette
+	 * computes every rule a series palette must pass, in both themes,
+	 * and prints the numbers; there is no third slot because nothing
+	 * draws a third series, and a chart that needs one folds into
+	 * "Other" or becomes small multiples (web-ux-guidelines.md).
 	 */
-	--series-1: var(--bus-blue);
-	--series-2: var(--nickel);
-	--series-3: var(--copper);
 
 	--phosphor-ink: #4f7a12;
 	--amber-ink: #8a6410;
@@ -120,6 +130,8 @@
 	--panel: var(--paper);
 	--text: var(--carbon);
 	--muted: #6b767d;
+	--series-1: #1384b7;
+	--series-2: #414a94;
 	--border: #d5cec0;
 	--accent: var(--copper);
 	--ok: var(--phosphor-ink);
@@ -164,6 +176,8 @@
 		--panel: var(--ferrite);
 		--text: var(--paper);
 		--muted: var(--nickel);
+		--series-1: #449ccc;
+		--series-2: #5460b3;
 		--border: var(--machined);
 		--accent: var(--copper);
 		--ok: var(--phosphor);
@@ -210,6 +224,8 @@
 	--panel: var(--paper);
 	--text: var(--carbon);
 	--muted: #6b767d;
+	--series-1: #1384b7;
+	--series-2: #414a94;
 	--border: #d5cec0;
 	--accent: var(--copper);
 	--ok: var(--phosphor-ink);
@@ -245,6 +261,8 @@
 	--panel: var(--ferrite);
 	--text: var(--paper);
 	--muted: var(--nickel);
+	--series-1: #449ccc;
+	--series-2: #5460b3;
 	--border: var(--machined);
 	--accent: var(--copper);
 	--ok: var(--phosphor);
@@ -1959,6 +1977,18 @@ td.empty-refused {
 	margin-top: 0.4rem;
 }
 
+/* A chart legend's swatch: the series colour on a mark, never on text. */
+.series-key {
+	display: inline-block;
+	width: 0.75em;
+	height: 0.75em;
+	margin-right: 0.3em;
+	border-radius: 2px;
+	vertical-align: -0.05em;
+}
+.series-key-1 { background: var(--series-1); }
+.series-key-2 { background: var(--series-2); }
+
 .detail-actions {
 	display: flex;
 	gap: 0.75rem;
@@ -2767,8 +2797,10 @@ body.console-popout #content-scroll {
  * colouring." The chart used to cycle eight hsl() hues computed in
  * app.js, defined for neither theme (#592). Three classes, all tokens:
  * an operator's partition (or a filesystem's used space), a protected
- * OS partition -- nickel, the "cannot be touched" neutral -- and free
- * space, the muted ink at reduced opacity.
+ * OS partition, and free space, the muted ink at reduced opacity. The
+ * OS partition was Nickel until #601, which made it the same colour as
+ * the dark theme's --muted that free space is drawn in; it is series
+ * slot 2 now, which test_web_palette checks against slot 1.
  */
 .alloc-seg-part { stroke: var(--series-1); }
 .alloc-seg-os { stroke: var(--series-2); }

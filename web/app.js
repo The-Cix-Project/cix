@@ -4361,6 +4361,16 @@ function seriesColor(n) {
 	return v || "#5fa8d3";
 }
 
+/* A legend swatch for series slot n; the text beside it stays in the
+ * text tokens (web-ux-guidelines.md). */
+function seriesKey(n) {
+	const key = document.createElement("span");
+
+	key.className = "series-key series-key-" + n;
+	key.setAttribute("aria-hidden", "true");
+	return key;
+}
+
 function drawChart(canvas, series, opts) {
 	const ctx = canvas.getContext("2d");
 	const w = canvas.width;
@@ -4555,14 +4565,23 @@ function renderStatsCharts() {
 		document.getElementById("cd-stats-net"),
 		[
 			{ values: rxRates, color: seriesColor(1) },
-			{ values: txRates, color: seriesColor(1) },
+			{ values: txRates, color: seriesColor(2) },
 		],
 		{ times: rateTimes, formatY: (v) => formatBytes(v) + "/s" }
 	);
-	document.getElementById("cd-stats-net-label").textContent =
-		rxRates.length > 0
-			? formatBytes(rxRates[rxRates.length - 1]) + "/s ↓  " + formatBytes(txRates[txRates.length - 1]) + "/s ↑"
-			: "…";
+	/* Two series, so a legend: both lines were slot 1 until #601, told
+	 * apart by nothing on the chart itself. */
+	{
+		const label = document.getElementById("cd-stats-net-label");
+
+		if (rxRates.length > 0) {
+			label.replaceChildren(
+				seriesKey(1), "received " + formatBytes(rxRates[rxRates.length - 1]) + "/s  ",
+				seriesKey(2), "sent " + formatBytes(txRates[txRates.length - 1]) + "/s");
+		} else {
+			label.textContent = "…";
+		}
+	}
 
 	/* PSI avg10 is already a 0-100 rolling percentage straight from the
 	 * kernel (cpu.pressure/memory.pressure "some" line) -- a gauge like
@@ -4751,7 +4770,7 @@ function renderHostStatsCharts() {
 
 			wcard.hidden = false;
 			drawChart(document.getElementById("hs-stats-workload"),
-			          [{ values: wvalues, color: seriesColor(2) }], {
+			          [{ values: wvalues, color: seriesColor(1) }], {
 				times: gaugeTimes,
 				maxY: limited ? last.workloadLimit : (last.memTotal || 0),
 				formatY: formatBytes,

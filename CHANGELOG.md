@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The chart series palette is computed and gated (#601)
+
+- **What changed:** `--series-1` and `--series-2` are chosen per theme, both derived from Bus Blue: light `#1384b7`/`#414a94`, dark `#449ccc`/`#5460b3`. They were Bus Blue, Nickel and Copper for both themes. Nickel is the dark theme's `--muted` and Copper is `--accent`, and Bus Blue itself is under 3:1 on the light `--bg`, under the chroma floor, and outside the dark theme's lightness band. `--series-3` is removed: nothing drew a third series.
+- **The network chart** drew received and sent in the same colour with nothing but an arrow in the text to tell them apart. Sent is slot 2 now, and the line under the chart is a legend: a swatch per series and "received … / sent …" in the text colour. The host's workload chart, one series, uses slot 1. The storage allocation chart's OS partition, which was Nickel beside free space in `--muted`, is slot 2.
+- **Verified:** `test_web_palette` (in `SELFTESTS`) computes, per theme, the lightness band, the chroma floor, adjacent-slot separation under normal vision (15) and simulated protanopia and deuteranopia (8, Machado 2009), contrast against `--bg` (3:1), distance from every reserved colour (8), and agreement between the two copies of each theme block, and prints every figure.
+
 ### A system backup is made off the event loop (#630, #617)
 
 - **What changed:** `GET /v1/system/backup`, `POST /v1/system/backup-config/snapshot-now` and the `system.backup` schedule action make the bundle in a helper child instead of on the event loop. The request waits, parked like a filtered log read (ADR-0342), and is answered with the same bytes as before. One backup runs at a time with up to 4 waiting; beyond that, `503` with `Retry-After: 5`. A download whose client leaves is killed; a snapshot to the backup disk always finishes and records its outcome, whoever asked.
