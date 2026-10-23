@@ -39365,22 +39365,33 @@ static int cixd_main(int argc, char **argv)
 	 * SHUTDOWN_ACTION_POWEROFF; the same tests already send cixd
 	 * SIGTERM to end sessions today). */
 	if (init_mode) {
-		sync();
 		/*
 		 * #638: leave the ESP clean. vfat sets a dirty bit when it is
-		 * mounted and clears it only when it is unmounted or remounted
-		 * read-only, and nothing did either, so every boot logged
-		 * "FAT-fs (vdb1): Volume was not properly unmounted. Some data
-		 * may be corrupt. Please run fsck." -- 293 boots, 293 lines, on
-		 * 192.168.15.95 (2026-10-23). The sync above already flushed
-		 * the data; this is what tells the next boot so. Read-only is
-		 * the fallback for an ESP something still holds open, which
-		 * refuses the unmount but not the remount.
+		 * mounted and clears it only when the filesystem is remounted
+		 * read-only or its last mount goes, and nothing did either, so
+		 * every boot logged "FAT-fs (vdb1): Volume was not properly
+		 * unmounted. Some data may be corrupt. Please run fsck." -- 293
+		 * boots, 293 lines, on 192.168.15.95 (2026-10-23).
+		 *
+		 * Read-only FIRST. 0.2.57-589 unmounted first and the next boot
+		 * still logged the warning: an unmount here detaches this
+		 * namespace's mount, and the filesystem lives on wherever else
+		 * it is mounted, so the bit stays set. A remount acts on the
+		 * filesystem itself. Each outcome goes into the log store
+		 * before the sync below, because stderr reaches only the
+		 * console and 589 left no trace of why it failed.
 		 */
-		if (umount2(ESP_DIR, 0) != 0 &&
-		    mount(NULL, ESP_DIR, NULL, MS_REMOUNT | MS_RDONLY, NULL) != 0)
-			fprintf(stderr, "%s: could not unmount or remount read-only: %s\n", ESP_DIR,
-			        strerror(errno));
+		if (mount(NULL, ESP_DIR, NULL, MS_REMOUNT | MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC,
+		          NULL) != 0)
+			logstore_write("cixd", "warn",
+			               "shutdown: could not remount %s read-only (%s) -- the next boot "
+			               "will report it was not properly unmounted (#638)",
+			               ESP_DIR, strerror(errno));
+		else if (umount2(ESP_DIR, 0) != 0)
+			logstore_write("cixd", "info",
+			               "shutdown: %s is read-only and stays mounted (%s) (#638)",
+			               ESP_DIR, strerror(errno));
+		sync();
 		reboot(g_shutdown_action == SHUTDOWN_ACTION_REBOOT ? RB_AUTOBOOT : RB_POWER_OFF);
 		perror("reboot");
 		return 1;
