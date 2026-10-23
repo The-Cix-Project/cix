@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### nslcd stops cleanly: an image can carry libgcc_s.so.1 without a compiler (#639)
+
+- **What changed (cix-recipes):** a new `libgcc-s@16.2.0-2` package carries gcc's `libgcc_s.so.1`, byte for byte, from the gcc 16.2.0-19 artifact, and `replaces { package "gcc" }` for that path. `nss-pam-ldapd@0.9.13-8` depends on it, and `jumpbox` 2.9.7 pins both.
+- **Why:** glibc `dlopen()`s `libgcc_s.so.1` by name to unwind a thread in `pthread_cancel()`, and aborts when it is absent. No ELF walk sees that dependency, so nothing put the library into images. nslcd in `jump` aborted on every stop (`libgcc_s.so.1 must be installed for pthread_cancel to work`, then `killed by signal 6`), 347 times in its retained log.
+- **Verified:** on 192.168.15.95, the last abort was at ts 1792781651. The three stops since (ts 1792782005, 1792785663, 1792789209) each logged `service nslcd exited with status 0`.
+
 ### The ESP is checked at every boot and left clean at every reboot (#638)
 
 - **What changed:**

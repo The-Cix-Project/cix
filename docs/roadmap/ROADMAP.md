@@ -2445,6 +2445,12 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 322: nslcd stops cleanly, with libgcc_s.so.1 as its own package (#639)
+
+glibc `dlopen()`s `libgcc_s.so.1` to unwind a cancelled thread, and nslcd in `jump` aborted on every stop without it (347 times in its retained log). `libgcc-s@16.2.0-2` (cix-recipes) carries gcc's own copy, checked byte-identical to the gcc 16.2.0-19 artifact's, so an image gets the library without a compiler. `nss-pam-ldapd@0.9.13-8` depends on it and `jumpbox` 2.9.7 pins both.
+
+**Measured on 192.168.15.95, 2026-10-23:** the last `killed by signal 6` was at ts 1792781651. The three stops after jump moved to the new image (ts 1792782005, 1792785663, 1792789209) each logged `service nslcd exited with status 0`, with no `must be installed` line.
+
 ## Part 321: the ESP is checked at every boot and left clean at every reboot (#638, 0.2.57-589 to 592)
 
 Every boot of 192.168.15.95 warned `FAT-fs (vdb1): Volume was not properly unmounted` (293 boots). The kernel never clears a FAT dirty bit it found at mount (`fat_set_state()` returns early when `sbi->dirty` is set, kernel 7.2.12, read by `probe-fatdirty@1-1`), so no shutdown can repair a volume already dirty. Now:
