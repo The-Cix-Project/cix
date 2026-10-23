@@ -39366,6 +39366,21 @@ static int cixd_main(int argc, char **argv)
 	 * SIGTERM to end sessions today). */
 	if (init_mode) {
 		sync();
+		/*
+		 * #638: leave the ESP clean. vfat sets a dirty bit when it is
+		 * mounted and clears it only when it is unmounted or remounted
+		 * read-only, and nothing did either, so every boot logged
+		 * "FAT-fs (vdb1): Volume was not properly unmounted. Some data
+		 * may be corrupt. Please run fsck." -- 293 boots, 293 lines, on
+		 * 192.168.15.95 (2026-10-23). The sync above already flushed
+		 * the data; this is what tells the next boot so. Read-only is
+		 * the fallback for an ESP something still holds open, which
+		 * refuses the unmount but not the remount.
+		 */
+		if (umount2(ESP_DIR, 0) != 0 &&
+		    mount(NULL, ESP_DIR, NULL, MS_REMOUNT | MS_RDONLY, NULL) != 0)
+			fprintf(stderr, "%s: could not unmount or remount read-only: %s\n", ESP_DIR,
+			        strerror(errno));
 		reboot(g_shutdown_action == SHUTDOWN_ACTION_REBOOT ? RB_AUTOBOOT : RB_POWER_OFF);
 		perror("reboot");
 		return 1;

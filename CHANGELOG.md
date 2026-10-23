@@ -27,6 +27,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **Also visible now:** the OS disk's free space read 0 bytes through the tcc `sfdisk`; on 0.2.57-583 it reads 16.7 GB, which is right.
 - **Verified:** compile probe 0.2.57-600 and the 584 release build each ran `test_boot PASS`, `SELFTEST: PASS`. A boot takes about 46 s under TCG.
 
+### A reboot leaves the ESP clean (#638)
+
+- **What changed:** before `reboot(2)`, cixd unmounts the ESP after its `sync()`, or remounts it read-only if something still holds it open.
+- **Why:** nothing did either, so vfat's dirty bit was never cleared. Every boot logged "FAT-fs (vdb1): Volume was not properly unmounted. Some data may be corrupt. Please run fsck." That is 293 boots and 293 lines on 192.168.15.95. The data was already flushed by the `sync()`, so this was a fault reported on every boot that was not one.
+
 ### Certificate keys are generated ahead of need (ADR-0353, #637)
 
 - **What changed:** cixd keeps four RSA-2048 keys ready, generated one at a time in a helper child while a CA exists. `pki.c` writes a pooled key when it needs a new one, and generates one in place when the pool is empty.
