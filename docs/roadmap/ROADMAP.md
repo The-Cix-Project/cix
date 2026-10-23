@@ -2445,6 +2445,15 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 319: a boot manager install fetches off the event loop (#633, 0.2.57-587)
+
+`POST /v1/system/boot-manager` runs its `url` fetch and the install in a helper child, parked as `PARK_BOOTMGR`, with one install at a time. It was the last `fetch_update_image()` caller on the loop, bounded only by the shared curl guards (minutes in the worst case). `test_blocking_waits` now counts that call too.
+
+**Measured on 192.168.15.95, 2026-10-23, on 587** (slot a, 12 containers running), without writing anything:
+- A non-PE path answered 400 in 3.8 ms, and a url the LAN cache does not have answered 400 in 6.7 ms, both through the child.
+- The installed boot manager was unchanged (12288 bytes, sha256 1b3ed3ff, backup present).
+- Compile probe 0.2.57-604 and the 587 release build: all five boot tests and `SELFTEST: PASS`.
+
 ## Part 318: the console shows its output again, and a release proves it (#636, #584, #635, 0.2.57-586)
 
 **Every command typed at a Cix host's console lost its output (#636).** `pager_begin()` ran `/bin/sh -c "less -FRX"`, and a Cix host has no `/bin/sh`, so the child exited 127. cixd runs the console shell with `SIGPIPE` ignored, so the writes into the dead pipe failed with `EPIPE` and nothing said so. Found by `test_console_pki_bootstrap`, whose `pki ca bootstrap` did its work and printed nothing. The child now reports exec failure over a close-on-exec status pipe, and on failure nothing is paged. An empty `PAGER` means no pager, as its comment already said.
