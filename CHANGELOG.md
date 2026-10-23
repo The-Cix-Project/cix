@@ -27,6 +27,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **Also visible now:** the OS disk's free space read 0 bytes through the tcc `sfdisk`; on 0.2.57-583 it reads 16.7 GB, which is right.
 - **Verified:** compile probe 0.2.57-600 and the 584 release build each ran `test_boot PASS`, `SELFTEST: PASS`. A boot takes about 46 s under TCG.
 
+### The console shows command output again (#636), and two console boot tests gate releases
+
+- **What changed:** cixctl's pager detects a pager that cannot start and pages nothing in that case, so the output reaches the terminal. On a Cix host, which has no `/bin/sh`, every console command's output had been lost. An empty `PAGER` now means no pager.
+- **Tests:**
+  - `test_console_shell` waits for the line `ok`, not the word, which the boot log already contained.
+  - It and `test_console_pki_bootstrap` join `BOOT_SELFTESTS`, both with 300 s budgets measured under the full selftest.
+- **Released as 0.2.57-586**, whose release build passed all five boot tests.
+
 ### TRADEMARK.md says what an official Cix artifact is
 
 - **What changed:** two sections, at the owner's request (2026-10-23).

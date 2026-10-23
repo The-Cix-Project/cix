@@ -2445,6 +2445,22 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 318: the console shows its output again, and a release proves it (#636, #584, #635, 0.2.57-586)
+
+**Every command typed at a Cix host's console lost its output (#636).** `pager_begin()` ran `/bin/sh -c "less -FRX"`, and a Cix host has no `/bin/sh`, so the child exited 127. cixd runs the console shell with `SIGPIPE` ignored, so the writes into the dead pipe failed with `EPIPE` and nothing said so. Found by `test_console_pki_bootstrap`, whose `pki ca bootstrap` did its work and printed nothing. The child now reports exec failure over a close-on-exec status pipe, and on failure nothing is paged. An empty `PAGER` means no pager, as its comment already said.
+
+**The test that should have caught it was a false pass.** `test_console_shell` waited for the bare word `ok`, which the boot's `Can't lookup blockdev` contains. It waits for the line `ok` now.
+
+**Gated from 586.** `test_console_shell` and `test_console_pki_bootstrap` join `BOOT_SELFTESTS`, the owner's decision. Both now have 300 s budgets. In the full selftest the shell test's respawned prompt arrived just as 150 s ran out, and alone it takes 59 s. The PKI test's CA key generation holds the loop 16–32 s under TCG (#637). Compile probe 0.2.57-603 and the 586 release build ran all five boot tests and passed. 586 booted on .95 slot b with 12 containers running.
+
+**#635 is closed.** No other checked tcc-built package lays an on-disk format out differently without `packed`:
+- libblkid is built with gcc.
+- libuuid and CBS have no packed structs.
+- squashfs-tools' packed structs are formats 1–3, which Cix never uses.
+- e2fsprogs' ext4 and quota structs are naturally aligned.
+
+**Still open on #584:** `test_installer` needs a Secure Boot OVMF, and `test_console_pkg_bootstrap` needs its toolchain input.
+
 ## Part 317: test_boot passes on a Cix host, and the root's sfdisk writes GPTs readers accept (#584, #634, 0.2.57-583)
 
 **`test_boot` ran on a Cix host for the first time and passed.** `probe-cix-bootest@14-1` built it from commit aed0790a and booted under Cix's qemu and OVMF: cix-boot, kernel 7.2.9, the squashfs root, and cixd as PID 1 with `cix-config` mounted from `/dev/vda3`, ending `cixd listening on` and `BOOT RESULT: PASS` in 45.8 s. Earlier revisions each stopped on a cause the next one fixed:
