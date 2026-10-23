@@ -6,6 +6,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A backup carries only the recipes no source gives back (ADR-0351, #632)
+
+- **What changed:** `GET /v1/system/backup`'s `pkg_recipes` now holds every stored version of a package no recipe source owns, and nothing of a package a source owns. The bundle says so with `source_recipes_included: false`. `POST /v1/system/restore` starts a recipe sync and reports it in `recipe_sync`.
+- **Why:** git is authoritative for a package its source owns (ADR-0324), and on 192.168.15.95 1558 of the 1620 stored versions were in git, 13.2 MB of an 18.5 MB bundle. The other 62 were probes plus withdrawn or superseded revisions, none installed or referenced. The owner decided they need not be kept.
+- **Still off the loop:** the backup walks the whole store and only the operator bounds how many recipes no source owns, so it stays in its helper child (#630).
+- **Verified:** `test_system_backup` asserts `source_recipes_included` and the restore's `recipe_sync`. Its daemon has no source, so it still proves every unowned recipe is carried.
+
 ### The chart series palette is computed and gated (#601)
 
 - **What changed:** `--series-1` and `--series-2` are chosen per theme, both derived from Bus Blue: light `#1384b7`/`#414a94`, dark `#449ccc`/`#5460b3`. They were Bus Blue, Nickel and Copper for both themes. Nickel is the dark theme's `--muted` and Copper is `--accent`, and Bus Blue itself is under 3:1 on the light `--bg`, under the chroma floor, and outside the dark theme's lightness band. `--series-3` is removed: nothing drew a third series.

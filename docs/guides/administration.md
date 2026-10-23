@@ -98,7 +98,7 @@ Every hotplug-driven grant or revocation is written to the consolidated log (`ci
 cixctl backup --output=backup.json
 ```
 
-Bundles container definitions, networks, DNS records, the volume registry, package install state + recipes, and site config into one file, saved byte-for-byte for later use with `cixctl restore --input=backup.json`. Read the fine print before relying on this for disaster recovery — it **does not** include:
+Bundles container definitions, networks, DNS records, the volume registry, package install state, the recipes no source owns (ADR-0351), and site config into one file, saved byte-for-byte for later use with `cixctl restore --input=backup.json`. Read the fine print before relying on this for disaster recovery — it **does not** include:
 
 - **container workload data** — a database's own files, a git host's repos; keep that on volumes and use [volume backups](containers-and-services.md#volumes) or the workload's own tooling. A restore recreates volumes empty.
 - **image rootfs content** — reproducible by re-running `pkg install`, since everything here is compiled from source; the bundle is the "shopping list", not the built bytes.

@@ -180,7 +180,7 @@ Runbooks: [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and
 
 | Command | |
 |---|---|
-| `backup [--output=PATH]` | The platform configuration bundle (container definitions, networks, DNS records, package state and recipes). No workload data, no image content, no keys. Prints it by default; `--output=` saves it byte-for-byte for `restore` |
+| `backup [--output=PATH]` | The platform configuration bundle (container definitions, networks, DNS records, package state, and the recipes no source owns). No workload data, no image content, no keys. Prints it by default; `--output=` saves it byte-for-byte for `restore` |
 | `restore --input=PATH` | Write a saved bundle back. Does not reboot or hot-reload |
 | `backup-config show` | Which disk automatic backup snapshots go to, and whether they are enabled (ADR-0141). When they run is a schedule (below) |
 | `backup-config set [--disk=NAME \| --clear-disk] [--enable \| --disable]` | Change only the fields given. The disk must carry the `backup` role |

@@ -7924,6 +7924,16 @@ static int cmd_backup(const struct cix_client *c, int json_mode, int argc, char 
 	return emit(&r, json_mode, NULL);
 }
 
+/* ADR-0351: what the restore's recipe sync did is part of the answer. */
+static void fmt_restore(const struct json_value *v)
+{
+	const char *sync = json_str_field(v, "recipe_sync");
+
+	printf("%s\n", json_str_field(v, "status"));
+	if (sync != NULL)
+		printf("recipe sync: %s\n", sync);
+}
+
 static int cmd_restore(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *input = NULL;
@@ -7956,7 +7966,7 @@ static int cmd_restore(const struct cix_client *c, int json_mode, int argc, char
 	}
 	free(buf);
 
-	return emit(&r, json_mode, fmt_health);
+	return emit(&r, json_mode, fmt_restore);
 }
 
 static void fmt_site_config(const struct json_value *v)

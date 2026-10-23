@@ -297,7 +297,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 
 - **The rule is bounded versus unbounded, never fast versus slow.** `logread_query_bounded()` decides: no `source`, `level`, `container` or `regex`, and `since` absent or 0. Everything else may read every segment, whatever it costs today.
 - **`logread_run()` is the one caller of `logstore_tail_ex()`.** It is called by the handler for a bounded read, and by the child through `logread_write_to()`. `test_blocking_waits` counts every site.
-- **One park, not two.** A filtered read parks through ADR-0340's record, which is `struct park` with a kind. A new kind of work that makes a request wait is a new kind there, never a second park. **A system backup is one (#630, `PARK_BACKUP`)**: `do_system_backup()` reads every stored recipe, 18.5 MB on .95, so it runs only in `backup_work()`; ask through `backup_ask()`. A kind whose result is a body uses the connection's one `body_state`/`body_fd` slot and `respond_json_from_fd()`.
+- **One park, not two.** A filtered read parks through ADR-0340's record, which is `struct park` with a kind. A new kind of work that makes a request wait is a new kind there, never a second park. **A system backup is one (#630, `PARK_BACKUP`)**: `do_system_backup()` walks the whole recipe store (it read every recipe, 18.5 MB on .95, until ADR-0351), so it runs only in `backup_work()`; ask through `backup_ask()`. A kind whose result is a body uses the connection's one `body_state`/`body_fd` slot and `respond_json_from_fd()`.
 - **`since` is a filter, never a stop condition.** The daemon sets the clock, so a segment can hold a backward step.
 - **Only the unfiltered log tail is a stream.** A sample runs in-process, where nothing can be parked, so a filtered log subscription is refused.
 - **A segment's summary is exact or absent, never a guess** (#616). It is used only for the file it was made from (seq, device, inode, size), it is written only when it covers the segment from its first byte, and a set too large to keep is unknown. Never add a skip that a summary cannot prove, and never read or write one on an unfiltered read, which runs on the loop.
@@ -379,6 +379,15 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **`curlfetch_perform()` is the one TLS verifier against the default path.** A new HTTPS client in cixd goes through it, or it does not see the anchors.
 - **An anchor is never fetched,** because fetching is what needs it, and the catalogue cannot carry one for the same reason.
 - **The root's bundle is the `ca-certificates` package** since 0.2.57-577, staged by `stage_controlplane_files()`. On .95 the site CA is two anchors, the gibnet root and its intermediate, because the forge sends only its leaf. Removing them makes a forge sync fail with `unable to get local issuer certificate (20)` (measured 2026-10-23), so never remove them without adding them back in the same action. The two files are in `/usr/local/share/ca-certificates/gibnet-im-root.crt` here, intermediate first.
+
+## A backup carries only the recipes no source gives back
+
+**A system backup carries every stored version of a package no recipe source owns, and nothing of a package a source owns. A restore starts a recipe sync for the rest.** That is [ADR-0351](docs/adr/0351-a-backup-carries-only-the-recipes-no-source-gives-back.md), the owner's answer of 2026-10-23 (*"I don't think so, right? Unless we're needing them?"*, #632).
+
+- **Ownership decides, per package name, through `pkgsource_owner_of()`.** Never add a second record of which versions git holds in order to carry more.
+- **The bundle names what it leaves out:** `source_recipes_included` is always `false`, as `pki_included` is.
+- **A restore's sync is reported, never fatal** (`recipe_sync`). Its files are already written.
+- **Store keys and corpus filenames differ:** the store's `rtw88-firmware@3-1` is the corpus file `rtw88-firmware@3.cbs` (`release 1` inside), and 293 of .95's stored versions are filed that way. Compare versions, never names, or the count is wrong (it said 355 box-only where there were 62).
 
 ## One way to make an image
 

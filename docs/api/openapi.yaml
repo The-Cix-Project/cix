@@ -1541,8 +1541,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           description: >
-            No backup could start (#630). A backup reads every stored
-            recipe, so it runs off the daemon's event loop, one at a time
+            No backup could start (#630). A backup walks the whole recipe
+            store, so it runs off the daemon's event loop, one at a time
             with up to 4 more waiting their turn, this and the
             snapshot-now request together; one arriving beyond that is
             answered at once. Retry after the header's interval.
@@ -1576,6 +1576,9 @@ paths:
         call the pre-existing POST /system/reboot separately once
         ready, the same "write, don't reboot, caller decides when to
         cut over" shape /system/update already established (ADR-0031).
+        The one thing a restore starts is a recipe sync, because a
+        bundle carries no recipe a source owns (ADR-0351): the recipe
+        store is read live, so those come back without a reboot.
       operationId: postSystemRestore
       x-cix-invalidates: [*]
       x-cix-permission: system:write
@@ -1593,11 +1596,19 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [status]
+                required: [status, recipe_sync]
                 properties:
                   status:
                     type: string
                     enum: [restored]
+                  recipe_sync:
+                    type: string
+                    description: >
+                      What the recipe sync this restore asked for did
+                      (ADR-0351), in the scheduler's own words: started,
+                      already running, or no recipe source configured.
+                      Never a failure of the restore, whose files are
+                      written either way.
         "400":
           description: >
             No recognized field present, or a present field failed its
@@ -17457,6 +17468,14 @@ components:
             trust root reads as complete, and an operator only discovers
             otherwise at the reinstall they needed it for. Response-only;
             ignored on restore. The PKI is carried by POST /pki/export.
+        source_recipes_included:
+          type: boolean
+          description: >
+            Always false, for the same reason as pki_included: the
+            bundle carries no recipe of a package a recipe source owns
+            (ADR-0351), and says so. Git is authoritative for those
+            (ADR-0324), so the source gives them back, and a restore
+            starts a sync for them. Response-only; ignored on restore.
         container_defs:
           type: string
           description: Raw content of container_defs.json (every persisted container's exact create request, verbatim -- ADR-0025).
@@ -17495,9 +17514,11 @@ components:
           additionalProperties:
             type: string
           description: >
-            Every published recipe currently on disk (not just
-            currently-installed packages -- recipes are cheap, and the
-            operator may want them all preserved).
+            Every recipe version on disk of a package no recipe source
+            owns (ADR-0351) -- published here with `pkg recipe add`, or
+            on a host with no source at all. A package a source owns is
+            left to that source, which is what source_recipes_included
+            says. This carried every stored recipe until 0.2.57-581.
 
             Keyed `<name>/<version>` under ADR-0107's version-keyed
             layout; this said "keyed by package name" from before that

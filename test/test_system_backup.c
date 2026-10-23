@@ -360,6 +360,17 @@ int main(void)
 				ok = 0;
 			}
 		}
+		{
+			/* ADR-0351: the bundle names the recipes it leaves to their
+			 * sources, as pki_included names the PKI (#415). This daemon
+			 * has no source, so every recipe below is still carried. */
+			const struct json_value *src = json_object_get(r.json, "source_recipes_included");
+
+			if (src == NULL || src->type != JSON_BOOL || src->u.boolean != 0) {
+				fprintf(stderr, "FAIL: backup source_recipes_included missing or not false\n");
+				ok = 0;
+			}
+		}
 		if (recipes == NULL || recipes->type != JSON_OBJECT) {
 			fprintf(stderr, "FAIL: backup pkg_recipes missing or not an object\n");
 			ok = 0;
@@ -578,6 +589,16 @@ int main(void)
 		    r.status != 200) {
 			fprintf(stderr, "FAIL: restore of pkg_recipes expected 200, got %d\n", r.status);
 			ok = 0;
+		} else {
+			/* ADR-0351: a restore asks the sources for their recipes and
+			 * says how that went. Test data dirs start with no source. */
+			const char *sync = json_str_field(r.json, "recipe_sync");
+
+			if (sync == NULL || strstr(sync, "no recipe source is configured") == NULL) {
+				fprintf(stderr, "FAIL: restore recipe_sync expected the no-source sentence, got %s\n",
+				        sync != NULL ? sync : "(absent)");
+				ok = 0;
+			}
 		}
 		cix_response_free(&r);
 		jw_free(&recipe_restore);

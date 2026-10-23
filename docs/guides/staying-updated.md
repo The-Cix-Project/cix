@@ -53,4 +53,4 @@ Nothing runs `pkg update-all` on its own. Run it yourself, or from any REST clie
 cixctl backup --output=backup.json
 ```
 
-The bundle holds container definitions, networks, DNS records, volume definitions (not their data), package install state and recipes, and site config. See [Backup and restore](../api/README.md#backup-and-restore) for exactly what it contains and excludes. To take it on a clock, schedule the `system.backup` action; `cixctl backup-config` sets which disk it is written to.
+The bundle holds container definitions, networks, DNS records, volume definitions (not their data), package install state, the recipes no source owns (a restore syncs the rest, ADR-0351), and site config. See [Backup and restore](../api/README.md#backup-and-restore) for exactly what it contains and excludes. To take it on a clock, schedule the `system.backup` action; `cixctl backup-config` sets which disk it is written to.

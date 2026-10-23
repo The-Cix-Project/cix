@@ -4016,9 +4016,10 @@ static void handle_system_update(int fd, const char *body, size_t body_len)
  * path can for /system/update; an individual unreadable recipe file
  * is skipped, not fatal to the whole bundle.
  *
- * Called only by backup_work(), in a helper child (#630): it reads
- * every stored recipe, and so must never run on the loop. It reads and
- * writes nothing else, and logs nothing.
+ * Called only by backup_work(), in a helper child (#630): it walks the
+ * whole recipe store and reads every recipe no source owns (ADR-0351),
+ * a set only the operator bounds, and so must never run on the loop.
+ * It reads and writes nothing else, and logs nothing.
  */
 static void do_system_backup(struct json_writer *w)
 {
@@ -4041,6 +4042,10 @@ static void do_system_backup(struct json_writer *w)
 	 * they needed it for. POST /pki/export is the other half.
 	 */
 	jw_key(w, "pki_included");
+	jw_bool(w, 0);
+	/* ADR-0351: the same, for the recipes a source owns -- they are not
+	 * here because that source gives them back, and the bundle says so. */
+	jw_key(w, "source_recipes_included");
 	jw_bool(w, 0);
 
 	jw_key(w, "container_defs");
@@ -4116,11 +4121,17 @@ static void do_system_backup(struct json_writer *w)
 		jw_str(w, "");
 	}
 
-	/* Every recipe version on disk, not just currently-installed
-	 * packages, since the operator may want them all preserved. Not
-	 * cheap: 1620 recipes and 13.2 MB of an 18.5 MB bundle on
-	 * 192.168.15.95 (2026-10-23), which is why this whole function runs
-	 * in a helper child (#630). ADR-0107's version-keyed layout (<name>/<version>/
+	/* Every recipe version on disk of a package NO SOURCE OWNS
+	 * (ADR-0351). A package a source owns is given back by that source's
+	 * next sync, and git is authoritative for it (ADR-0324), so a copy
+	 * here would be a second one -- and restoring an old copy would make
+	 * the next sync see a divergence and write it back. Measured on
+	 * 192.168.15.95 (2026-10-23): carrying every recipe was 1620 recipes
+	 * and 13.2 MB of an 18.5 MB bundle; 9 package names, all probes, are
+	 * owned by no source there. The walk still reads the store, so this
+	 * function stays in a helper child (#630), which is also why the
+	 * ownership it asks about is the loop's, inherited at the fork.
+	 * ADR-0107's version-keyed layout (<name>/<version>/
 	 * build.cbs) needs a two-level directory walk,
 	 * not the flat single-level opendir() this used before that
 	 * migration landed -- that old code silently stopped matching
@@ -4138,10 +4149,16 @@ static void do_system_backup(struct json_writer *w)
 		while ((de = readdir(d)) != NULL) {
 			char name_dir[PATH_MAX];
 			char version_dir[PATH_MAX];
+			char item[PKG_SOURCE_ITEM_MAX];
+			char owner[PKG_SOURCES_MAX * PKG_SOURCE_NAME_MAX];
 			DIR *vd;
 			struct dirent *vde;
 
 			if (de->d_name[0] == '.')
+				continue;
+			/* One owner or several: either way a source gives it back. */
+			snprintf(item, sizeof(item), "package:%s", de->d_name);
+			if (pkgsource_owner_of(item, owner, sizeof(owner)) != PKGSOURCE_OWNER_NONE)
 				continue;
 			snprintf(name_dir, sizeof(name_dir), "%s/%s", PKG_RECIPES_DIR, de->d_name);
 			vd = opendir(name_dir);
@@ -4525,9 +4542,12 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 	return 200;
 }
 
+static int action_pkg_sync(const char *params, char *reason, size_t reason_size);
+
 static void handle_system_restore(int fd, const char *body, size_t body_len)
 {
 	char errmsg[256];
+	char sync[256];
 	int status;
 	struct json_writer w;
 
@@ -4536,11 +4556,21 @@ static void handle_system_restore(int fd, const char *body, size_t body_len)
 		respond_error(fd, status, http_status_text(status), errmsg);
 		return;
 	}
+	/*
+	 * ADR-0351: a bundle carries no recipe a source owns, so the restore
+	 * asks the sources for theirs now rather than at the next scheduled
+	 * sync, hours later. The store is read live, so this needs no reboot.
+	 * Its outcome is reported, never a failure of the restore: the files
+	 * are written whatever a sync does.
+	 */
+	action_pkg_sync(NULL, sync, sizeof(sync));
 
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "status");
 	jw_str(&w, "restored");
+	jw_key(&w, "recipe_sync");
+	jw_str(&w, sync);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -32612,9 +32642,8 @@ struct park {
  * Module jobs: one `modprobe` at a time (ADR-0348 rule 5), and 256
  * waiting, because a hub plugged in is a burst of uevents, one job per
  * alias, and a dropped one is a device without its driver. System
- * backups: one at a time and 4 waiting (#630) -- each reads every stored
- * recipe, 18.5 MB on 192.168.15.95, and two at once would only share
- * the disk.
+ * backups: one at a time and 4 waiting (#630) -- each walks the whole
+ * recipe store, and two at once would only share the disk.
  */
 struct park_queue {
 	int running_max;
@@ -32868,7 +32897,8 @@ static int backup_work(void *arg)
 }
 
 /* Forks a backup. A download gets a memfd for the same reason as a log
- * read: the bundle is 18.5 MB on 192.168.15.95. */
+ * read: nothing bounds the bundle (18.5 MB on 192.168.15.95 before
+ * ADR-0351 left out the recipes a source owns). */
 static int backup_start(struct park *p)
 {
 	if (p->backup_target[0] == '\0') {
@@ -33257,9 +33287,11 @@ static void logread_done(int exit_status, void *ctx)
 /*
  * #630: a system backup for the request being served -- the bundle for
  * GET /v1/system/backup when target is empty, or a snapshot to target
- * on the backup disk. do_system_backup() reads every stored recipe, 18.5
- * MB on 192.168.15.95, which held the loop 0.45-0.5 s idle and 1168 ms
- * under a build; so it runs in a helper child, like a filtered log read.
+ * on the backup disk. do_system_backup() walks the whole recipe store;
+ * when it read every recipe, 18.5 MB on 192.168.15.95, it held the loop
+ * 0.45-0.5 s idle and 1168 ms under a build. ADR-0351 made it read far
+ * fewer, but only the operator bounds how many, so it still runs in a
+ * helper child, like a filtered log read.
  */
 static enum park_body_answer backup_ask(const char *target, int *result_fd)
 {
