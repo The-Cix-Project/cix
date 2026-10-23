@@ -272,8 +272,18 @@ FLOOR_SELFTESTS = \
 # the cix-hosttools set (cbs, squashfs-tools, util-linux, e2fsprogs,
 # btrfs-progs, ca-certificates, openssl).
 #
+#
+# test_boot_ab and test_boot_update joined on 2026-10-23, after
+# probe-cix-bootest@15-1 and @17-1 passed them on 192.168.15.95: the A/B
+# fallback after a slot's tries run out (102.5 s, four boots), and an
+# update staged by do_system_update() and booted from the slot it wrote
+# (101.6 s, two boots). Between them they prove the rollback every
+# release depends on.
+#
 BOOT_SELFTESTS = \
-	$(BUILD)/test_boot
+	$(BUILD)/test_boot \
+	$(BUILD)/test_boot_ab \
+	$(BUILD)/test_boot_update
 #
 # Three tests were in this list and are deliberately NOT, because they
 # fail in a composed build container for reasons that are not defects.
