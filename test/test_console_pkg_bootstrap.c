@@ -37,8 +37,10 @@
 #define CIXCTL_BIN "build/cixctl"
 #define TOOLCHAIN_SQUASHFS_PATH "/tmp/toolchain.squashfs"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
-#define SYSTEMD_BOOT_EFI "/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
-#define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS_4M.fd"
+/* Cix's own boot manager (ADR-0215) and edk2's own VARS template, as
+ * test_boot.c names them (cix#584). */
+#define BOOT_MANAGER_EFI "build/cix-boot.efi"
+#define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS.fd"
 
 #define ESP_SIZE_MIB 64
 #define ROOT_SIZE_MIB 192
@@ -69,7 +71,7 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 		return -1;
 	if (esp_mmd(esp_img, "::/loader/entries") != 0)
 		return -1;
-	if (esp_mcopy_in(esp_img, SYSTEMD_BOOT_EFI, "::/EFI/BOOT/BOOTX64.EFI") != 0)
+	if (esp_mcopy_in(esp_img, BOOT_MANAGER_EFI, "::/EFI/BOOT/BOOTX64.EFI") != 0)
 		return -1;
 	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/cix-bzImage-a") != 0)
 		return -1;
