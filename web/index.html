@@ -1193,8 +1193,9 @@
 			<h3>Register a CA</h3>
 			<p class="hint">
 				Paste the CA's certificate, or load it from a file: exactly one certificate, never
-				a private key. Register the root of the CA; an intermediate also works. A
-				registered CA can vouch for any server to this host, so register only your own.
+				a private key. Register the CA's root, and its intermediate too when your server
+				sends only its own certificate, one at a time. A registered CA can vouch for any
+				server to this host, so register only your own.
 			</p>
 			<form id="trust-anchor-add-form"></form>
 		</div>

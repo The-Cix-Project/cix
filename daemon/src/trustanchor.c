@@ -64,6 +64,8 @@ void trustanchor_write_json(struct json_writer *w, const struct trustanchor *a, 
 		jw_key(w, "pem");
 		jw_str(w, a->pem);
 	}
+	jw_key(w, "name");
+	jw_str(w, a->info.name);
 	jw_key(w, "subject");
 	jw_str(w, a->info.subject);
 	jw_key(w, "issuer");

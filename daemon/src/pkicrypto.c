@@ -419,7 +419,7 @@ int pkicrypto_anchor_inspect(const char *pem, size_t pem_len, struct pkicrypto_a
 {
 	unsigned char md[EVP_MAX_MD_SIZE];
 	unsigned int md_len = 0, i;
-	int blocks, certs, ok;
+	int blocks, certs, ok, cn;
 	uint32_t flags;
 	struct tm tm;
 	X509 *cert;
@@ -468,6 +468,22 @@ int pkicrypto_anchor_inspect(const char *pem, size_t pem_len, struct pkicrypto_a
 	     X509_NAME_print_ex(b, X509_get_issuer_name(cert), 0, XN_FLAG_ONELINE) >= 0 &&
 	     bio_text(b, out->issuer, sizeof(out->issuer)) == 0;
 	BIO_free(b);
+
+	/* The commonName names the anchor in a list, where two CAs of one
+	 * site share every other field (#629); a CA with none is named by
+	 * its whole subject. */
+	cn = X509_NAME_get_index_by_NID(X509_get_subject_name(cert), NID_commonName, -1);
+	if (ok && cn >= 0) {
+		unsigned char *utf8 = NULL;
+		int n = ASN1_STRING_to_UTF8(
+		    &utf8, X509_NAME_ENTRY_get_data(X509_NAME_get_entry(X509_get_subject_name(cert), cn)));
+
+		if (n > 0)
+			snprintf(out->name, sizeof(out->name), "%.*s", n, (const char *)utf8);
+		OPENSSL_free(utf8);
+	}
+	if (out->name[0] == '\0')
+		snprintf(out->name, sizeof(out->name), "%s", out->subject);
 
 	memset(&tm, 0, sizeof(tm));
 	ok = ok && ASN1_TIME_to_tm(X509_get0_notAfter(cert), &tm) == 1;

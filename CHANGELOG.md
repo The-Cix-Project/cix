@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A trust anchor is named by its CN (#629)
+
+- **What changed:** `TrustAnchor` gains `name`, the subject's commonName, or the whole subject when it has none. The dashboard's Trust Anchors table leads with it and keeps the subject on hover. Rendered from 0.2.57-577's own files, the table had cut the subject from its end, so the gibnet root and intermediate read the same: `C = GB, ST = London, L = London, O = itdlabs, OU = Root Authority, C…`. The config document reports `name` as state.
+- **The hint, the contract and the README** now say to register the intermediate as well when a server sends only its own certificate, as `git.home.arpa` does. They had said a root alone is enough.
+- **Verified:** `test_trustanchor` checks that a root and an intermediate are each named by their CN.
+
 ### The root's trust store is the ca-certificates package (ADR-0350 release two, #591)
 
 - **What changed:**

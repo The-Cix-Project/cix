@@ -133,6 +133,7 @@ int main(void)
 	CHECK(pkicrypto_anchor_inspect(root_pem, root_len, &info, err, sizeof(err)) == 0 &&
 	          info.root == 1 && info.expired == 0,
 	      "a self-signed CA reads as a root, not expired");
+	CHECK(strcmp(info.name, "Test Site Root") == 0, "the name is the subject's commonName (#629)");
 	/* The same digest pkicrypto_cert_fields() reports, written bare
 	 * and lowercase: one definition of the fingerprint, two spellings. */
 	CHECK(pkicrypto_cert_fields(root, &fields, err, sizeof(err)) == 0, "the root's fields read");
@@ -143,8 +144,8 @@ int main(void)
 	CHECK(strlen(info.fingerprint) == 64 && strcmp(info.fingerprint, expect_fp) == 0,
 	      "the fingerprint is the SHA-256 of the DER, 64 lowercase hex, no separators");
 	CHECK(pkicrypto_anchor_inspect(inter_pem, inter_len, &info, err, sizeof(err)) == 0 &&
-	          info.root == 0,
-	      "an intermediate CA is accepted and reads as not a root");
+	          info.root == 0 && strcmp(info.name, "Test Site Intermediate") == 0,
+	      "an intermediate CA is accepted, reads as not a root, and is named by its CN");
 	CHECK(pkicrypto_anchor_inspect(leaf_pem, leaf_len, &info, err, sizeof(err)) != 0 &&
 	          strstr(err, "not a CA") != NULL,
 	      "a leaf certificate is refused as not a CA");

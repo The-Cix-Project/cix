@@ -16224,7 +16224,7 @@ components:
           x-cix-config-kind: array
           x-cix-config-key: "fingerprint"
           x-cix-config-apply: reconcile
-          x-cix-config-state: "subject,issuer,not_after,root,expired,added_at"
+          x-cix-config-state: "name,subject,issuer,not_after,root,expired,added_at"
         time:
           description: NTP configuration -- upstream sources and whether stepping is allowed.
           x-cix-config-kind: object
@@ -18688,13 +18688,17 @@ components:
             type: string
     TrustAnchor:
       type: object
-      required: [fingerprint, subject, issuer, not_after, root, expired, added_at]
+      required: [fingerprint, name, subject, issuer, not_after, root, expired, added_at]
       description: One CA an operator registered for this host's HTTPS fetches (ADR-0350).
       properties:
         fingerprint:
           title: Fingerprint
           type: string
           description: SHA-256 of the certificate's DER, 64 lowercase hex characters. Names the anchor everywhere.
+        name:
+          title: Name
+          type: string
+          description: The subject's commonName, or the whole subject when it has none. What tells a site's root and intermediate apart in a list, since they share every other subject field.
         subject:
           title: Subject
           type: string
@@ -18709,7 +18713,7 @@ components:
         root:
           title: Root
           type: boolean
-          description: Self-signed. A root is what to register; an intermediate is accepted too.
+          description: Self-signed. Register the root, and also its intermediate when the server sends only its own certificate.
         expired:
           title: Expired
           type: boolean

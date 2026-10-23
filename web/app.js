@@ -13670,9 +13670,10 @@ async function refreshTrustAnchors() {
 
 function renderTrustAnchors() {
 	renderTable(document.getElementById("trust-anchors"), "TrustAnchor", cache.trustAnchors, [
-		/* Both long values share the spare width, one line each, whole
-		 * on hover; a subject left to wrap ran to nine lines. */
-		{ field: "subject", cls: "cell-identifier", title: (a) => a.subject },
+		/* The CN leads: a site's root and intermediate share every
+		 * other subject field, so a cut subject read the same on both
+		 * rows (#629). The whole subject is on hover. */
+		{ field: "name", title: (a) => a.subject },
 		{ field: "fingerprint", cls: "cell-identifier", title: (a) => a.fingerprint },
 		"root",
 		"not_after",
@@ -13696,7 +13697,7 @@ function renderTrustAnchors() {
 }
 
 async function removeTrustAnchor(a) {
-	if (!confirm("Stop trusting " + a.subject + "? Servers only this CA certifies stop being " +
+	if (!confirm("Stop trusting " + a.name + "?Servers only this CA certifies stop being " +
 	             "reachable over HTTPS from this host, at the next fetch."))
 		return;
 	try {

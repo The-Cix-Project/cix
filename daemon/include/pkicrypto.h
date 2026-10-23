@@ -71,13 +71,15 @@ int pkicrypto_cert_fields(const char *cert_path, struct pkicrypto_cert_fields *o
  * a private key, or a second block of any kind, is refused -- and the
  * certificate must carry basicConstraints CA:TRUE. fingerprint is the
  * SHA-256 of the DER as 64 lowercase hex characters, with no
- * separators; not_after is unix seconds; root is 1 for a self-signed
+ * separators; name is the subject's commonName, or the whole subject
+ * when it has none; not_after is unix seconds; root is 1 for a self-signed
  * certificate; expired is 1 when not_after has passed, which the caller
  * decides about (a new anchor is refused, a stored one stays listed).
  * Returns 0, or -1 with the reason in err.
  */
 struct pkicrypto_anchor {
 	char fingerprint[65];
+	char name[256];
 	char subject[256];
 	char issuer[256];
 	long long not_after;
