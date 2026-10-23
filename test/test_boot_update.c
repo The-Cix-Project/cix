@@ -52,7 +52,10 @@
 #define BOOT_MANAGER_EFI "build/cix-boot.efi"
 #define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS.fd"
 
-#define DISK_SIZE_BYTES (576 * 1024 * 1024) /* 64MiB ESP + three 160MiB slots + 16MiB kernel scratch */
+/* 64 MiB ESP + three 160 MiB slots + 16 MiB kernel scratch, and the
+ * rest as cix-config, which cixd cannot boot without
+ * (config_partition_write(), cix#584). */
+#define DISK_SIZE_BYTES (768 * 1024 * 1024)
 #define ESP_SIZE_MIB 64
 #define ROOT_SLOT_SIZE_MIB 160
 #define KERNEL_SCRATCH_SIZE_MIB 16
@@ -210,6 +213,7 @@ int main(void)
 	char root_squashfs_a[600], root_squashfs_new[600];
 	char disk_img[600];
 	char esp_img[600];
+	char config_img[600];
 	char ovmf_vars[600];
 	char sfdisk_dump[8192];
 	char captured[65536];
@@ -219,6 +223,7 @@ int main(void)
 	long b_start_sec, b_size_sec;
 	long c_start_sec, c_size_sec;
 	long d_start_sec, d_size_sec;
+	long config_start_sec, config_size_sec;
 	struct stat new_squashfs_st;
 	struct stat bzimage_st;
 	char extracted_root_b[600];
@@ -239,6 +244,7 @@ int main(void)
 	snprintf(root_squashfs_new, sizeof(root_squashfs_new), "%s/root-new.squashfs", workdir);
 	snprintf(disk_img, sizeof(disk_img), "%s/disk.img", workdir);
 	snprintf(esp_img, sizeof(esp_img), "%s/esp.img", workdir);
+	snprintf(config_img, sizeof(config_img), "%s/config.img", workdir);
 	snprintf(ovmf_vars, sizeof(ovmf_vars), "%s/OVMF_VARS.fd", workdir);
 	snprintf(extracted_root_b, sizeof(extracted_root_b), "%s/extracted-root-b", workdir);
 	snprintf(extracted_kernel_a, sizeof(extracted_kernel_a), "%s/extracted-kernel-a", workdir);
@@ -301,7 +307,8 @@ int main(void)
 		         "size=%dMiB, type=linux, name=\"cix-root-a\"\n"
 		         "size=%dMiB, type=linux, name=\"cix-root-b\"\n"
 		         "size=%dMiB, type=linux, name=\"root-c\"\n"
-		         "size=%dMiB, type=linux, name=\"kernel-scratch\"\n",
+		         "size=%dMiB, type=linux, name=\"kernel-scratch\"\n"
+		         "type=linux, name=\"cix-config\"\n",
 		         ESP_SIZE_MIB, ROOT_SLOT_SIZE_MIB, ROOT_SLOT_SIZE_MIB, ROOT_SLOT_SIZE_MIB,
 		         KERNEL_SCRATCH_SIZE_MIB);
 		if (run_subprocess_stdin(SFDISK_BIN, sfdisk_argv, script) != 0)
@@ -322,6 +329,8 @@ int main(void)
 		if (sfdisk_dump_offset(sfdisk_dump, 4, &c_start_sec, &c_size_sec) != 0)
 			return 1;
 		if (sfdisk_dump_offset(sfdisk_dump, 5, &d_start_sec, &d_size_sec) != 0)
+			return 1;
+		if (sfdisk_dump_offset(sfdisk_dump, 6, &config_start_sec, &config_size_sec) != 0)
 			return 1;
 	}
 
@@ -347,6 +356,8 @@ int main(void)
 	if (write_at_offset(disk_img, c_start_sec * SECTOR_SIZE, root_squashfs_new) != 0)
 		return 1;
 	if (write_at_offset(disk_img, d_start_sec * SECTOR_SIZE, BZIMAGE_PATH) != 0)
+		return 1;
+	if (config_partition_write(disk_img, config_img, config_start_sec, config_size_sec) != 0)
 		return 1;
 
 	if (test_image_fixture_copy_file(OVMF_VARS_TEMPLATE, ovmf_vars) != 0)
