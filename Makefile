@@ -280,10 +280,19 @@ FLOOR_SELFTESTS = \
 # (101.6 s, two boots). Between them they prove the rollback every
 # release depends on.
 #
+#
+# test_console_shell and test_console_pki_bootstrap joined the same day,
+# the owner's decision, after probe-cix-bootest@20-1 passed both (59.2 s
+# and 91.4 s). Until #636 every command typed at a Cix host's console
+# lost its output to a pager that could not start, and nothing gated
+# the console, so that shipped in every release.
+#
 BOOT_SELFTESTS = \
 	$(BUILD)/test_boot \
 	$(BUILD)/test_boot_ab \
-	$(BUILD)/test_boot_update
+	$(BUILD)/test_boot_update \
+	$(BUILD)/test_console_shell \
+	$(BUILD)/test_console_pki_bootstrap
 #
 # Three tests were in this list and are deliberately NOT, because they
 # fail in a composed build container for reasons that are not defects.
