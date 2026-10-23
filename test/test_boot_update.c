@@ -45,8 +45,12 @@
 #define CIXCTL_BIN "build/cixctl"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define MDIR_BIN "/usr/bin/mdir"
-#define SYSTEMD_BOOT_EFI "/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
-#define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS_4M.fd"
+/* Cix's own boot manager (ADR-0215), built beside the binaries under
+ * test; the systemd-boot path this named exists on a Debian box and on
+ * no Cix host. Its VARS template is edk2's own OVMF_VARS.fd, as
+ * ovmf 202608-1 installs it, not Debian's OVMF_VARS_4M.fd (cix#584). */
+#define BOOT_MANAGER_EFI "build/cix-boot.efi"
+#define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS.fd"
 
 #define DISK_SIZE_BYTES (576 * 1024 * 1024) /* 64MiB ESP + three 160MiB slots + 16MiB kernel scratch */
 #define ESP_SIZE_MIB 64
@@ -82,7 +86,7 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 		return -1;
 	if (esp_mmd(esp_img, "::/loader/entries") != 0)
 		return -1;
-	if (esp_mcopy_in(esp_img, SYSTEMD_BOOT_EFI, "::/EFI/BOOT/BOOTX64.EFI") != 0)
+	if (esp_mcopy_in(esp_img, BOOT_MANAGER_EFI, "::/EFI/BOOT/BOOTX64.EFI") != 0)
 		return -1;
 	/* Per-slot kernel file (ADR-0032) -- slot A's own, matching what
 	 * the real installer now stages. Slot B's own cix-bzImage-b

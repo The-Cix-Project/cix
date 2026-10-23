@@ -15,7 +15,11 @@
 
 extern char **environ;
 
-#define MKFS_VFAT_BIN "/usr/sbin/mkfs.vfat"
+/* mkfs.fat, not mkfs.vfat: dosfstools 4.2-3 ships only the real name,
+ * and mkfs.vfat is the compatibility link a Debian box adds. Measured
+ * on 192.168.15.95, 2026-10-23, by probe-cix-bootest@10-1, which died
+ * here on "/usr/sbin/mkfs.vfat: No such file or directory" (cix#584). */
+#define MKFS_FAT_BIN "/usr/sbin/mkfs.fat"
 #define MCOPY_BIN "/usr/bin/mcopy"
 #define MMD_BIN "/usr/bin/mmd"
 #define MREN_BIN "/usr/bin/mren"
@@ -290,9 +294,9 @@ int extract_partition(const char *src_path, long offset_bytes, long size_bytes, 
 
 int esp_mkfs(const char *esp_img)
 {
-	char *argv[] = { (char *)MKFS_VFAT_BIN, "-n", "ESP", (char *)esp_img, NULL };
+	char *argv[] = { (char *)MKFS_FAT_BIN, "-n", "ESP", (char *)esp_img, NULL };
 
-	return run_subprocess(MKFS_VFAT_BIN, argv);
+	return run_subprocess(MKFS_FAT_BIN, argv);
 }
 
 int esp_mmd(const char *esp_img, const char *esp_dir_path)

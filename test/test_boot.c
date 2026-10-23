@@ -1,6 +1,6 @@
 /*
  * Phase 11 part 1 demonstrable test: proves the actual boot chain works --
- * kernel -> systemd-boot -> cixd --init-mode -- not just that each piece
+ * kernel -> cix-boot -> cixd --init-mode -- not just that each piece
  * builds. Assembles a throwaway 2-partition disk (ESP + one squashfs root
  * slot; the real 5-partition A/B layout is part 3's installer output, not
  * this test's job), boots it in QEMU (software-emulated -- no /dev/kvm in
@@ -26,8 +26,12 @@
 #define CIXD_BIN "build/cixd"
 #define CIXCTL_BIN "build/cixctl"
 #define SFDISK_BIN "/usr/sbin/sfdisk"
-#define SYSTEMD_BOOT_EFI "/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
-#define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS_4M.fd"
+/* Cix's own boot manager (ADR-0215), built beside the binaries under
+ * test; the systemd-boot path this named exists on a Debian box and on
+ * no Cix host. Its VARS template is edk2's own OVMF_VARS.fd, as
+ * ovmf 202608-1 installs it, not Debian's OVMF_VARS_4M.fd (cix#584). */
+#define BOOT_MANAGER_EFI "build/cix-boot.efi"
+#define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS.fd"
 
 #define DISK_SIZE_BYTES (256 * 1024 * 1024) /* 64MB ESP + ~192MB root -- root.squashfs measures well under 1MB */
 #define ESP_SIZE_MIB 64
@@ -37,7 +41,7 @@
 #define SUCCESS_MARKER "cixd listening on"
 #define PANIC_MARKER "Kernel panic"
 
-/* Builds the ESP as a standalone FAT32 file via mtools -- systemd-boot
+/* Builds the ESP as a standalone FAT32 file via mtools -- the boot manager
  * itself, the kernel, and a loader entry pointing init at
  * cixd --init-mode on the raw root partition. */
 static int build_esp_image(const char *esp_img, const char *workdir)
@@ -55,7 +59,7 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 		return -1;
 	if (esp_mmd(esp_img, "::/loader/entries") != 0)
 		return -1;
-	if (esp_mcopy_in(esp_img, SYSTEMD_BOOT_EFI, "::/EFI/BOOT/BOOTX64.EFI") != 0)
+	if (esp_mcopy_in(esp_img, BOOT_MANAGER_EFI, "::/EFI/BOOT/BOOTX64.EFI") != 0)
 		return -1;
 	if (esp_mcopy_in(esp_img, BZIMAGE_PATH, "::/cix-bzImage-a") != 0)
 		return -1;
