@@ -18,10 +18,15 @@ static char g_country[3];   /* "" when none is configured */
 static char g_apply_error[160];
 static char g_state_path[512];
 
-static int country_is_valid(const char *c)
+int wireless_country_valid(const char *c)
 {
 	return c != NULL && strlen(c) == 2 && c[0] >= 'A' && c[0] <= 'Z' && c[1] >= 'A' &&
 	       c[1] <= 'Z';
+}
+
+const char *wireless_country(void)
+{
+	return g_country[0] != '\0' ? g_country : NULL;
 }
 
 static int save_state(void)
@@ -76,7 +81,7 @@ void wireless_init(const char *path)
 
 			/* A file gone bad leaves no setting rather than refusing
 			 * to boot, and says so. */
-			if (country_is_valid(c))
+			if (wireless_country_valid(c))
 				snprintf(g_country, sizeof(g_country), "%s", c);
 			else if (c != NULL)
 				logstore_write("cixd", "warn",
@@ -100,7 +105,7 @@ enum wireless_error wireless_set(const char *country)
 {
 	char previous[sizeof(g_country)];
 
-	if (country != NULL && !country_is_valid(country))
+	if (country != NULL && !wireless_country_valid(country))
 		return WIRELESS_ERR_INVALID;
 	memcpy(previous, g_country, sizeof(previous));
 	snprintf(g_country, sizeof(g_country), "%s", country != NULL ? country : "");

@@ -68,6 +68,7 @@
 #include "swap.h"
 #include "trustanchor.h"
 #include "zswap.h"
+#include "wireless.h"
 
 #include "generated/config_sections.h"
 
@@ -473,6 +474,40 @@ static int cfg_apply_zswap(const struct json_value *live, const struct json_valu
 		snprintf(err, errsz, "the zswap configuration could not be persisted");
 		return -1;
 	}
+}
+
+static int cfg_apply_wireless(const struct json_value *live, const struct json_value *sup,
+                              const char *state_fields, int dry_run, char *err,
+                              size_t errsz)
+{
+	const char *country, *current;
+
+	if (require_whole_section(live, sup, state_fields, err, errsz) != 0)
+		return -1;
+	/* `apply_error`, `kernel` and `radios` are observed (ADR-0354). */
+	if (need_string_or_null(sup, "country", &country, err, errsz) != 0)
+		return -1;
+	if (country != NULL && !wireless_country_valid(country)) {
+		snprintf(err, errsz, "\"country\" must be two upper-case letters, e.g. GB, or null");
+		return -1;
+	}
+	/*
+	 * An unchanged country sends nothing. The domain is global to the
+	 * host, and a document replayed unchanged -- which every test of
+	 * this endpoint does -- must not send one: from a daemon in the
+	 * initial user namespace that would set the real host's.
+	 */
+	current = wireless_country();
+	if ((country == NULL && current == NULL) ||
+	    (country != NULL && current != NULL && strcmp(country, current) == 0))
+		return 0;
+	if (dry_run)
+		return 0;
+	if (wireless_set(country) != WIRELESS_OK) {
+		snprintf(err, errsz, "the wireless country could not be persisted");
+		return -1;
+	}
+	return 0;
 }
 
 static int cfg_apply_swap(const struct json_value *live, const struct json_value *sup,

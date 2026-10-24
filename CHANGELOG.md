@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The configuration document carries the wireless country (#355)
+
+- **What changed:** `GET`/`POST /v1/config` has a `wireless` section after `zswap`, rendered from the same read as `GET /v1/system/wireless`, with `apply_error`, `kernel` and `radios` observed. A document carrying the country the host already has sends nothing to the kernel.
+- **Why:** 0.2.57-594 shipped the setting without a section, so a document replayed onto a reinstalled host dropped the country. The contract's `ConfigDocument` says every configurable subsystem belongs there.
+
 ### The host's wireless country is a setting cixd applies (#355)
 
 - **What changed:** `GET`/`PUT /v1/system/wireless`, `cixctl wireless show|set --country=CC|--clear`, and a Devices > Wireless tab. cixd persists the country and sends it to the kernel over nl80211 at start, before the kmod sweep and autostart, and on every change. The read reports the configured country, the kernel's domain and any radio with a domain of its own, separately ([ADR-0354](docs/adr/0354-the-wireless-regulatory-domain-is-a-host-setting.md)).

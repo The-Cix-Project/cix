@@ -478,6 +478,17 @@ int main(void)
 			ok = 0;
 		}
 		cix_response_free(&r);
+		/* The configuration document carries it, or a replay onto a
+		 * reinstalled host loses the country. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/config", NULL, &r) != 0 || r.status != 200 ||
+		    json_object_get(r.json, "wireless") == NULL ||
+		    json_object_get(json_object_get(r.json, "wireless"), "country") == NULL) {
+			fprintf(stderr, "FAIL: ADR-0354 GET /v1/config has no wireless.country, status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
 		{
 			static const char *const bad[] = { "{\"country\":\"gb\"}", "{\"country\":\"GBR\"}",
 			                                   "{\"country\":\"G\"}", "{\"country\":7}", "{}" };

@@ -32,6 +32,13 @@ void wireless_init(const char *path);
  * it is recorded and reported, and the setting is kept. */
 enum wireless_error wireless_set(const char *country);
 
+/* Two upper-case letters: the one rule a country must meet, for the
+ * PUT and for a config document alike. */
+int wireless_country_valid(const char *country);
+
+/* The configured country, or NULL when none is set. */
+const char *wireless_country(void);
+
 /* The configured country, the kernel's domain, and each radio's. */
 void wireless_write_json(struct json_writer *w);
 

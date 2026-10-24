@@ -3480,7 +3480,7 @@ The country decides which channels a radio may use and whether it may start tran
 
 The daemon sends the country at start, before the kmod sweep and before any container starts, so a radio and an access point find it in place. An access point already running keeps the channels it computed when it started; restart it after a change. A recipe for an access point carries no `country_code`.
 
-`cixctl wireless show|set --country=CC|--clear` is the CLI surface; the dashboard has it under Devices > Wireless.
+`cixctl wireless show|set --country=CC|--clear` is the CLI surface; the dashboard has it under Devices > Wireless. The configuration document (`GET`/`POST /v1/config`) carries it as the `wireless` section, with `apply_error`, `kernel` and `radios` observed; a document carrying the country the host already has sends nothing to the kernel.
 
 ## Kernel line (issue #65)
 

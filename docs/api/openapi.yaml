@@ -16421,6 +16421,11 @@ components:
           x-cix-config-kind: object
           x-cix-config-apply: replace
           x-cix-config-state: "supported,kernel,available_compressors"
+        wireless:
+          description: The host's wireless regulatory domain (ADR-0354). A document carrying the country it already has sends nothing to the kernel.
+          x-cix-config-kind: object
+          x-cix-config-apply: replace
+          x-cix-config-state: "apply_error,kernel,radios"
         swap:
           description: Swap placement and size.
           x-cix-config-kind: object
