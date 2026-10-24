@@ -85,4 +85,37 @@ int nl80211_move_phy_to_netns_fd(const char *ifname, int netns_fd);
  */
 int nl80211_family_id(void);
 
+/*
+ * Sends the host's regulatory domain as a user hint: a two-letter
+ * country, or "00" for the world domain (ADR-0354). The kernel holds one
+ * domain for the whole host and accepts this only from CAP_NET_ADMIN in
+ * the initial user namespace, so from a user-namespaced process it is
+ * EPERM.
+ *
+ * Returns 0 once the kernel has queued the hint, which is not the same
+ * as applying it; read the domain back to know. -1 with errno set.
+ */
+int nl80211_reg_set(const char *alpha2);
+
+/*
+ * A regulatory domain the kernel holds: the host's (wiphy -1), or one a
+ * radio keeps of its own because its driver hinted it or manages its
+ * own (self_managed). country is "" when the kernel sent none.
+ */
+struct nl80211_regdom {
+	int wiphy;
+	int self_managed;
+	char country[3];
+};
+
+/*
+ * Every domain the kernel holds, from one NL80211_CMD_GET_REG dump: the
+ * host's, then each radio with a domain of its own, in whatever network
+ * namespace it is (the dump does not filter by namespace, which a
+ * per-wiphy request does). A radio not listed follows the host's.
+ *
+ * Fills at most max entries and returns how many, or -1 with errno set.
+ */
+int nl80211_reg_list(struct nl80211_regdom *out, int max);
+
 #endif /* CIX_NL80211_H */

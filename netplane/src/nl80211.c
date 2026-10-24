@@ -18,7 +18,11 @@
  *
  * Every value below was read off <linux/nl80211.h>, <linux/genetlink.h>
  * and <linux/netlink.h> by compiling a program that printed them, not
- * recalled.
+ * recalled. The four regulatory ones (ADR-0354) were counted out of the
+ * enums in <linux/nl80211.h> with awk on 2026-10-24, nothing being
+ * compiled outside a Cix host, and the same count gave GET_INTERFACE 5,
+ * SET_WIPHY_NETNS 49, ATTR_IFINDEX 3 and ATTR_NETNS_FD 219, matching the
+ * printed values above it.
  */
 #define CIX_NETLINK_GENERIC 16
 #define CIX_GENL_ID_CTRL 16
@@ -26,9 +30,13 @@
 #define CIX_CTRL_ATTR_FAMILY_ID 1
 #define CIX_CTRL_ATTR_FAMILY_NAME 2
 #define CIX_NL80211_CMD_GET_INTERFACE 5
+#define CIX_NL80211_CMD_REQ_SET_REG 27
+#define CIX_NL80211_CMD_GET_REG 31
 #define CIX_NL80211_CMD_SET_WIPHY_NETNS 49
 #define CIX_NL80211_ATTR_IFINDEX 3
 #define CIX_NL80211_ATTR_WIPHY 1
+#define CIX_NL80211_ATTR_REG_ALPHA2 33
+#define CIX_NL80211_ATTR_WIPHY_SELF_MANAGED_REG 216
 #define CIX_NL80211_ATTR_NETNS_FD 219
 
 /* struct genlmsghdr, which is 4 bytes and has no packing subtleties --
@@ -459,4 +467,177 @@ int nl80211_move_phy_to_netns_fd(const char *ifname, int netns_fd)
 		return -1;
 	}
 	return move_phy(ifname, CIX_NL80211_ATTR_NETNS_FD, (uint32_t)netns_fd);
+}
+
+/*
+ * The host's regulatory domain, as a user hint (ADR-0354). The request
+ * carries the country and nothing else, because the kernel's handler
+ * reads nothing else for a user hint (nl80211_req_set_reg(),
+ * net/wireless/nl80211.c:10017-10044 in kernel 7.2.12, probe-regperm@1-1).
+ *
+ * The ack says the hint was queued, not that it took: the kernel applies
+ * it from a workqueue and drops a country its database lacks.
+ */
+int nl80211_reg_set(const char *alpha2)
+{
+	struct nl_msg m;
+	struct nlmsghdr *nh;
+	struct cix_genlmsghdr *gh;
+	int fd, family, rc, saved;
+
+	if (alpha2 == NULL || strlen(alpha2) != 2) {
+		errno = EINVAL;
+		return -1;
+	}
+	family = nl80211_family_id();
+	if (family < 0)
+		return -1;
+	fd = genl_open();
+	if (fd < 0)
+		return -1;
+
+	nl_msg_init(&m);
+	nh = nl_msg_put(&m, sizeof(*nh));
+	gh = nl_msg_put(&m, sizeof(*gh));
+	if (nh == NULL || gh == NULL ||
+	    nl_msg_put_attr_str(&m, CIX_NL80211_ATTR_REG_ALPHA2, alpha2) == NULL) {
+		close(fd);
+		errno = ENOBUFS;
+		return -1;
+	}
+	gh->cmd = CIX_NL80211_CMD_REQ_SET_REG;
+	gh->version = 0;
+	nh->nlmsg_type = (uint16_t)family;
+	rc = nl_msg_send_and_ack(fd, &m);
+	saved = errno;
+	close(fd);
+	errno = saved;
+	return rc;
+}
+
+/* One GET_REG reply message into out. The host's entry is the one with
+ * no NL80211_ATTR_WIPHY (nl80211_send_regdom(), nl80211.c:10635). */
+static void reg_parse_one(const struct nlmsghdr *rnh, struct nl80211_regdom *out)
+{
+	const struct rtattr *rta;
+	size_t remaining;
+
+	memset(out, 0, sizeof(*out));
+	out->wiphy = -1;
+	rta = (const struct rtattr *)((const char *)NLMSG_DATA(rnh) +
+	                              NLMSG_ALIGN(sizeof(struct cix_genlmsghdr)));
+	remaining = rnh->nlmsg_len - NLMSG_LENGTH(NLMSG_ALIGN(sizeof(struct cix_genlmsghdr)));
+	while (RTA_OK(rta, remaining)) {
+		/* The two top bits are NLA_F_NESTED and NLA_F_NET_BYTEORDER,
+		 * which the kernel sets on REG_RULES; the type is the rest. */
+		unsigned short type = rta->rta_type & 0x3fff;
+
+		if (type == CIX_NL80211_ATTR_REG_ALPHA2 && RTA_PAYLOAD(rta) >= 2) {
+			memcpy(out->country, RTA_DATA(rta), 2);
+			out->country[2] = '\0';
+		} else if (type == CIX_NL80211_ATTR_WIPHY && RTA_PAYLOAD(rta) >= sizeof(uint32_t)) {
+			uint32_t v;
+
+			memcpy(&v, RTA_DATA(rta), sizeof(v));
+			if (v <= 0x7fffffff)
+				out->wiphy = (int)v;
+		} else if (type == CIX_NL80211_ATTR_WIPHY_SELF_MANAGED_REG) {
+			out->self_managed = 1;
+		}
+		rta = RTA_NEXT(rta, remaining);
+	}
+}
+
+/*
+ * A dump, not one request per radio, because only the dump reaches a
+ * radio in another network namespace. Read from kernel 7.2.12
+ * (probe-regperm@2-2): nl80211_get_reg_do() resolves a wiphy through
+ * genl_info_net(), so it cannot name a radio a container holds, while
+ * nl80211_get_reg_dump() walks cfg80211_rdev_list with no namespace
+ * test (nl80211.c:10670) and sends each radio that has a domain of its
+ * own. A radio it does not send follows the host's.
+ */
+int nl80211_reg_list(struct nl80211_regdom *out, int max)
+{
+	struct nl_msg m;
+	struct nlmsghdr *nh;
+	struct cix_genlmsghdr *gh;
+	int fd, family, count = 0, done = 0, saved;
+	ssize_t n;
+
+	if (out == NULL || max < 1) {
+		errno = EINVAL;
+		return -1;
+	}
+	family = nl80211_family_id();
+	if (family < 0)
+		return -1;
+	fd = genl_open();
+	if (fd < 0)
+		return -1;
+
+	nl_msg_init(&m);
+	nh = nl_msg_put(&m, sizeof(*nh));
+	gh = nl_msg_put(&m, sizeof(*gh));
+	if (nh == NULL || gh == NULL) {
+		close(fd);
+		errno = ENOBUFS;
+		return -1;
+	}
+	gh->cmd = CIX_NL80211_CMD_GET_REG;
+	gh->version = 0;
+	nh->nlmsg_type = (uint16_t)family;
+	nh->nlmsg_len = (uint32_t)m.len;
+	nh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+	nh->nlmsg_seq = 1;
+	nh->nlmsg_pid = 0;
+
+	n = send(fd, m.buf, m.len, 0);
+	if (n < 0 || (size_t)n != m.len) {
+		saved = n < 0 ? errno : EIO;
+		close(fd);
+		errno = saved;
+		return -1;
+	}
+
+	/* A dump is several datagrams, each holding several messages, and
+	 * ends with NLMSG_DONE. Each datagram is read at its own size. */
+	while (!done) {
+		char *rbuf = NULL;
+		struct nlmsghdr *rnh;
+		size_t left;
+
+		n = genl_recv_sized(fd, &rbuf);
+		if (n < 0) {
+			saved = errno;
+			close(fd);
+			errno = saved;
+			return -1;
+		}
+		left = (size_t)n;
+		for (rnh = (struct nlmsghdr *)rbuf; NLMSG_OK(rnh, left); rnh = NLMSG_NEXT(rnh, left)) {
+			if (rnh->nlmsg_type == NLMSG_DONE) {
+				done = 1;
+				break;
+			}
+			if (rnh->nlmsg_type == NLMSG_ERROR) {
+				struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(rnh);
+
+				saved = (rnh->nlmsg_len >= NLMSG_LENGTH(sizeof(*err)) && err->error != 0)
+				            ? -err->error
+				            : EPROTO;
+				free(rbuf);
+				close(fd);
+				errno = saved;
+				return -1;
+			}
+			if (rnh->nlmsg_len < NLMSG_LENGTH(sizeof(*gh)))
+				continue;
+			if (count < max)
+				reg_parse_one(rnh, &out[count++]);
+		}
+		free(rbuf);
+	}
+	close(fd);
+	return count;
 }

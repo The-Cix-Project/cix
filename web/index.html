@@ -618,6 +618,7 @@
 				<button type="button" class="tab-button active" data-tab="devices">Devices</button>
 				<button type="button" class="tab-button" data-tab="devicemaps">Named Mappings</button>
 				<button type="button" class="tab-button" data-tab="kmod">Kernel Modules</button>
+				<button type="button" class="tab-button" data-tab="wireless">Wireless</button>
 			</div>
 <div class="tab-panel" data-tab="devices">
 			<p class="hint">Every device the host has, each under the one it hangs off, with the state
@@ -724,6 +725,17 @@
 			<p class="hint">An ordinary <code>pkg hostbuild kernel</code> under the hood, gaining extra <code>=m</code> module symbols merged into the same curated kernel config -- needs a reboot onto the new build (Update page) to actually take effect.</p>
 			<form id="kmod-build-form"></form>
 			</div>
+<div class="tab-panel" data-tab="wireless" hidden>
+			<p class="hint">The country this host's radios operate under, which decides the channels
+				an access point may use (ADR-0354). The kernel keeps one country for the whole host
+				and will not take it from a container, so it is set here rather than in an access
+				point's configuration. An access point already running keeps the channels it chose
+				when it started; restart it after a change. Leave the country empty for the world
+				domain.</p>
+			<p class="hint" id="wireless-divergence" hidden></p>
+			<form id="wireless-form"></form>
+			<table class="detail-table"><tbody id="wireless-kernel"></tbody></table>
+		</div>
 		</section>
 
 		<!-- Kernel Modules (ADR-0159) -->

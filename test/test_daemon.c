@@ -459,6 +459,42 @@ int main(void)
 		}
 		cix_response_free(&r);
 
+		/*
+		 * ADR-0354: the wireless regulatory domain. Only refusals and
+		 * the shape are asserted. A valid PUT is never sent, null
+		 * included: the domain is global to the host, and a test daemon
+		 * that happened to run in the initial user namespace would set
+		 * the real host's country. A refusal here is made before
+		 * anything is sent, which is what makes it safe to assert.
+		 */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "GET", "/v1/system/wireless", NULL, &r) != 0 ||
+		    r.status != 200 || json_object_get(r.json, "country") == NULL ||
+		    json_object_get(r.json, "country")->type != JSON_NULL ||
+		    json_object_get(r.json, "kernel") == NULL ||
+		    json_object_get(r.json, "radios") == NULL ||
+		    json_object_get(r.json, "radios")->type != JSON_ARRAY) {
+			fprintf(stderr, "FAIL: ADR-0354 GET wireless, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		{
+			static const char *const bad[] = { "{\"country\":\"gb\"}", "{\"country\":\"GBR\"}",
+			                                   "{\"country\":\"G\"}", "{\"country\":7}", "{}" };
+			size_t bi;
+
+			for (bi = 0; bi < sizeof(bad) / sizeof(bad[0]); bi++) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "PUT", "/v1/system/wireless", bad[bi], &r) != 0 ||
+				    r.status != 400) {
+					fprintf(stderr, "FAIL: ADR-0354 PUT wireless %s should 400, got %d\n", bad[bi],
+					        r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
+		}
+
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "PUT", "/v1/system/zswap",
 		                       "{\"max_pool_percent\":0}", &r) != 0 ||

@@ -91,6 +91,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | PUT | `/system/ksm` | Turn the scanner on or off and set how hard it scans -- partial update, applied and persisted |
 | GET | `/system/zswap` | The compressed swap cache: configured intent, what the kernel actually has, and which compressors it was built with (issue #51) |
 | PUT | `/system/zswap` | Configure it -- partial update, applied to the running kernel and persisted |
+| GET | `/system/wireless` | The host's wireless regulatory domain: the configured country, the domain the kernel has, and each radio's own (ADR-0354) |
+| PUT | `/system/wireless` | Set the country, or `null` to return to the world domain -- persisted, and sent to the kernel now and at every start |
 | GET | `/system/kmsg` | Tail the kernel ring buffer directly (`tail` filter) -- dmesg for a host with no shell |
 | GET | `/system/logs` | Query the consolidated log store (`source`/`level`/`container`/`regex`/`since`/`tail` filters) |
 | GET | `/system/logs/config` | The consolidated log store's size cap |
@@ -3456,6 +3458,29 @@ zswap compresses pages in RAM before they would otherwise be written to the real
 Validation happens before the write, never after. An out-of-range percentage or a compressor name that is not a plain algorithm name is a `400` — the string goes into a sysfs file, so it is refused rather than escaped. And if the kernel refuses the settings, the previous ones are restored and **nothing is persisted**: a config file describing a state the machine is not in is worse than the failure it was recording.
 
 `cixctl zswap show|set [--enable|--disable] [--max-pool-percent=N] [--compressor=NAME]` is the CLI surface; the dashboard has it under System > Host > Swap, below the swap file itself.
+
+## Wireless regulatory domain (ADR-0354)
+
+```
+GET /v1/system/wireless
+PUT /v1/system/wireless   {"country": "GB"}
+```
+
+The country decides which channels a radio may use and whether it may start transmitting on them, which an access point must do. The kernel holds **one domain for the whole host** and accepts it only from the initial user namespace, so a container's hostapd is refused (`Failed to set country code`, #355) and the daemon sets it instead. There is no per-radio or per-interface field because the kernel has nothing of the kind to set: its request takes a country and nothing else.
+
+```json
+{"country": "GB", "apply_error": null,
+ "kernel": {"country": "GB"},
+ "radios": []}
+```
+
+**The configured country and the kernel's are reported apart.** The kernel applies a country asynchronously and drops one its regulatory database lacks, so `kernel.country` is read back rather than echoed, and a disagreement means the setting did not take. A refusal (for example `Operation not permitted` from a daemon that is not in the initial user namespace) is `apply_error`, and the setting is kept.
+
+**`radios` lists only a radio that runs under a domain of its own**: `driver` when its driver hinted one from its hardware (the kernel combines it with the host's), `self-managed` when the driver ignores the host's. Every radio not listed, a container's included, runs under the host's domain. The list comes from the kernel's regulatory dump, which covers every radio whatever network namespace it is in, so a radio a container holds is listed too, with `phy` null because its name lives in that namespace. A radio is reported, never configured.
+
+The daemon sends the country at start, before the kmod sweep and before any container starts, so a radio and an access point find it in place. An access point already running keeps the channels it computed when it started; restart it after a change. A recipe for an access point carries no `country_code`.
+
+`cixctl wireless show|set --country=CC|--clear` is the CLI surface; the dashboard has it under Devices > Wireless.
 
 ## Kernel line (issue #65)
 

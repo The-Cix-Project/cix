@@ -4425,6 +4425,77 @@ paths:
           description: This kernel has no zswap, or was not built with the requested compressor
         "500":
           description: The kernel refused the settings (previous ones restored), or they applied but could not be persisted
+  /system/wireless:
+    get:
+      summary: The host's wireless regulatory domain (ADR-0354)
+      description: >
+        The country this host's radios operate under, which decides the
+        channels and power an access point may use. The kernel holds
+        one domain for the whole host and accepts it only from the
+        initial user namespace, so a container's hostapd can never set
+        it (#355); the daemon does, from this setting.
+
+        Reports the configured country **and what the kernel has**,
+        separately. The kernel applies a country asynchronously and
+        drops one its regulatory database lacks, so the two can
+        disagree, and when they do the setting did not take. `radios`
+        lists each radio whose driver keeps a domain of its own, a
+        container's included; every other radio runs under the host's.
+      operationId: getWireless
+      x-cix-read: sample
+      x-cix-sample-period: 30
+      x-cix-permission: devices:read
+      x-cix-expose: [cli, web]
+      responses:
+        "200":
+          description: Configured country, the kernel's domain, and each radio's
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Wireless"
+    put:
+      summary: Set the host's wireless regulatory domain (ADR-0354)
+      description: >
+        Persisted, then sent to the kernel, and sent again at every
+        daemon start before any radio is used. One value for the whole
+        host: the kernel has no per-radio or per-interface domain to set
+        (ADR-0354), so there is no such field here.
+
+        `null` clears the setting, and the host returns to the world
+        domain `00`. A refusal by the kernel is reported in
+        `apply_error` rather than failing the request: the setting is
+        what the operator asked for, the kernel fields say what took.
+
+        An access point started before a change keeps the channels it
+        computed at start; restart it to use the new domain.
+      operationId: setWireless
+      x-cix-invalidates: [getWireless]
+      x-cix-permission: devices:write
+      x-cix-expose: [cli, web]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [country]
+              properties:
+                country:
+                  type: string
+                  nullable: true
+                  pattern: "^[A-Z]{2}$"
+                  description: An ISO 3166-1 alpha-2 country code, e.g. GB, or null to clear.
+      responses:
+        "200":
+          description: Persisted and sent; reported the same way GET reports it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Wireless"
+        "400":
+          description: The country is not two upper-case letters
+        "500":
+          description: The setting could not be persisted
   /system/swap:
     get:
       summary: Whether the host swap file is enabled (ADR-0069)
@@ -19266,6 +19337,53 @@ components:
           description: Compression algorithms this kernel was built with, from /proc/crypto. Empty means no zswap at all.
           items:
             type: string
+    Wireless:
+      type: object
+      properties:
+        country:
+          type: string
+          nullable: true
+          description: The configured country; null when none is set.
+        apply_error:
+          type: string
+          nullable: true
+          description: Why the kernel refused the last attempt to send the country, at start or on a change; null when it accepted it or nothing was sent.
+        kernel:
+          type: object
+          description: What the kernel itself reports, read back rather than echoed.
+          properties:
+            country:
+              type: string
+              nullable: true
+              description: The host's domain, `00` being the world domain; null when it could not be read.
+        radios:
+          type: array
+          description: >
+            Every radio that runs under a domain of its own, in whatever
+            network namespace it is, a container's included. A radio not
+            listed follows the host's domain.
+          items:
+            type: object
+            properties:
+              wiphy:
+                type: integer
+                description: The kernel's wiphy index.
+              phy:
+                type: string
+                nullable: true
+                description: The radio's name on the host, e.g. phy0; null for a radio a container holds, whose name lives in its namespace.
+              country:
+                type: string
+                nullable: true
+                description: The radio's own domain; null when the kernel sent none.
+              source:
+                type: string
+                enum: [driver, self-managed]
+                description: >
+                  `driver` when its driver hinted a domain from its
+                  hardware, which the kernel combines with the host's;
+                  `self-managed` when its driver keeps its own and
+                  ignores the host's.
     DhcpNetwork:
       type: object
       properties:

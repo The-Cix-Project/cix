@@ -66,6 +66,7 @@
 #include "api_srcpolicy.h"
 #include "ksm.h"
 #include "zswap.h"
+#include "wireless.h"
 #include "dhcp.h"
 #include "procfuse.h"
 #include "proctitle.h"
@@ -304,6 +305,7 @@ char SCHEDULER_STATE_PATH[PATH_MAX];    /* ADR-0257 -- everything this host does
 char KERNEL_RELEASES_PATH[PATH_MAX];    /* issue #65 -- cached kernel.org releases.json */
 char ZSWAP_STATE_PATH[PATH_MAX];        /* issue #51 -- compressed swap cache settings */
 char KSM_STATE_PATH[PATH_MAX];          /* issue #50 -- samepage merging settings */
+char WIRELESS_STATE_PATH[PATH_MAX];     /* ADR-0354 -- the host's wireless country */
 char DHCP_STATE_PATH[PATH_MAX];         /* DHCP ranges and static reservations */
 char STALLWATCH_RECORDS_PATH[PATH_MAX]; /* issue #100 -- control-plane stall records */
 char VOLUMES_STATE_PATH[PATH_MAX];      /* issue #88 */
@@ -506,6 +508,7 @@ static void compute_state_dir_relative_paths(void)
 	         STATE_DIR);
 	snprintf(ZSWAP_STATE_PATH, sizeof(ZSWAP_STATE_PATH), "%s/zswap.json", STATE_DIR);
 	snprintf(KSM_STATE_PATH, sizeof(KSM_STATE_PATH), "%s/ksm.json", STATE_DIR);
+	snprintf(WIRELESS_STATE_PATH, sizeof(WIRELESS_STATE_PATH), "%s/wireless.json", STATE_DIR);
 	snprintf(DHCP_STATE_PATH, sizeof(DHCP_STATE_PATH), "%s/dhcp.json", STATE_DIR);
 	snprintf(STALLWATCH_RECORDS_PATH, sizeof(STALLWATCH_RECORDS_PATH),
 	         "%s/control_plane_stalls.jsonl", STATE_DIR);
@@ -26102,6 +26105,60 @@ static void handle_zswap_put(int fd, const char *body, size_t body_len)
 	jw_free(&w);
 }
 
+static void handle_wireless_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	wireless_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_wireless_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	const struct json_value *jc;
+	char country[3] = "";
+	int clear = 0;
+	enum wireless_error err;
+	struct json_writer w;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	/* The key is required, and null is the one way to clear: an absent
+	 * key is a mistake, not "leave it". */
+	jc = json_object_get(root, "country");
+	if (jc != NULL && jc->type == JSON_NULL)
+		clear = 1;
+	else if (jc != NULL && jc->type == JSON_STRING && strlen(json_as_string(jc)) < sizeof(country))
+		snprintf(country, sizeof(country), "%s", json_as_string(jc));
+	json_free(root);
+	if (!clear && country[0] == '\0') {
+		respond_error(fd, 400, "Bad Request",
+		               "country must be two upper-case letters, e.g. GB, or null to clear");
+		return;
+	}
+
+	err = wireless_set(clear ? NULL : country);
+	if (err == WIRELESS_ERR_INVALID) {
+		respond_error(fd, 400, "Bad Request",
+		               "country must be two upper-case letters, e.g. GB, or null to clear");
+		return;
+	}
+	if (err == WIRELESS_ERR_PERSIST_FAILED) {
+		respond_error(fd, 500, "Internal Server Error",
+		               "the country could not be persisted; nothing was changed");
+		return;
+	}
+	jw_init(&w);
+	wireless_write_json(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_kernel_policy_get(int fd)
 {
 	struct json_writer w;
@@ -28441,6 +28498,18 @@ static void op_getZswap(const struct api_ctx *ctx)
 static void op_setZswap(const struct api_ctx *ctx)
 {
 	handle_zswap_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/system/wireless */
+static void op_getWireless(const struct api_ctx *ctx)
+{
+	handle_wireless_get(ctx->fd);
+}
+
+/* PUT /v1/system/wireless */
+static void op_setWireless(const struct api_ctx *ctx)
+{
+	handle_wireless_put(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
 /* GET /v1/system/swap */
@@ -38168,6 +38237,10 @@ static int cixd_main(int argc, char **argv)
 	 * deliberately off, so this is the setting's only chance to survive
 	 * a reboot. */
 	zswap_init(ZSWAP_STATE_PATH);
+	/* ADR-0354: before the kmod sweep and boot autostart below, so a
+	 * radio registered later inherits the domain and an access point
+	 * computes its channels under it. */
+	wireless_init(WIRELESS_STATE_PATH);
 	ksm_init(KSM_STATE_PATH);
 	dhcp_init(DHCP_STATE_PATH);
 	/* A cached answer from a previous run, if there is one. Its own

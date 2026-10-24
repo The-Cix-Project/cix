@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The host's wireless country is a setting cixd applies (#355)
+
+- **What changed:** `GET`/`PUT /v1/system/wireless`, `cixctl wireless show|set --country=CC|--clear`, and a Devices > Wireless tab. cixd persists the country and sends it to the kernel over nl80211 at start, before the kmod sweep and autostart, and on every change. The read reports the configured country, the kernel's domain and any radio with a domain of its own, separately ([ADR-0354](docs/adr/0354-the-wireless-regulatory-domain-is-a-host-setting.md)).
+- **Why:** `ar-1`'s hostapd was refused `country_code=GB` on every start, so the host stayed on the world domain, where 5 GHz may not be used to start an access point. The kernel takes a country only from CAP_NET_ADMIN in the initial user namespace (`GENL_ADMIN_PERM`, kernel 7.2.12, `probe-regperm@1-1`), and a userns container's `iw reg set GB` was refused EPERM on 192.168.15.95.
+
 ### A container's exit reason names the service that ended it (#640)
 
 - **What changed:** once a container's cix-init has read its table, `exit_reason` names the service that ended the container, e.g. `service main exited with status 142` or `service main killed by signal 11 (SIGSEGV)`. Before marking the exit, the pidfd handler drains cix-init's last reports, so the records the reason is built from are present.

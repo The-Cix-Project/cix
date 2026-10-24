@@ -2452,6 +2452,7 @@ const CATEGORY_VIEWS = {
 	devices: "view-devices",
 	devicemaps: "view-devices",
 	kmod: "view-devices",
+	wireless: "view-devices",
 	sysctl: "view-kernel",
 	storage: "view-storage",
 	"dns-records": "view-dns-records",
@@ -13635,6 +13636,54 @@ async function refreshZswap() {
 	}
 }
 
+/* ---------- wireless regulatory domain (ADR-0354) ---------- */
+
+function renderWireless(wl) {
+	const kernelGrid = document.getElementById("wireless-kernel");
+	const divergence = document.getElementById("wireless-divergence");
+	const wanted = wl.country || "00";
+	const have = wl.kernel ? wl.kernel.country : null;
+
+	syncForm(document.getElementById("wireless-form"), "setWireless", {
+		values: { country: wl.country }, submit: "Save", saved: "Country saved.",
+		failed: "Failed to save the country", after: refreshWireless,
+	});
+
+	kernelGrid.textContent = "";
+	kernelGrid.appendChild(fieldBlock("Kernel says", have === null ? "unknown" : have));
+	/* Only a radio with a domain of its own is listed; every other one,
+	 * a container's included, runs under the host's (ADR-0354). */
+	const radios = wl.radios || [];
+
+	kernelGrid.appendChild(fieldBlock("Radios", radios.length === 0
+		? "every radio follows the host's country"
+		: radios.length + " with a country of their own, below"));
+	radios.forEach((r) => {
+		kernelGrid.appendChild(fieldBlock("Radio " + (r.phy || "wiphy " + r.wiphy + ", held by a container"),
+		                                   (r.country || "unknown") + ", set by its driver" +
+		                                   (r.source === "self-managed" ? ", which ignores the host's" : "")));
+	});
+	/* Silence when they agree, as zswap's panel does. */
+	if (wl.apply_error) {
+		divergence.hidden = false;
+		divergence.textContent = "The kernel refused " + wanted + ": " + wl.apply_error + ".";
+	} else if (have !== null && have !== wanted) {
+		divergence.hidden = false;
+		divergence.textContent = "Configured " + wanted + ", but the kernel reports " + have +
+			" — it has not taken the setting.";
+	} else {
+		divergence.hidden = true;
+	}
+}
+
+async function refreshWireless() {
+	try {
+		renderWireless(await apiRequest("GET", CIX_API.getWireless()));
+	} catch (e) {
+		/* Best-effort, same as every other panel here. */
+	}
+}
+
 
 async function refreshSwap() {
 	try {
@@ -15139,6 +15188,7 @@ const VIEW_REFRESHERS = {
 	routes: [refreshRoutes],
 	sysctl: [refreshSysctl],
 	"host-swap": [refreshSwap, refreshZswap],
+	wireless: [refreshWireless],
 	"trust-anchors": [refreshTrustAnchors],
 	"rolling-restart": [refreshRollingConfig],
 	"tls-throttle": [refreshTlsThrottleConfig, refreshTlsThrottleStatus],

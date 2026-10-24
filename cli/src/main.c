@@ -539,6 +539,8 @@ static const char USAGE_TEXT[] =
 	        "  zswap show / zswap set [--enable | --disable] [--max-pool-percent=N]\n"
 	        "               [--compressor=NAME]  -- compress pages in RAM before they would\n"
 	        "               reach the swap device (ADR-0196)\n"
+	        "  wireless show / wireless set --country=CC | --clear  -- the host's\n"
+	        "               regulatory domain, one for every radio (ADR-0354)\n"
 	        "  kernel-policy show | refresh\n"
 	        "  kernel-policy set --channel=pinned|longterm|stable|mainline  -- which\n"
 	        "               kernel.org line this box tracks (#65); pinned proposes nothing\n"
@@ -4558,6 +4560,96 @@ static int cmd_zswap(const struct cix_client *c, int json_mode, int argc, char *
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_zswap);
+}
+
+/*
+ * ADR-0354: cixctl wireless show|set. The configured country and the
+ * kernel's side by side, because the kernel applies a country
+ * asynchronously and drops one it does not know, then each radio.
+ */
+static void fmt_wireless(const struct json_value *v)
+{
+	const char *country = json_str_field(v, "country");
+	const char *err = json_str_field(v, "apply_error");
+	const struct json_value *kernel = json_object_get(v, "kernel");
+	const char *kcountry = kernel != NULL ? json_str_field(kernel, "country") : NULL;
+	const struct json_value *radios = json_object_get(v, "radios");
+	size_t i;
+
+	printf("configured: %s\n", country != NULL ? country : "none (world domain)");
+	printf("kernel:     %s\n", kcountry != NULL ? kcountry : "unknown");
+	if (err != NULL)
+		printf("  ^ the kernel refused the last attempt: %s\n", err);
+	else if (kcountry != NULL && strcmp(kcountry, country != NULL ? country : "00") != 0)
+		printf("  ^ these disagree: the kernel has not taken what was configured\n");
+	if (radios == NULL || radios->type != JSON_ARRAY)
+		return;
+	if (radios->u.array.count == 0)
+		printf("radios:     every radio follows the host's domain\n");
+	for (i = 0; i < radios->u.array.count; i++) {
+		const struct json_value *rd = radios->u.array.items[i];
+		const char *rc = json_str_field(rd, "country");
+		const char *src = json_str_field(rd, "source");
+		const char *phy = json_str_field(rd, "phy");
+
+		printf("radio:      wiphy %d (%s) runs under %s, set by its %s\n",
+		       (int)json_as_number(json_object_get(rd, "wiphy")),
+		       phy != NULL ? phy : "held by a container", rc != NULL ? rc : "unknown",
+		       src != NULL && strcmp(src, "self-managed") == 0 ? "driver alone" : "driver");
+	}
+}
+
+static int cmd_wireless(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	const char *sub = argc > 0 ? argv[0] : "show";
+	const char *country = NULL;
+	int clear = 0;
+	int i;
+	struct json_writer w;
+
+	if (strcmp(sub, "show") == 0) {
+		if (cix_client_request(c, CIX_API_getWireless_METHOD, CIX_API_getWireless, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_wireless);
+	}
+	for (i = 1; i < argc; i++) {
+		if (strncmp(argv[i], "--country=", 10) == 0)
+			country = argv[i] + 10;
+		else if (strcmp(argv[i], "--clear") == 0)
+			clear = 1;
+		else {
+			fprintf(stderr, "cixctl: unknown wireless set option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (strcmp(sub, "set") != 0 || (country == NULL) == (clear == 0)) {
+		fprintf(stderr, "usage: cixctl wireless show\n"
+		                "       cixctl wireless set --country=CC | --clear\n"
+		                "  the host's wireless regulatory domain, one for every radio\n"
+		                "  (ADR-0354); --clear returns to the world domain\n");
+		return 2;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "country");
+	if (clear)
+		jw_null(&w);
+	else
+		jw_str(&w, country);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+
+	if (cix_client_request(c, CIX_API_setWireless_METHOD, CIX_API_setWireless, w.buf, &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_wireless);
 }
 
 static int cmd_swap_status(const struct cix_client *c, int json_mode)
@@ -19838,6 +19930,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_ksm(client, json_mode, argc, argv);
 	if (strcmp(cmd, "zswap") == 0)
 		return cmd_zswap(client, json_mode, argc, argv);
+	if (strcmp(cmd, "wireless") == 0)
+		return cmd_wireless(client, json_mode, argc, argv);
 	if (strcmp(cmd, "swap") == 0)
 		return cmd_swap(client, json_mode, argc, argv);
 	if (strcmp(cmd, "host-stats") == 0)

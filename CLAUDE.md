@@ -355,6 +355,15 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Only a running container holds a device.** A kept-exited one is a stopped definition (ADR-0344's reservation rule).
 - **A daemon-initiated stop announces:** `registry_begin_kill()` does it for every kind.
 
+## The wireless country is one host setting
+
+**The regulatory domain is set by cixd from `PUT /v1/system/wireless`, for the whole host, never per radio or interface** -- [ADR-0354](docs/adr/0354-the-wireless-regulatory-domain-is-a-host-setting.md), the owner's decision of 2026-10-24 (#355), after asking whether it should be per interface.
+
+- **The kernel has one domain and takes it only from the initial user namespace.** `NL80211_CMD_REQ_SET_REG` is `GENL_ADMIN_PERM` and carries only an alpha2 (kernel 7.2.12, `probe-regperm@1-1`); a userns container gets EPERM (measured 2026-10-24). Never offer a per-interface country, and never give an access point `userns: false` to set one.
+- **An access point recipe carries no `country_code`**, and so no `ieee80211d`.
+- **Sent at start before the kmod sweep and autostart**, and only when a country is configured: a test daemon must never send one.
+- **The read is a sample, never on the device record.** The kernel moves it with no API call. A radio's own domain comes from the `GET_REG` dump, which covers every namespace; a per-wiphy request does not.
+
 ## A device gets its driver, and one policy decides every module load
 
 **Hardware that appears gets its driver by default, and every module load, whoever asks, is decided by one function over one policy.** That is [ADR-0348](docs/adr/0348-a-device-gets-its-driver-and-one-policy-decides-every-module-load.md), accepted by the owner on 2026-10-21 (#143), with the defaults the owner chose that day: autoload at boot and on plug, and a blacklisted module that is loaded is marked and warned about, never unloaded.
