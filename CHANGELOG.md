@@ -10,7 +10,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** the approval write into a recipe and the ADR-0324 refresh from git each give the replacement file the stored file's times before renaming it into place (`recipe_keep_published_time()`). So a version's `created_at`, and the `newest` policy's order, stay its publish time.
 - **Why:** both writers renamed a new file over the stored one, which made the version read as published at the moment of the rewrite. Under `newest` (ADR-0188), an older version approved after a newer one was published would have been chosen. Found reading the code for the documentation sweep. No package on 192.168.15.95 has a policy set, so it had not happened there. A system restore still writes the text afresh with no time, which the comment now says.
-- **Verified:** pending.
+- **Verified:** compile probe 0.2.57-616 and the 0.2.57-597 release: `SELFTEST: PASS`, `test_pkg` included. On 192.168.15.95 at 597, `hibr@0.99.321-1` was published at 21:59:32Z and approved at 21:59:47Z, and its `created_at` reads the publish second (1792879172). At 596, `hibr@0.99.318-1`'s read its approval second.
 
 ### cixctl help lists every command, and the contract declares what the daemon emits (#628)
 
