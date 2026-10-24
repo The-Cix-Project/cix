@@ -3098,8 +3098,8 @@ int pkg_version_compare(const char *a, const char *b)
 /*
  * The recipe file inside one version directory: its build.cbs
  * (ADR-0305). Fills out_path and, when out_created is non-NULL, the
- * file's mtime -- which ADR-0107 immutability makes a real "first
- * published" timestamp (see recipe_created_at()).
+ * file's mtime -- its "first published" timestamp (see
+ * recipe_created_at()).
  *
  * Returns -1 when the directory holds no build.cbs. A build.sh is not a
  * recipe: shell recipes do not exist (cix#569), and a version
@@ -3193,10 +3193,9 @@ static int find_recipe_path(const char *name, const char *version, char *out_pat
 				if (pkg_recipe_file_in(version_dir, candidate, sizeof(candidate), &created, NULL) != 0)
 					continue;
 				if (policy == PKG_POLICY_NEWEST) {
-					/* A recipe version's file is written exactly once
-					 * and never touched again (ADR-0107 immutability),
-					 * so its mtime really is "first published" -- see
-					 * recipe_created_at()'s own comment. Ties fall back
+					/* A recipe version's mtime is "first published",
+					 * kept across the rewrites that are not a new
+					 * version -- see recipe_created_at(). Ties fall back
 					 * to the version order, so the answer is stable
 					 * rather than dependent on readdir() order. */
 					wins = !have_best || created > best_created ||
@@ -3700,13 +3699,16 @@ int pkg_upstream_refresh_running(void)
 
 
 /*
- * A recipe version's own file is written exactly once
- * (persist_atomic_write(), never rewritten -- ADR-0107's immutability
- * rule) and never copied/hardlinked/touched again by anything in this
- * codebase, so its own mtime *is* an accurate, permanent "first
- * published" timestamp with no separate persisted field needed
- * (ADR-0108). Returns 0 (unknown/stat failed) rather than failing the
- * caller -- a missing timestamp is display-only, never load-bearing.
+ * A recipe version's mtime is its "first published" timestamp, with no
+ * separate persisted field (ADR-0108), and the `newest` policy orders
+ * versions by it (ADR-0188). The publish writes the file; two later
+ * writers replace its text without making it a new version: the
+ * approval write-back (approve_cbs_artifact()) and the ADR-0324 refresh
+ * (recipe_cbs_refresh()). Both go through
+ * recipe_keep_published_time(), so the time survives them. A system
+ * restore writes the text afresh and the bundle carries no time, so a
+ * restored version reads as published at the restore. Returns 0
+ * (unknown/stat failed) rather than failing the caller.
  */
 static long recipe_created_at(const char *recipe_path)
 {
@@ -3715,6 +3717,26 @@ static long recipe_created_at(const char *recipe_path)
 	if (stat(recipe_path, &st) != 0)
 		return 0;
 	return (long)st.st_mtime;
+}
+
+/*
+ * Gives new_path, the replacement text about to be renamed over
+ * recipe_path, the stored file's times. Without it a replacement made
+ * the version read as published at the moment of the rewrite, so under
+ * `newest` an older version approved after a newer one was published
+ * would win. Read from the code on 2026-10-24 (#628); no package on
+ * 192.168.15.95 had a policy set, so it had not happened there.
+ */
+static int recipe_keep_published_time(const char *recipe_path, const char *new_path)
+{
+	struct stat st;
+	struct timespec times[2];
+
+	if (stat(recipe_path, &st) != 0)
+		return -1;
+	times[0] = st.st_atim;
+	times[1] = st.st_mtim;
+	return utimensat(AT_FDCWD, new_path, times, 0);
 }
 
 /*
@@ -9098,6 +9120,11 @@ static enum pkg_error recipe_cbs_refresh(const char *name, const char *version,
 		unlink(staging_path);
 		return recipe_persist_failed("write the refreshed recipe's explain");
 	}
+	if (recipe_keep_published_time(recipe_path, staging_path) != 0)
+		logstore_write("cixd", "warn",
+		               "pkg: recipe %s@%s: could not keep its publish time across the refresh "
+		               "(%s), so it now reads as published now (#628)",
+		               name, version, strerror(errno));
 	if (rename(staging_path, recipe_path) != 0) {
 		unlink(staging_path);
 		return recipe_persist_failed("move the refreshed recipe into place");
@@ -21026,6 +21053,11 @@ static void approve_cbs_artifact(const char *recipe_path, const char *name, cons
 	 * explain.json claiming an approval the recipe does not declare,
 	 * so a re-derive would silently revoke it.
 	 */
+	if (recipe_keep_published_time(recipe_path, candidate_path) != 0)
+		logstore_write("cixd", "warn",
+		               "pkg: %s@%s: could not keep its publish time across the approval "
+		               "write (%s), so it now reads as published now (#628)",
+		               name, version, strerror(errno));
 	if (rename(candidate_path, recipe_path) != 0)
 		goto done;
 	pkg_announce_recipes();

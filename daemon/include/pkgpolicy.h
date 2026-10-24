@@ -22,10 +22,10 @@
  * Three policies, per package name:
  *   highest  -- the default, unchanged behaviour.
  *   newest   -- the most recently PUBLISHED recipe wins, for names
- *               where publication order is the real intent. A recipe
- *               version's file is written exactly once and never
- *               touched again (ADR-0107 immutability), so its mtime is
- *               a real first-published timestamp, not an approximation.
+ *               where publication order is the real intent, read from
+ *               the recipe file's mtime. The approval write-back and
+ *               the ADR-0324 refresh rewrite that file and carry its
+ *               time across (recipe_keep_published_time(), #628).
  *   pinned   -- an explicit version that nothing may bump. A real hold:
  *               update-all and follow_rolling resolve to the pinned
  *               version, so there is never an update to apply.

@@ -8847,6 +8847,7 @@ skip_resume:
 
 		if (stage_ok) {
 			char st_s[32];
+			long shared_created = -1;
 
 			/* First sync: own packages arrive, `shared` is held. */
 			if (sync_and_wait(&client, st_s, sizeof(st_s), &r) != 0 || !str_eq(st_s, "success") ||
@@ -8904,7 +8905,15 @@ skip_resume:
 				        r.body != NULL ? r.body : "(no body)");
 				ok = 0;
 			}
+			/* When shared@1.0-1 was published here. The refreshes and the
+			 * approval write-back below each replace the stored text, and
+			 * none of them is a new publish, so this must survive them
+			 * (#628); the sleep makes a rewrite visible as a later second. */
+			shared_created = r.json != NULL
+			                     ? (long)json_as_number(json_object_get(r.json, "created_at"))
+			                     : -1;
 			cix_response_free(&r);
+			sleep(1);
 
 			/* The choice moves to srca: its copy is a different recipe
 			 * under the same version, so it is refused, not merged. */
@@ -9111,6 +9120,18 @@ skip_resume:
 				}
 				json_free(sent);
 				free(posted_req);
+
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/recipes/shared", NULL, &r) != 0 ||
+				    r.json == NULL || shared_created <= 0 ||
+				    (long)json_as_number(json_object_get(r.json, "created_at")) != shared_created) {
+					fprintf(stderr, "FAIL: #628 shared@1.0-1's created_at must stay %ld, its "
+					                "publish time, through the refreshes and the approval "
+					                "write-back: %s\n",
+					        shared_created, r.body != NULL ? r.body : "(no body)");
+					ok = 0;
+				}
+				cix_response_free(&r);
 			}
 
 			/*

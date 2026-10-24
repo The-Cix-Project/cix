@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A recipe keeps its publish time when its text is rewritten (#628)
+
+- **What changed:** the approval write into a recipe and the ADR-0324 refresh from git each give the replacement file the stored file's times before renaming it into place (`recipe_keep_published_time()`). So a version's `created_at`, and the `newest` policy's order, stay its publish time.
+- **Why:** both writers renamed a new file over the stored one, which made the version read as published at the moment of the rewrite. Under `newest` (ADR-0188), an older version approved after a newer one was published would have been chosen. Found reading the code for the documentation sweep. No package on 192.168.15.95 has a policy set, so it had not happened there. A system restore still writes the text afresh with no time, which the comment now says.
+- **Verified:** pending.
+
 ### cixctl help lists every command, and the contract declares what the daemon emits (#628)
 
 - **What changed:** `cixctl help all` gains the dispatched commands it omitted: `pager`, `container drift|edit|network|volume|device`, `image show|materialize|manifest`, `dns record update|provision|forwarders` and `dhcp remove`. `ldap user add --uidnumber` and `ldap group add --gidnumber` are shown as optional, as the host allocates them. `volume backups` gains `--while-running=` and names the schedule rather than a retired interval field. `iso build` no longer calls an empty build a placeholder ISO. Completion offers `pager`, `container drift` and `container run --console=`. The contract declares `ifname`, `container_bridge` and `live` on a container's `networks[]`, `userns_default` on daemon-config, the config plan's `observed_fields`, and `manual` in its `apply` enum (11 sections report it). The volume-backup-config, backup-config and `/pkg/sync` summaries describe what those endpoints do since ADR-0257 and ADR-0324.
