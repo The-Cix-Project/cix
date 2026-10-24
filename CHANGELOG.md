@@ -15,7 +15,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** once a container's cix-init has read its table, `exit_reason` names the service that ended the container, e.g. `service main exited with status 142` or `service main killed by signal 11 (SIGSEGV)`. Before marking the exit, the pidfd handler drains cix-init's last reports, so the records the reason is built from are present.
 - **Why:** with cix-init as pid 1 the container's exit status is the service's, and the reason was decoded as if it were `src/container.c`'s pre-exec code. A oneshot exiting 255 on 192.168.15.95 read `overlay mount or exec failed: Operation now in progress` (255 is 140 + EINPROGRESS) for a container whose mount and exec had both worked.
-- **Verified:** `test_container_restart` asserts both reasons above.
+- **Verified:** `test_container_restart` asserts both reasons above. On 192.168.15.95 at 0.2.57-593, the same oneshot that read `overlay mount or exec failed` on 592 reported `service set exited with status 255`.
 
 ### nslcd stops cleanly: an image can carry libgcc_s.so.1 without a compiler (#639)
 

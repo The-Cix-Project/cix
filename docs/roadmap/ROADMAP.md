@@ -2445,6 +2445,12 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 323: a container's exit reason names the service that ended it (#640, 0.2.57-593)
+
+With cix-init as pid 1, a container's exit status is the status of the service that ended it, and `registry_mark_exited_with()` decoded it as `src/container.c`'s pre-exec code: 141..255 read as 140 + errno, 110..138 as named setup steps. Once cix-init has reported up, `registry_describe_service_end()` now names the service cix-init reported failing, or the one whose last exit is the container's status. The pidfd handler drains cix-init's last reports before marking the exit, so those records are there. `test_container_restart` asserts `service main exited with status 142` and `service main killed by signal 11 (SIGSEGV)`.
+
+**Measured on 192.168.15.95, 2026-10-24:** on 592, a `wifi_router` container whose oneshot `iw reg set GB` exited 255 reported `overlay mount or exec failed: Operation now in progress`. On 593 the same container reported `service set exited with status 255`. Compile probe 0.2.57-611 and the 593 release build: `SELFTEST: PASS`; 593 booted on slot a with 12 containers running.
+
 ## Part 322: nslcd stops cleanly, with libgcc_s.so.1 as its own package (#639)
 
 glibc `dlopen()`s `libgcc_s.so.1` to unwind a cancelled thread, and nslcd in `jump` aborted on every stop without it (347 times in its retained log). `libgcc-s@16.2.0-2` (cix-recipes) carries gcc's own copy, checked byte-identical to the gcc 16.2.0-19 artifact's, so an image gets the library without a compiler. `nss-pam-ldapd@0.9.13-8` depends on it and `jumpbox` 2.9.7 pins both.
