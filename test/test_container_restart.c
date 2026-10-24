@@ -592,11 +592,68 @@ int main(void)
 				fprintf(stderr, "FAIL: sigdeath services[0].last_exit should be killed by signal 11\n");
 				ok = 0;
 			}
+			if (!str_eq(json_str_field(r.json, "exit_reason"),
+			            "service main killed by signal 11 (SIGSEGV)")) {
+				fprintf(stderr, "FAIL: sigdeath exit_reason should name the service, got \"%s\"\n",
+				        json_str_field(r.json, "exit_reason") != NULL
+				            ? json_str_field(r.json, "exit_reason") : "(null)");
+				ok = 0;
+			}
 		}
 		cix_response_free(&r);
 
 		memset(&r, 0, sizeof(r));
 		cix_client_request(&client, "DELETE", "/v1/containers/sigdeath", NULL, &r);
+		cix_response_free(&r);
+	}
+
+	/*
+	 * A service exit code in 141..255 is also src/container.c's
+	 * 140 + errno encoding for a container that never started, and the
+	 * exit reason used to be decoded from the number alone: measured on
+	 * 192.168.15.95, 2026-10-24, a oneshot exiting 255 read "overlay
+	 * mount or exec failed: Operation now in progress". 142 would have
+	 * read "... No such file or directory". Once cix-init is up, the
+	 * reason names the service instead.
+	 */
+	{
+		int i;
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/containers",
+		                       "{\"name\":\"misreadexit\",\"image\":\"restarttest\","
+		                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"0\",\"142\"]}]}",
+		                       &r) != 0 ||
+		    r.status != 201) {
+			fprintf(stderr, "FAIL: POST misreadexit, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		for (i = 0; i < 60; i++) {
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/containers/misreadexit", NULL, &r) == 0 &&
+			    r.status == 200 && str_eq(json_str_field(r.json, "status"), "exited"))
+				break;
+			usleep(100000);
+		}
+		if (r.status != 200 || !str_eq(json_str_field(r.json, "status"), "exited")) {
+			fprintf(stderr, "FAIL: misreadexit never reached exited\n");
+			ok = 0;
+		} else if (json_num_field(r.json, "exit_status") != 142 ||
+		           !str_eq(json_str_field(r.json, "exit_reason"), "service main exited with status 142")) {
+			fprintf(stderr, "FAIL: misreadexit expected 142 / \"service main exited with status 142\", "
+			        "got %ld / \"%s\"\n", json_num_field(r.json, "exit_status"),
+			        json_str_field(r.json, "exit_reason") != NULL
+			            ? json_str_field(r.json, "exit_reason") : "(null)");
+			ok = 0;
+		}
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		cix_client_request(&client, "DELETE", "/v1/containers/misreadexit", NULL, &r);
 		cix_response_free(&r);
 	}
 

@@ -18393,9 +18393,12 @@ components:
             Human-readable why, once status is exited; null while running
             (ADR-0080). Either the real diagnostic text the container's
             own pre-exec setup or final exec wrote before failing (e.g.
-            "child: execve(/usr/bin/foo): No such file or directory"), or
-            a fixed category string (e.g. "clean exit", "overlay: mount(2)
-            itself failed") when that text isn't available. exit_status
+            "child: execve(/usr/bin/foo): No such file or directory");
+            once the container's cix-init has started, the service that
+            ended it (e.g. "service hostapd exited with status 1",
+            "service main killed by signal 11 (SIGSEGV)"); or a fixed
+            category string (e.g. "clean exit", "overlay: mount(2)
+            itself failed") when neither applies. exit_status
             alone was never enough to act on -- this is the same numeric
             scheme documented in src/container.c decoded into something
             an operator can actually read, without needing serial console

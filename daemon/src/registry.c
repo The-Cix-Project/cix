@@ -419,6 +419,62 @@ void registry_mark_exited(struct registry_entry *entry)
 		registry_mark_exited_with(entry, status, sig);
 }
 
+/*
+ * Once cix-init has read its table, the container's exit status is
+ * cix-init's, and that is the status of the service that ended it
+ * (include/cixinit.h, EXIT STATUS) -- never one of src/container.c's
+ * pre-exec setup codes. container_decode_exit_status() cannot tell the
+ * two apart from the number, so it is not asked. Measured on
+ * 192.168.15.95, 2026-10-24: a container whose oneshot ran
+ * `iw reg set GB` and exited 255 reported "overlay mount or exec failed:
+ * Operation now in progress", because 255 is 140 + EINPROGRESS.
+ *
+ * The service named is the one cix-init reported failing (a oneshot's
+ * status, or a fork that never made a child); failing that, the one
+ * whose last exit is the container's status. A dependency failure is
+ * never the cause, only a consequence of one. Returns 0, writing
+ * nothing, when cix-init never came up or the exit needs no service to
+ * explain it.
+ */
+static int registry_describe_service_end(const struct registry_entry *entry, int status, int sig,
+                                         char *buf, size_t bufsize)
+{
+	const struct registry_service *s, *found = NULL;
+	int i;
+
+	if (!entry->init_up || sig != 0 || status == 0)
+		return 0;
+	for (i = 0; i < entry->service_count && found == NULL; i++) {
+		s = &entry->services[i];
+		if (s->fail_reason == CIXINIT_FAIL_ONESHOT || s->fail_reason == CIXINIT_FAIL_SPAWN)
+			found = s;
+	}
+	for (i = 0; i < entry->service_count && found == NULL; i++) {
+		s = &entry->services[i];
+		if (!s->has_exit)
+			continue;
+		if (s->exit_kind == CIXINIT_EXIT_KIND_EXITED ? s->exit_value == status
+		                                             : 128 + s->exit_value == status)
+			found = s;
+	}
+	if (found == NULL) {
+		snprintf(buf, bufsize, "exited with status %d", status);
+	} else if (found->fail_reason == CIXINIT_FAIL_SPAWN) {
+		snprintf(buf, bufsize, "service %s could not be started (fork failed)", found->def.name);
+	} else if (found->exit_kind == CIXINIT_EXIT_KIND_EXITED) {
+		snprintf(buf, bufsize, "service %s exited with status %d", found->def.name,
+		         found->exit_value);
+	} else {
+		const char *name = container_signal_name(found->exit_value);
+
+		snprintf(buf, bufsize, "service %s killed by signal %d%s%s%s%s", found->def.name,
+		         found->exit_value, name != NULL ? " (" : "", name != NULL ? name : "",
+		         name != NULL ? ")" : "",
+		         found->exit_kind == CIXINIT_EXIT_KIND_DUMPED ? ", core dumped" : "");
+	}
+	return 1;
+}
+
 /* The bookkeeping half of registry_mark_exited(), kept separate from
  * the waitid() that produces the status so the two concerns stay
  * readable. */
@@ -438,14 +494,16 @@ static void registry_mark_exited_with(struct registry_entry *entry, int status, 
 		 * that can tell "overlay mount failed" apart from "the exec'd
 		 * program's own real exit code happened to land in the same
 		 * numeric range," see container_decode_exit_status()'s own
-		 * comment) -- fall back to the fixed category decode only when
-		 * the pipe had nothing (a genuinely clean exit, or a container
-		 * whose diag pipe was already consumed/unavailable).
+		 * comment). With the pipe empty, a container whose cix-init came
+		 * up is described by the service that ended it, and the fixed
+		 * category decode is left for the rest: a clean exit, a signal,
+		 * or a child that never got as far as reading its table.
 		 */
 		diag_len = container_read_diag(&entry->handle, diag, sizeof(diag));
 		if (diag_len > 0) {
 			snprintf(entry->last_exit_reason, sizeof(entry->last_exit_reason), "%s", diag);
-		} else {
+		} else if (!registry_describe_service_end(entry, status, sig, entry->last_exit_reason,
+		                                          sizeof(entry->last_exit_reason))) {
 			container_decode_exit_status(status, sig, entry->last_exit_reason,
 			                              sizeof(entry->last_exit_reason));
 		}

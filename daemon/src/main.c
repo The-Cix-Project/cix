@@ -37031,6 +37031,15 @@ static void handle_container_event(struct conn *cc)
 	struct registry_entry *entry = cc->entry;
 
 	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	/*
+	 * cix-init writes a service's EXITED and FAILED reports before it
+	 * exits, but the loop may serve this pidfd before the report
+	 * socket, and the exit reason is described from those reports
+	 * (registry_describe_service_end()). Draining here never blocks:
+	 * the writer is gone, so what is left is buffered or EOF.
+	 */
+	if (entry->init_report_fd >= 0)
+		container_init_pump(entry, entry->init_report_fd);
 	registry_mark_exited(entry);
 	entry->reactor_conn = NULL;
 	free(cc);

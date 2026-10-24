@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container's exit reason names the service that ended it (#640)
+
+- **What changed:** once a container's cix-init has read its table, `exit_reason` names the service that ended the container, e.g. `service main exited with status 142` or `service main killed by signal 11 (SIGSEGV)`. Before marking the exit, the pidfd handler drains cix-init's last reports, so the records the reason is built from are present.
+- **Why:** with cix-init as pid 1 the container's exit status is the service's, and the reason was decoded as if it were `src/container.c`'s pre-exec code. A oneshot exiting 255 on 192.168.15.95 read `overlay mount or exec failed: Operation now in progress` (255 is 140 + EINPROGRESS) for a container whose mount and exec had both worked.
+- **Verified:** `test_container_restart` asserts both reasons above.
+
 ### nslcd stops cleanly: an image can carry libgcc_s.so.1 without a compiler (#639)
 
 - **What changed (cix-recipes):** a new `libgcc-s@16.2.0-2` package carries gcc's `libgcc_s.so.1`, byte for byte, from the gcc 16.2.0-19 artifact, and `replaces { package "gcc" }` for that path. `nss-pam-ldapd@0.9.13-8` depends on it, and `jumpbox` 2.9.7 pins both.
