@@ -407,12 +407,14 @@ int main(void)
 	 *     request.
 	 * 350 as of ADR-0350: GET, POST and DELETE /system/trust-anchors, the
 	 *     CAs an operator registers for this host's HTTPS fetches.
+	 * 352 as of ADR-0354: GET and PUT /system/wireless, the host's wireless
+	 *     regulatory domain.
 	 */
 	status = run_apigen("docs/api/openapi.yaml", NULL, out, sizeof(out));
 	if (status != 0)
 		fail("apigen rejected the real spec: %.300s", out);
-	else if (atoi(out) != 350)
-		fail("apigen found %d operations in the real spec, expected 350 -- if the spec "
+	else if (atoi(out) != 352)
+		fail("apigen found %d operations in the real spec, expected 352 -- if the spec "
 		     "genuinely changed, update this number deliberately; a silently different "
 		     "count is how a lost route hides",
 		     atoi(out));
@@ -647,7 +649,7 @@ int main(void)
 	 * reads it makes stale. The events stream announces from these, so
 	 * a gap is a page that stays stale with nothing saying so -- a
 	 * build failure, as a missing permission is. The real spec passing
-	 * above is the positive control: all 147 reads and 203 changes.
+	 * above is the positive control: all 148 reads and 204 changes.
 	 */
 	expect_refusal("a read with no x-cix-read",
 	               VOCAB
@@ -933,8 +935,8 @@ int main(void)
 		 * these lists, so a slot out of range would write past the
 		 * vector and a missing change row would announce nothing --
 		 * both silently. Counted here against the contract itself:
-		 * one slot per announced read (147 reads, less 10 streams and
-		 * 11 derived reads, is 126), one row per change (203).
+		 * one slot per announced read (148 reads, less 10 streams and
+		 * 11 derived reads, is 127), one row per change (204).
 		 */
 		char slots_path[256], table_path[256];
 		char buf[4096];
@@ -999,13 +1001,13 @@ int main(void)
 		}
 		unlink(slots_path);
 		unlink(table_path);
-		if (count != 126 || defines != count || read_rows != count)
+		if (count != 127 || defines != count || read_rows != count)
 			fail("the events slots say %d reads, define %d EV_ constants and the table has "
-			     "%d read rows; all three should be 126 (ADR-0339)",
+			     "%d read rows; all three should be 127 (ADR-0339)",
 			     count, defines, read_rows);
-		if (change_count != 203 || change_rows != change_count)
+		if (change_count != 204 || change_rows != change_count)
 			fail("the events table declares %d changes and has %d change rows; both should "
-			     "be 203, one per non-GET operation (ADR-0339)",
+			     "be 204, one per non-GET operation (ADR-0339)",
 			     change_count, change_rows);
 		if (stream_count != 7 || stream_rows != stream_count)
 			fail("the events table declares %d subscribable reads and has %d stream rows; "
