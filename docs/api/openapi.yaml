@@ -20971,9 +20971,13 @@ components:
         live:
           type: boolean
           description: >
-            Whether the interface exists now -- true while the container
-            runs with it plugged in, false for a stopped container's
-            recorded attachment.
+            True only for an attachment made by a later
+            POST /containers/{name}/networks on a running container;
+            false for one made at container creation time, whether the
+            container is running or not. Only a live attachment can be
+            removed by DELETE /containers/{name}/networks/{network} -- a
+            create-time one is a 409, the same rule a device grant's
+            live has.
 
     ContainerInterfaceAttachment:
       type: object

@@ -1447,14 +1447,14 @@ Response (`201`):
   "term_signal": null,
   "exit_reason": null,
   "networks": [
-    {"name": "internal", "ip": "172.31.0.2", "ifname": "eth0", "live": true},
-    {"name": "dmz", "ip": "172.32.0.2", "ifname": "eth1", "live": true}
+    {"name": "internal", "ip": "172.31.0.2", "ifname": "eth0", "live": false},
+    {"name": "dmz", "ip": "172.32.0.2", "ifname": "eth1", "live": false}
   ],
   "ip_forward": false
 }
 ```
 
-Each attachment names its interface inside the container (`ifname`, ADR-0259) and says whether it exists now (`live`, false for a stopped container's recorded attachment); one that is a port of a bridge inside the container also carries `container_bridge` (ADR-0264), and its address is then on that bridge.
+Each attachment names its interface inside the container (`ifname`, ADR-0259) and says whether it was attached to the running container later (`live`): false for an attachment made at creation, true for one made by `POST .../networks`, and only a live one can be detached; one that is a port of a bridge inside the container also carries `container_bridge` (ADR-0264), and its address is then on that bridge.
 
 **A `201` means the container's first process has exec'd ([#549](https://git.home.arpa/itdlabs/cix/issues/549)).** The create answers once the child has started its program in its own root, or has failed to (its reason is then in the container's diagnostics), rather than as soon as it was cloned. So `/proc/<pid>/root` and a console opened straight after the `201` see the container. That is a wait of milliseconds, bounded at 5 s; past that the create answers anyway, as it always did.
 
