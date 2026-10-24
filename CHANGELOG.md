@@ -10,6 +10,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** `GET`/`POST /v1/config` has a `wireless` section after `zswap`, rendered from the same read as `GET /v1/system/wireless`, with `apply_error`, `kernel` and `radios` observed. A document carrying the country the host already has sends nothing to the kernel.
 - **Why:** 0.2.57-594 shipped the setting without a section, so a document replayed onto a reinstalled host dropped the country. The contract's `ConfigDocument` says every configurable subsystem belongs there.
+- **Verified:** on 192.168.15.95 at 0.2.57-595, `GET /v1/config` carries `"wireless":{"country":"GB"`, and `POST /v1/config/diff` of that document reports the section `unchanged`, with `apply_error,kernel,radios` observed. Compile probe 0.2.57-614 and the 595 release: `SELFTEST: PASS`.
 
 ### The host's wireless country is a setting cixd applies (#355)
 
