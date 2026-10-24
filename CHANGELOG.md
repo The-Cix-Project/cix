@@ -10,6 +10,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** `GET`/`PUT /v1/system/wireless`, `cixctl wireless show|set --country=CC|--clear`, and a Devices > Wireless tab. cixd persists the country and sends it to the kernel over nl80211 at start, before the kmod sweep and autostart, and on every change. The read reports the configured country, the kernel's domain and any radio with a domain of its own, separately ([ADR-0354](docs/adr/0354-the-wireless-regulatory-domain-is-a-host-setting.md)).
 - **Why:** `ar-1`'s hostapd was refused `country_code=GB` on every start, so the host stayed on the world domain, where 5 GHz may not be used to start an access point. The kernel takes a country only from CAP_NET_ADMIN in the initial user namespace (`GENL_ADMIN_PERM`, kernel 7.2.12, `probe-regperm@1-1`), and a userns container's `iw reg set GB` was refused EPERM on 192.168.15.95.
+- **Verified:** on 192.168.15.95 at 0.2.57-594, `cixctl wireless set --country=GB` moved the kernel from `00` to `GB` within 3 s, and ar-1's radio, held in its namespace, lost `no IR` on channels 36-48 and 149 and on 2.4 GHz 12-13, with ar-1 running throughout. After a reboot cixd logged `wireless: sent regulatory domain GB` at start and the kernel read `GB`, with 12 containers running. The Wireless tab is served by the box; its look was not checked in a browser.
 
 ### A container's exit reason names the service that ended it (#640)
 
