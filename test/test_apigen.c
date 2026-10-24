@@ -921,9 +921,9 @@ int main(void)
 			}
 			fclose(f);
 			unlink(routes_path);
-			if (rows != 350 || with_permission != rows)
+			if (rows != 352 || with_permission != rows)
 				fail("the generated route table has %d rows and %d carry a permission; "
-				     "expected 350 and 350 (ADR-0317)",
+				     "expected 352 and 352 (ADR-0317)",
 				     rows, with_permission);
 		}
 	}
@@ -1112,10 +1112,10 @@ int main(void)
 			fclose(f);
 			unlink(hdr_path);
 		}
-		if (defines != 350)
-			fail("CLI header has %d path defines, expected one per operation (350)", defines);
-		if (methods != 350)
-			fail("CLI header has %d method defines, expected one per operation (350)", methods);
+		if (defines != 352)
+			fail("CLI header has %d path defines, expected one per operation (352)", defines);
+		if (methods != 352)
+			fail("CLI header has %d method defines, expected one per operation (352)", methods);
 		if (braces != 0)
 			fail("%d CLI path define(s) still contain '{' -- a parameter was not converted "
 			     "to %%s and would put a literal brace in the URL",
@@ -1442,8 +1442,8 @@ int main(void)
 			fclose(f);
 			unlink(js_path);
 		}
-		if (shapes != 350)
-			fail("web api.js has %d _SHAPE entries, expected one per operation (350)",
+		if (shapes != 352)
+			fail("web api.js has %d _SHAPE entries, expected one per operation (352)",
 			     shapes);
 		if (!saw_fields)
 			fail("web api.js has no FIELDS table -- the renderers have nothing to render "
@@ -1668,8 +1668,8 @@ int main(void)
 			     "raise it rather than check a prefix of them%s",
 			     "APIGEN_TEST_MAX_REQ", "");
 		if (n_names == 0)
-			fail("no operation in api.js names a request schema -- 126 of the "
-			     "contract's 350 carry a requestBody, so this is a reader that "
+			fail("no operation in api.js names a request schema -- 127 of the "
+			     "contract's 352 carry a requestBody, so this is a reader that "
 			     "resolved none of them");
 		if (dangling > 0)
 			fail("%d operation(s) name a request schema with no FIELDS entry, the first "

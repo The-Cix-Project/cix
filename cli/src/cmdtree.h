@@ -515,6 +515,18 @@ static const struct cli_node n_zswap_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
+static const char *const n_wireless_flags[] = {
+	"--clear",
+	"--country=",
+	NULL
+};
+
+static const struct cli_node n_wireless_subs[] = {
+	{ "set", NULL, NULL },
+	{ "show", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
 static const char *const n_swap_enable_flags[] = {
 	"--disk=",
 	"--size-mb=",
@@ -1638,6 +1650,7 @@ static const struct cli_node CLI_TREE[] = {
 	{ "dhcp", n_dhcp_flags, n_dhcp_subs },
 	{ "ksm", n_ksm_flags, n_ksm_subs },
 	{ "zswap", n_zswap_flags, n_zswap_subs },
+	{ "wireless", n_wireless_flags, n_wireless_subs },
 	{ "swap", NULL, n_swap_subs },
 	{ "host-stats", NULL, NULL },
 	{ "server-health", NULL, n_server_health_subs },
