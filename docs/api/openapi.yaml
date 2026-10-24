@@ -11297,7 +11297,7 @@ paths:
   /pkg/sync:
     post:
       summary: >
-        Starts an async fetch-and-merge of the configured repo's recipes (ADR-0121).
+        Starts an async fetch-and-merge of every configured recipe source (ADR-0121, ADR-0324).
         Recipes only -- never package artifacts (that's Part 3's own separate
         cache/fetch mechanism). Merge/additive: an already-known (name,version) is
         counted as skipped, never overwritten or deleted (recipe versions stay
@@ -15102,7 +15102,10 @@ paths:
 
   /system/volume-backup-config:
     get:
-      summary: The shared schedule for volume content snapshots (issue #96)
+      summary: >
+        Where volume content snapshots are written, and whether they are
+        taken (issue #96). When is a schedule for the volume.backup
+        action (ADR-0257), not a field here.
       operationId: getVolumeBackupConfig
       x-cix-read: state
       x-cix-permission: system:read
@@ -15115,11 +15118,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/VolumeBackupConfig"
     put:
-      summary: Set the shared schedule for volume content snapshots
+      summary: Set where volume content snapshots go, and whether they are taken
       description: >
-        One interval for every opted-in volume rather than one per
-        volume: N independent timers is N ways for a schedule to be
-        quietly wrong. Per-volume opt-in and retention live on the
+        One target and one switch for every opted-in volume rather than
+        one per volume; when they run is the volume.backup schedule
+        (ADR-0257), and an `interval_hours` here is refused with a 400
+        naming it. Per-volume opt-in and retention live on the
         volume (PUT /volumes/{name}/backups). The disk must carry the
         `backup` role -- the same role the configuration snapshots use,
         so there is one answer to "where do backups go".
@@ -16586,7 +16590,11 @@ components:
                 enum: [object, array]
               apply:
                 type: string
-                enum: [replace, reconcile]
+                enum: [replace, reconcile, manual]
+                description: >
+                  The section's x-cix-config-apply. A manual section is
+                  diffed and never applied: when it has changes it is not
+                  appliable, and `reason` says why.
               status:
                 type: string
                 enum: [unchanged, changed]
@@ -16599,6 +16607,14 @@ components:
               reason:
                 type: string
                 description: Present only when `appliable` is false -- why not.
+              observed_fields:
+                type: string
+                description: >
+                  Comma-separated members of this section that report what
+                  the host observed rather than what was configured
+                  (x-cix-config-state). They are never compared, so
+                  `unchanged` says nothing about them. Present only for a
+                  section that has any.
               truncated:
                 type: boolean
                 description: >
@@ -20932,7 +20948,7 @@ components:
 
     ContainerNetworkAttachment:
       type: object
-      required: [name, ip]
+      required: [name, ip, ifname, live]
       properties:
         name:
           type: string
@@ -20940,6 +20956,24 @@ components:
         ip:
           type: string
           description: Assigned IPv4 address (dotted-quad) within that network.
+        ifname:
+          type: string
+          description: >
+            What this interface is called inside the container
+            (ADR-0259): the name the attachment asked for, or the
+            positional eth<index> when it asked for none.
+        container_bridge:
+          type: string
+          description: >
+            The bridge inside the container this attachment is a port of
+            (ADR-0264). Present only when the attachment asked for one;
+            the address then sits on that bridge, not on this interface.
+        live:
+          type: boolean
+          description: >
+            Whether the interface exists now -- true while the container
+            runs with it plugged in, false for a stopped container's
+            recorded attachment.
 
     ContainerInterfaceAttachment:
       type: object
@@ -22676,7 +22710,7 @@ components:
             deferred-removal race, preserved).
     DaemonConfig:
       type: object
-      required: [port, http_enabled, https_enabled, https_port]
+      required: [port, http_enabled, https_enabled, https_port, userns_default]
       description: >
         cixd's own listener configuration -- ports and HTTP/HTTPS
         exposure only. WHERE cixd listens off-box is no longer part of
@@ -22702,6 +22736,14 @@ components:
           type: integer
           default: 443
           description: The HTTPS listener's port.
+        userns_default:
+          type: boolean
+          default: true
+          description: >
+            Whether a container whose definition does not say runs in its
+            own user namespace (ADR-0207). A container's resolved value is
+            pinned at creation, so changing this affects only containers
+            created afterwards.
 
     DaemonConfigPutRequest:
       type: object
@@ -22728,6 +22770,9 @@ components:
           type: integer
           minimum: 1
           maximum: 65535
+        userns_default:
+          title: User namespace by default
+          type: boolean
 
     LogEntry:
       type: object

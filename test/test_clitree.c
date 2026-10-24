@@ -394,10 +394,11 @@ int main(void)
 				break;
 			}
 		}
-		/* The client-local commands are handled in main() before the
-		 * dispatcher and have no endpoint, so they are legitimately
-		 * absent from the tree. */
-		if (!found && strcmp(name, "pager") != 0 && strcmp(name, "__complete") != 0)
+		/* __complete is the completion protocol itself, so it is the
+		 * one routed word the tree does not offer. pager is handled in
+		 * main() before the dispatcher and has no endpoint, but an
+		 * operator types it, so it is completed like any other (#628). */
+		if (!found && strcmp(name, "__complete") != 0)
 			fail("dispatch_command() routes '%s', which is missing from cmdtree.h -- "
 			     "it could be run but never completed",
 			     name);

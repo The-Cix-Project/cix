@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cixctl help lists every command, and the contract declares what the daemon emits (#628)
+
+- **What changed:** `cixctl help all` gains the dispatched commands it omitted: `pager`, `container drift|edit|network|volume|device`, `image show|materialize|manifest`, `dns record update|provision|forwarders` and `dhcp remove`. `ldap user add --uidnumber` and `ldap group add --gidnumber` are shown as optional, as the host allocates them. `volume backups` gains `--while-running=` and names the schedule rather than a retired interval field. `iso build` no longer calls an empty build a placeholder ISO. Completion offers `pager`, `container drift` and `container run --console=`. The contract declares `ifname`, `container_bridge` and `live` on a container's `networks[]`, `userns_default` on daemon-config, the config plan's `observed_fields`, and `manual` in its `apply` enum (11 sections report it). The volume-backup-config, backup-config and `/pkg/sync` summaries describe what those endpoints do since ADR-0257 and ADR-0324.
+- **Why:** the documentation sweep of 2026-10-22 found each of these. A client generated from the contract could not see four fields every container read carries, and would have rejected a plan whose `apply` is `manual`.
+- **Verified:** pending the compile probe and the release.
+
 ### The configuration document carries the wireless country (#355)
 
 - **What changed:** `GET`/`POST /v1/config` has a `wireless` section after `zswap`, rendered from the same read as `GET /v1/system/wireless`, with `apply_error`, `kernel` and `radios` observed. A document carrying the country the host already has sends nothing to the kernel.

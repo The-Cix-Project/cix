@@ -527,6 +527,13 @@ static const struct cli_node n_wireless_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
+static const struct cli_node n_pager_subs[] = {
+	{ "off", NULL, NULL },
+	{ "on", NULL, NULL },
+	{ "status", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
 static const char *const n_swap_enable_flags[] = {
 	"--disk=",
 	"--size-mb=",
@@ -857,6 +864,7 @@ static const char *const n_container_run_flags[] = {
 	"--after=",
 	"--cap-add=",
 	"--capture-output",
+	"--console=",
 	"--cpu-max=",
 	"--cpuset=",
 	"--depends-on=",
@@ -933,6 +941,7 @@ static const char *const n_container_sysctl_flags[] = {
 static const struct cli_node n_container_subs[] = {
 	{ "console", n_container_console_flags, NULL },
 	{ "device", NULL, n_container_device_subs },
+	{ "drift", NULL, NULL },
 	{ "edit", n_container_edit_flags, NULL },
 	{ "files", NULL, n_container_files_subs },
 	{ "inspect", NULL, NULL },
@@ -1614,6 +1623,7 @@ static const struct cli_node n_ksm_subs[] = {
 static const struct cli_node CLI_TREE[] = {
 	{ "health", NULL, NULL },
 	{ "help", NULL, NULL },
+	{ "pager", NULL, n_pager_subs },
 	{ "login", n_login_flags, NULL },
 	{ "logout", n_logout_flags, NULL },
 	{ "boot", NULL, NULL },

@@ -53,7 +53,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/system/boot-manager` | Replace it -- the one file both A/B slots share, with no per-slot fallback |
 | GET | `/system/backup` | Bundle platform configuration state (container defs, networks, DNS, package state, site config) |
 | POST | `/system/restore` | Write a previously-backed-up bundle back to its real state files |
-| GET | `/system/backup-config` | Which disk (if any) automatic backup snapshots write to, whether enabled, interval |
+| GET | `/system/backup-config` | Which disk (if any) automatic backup snapshots write to and whether enabled; when is the `system.backup` schedule (ADR-0257) |
 | PUT | `/system/backup-config` | Update backup-snapshot config (only the fields given are changed) |
 | GET | `/system/backup-config/status` | Outcome of the most recent backup-snapshot attempt |
 | POST | `/system/backup-config/snapshot-now` | Write a backup snapshot to the configured disk right now |
@@ -199,8 +199,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/volumes/{volume_name}` | Inspect one volume |
 | GET | `/volumes/{volume_name}/usage` | How much a volume actually holds (issue #365) |
 | GET | `/software` | What is declared (has a recipe) against what is actually installed (issue #97) |
-| GET | `/system/volume-backup-config` | The shared schedule for volume content snapshots (issue #96) |
-| PUT | `/system/volume-backup-config` | Set it — target disk, on/off, interval |
+| GET | `/system/volume-backup-config` | Where volume content snapshots go and whether they are taken (issue #96); when is the `volume.backup` schedule (ADR-0257) |
+| PUT | `/system/volume-backup-config` | Set it — target disk, on/off |
 | GET | `/volumes/{volume_name}/backups` | A volume's backup policy, its snapshots, and the last attempt |
 | PUT | `/volumes/{volume_name}/backups` | Opt a volume in (or out) and set its retention |
 | POST | `/volumes/{volume_name}/backup` | Take one snapshot now |
@@ -299,7 +299,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/pkg/recipe-commit` | Commit a CPDL recipe as `recipes/package/<name>@<version>.cbs` to the writable source that owns its package (or the `source` named, for a new package), then publish it here (ADR-0323, ADR-0324). Validated by every test a publish applies first, so nothing that would not publish reaches git. 202; one at a time |
 | GET | `/pkg/recipe-commit` | The last recipe commit: state, path, commit sha, whether it was published here, and why not if it was not |
 | POST | `/pkg/recipe-revise` | The author stage (ADR-0323): write the next revision of a package's newest recipe with `cbs revise` -- `version`, release 1, the main source's `url` and `sha256`, the artifact approval removed, and a changelog naming the digest and the `verification` -- keeping every other byte, then commit and publish it exactly as `/pkg/recipe-commit` does. 404 for a package with no recipe (never a first one), 409 for a version not newer than the newest revision, 400 for a revision that would still name the old release outside a comment, the main url and the changelog, naming the line to write as `${version}` (cix#567). 202; poll `GET /pkg/recipe-commit` |
-| POST | `/pkg/sync` | Start an async fetch-and-merge of the configured repo's recipes (async — returns immediately) |
+| POST | `/pkg/sync` | Start an async fetch-and-merge of every configured recipe source (async — returns immediately) |
 | GET | `/pkg/policies` | Per-package rolling policy — which version an omitted version resolves to (issue #64) |
 | PUT | `/pkg/policies/{name}` | Set it: `highest` (default), `newest`, or `pinned` with a version |
 | DELETE | `/pkg/policies/{name}` | Back to the default |
@@ -1150,10 +1150,10 @@ GET /v1/system/daemon-config
 ```
 
 ```json
-{"port": 80, "http_enabled": true, "https_enabled": true, "https_port": 443}
+{"port": 80, "http_enabled": true, "https_enabled": true, "userns_default": true, "https_port": 443}
 ```
 
-`port`, `http_enabled`, `https_enabled`, and `https_port` are independently settable in the same request or separately. Both `http_enabled` and `https_enabled` default to `true` on a fresh install (ADR-0171, ports 80/443) — a genuinely fresh install just has HTTPS silently not come up at boot until a PKI root CA exists (non-fatal, logged), since there's no host certificate yet to serve TLS with:
+`userns_default` is whether a container whose definition does not say runs in its own user namespace (ADR-0207, `true` on a fresh install); a container's resolved value is pinned at creation, so changing it affects only containers created afterwards. `port`, `http_enabled`, `https_enabled`, `https_port` and `userns_default` are independently settable in the same request or separately. Both `http_enabled` and `https_enabled` default to `true` on a fresh install (ADR-0171, ports 80/443) — a genuinely fresh install just has HTTPS silently not come up at boot until a PKI root CA exists (non-fatal, logged), since there's no host certificate yet to serve TLS with:
 
 ```
 PUT /v1/system/daemon-config
@@ -1447,12 +1447,14 @@ Response (`201`):
   "term_signal": null,
   "exit_reason": null,
   "networks": [
-    {"name": "internal", "ip": "172.31.0.2"},
-    {"name": "dmz", "ip": "172.32.0.2"}
+    {"name": "internal", "ip": "172.31.0.2", "ifname": "eth0", "live": true},
+    {"name": "dmz", "ip": "172.32.0.2", "ifname": "eth1", "live": true}
   ],
   "ip_forward": false
 }
 ```
+
+Each attachment names its interface inside the container (`ifname`, ADR-0259) and says whether it exists now (`live`, false for a stopped container's recorded attachment); one that is a port of a bridge inside the container also carries `container_bridge` (ADR-0264), and its address is then on that bridge.
 
 **A `201` means the container's first process has exec'd ([#549](https://git.home.arpa/itdlabs/cix/issues/549)).** The create answers once the child has started its program in its own root, or has failed to (its reason is then in the container's diagnostics), rather than as soon as it was cloned. So `/proc/<pid>/root` and a console opened straight after the `201` see the container. That is a wait of milliseconds, bounded at 5 s; past that the create answers anyway, as it always did.
 

@@ -10244,7 +10244,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 
 			if (strstr(url_to_check, "{{REPO_TOKEN}}") != NULL) {
 				static const char msg[] =
-				    "pkg_source needs a repo token, and the source that owns this package has "
+				    "this recipe's source url needs a repo token, and the source that owns this package has "
 				    "none (or no source owns it) -- set one with `cixctl pkg source set NAME --token=...`";
 				int efd = open(fetch_err_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 

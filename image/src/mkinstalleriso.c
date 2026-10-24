@@ -157,7 +157,8 @@ static int ensure_parents_under(const char *root, const char *rel)
  * Stage the NIC drivers, and only them, onto the installer media
  * (#429 follow-on).
  *
- * Why this exists: the five NIC chipsets this platform supports are
+ * Why this exists: the NIC chipsets this platform supports
+ * (CIX_NIC_MODULES, include/bootmodules.h) are
  * kernel MODULES, and this media used to carry no module tree at all.
  * So the only interfaces cix-install could ever list were built-in
  * drivers -- meaning virtio_net -- and a real machine with a built-in
@@ -918,8 +919,8 @@ int main(int argc, char **argv)
 		        "  \"\" for none. The NIC drivers this platform supports are modules, so\n"
 		        "  without them cix-install can only list interfaces whose driver is built\n"
 		        "  into the kernel -- virtio_net -- and a real machine's built-in Ethernet\n"
-		        "  is absent from the installer screen entirely (#429). Only the five NIC\n"
-		        "  modules and their dependency closure are staged, read out of the tree's\n"
+		        "  is absent from the installer screen entirely (#429). Only the NIC modules\n"
+		        "  (include/bootmodules.h) and their dependency closure are staged, read out of the tree's\n"
 		        "  own modules.dep; the rest of the tree, which now includes amdgpu, is not\n"
 		        "  something media for choosing a NIC has any use for.\n"
 		        "  kmod-bin-dir: the kmod image's usr/bin, or \"\" for none -- modprobe and\n"
