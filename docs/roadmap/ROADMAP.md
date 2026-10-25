@@ -2445,6 +2445,12 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 327: the dashboard's storage hints name the pages that exist (#628, 0.2.57-598)
+
+Storage > Placement's hint sent an operator to "Maintenance > Backup" and "Host > Swap", and a volume's snapshot hint to "System > Maintenance > Volume Backups"; none of those pages exists. They now name Storage > System Backup, Host > Configuration > Swap and Storage > Volume Backups, the places the sidebar tree and the route map in `web/app.js` put them. `tools/carry-artifact-approvals.sh`, which read shell recipes this repository no longer has, is removed, and four comments that described the code wrongly are corrected.
+
+**Measured on 192.168.15.95, 2026-10-25, at 0.2.57-598:** the `index.html` it serves carries all three new paths and no "Maintenance &gt;". 598 booted on slot b, kernel 7.2.12, 12 containers running. Compile probe 0.2.57-617 and the 598 release: `SELFTEST: PASS`.
+
 ## Part 326: a recipe keeps its publish time when its text is rewritten (#628, 0.2.57-597)
 
 A recipe version's `created_at`, and the order the `newest` policy reads (ADR-0188), are the stored file's mtime. Two writers replaced that file without making a new version: the approval write into the recipe and the ADR-0324 refresh from git. Each renamed a new file over the old one, so a version read as published at the moment it was approved. Under `newest`, an older version approved after a newer one was published would have been chosen. Both writers now give the replacement the stored file's times before the rename (`recipe_keep_published_time()`). `test_pkg`'s ADR-0324 sequence asserts that `shared@1.0-1`'s `created_at` survives two refreshes and the approval write-back.

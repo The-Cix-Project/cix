@@ -10,6 +10,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** Storage > Placement's hint links backup to Storage > System Backup and swap to Host > Configuration > Swap, where it said "Maintenance > Backup" and "Host > Swap". A volume's snapshot hint names Storage > Volume Backups rather than "System > Maintenance". `tools/carry-artifact-approvals.sh` is removed, with its README line, and ADR-0279 notes why. Four comments are corrected: the no-initramfs block in `main.c` moves above `boot_init()`, which it describes; the ISO trusted comment reads `0.2.57-NNN`; `mkbootroot`'s host-tools argument is described as required, as it is; and `test_mkbootroot_firmware` no longer says its list is kept in step by hand.
 - **Why:** the documentation sweep of 2026-10-22 found each. The hints sent an operator to pages that no longer exist. The script read shell recipes in this repository, and neither has existed since ADR-0308 and ADR-0329.
+- **Verified:** compile probe 0.2.57-617 and the 0.2.57-598 release: `SELFTEST: PASS`. On 192.168.15.95 at 598, the served `index.html` carries the three new paths and no "Maintenance &gt;".
 
 ### A recipe keeps its publish time when its text is rewritten (#628)
 
