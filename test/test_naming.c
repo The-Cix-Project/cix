@@ -209,6 +209,12 @@ int main(void)
 	 * into a two-hundred-line naming linter. One env var with one
 	 * default is the whole rule; if it ever grows past that, this is
 	 * the second place to change.
+	 *
+	 * The WHOLE repository, not only recipes/: its own gates, Makefile
+	 * and README say the name too, and on 2026-10-25 they still did
+	 * (#628) -- test_toolchain_policy.c named a suffix macro after it,
+	 * and the README called a CPDL recipe one. So the scan starts at
+	 * the parent of the recipes directory, skipping .git.
 	 */
 	{
 		const char *env = getenv("CIX_RECIPES_DIR");
@@ -221,8 +227,9 @@ int main(void)
 			       root);
 		} else {
 			snprintf(cmd, sizeof(cmd),
-			         "find %s -type f \\( -name '*.cbs' -o -name '*.sh' -o "
-			         "-name '*.json' \\) -exec grep -Hni pbs {} + 2>/dev/null",
+			         "find %s/.. -name .git -prune -o -type f \\( -name '*.cbs' -o "
+			         "-name '*.json' -o -name '*.c' -o -name '*.h' -o -name '*.md' -o "
+			         "-name Makefile \\) -exec grep -Hni pbs {} + 2>/dev/null",
 			         root);
 			if (scan_stream(cmd, &strays) != 0) {
 				printf("NAMING RESULT: FAIL (cannot scan %s)\n", root);
