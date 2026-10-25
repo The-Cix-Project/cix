@@ -10612,7 +10612,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: A toolchain_url fetch is already in progress
+          description: >
+            A toolchain_url fetch is already in progress, or the build sandbox
+            image is producing a new version for an install (ADR-0356); nothing
+            was changed
           content:
             application/json:
               schema:
@@ -13292,7 +13295,9 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: >
-            That entry has no build in flight -- it is installed, or already failed.
+            That entry has no build in flight -- it is installed, or already failed,
+            or its build has finished and its image version is being produced
+            (ADR-0356).
             Refused rather than half-acted on, so a cancel that arrives after the build
             has finished cannot mark a completed install as cancelled.
           content:
@@ -13794,7 +13799,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: This package is currently mid-install
+          description: >
+            This package is currently mid-install, or its image is producing a
+            new version for another install, one image producing one version at
+            a time (ADR-0356); nothing was changed
           content:
             application/json:
               schema:

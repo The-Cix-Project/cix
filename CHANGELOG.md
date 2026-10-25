@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An install's image version is produced in a helper child (#617)
+
+- **What changed:** once a build succeeds, the snapshot of its image, the merge of its files (an upgrade's unlinks first) and the placement of the new version run in a forked child, `image_version_fork()`, which the build-environment composer now shares ([ADR-0356](docs/adr/0356-an-installs-image-version-is-produced-in-a-helper-child.md)). The daemon records the version, applies the file list the child reports and finishes the install when it exits (`pkg_produce_completed()`). One image has one producer at a time: a second install into it waits for the first, and `DELETE /v1/pkg/{name}` in that image or `POST /v1/pkg/bootstrap` for the build sandbox answers 409 meanwhile. The #389 and #553 gates run where production begins, after any wait. An ordinary install becomes `installed` when its version is recorded, not when its build ends, and a production that fails keeps an upgrade on the version it had. The staging tree is `.staging`, without a pid, and the start-up sweep removes leftovers of either spelling.
+- **Why:** on 192.168.15.95 the mutate step of `hibr`'s upgrade in `jumpbox` held the event loop 862 ms on 2026-10-23, 834 of them in 203 `unlink()` calls, and 1219 ms over 386 calls on 2026-10-20. The cost grows with a package's file count.
+- **Not changed:** a delete still produces its version on the loop (#642).
+
 ### A container's /sys/devices/system/cpu lists only its own CPUs (#363)
 
 - **What changed:** `mountns_pivot()` replaces `/sys/devices/system/cpu` with a read-only tmpfs holding the kernel's own entries bound in, minus the `cpuN` directories outside the child's affinity ([ADR-0355](docs/adr/0355-a-containers-cpu-directory-lists-only-its-own-cpus.md)). It applies only when the container gets its procfuse files and a CPU is to be hidden; any failure detaches the view and leaves the real directory.

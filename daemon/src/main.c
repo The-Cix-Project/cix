@@ -1208,6 +1208,7 @@ enum conn_kind {
 	CONN_PKG_FETCH,
 	CONN_PKG_BUILDENV, /* #238: a forked build-environment composition */
 	CONN_PKG_UNPACK,   /* ADR-0307: a forked `cbs extract` of a cached .cixpkg */
+	CONN_PKG_PRODUCE,  /* ADR-0356: a forked producer of an install's image version */
 	CONN_PKG_BUILD_OUTPUT,  /* pkg.c's build-output capture pipe, drained incrementally
 	                          * as the container runs rather than once at exit (ADR-0087) */
 	CONN_CONTAINER_INIT,    /* ADR-0260: one container's cix-init report socket -- service state */
@@ -1321,6 +1322,7 @@ static const char *const g_conn_kind_names[CONN_KIND_COUNT] = {
 	[CONN_PKG_FETCH] = "pkg-fetch",
 	[CONN_PKG_BUILDENV] = "pkg-buildenv",
 	[CONN_PKG_UNPACK] = "pkg-unpack",
+	[CONN_PKG_PRODUCE] = "pkg-produce",
 	[CONN_PKG_BUILD_OUTPUT] = "pkg-build-output",
 	[CONN_CONTAINER_INIT] = "container-init",
 	[CONN_STOP_ESCALATE_TIMER] = "stop-escalate-timer",
@@ -9210,6 +9212,37 @@ static void register_pkg_unpack_pidfd(pid_t pid, int pidfd, int chain_idx)
 	}
 }
 
+/*
+ * ADR-0356 (#617): the forked producer of an install's image version,
+ * or a waiter on another chain's producer for the same image. Its own
+ * kind because it resumes differently again: its exit finishes an
+ * install (pkg_produce_completed()), where the two above go on to a
+ * build.
+ */
+static void register_pkg_produce_pidfd(pid_t pid, int pidfd, int chain_idx)
+{
+	struct conn *cc;
+	struct cix_epoll_event ev;
+
+	cc = calloc(1, sizeof(*cc));
+	if (cc == NULL) {
+		perror("malloc (pkg produce reactor conn)");
+		abort();
+	}
+	cc->kind = CONN_PKG_PRODUCE;
+	cc->fd = pidfd;
+	cc->pkg_fetch_pid = pid;
+	cc->pkg_chain_idx = chain_idx;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = cc;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
+		perror("epoll_ctl ADD pkg produce pidfd");
+		abort();
+	}
+}
+
 /* Forward declaration -- defined later in this file (Part 5, ADR-0124);
  * called from try_start_queued_pkg_rebuild() below, which several
  * earlier call sites already depend on. */
@@ -10140,16 +10173,24 @@ static int container_root_from_def(const char *name, char *out, size_t out_size)
  * deploy did nothing, and the only visible sign was
  * bootroot_assembly_started_generation staying at 0. Two call sites
  * doing "the same thing" is exactly the shape that maxim warns about,
- * so there is one of them now.
+ * so there is one of them now. It is also where a stop or a cancel that
+ * ends a build goes, and where an install's image producer finishing
+ * goes (ADR-0356).
+ *
+ * `next` is what the completion returned: 1 when the chain's next fetch
+ * started, 2 when an image producer (or a waiter for one) started, and
+ * 0 when the job is over.
  */
 /* ADR-0343: defined beside the discard queue it feeds. */
 static void image_retain_run(void);
 
-static void pkg_completion_followup(int chained, pid_t pkg_pid, int pkg_pidfd, int pkg_chain_idx,
+static void pkg_completion_followup(int next, pid_t pkg_pid, int pkg_pidfd, int pkg_chain_idx,
                                      const char *hostbuild_done_name)
 {
-	if (chained)
+	if (next == 1)
 		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
+	else if (next == 2)
+		register_pkg_produce_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
 	else
 		try_start_queued_pkg_rebuild();
 
@@ -10188,7 +10229,7 @@ static void pkg_completion_followup(int chained, pid_t pkg_pid, int pkg_pidfd, i
 
 	/* ADR-0343: last, after anything above that may have started the
 	 * next job -- a pass runs only when none is in flight. */
-	if (!chained)
+	if (next == 0)
 		image_retain_run();
 }
 
@@ -13152,9 +13193,18 @@ static void handle_bootstrap_fetch_event(struct conn *cc)
 		enum pkg_error perr = pkg_bootstrap_from_toolchain(PKGBUILD_TOOLCHAIN_FETCH_PATH);
 
 		if (perr != PKG_OK) {
+			const char *phrase;
+			char msg[200];
+
+			/* ADR-0356 added a refusal that has nothing to do with
+			 * the squashfs, so it is named in its own words. */
+			if (perr == PKG_ERR_IMAGE_PRODUCING)
+				pkg_error_describe(perr, &phrase, msg, sizeof(msg));
+			else
+				snprintf(msg, sizeof(msg), "invalid squashfs?");
 			g_bootstrap_fetch_state = BOOTSTRAP_FETCH_FAILED;
 			snprintf(g_bootstrap_fetch_error, sizeof(g_bootstrap_fetch_error),
-			         "fetched toolchain failed to stage (invalid squashfs?)");
+			         "fetched toolchain failed to stage (%s)", msg);
 			fprintf(stderr, "bootstrap fetch: staging failed\n");
 			return;
 		}
@@ -21948,12 +21998,14 @@ static void handle_stop(int fd, const char *name)
 			 * one. Discarded here for exactly that reason. */
 			int kept_ignored;
 
-			if (pkg_build_completed(name, e->exit_status, &pkg_pid, &pkg_pidfd,
-			                         &pkg_chain_idx, hostbuild_done_name, &kept_ignored))
-				register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
-			else
-				try_start_queued_pkg_rebuild();
-			artifact_push_pump(); /* issue #129 -- see the other call site */
+			/* ADR-0356: the one follow-up every completion shares,
+			 * which also knows an image producer from a fetch. Two
+			 * statements, because the outputs are only set once the
+			 * completion has run. */
+			int next = pkg_build_completed(name, e->exit_status, &pkg_pid, &pkg_pidfd,
+			                               &pkg_chain_idx, hostbuild_done_name, &kept_ignored);
+
+			pkg_completion_followup(next, pkg_pid, pkg_pidfd, pkg_chain_idx, hostbuild_done_name);
 		}
 	}
 	containerdef_set_stopped(name, 1);
@@ -27326,12 +27378,11 @@ static void handle_pkg_cancel(int fd, const char *body, size_t body_len)
 				logstore_write("cixd", "error",
 				                "%s: cancel could not release the registry slot (%s)",
 				                build_container_name, strerror(errno));
-			if (pkg_build_completed(build_container_name, exit_status, &pkg_pid, &pkg_pidfd,
-			                        &pkg_chain_idx, hostbuild_done_name, &kept_ignored))
-				register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
-			else
-				try_start_queued_pkg_rebuild();
-			artifact_push_pump(); /* issue #129 -- see the other call sites */
+			int next = pkg_build_completed(build_container_name, exit_status, &pkg_pid,
+			                               &pkg_pidfd, &pkg_chain_idx, hostbuild_done_name,
+			                               &kept_ignored);
+
+			pkg_completion_followup(next, pkg_pid, pkg_pidfd, pkg_chain_idx, hostbuild_done_name);
 		} else {
 			/*
 			 * #339: the build container is gone from the registry
@@ -27358,12 +27409,10 @@ static void handle_pkg_cancel(int fd, const char *body, size_t body_len)
 			                "releasing its leaked build slot directly (#339)",
 			                name, image[0] != '\0' ? image : "(default)",
 			                build_container_name);
-			if (pkg_build_completed(build_container_name, -1, &pkg_pid, &pkg_pidfd,
-			                        &pkg_chain_idx, hostbuild_done_name, &kept_ignored))
-				register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
-			else
-				try_start_queued_pkg_rebuild();
-			artifact_push_pump();
+			int next = pkg_build_completed(build_container_name, -1, &pkg_pid, &pkg_pidfd,
+			                               &pkg_chain_idx, hostbuild_done_name, &kept_ignored);
+
+			pkg_completion_followup(next, pkg_pid, pkg_pidfd, pkg_chain_idx, hostbuild_done_name);
 		}
 	}
 
@@ -37311,6 +37360,37 @@ static void handle_pkg_unpack_event(struct conn *cc)
 }
 
 /*
+ * Reaps an install's image producer, or a waiter for one, and finishes
+ * or resumes the install it belongs to (ADR-0356). What follows is the
+ * same as after a build container's exit: the chain's next job, or the
+ * queued work, publishing and the retention pass.
+ */
+static void handle_pkg_produce_event(struct conn *cc)
+{
+	int status;
+	int exit_status;
+	int chain_idx = cc->pkg_chain_idx;
+	pid_t pkg_pid;
+	int pkg_pidfd;
+	int pkg_chain_idx;
+	char hostbuild_done_name[PKG_NAME_MAX];
+	int next;
+
+	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
+	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
+		exit_status = WEXITSTATUS(status);
+	else
+		exit_status = -1;
+	close(cc->fd);
+	free(cc);
+
+	stallwatch_step("pkg produce: finish the install"); /* #619 */
+	next = pkg_produce_completed(chain_idx, exit_status, &pkg_pid, &pkg_pidfd, &pkg_chain_idx,
+	                             hostbuild_done_name);
+	pkg_completion_followup(next, pkg_pid, pkg_pidfd, pkg_chain_idx, hostbuild_done_name);
+}
+
+/*
  * Reaps spawn_cix_bootroot_assembly()'s own mkbootroot child.
  * Nothing further to dispatch on completion -- either
  * <artifact_dir>/cixd-root.squashfs now exists (success, ready for
@@ -39094,13 +39174,16 @@ static int cixd_main(int argc, char **argv)
 
 	{
 		/* #551: trees set aside because a reused version was wrong. No
-		 * container has started yet, so none can still have one mounted. */
+		 * container has started yet, so none can still have one mounted.
+		 * ADR-0356: and the staging of versions never finished, since
+		 * nothing has started producing one either. */
 		int swept = image_sweep_replaced_trees();
 
 		if (swept > 0)
 			logstore_write("cixd", "info",
-			               "image: removed %d stored tree(s) replaced because they were "
-			               "wrong (#551)",
+			               "image: removed %d leftover tree(s) -- stored versions replaced "
+			               "because they were wrong (#551), and versions a producer never "
+			               "finished (ADR-0356)",
 			               swept);
 	}
 
@@ -39286,6 +39369,8 @@ static int cixd_main(int argc, char **argv)
 				handle_pkg_buildenv_event(cc);
 			else if (cc->kind == CONN_PKG_UNPACK)
 				handle_pkg_unpack_event(cc);
+			else if (cc->kind == CONN_PKG_PRODUCE)
+				handle_pkg_produce_event(cc);
 			else if (cc->kind == CONN_PKG_BUILD_OUTPUT)
 				handle_pkg_build_output_event(cc);
 			else if (cc->kind == CONN_CONTAINER_OUTPUT)

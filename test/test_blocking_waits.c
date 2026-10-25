@@ -124,7 +124,11 @@ static const struct budget g_budgets[] = {
 	 * wait on the reactor, the kind this table exists to exclude, counted
 	 * here under a justification it never met. The copy is in-process now
 	 * (cix_tree_copy()). */
-	{ "daemon/src/main.c", 23, "pidfd callbacks + double-fork intermediates" },
+	/* 23 -> 24 (ADR-0356, #617): handle_pkg_produce_event() reaps an
+	 * install's image producer. A pidfd callback, the first category
+	 * above: EPOLLIN has already said the child exited. The production
+	 * itself, which held the loop up to 1.2 s, moved into that child. */
+	{ "daemon/src/main.c", 24, "pidfd callbacks + double-fork intermediates" },
 	/* 10 -> 11 for ADR-0279's signature fetch: the artifact tier now
 	 * pulls <artifact>.minisig alongside the artifact and waits for
 	 * that curl. In budget for the same reason every other one in this
@@ -224,7 +228,7 @@ static const struct budget g_budgets[] = {
 	 * handle_pkg_unpack_event() on EPOLLIN, where the process is
 	 * already gone.
 	 */
-	{ "daemon/src/pkg.c", 10, "build helpers and fetch intermediates, plus #618's buildenv_wait_for() (a waiter forked a moment ago and SIGKILLed when its pidfd cannot be opened, reaped at once as the composer beside it already is), plus ADR-0305's `cbs explain` (a bounded parse of a local file, its pipe closed before the wait); #352 dropped one (pkg_run_capture_sha256(), no more forked sha256sum), #411 dropped another (tarball_has_common_top_dir(), no more forked tar -tf), #410 dropped three more (start_fetch_for()'s curl children, replaced by in-process curlfetch_perform())" },
+	{ "daemon/src/pkg.c", 10, "build helpers and fetch intermediates, plus #618's child_exit_waiter() (a waiter forked a moment ago and SIGKILLed when its pidfd cannot be opened, reaped at once as the producer beside it, image_version_fork(), already is -- ADR-0356 renamed it from buildenv_wait_for()), plus ADR-0305's `cbs explain` (a bounded parse of a local file, its pipe closed before the wait); #352 dropped one (pkg_run_capture_sha256(), no more forked sha256sum), #411 dropped another (tarball_has_common_top_dir(), no more forked tar -tf), #410 dropped three more (start_fetch_for()'s curl children, replaced by in-process curlfetch_perform())" },
 	{ "daemon/src/diskpart.c", 4, "sfdisk/blkid, bounded external tools" },
 	{ "daemon/src/exec.c", 2, "namespace-join intermediates" },
 	{ "daemon/src/diskformat.c", 2, "mkfs intermediate" },
@@ -279,12 +283,16 @@ static const struct budget g_budgets[] = {
  * interface bring-up helper, which held the reactor for 1658 ms of
  * rtnl_link_set_up() on a radio. The helper still runs; the daemon
  * reaps it through its own epoll instead of standing still for it.
- * Then 51 -> 52 for #618: buildenv_wait_for() in pkg.c, the per-file
+ * Then 51 -> 52 for #618: buildenv_wait_for() in pkg.c (child_exit_waiter() since ADR-0356), the per-file
  * entry's bounded reap of a waiter killed because it cannot be watched.
  * Then 52 -> 53 for #622: container_create()'s reap of a child that wrote
  * its diagnostic before exec. The diagnostic is read to EOF first, and
- * EOF is the child's exit, so the wait reaps a process already gone. */
-#define TOTAL_ALLOWED 53
+ * EOF is the child's exit, so the wait reaps a process already gone.
+ * Then 53 -> 54 for ADR-0356: handle_pkg_produce_event() in main.c, a
+ * pidfd callback whose child is already gone. pkg.c's two waits moved
+ * with the code they belong to (image_version_fork(), child_exit_waiter())
+ * and its count did not change. */
+#define TOTAL_ALLOWED 54
 
 static int is_comment(const char *line)
 {
@@ -564,6 +572,34 @@ static const char *const g_update_calls[] = {
 	NULL,
 };
 
+/*
+ * AN EIGHTH COUNTED SET (ADR-0356, #617): producing an image version.
+ * The snapshot, the merge or unlink of a package's files and the
+ * placement cost as long as the files take: hibr's upgrade in jumpbox
+ * held the loop 862 ms on 192.168.15.95 on 2026-10-23, 834 of them in
+ * 203 unlinks. image_version_build() does that work, and its one caller
+ * outside image_produce_new_version() is image_version_fork()'s child.
+ * image_produce_new_version() is the rest: both halves in the daemon,
+ * for the callers that have not moved.
+ */
+static const struct call_budget g_produce_budgets[] = {
+	{ "pkg.c", "image_version_build(", 3,
+	  "the definition, image_produce_new_version(), and image_version_fork()'s child" },
+	{ "pkg.c", "image_produce_new_version(", 4,
+	  "the definition; the toolchain bootstrap and the sandbox migration at start, which "
+	  "produce cix-builder; and pkg_delete(), an uninstall, on the loop until #642 moves it. "
+	  "The bootstrap and the delete refuse while a child is producing the same image" },
+	{ "pkg.c", "image_version_fork(", 3,
+	  "the definition, a build environment's composer and an install's producer" },
+};
+
+static const char *const g_produce_calls[] = {
+	"image_version_build(",
+	"image_produce_new_version(",
+	"image_version_fork(",
+	NULL,
+};
+
 struct call_set {
 	const char *what;
 	const struct call_budget *budgets;
@@ -599,6 +635,12 @@ static const struct call_set g_call_sets[] = {
 	  "boot image can take minutes, and cixd has one event loop. Ask for a slot through "
 	  "update_submit() or update_submit_daemon_job() (#631) and for a boot manager through "
 	  "bootmgr_submit() (#633), which do the work in a helper child." },
+	{ "image version", g_produce_budgets,
+	  (int)(sizeof(g_produce_budgets) / sizeof(g_produce_budgets[0])), g_produce_calls,
+	  "Producing an image version snapshots it and merges or unlinks a package's files, which "
+	  "costs as long as the files take, and cixd has one event loop. Produce it through "
+	  "image_version_fork() (ADR-0356), which builds it in a helper child, and record it with "
+	  "image_version_commit() when the child has exited." },
 };
 
 #define CALL_SET_COUNT ((int)(sizeof(g_call_sets) / sizeof(g_call_sets[0])))

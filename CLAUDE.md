@@ -315,6 +315,15 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **A pass never runs while a package job is in flight.** It runs after the last job ends for each image a job gave a new version, once after daemon start, and on `POST /v1/images/gc`. The request carries no `keep`; the policy is the only knob.
 - **The reference rule is one definition**, computed once per pass. Never add a fifth source of "referenced" anywhere but there.
 
+## An install's image version is produced in a helper child
+
+**An install's image version is built in `image_version_fork()`'s child and recorded by the daemon when it exits** -- [ADR-0356](docs/adr/0356-an-installs-image-version-is-produced-in-a-helper-child.md), #617, done on the owner's "go ahead with #617". Measured before it on .95: `hibr`'s upgrade in `jumpbox` held the loop 862 ms, 834 of them in 203 unlinks.
+
+- **Two halves.** `image_version_build()` (snapshot, mutate, hash, placement) may run in a child; `image_version_commit()` (record, package snapshot) runs only in the daemon, because the record is announced and the retention mark is in memory. `test_blocking_waits` counts both and `image_version_fork()`.
+- **One producer per image.** A second install waits on the first producer through `child_exit_waiter()`; a delete or a toolchain bootstrap in that image answers 409 (`PKG_ERR_IMAGE_PRODUCING`). Never add a producer that does not ask `image_has_producer()`.
+- **INSTALLED means the image has it.** An ordinary install is marked INSTALLED when its version is recorded, in `pkg_produce_completed()`; until then it stays in flight. Never mark it earlier.
+- **A delete is still produced on the loop** until #642 moves it.
+
 ## A device is one record with one state, and every grant asks it
 
 **A physical device is one record in `GET /v1/devices`; one pure function decides its state; every grant asks that function, and the dashboard and cixctl show the same answer.** That is [ADR-0344](docs/adr/0344-a-device-is-one-record-with-one-state-and-every-grant-asks-it.md), accepted by the owner on 2026-10-20 (*"Accepted, no reservation as default but should be a setting"*). Before it, measured on .95, the OS disk was `assignable: true`, one display adapter was two records with opposite answers, and exclusivity was a `strcmp` of ids.

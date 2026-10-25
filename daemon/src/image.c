@@ -505,7 +505,7 @@ enum image_error image_delete(const char *name)
 	 * subvolume inline (ADR-0207 phase 1) -- on the event loop, for every
 	 * build environment a finished build released. A version directory
 	 * is emptied by set_aside_version_dir(); any other directory (a
-	 * .staging.<pid> leftover is a subvolume) is set aside whole. What
+	 * .staging leftover is a subvolume) is set aside whole. What
 	 * persist_remove_tree() then meets is files and empty directories.
 	 */
 	{
@@ -602,7 +602,7 @@ enum image_error image_retain_plan(const char *name, int keep, image_referenced_
 
 	/*
 	 * Every version on disk. A version directory is one that holds a
-	 * rootfs; a ".staging.<pid>" leftover is skipped by the leading dot,
+	 * rootfs; a ".staging" leftover is skipped by the leading dot,
 	 * and manifest.json is not a directory at all.
 	 *
 	 * A recorded version keeps its created_at, and its history index
@@ -1078,7 +1078,8 @@ enum image_error image_record_version(const char *name, const char *version)
  * when it found one wrong -- IMAGES_DIR/<image>/<version>/rootfs.replaced-*.
  * They were kept only because a running container might still have one
  * mounted as its lower layer. Called at startup, before any container
- * starts, which is the first moment nothing can. Returns how many it
+ * starts, which is the first moment nothing can. And the staging trees
+ * of versions a producer never finished (ADR-0356). Returns how many it
  * removed.
  */
 int image_sweep_replaced_trees(void)
@@ -1108,6 +1109,24 @@ int image_sweep_replaced_trees(void)
 			DIR *entries;
 			struct dirent *ede;
 
+			/*
+			 * ADR-0356: a version a producer was building when the
+			 * daemon stopped. Nothing is producing one while this runs
+			 * (main() calls it before the loop, after the sandbox
+			 * migration has finished), so any here is a leftover --
+			 * including one spelled
+			 * .staging.<pid>, as it was before, which nothing else would
+			 * ever look for again.
+			 */
+			if (strncmp(vde->d_name, ".staging", 8) == 0) {
+				char path[PATH_MAX];
+
+				if (snprintf(path, sizeof(path), "%s/%s", image_dir, vde->d_name) <
+				        (int)sizeof(path) &&
+				    cix_btrfs_subvol_delete_or_rmtree(path) == 0)
+					removed++;
+				continue;
+			}
 			if (vde->d_name[0] == '.')
 				continue;
 			if (snprintf(version_dir, sizeof(version_dir), "%s/%s", image_dir, vde->d_name) >=

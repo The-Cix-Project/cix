@@ -408,7 +408,14 @@ enum pkg_error {
 	 * a time. Its own code rather than PKG_ERR_BUSY, which means every
 	 * job slot is taken -- a different cause with a different remedy.
 	 */
-	PKG_ERR_HOSTBUILD_RUNNING
+	PKG_ERR_HOSTBUILD_RUNNING,
+	/*
+	 * ADR-0356: a helper child is producing a new version of this image
+	 * for another install, and one image has one producer at a time. A
+	 * delete or a toolchain bootstrap would produce one beside it.
+	 * Nothing was changed; it can be asked again once that finishes.
+	 */
+	PKG_ERR_IMAGE_PRODUCING
 };
 
 /*
@@ -1212,15 +1219,17 @@ void pkg_build_spawn_failed(int chain_idx);
  * registry_mark_exited() -- no-ops (returns 0) unless container_name
  * is PKG_BUILD_CONTAINER_NAME, mirroring exactly how
  * dns_record_forget_owner()/pki_cert_forget_owner() are already
- * called unconditionally on every container delete. On a clean exit,
- * merges <build container upperdir>/build/pkg-dest/ into the base
- * image (plain host file I/O -- the container has already exited, so
- * there is no running mount namespace left to reach into via
- * /proc/<pid>/root/, unlike DNS/PKI's live-container writes); for an
- * upgrade of an already-installed package, the OLD manifest's files
- * are unlinked first, so a version that renamed/dropped files doesn't
- * leave the old ones behind. Records every copied file's path into
- * the package's manifest.
+ * called unconditionally on every container delete. On a clean exit of
+ * an ordinary install, starts producing the target image's next
+ * version in a helper child (ADR-0356): the staged tree is merged into a
+ * snapshot of the current version there -- for an upgrade of an
+ * already-installed package, the OLD manifest's files are unlinked
+ * first, so a version that renamed/dropped files doesn't leave the old
+ * ones behind -- and returns 2 with that child in *out_pid/*out_pidfd
+ * and its chain in *out_chain_idx. The caller registers it, and its exit
+ * is handed to pkg_produce_completed(), which records the version and
+ * every copied file's path in the package's manifest and finishes the
+ * install. A hostbuild is harvested here instead, and finishes here.
  *
  * If this completion advances the dependency chain (there's a next
  * queued package to install), forks+execve's `curl` for it exactly
@@ -1244,7 +1253,7 @@ void pkg_build_spawn_failed(int chain_idx);
  * this module's).
  *
  * out_chain_idx (ADR-0157 Phase 2): only meaningful when this
- * function returns 1 -- the same chain the just-completed build
+ * function returns 1 or 2 -- the same chain the just-completed build
  * belonged to (a dependency chain always advances within its own
  * chain slot, never migrates), for the caller to thread into
  * register_pkg_fetch_pidfd() for the newly-started next fetch.
@@ -1270,6 +1279,17 @@ void pkg_build_spawn_failed(int chain_idx);
  */
 int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_pid, int *out_pidfd,
                          int *out_chain_idx, char *out_hostbuild_done_name, int *out_kept);
+
+/*
+ * ADR-0356 (#617): the image producer pkg_build_completed() started for
+ * chain_idx has exited. Records the version it built and the files it
+ * merged, then finishes the install exactly as pkg_build_completed()
+ * would have, with the same returns: 0, 1 for the chain's next fetch,
+ * or 2 for another producer -- when this one was a waiter on another
+ * chain's producer for the same image, which has now finished.
+ */
+int pkg_produce_completed(int chain_idx, int exit_status, pid_t *out_pid, int *out_pidfd,
+                          int *out_chain_idx, char *out_hostbuild_done_name);
 
 /*
  * ADR-0157 Phase 2: computes this chain's own real, distinct build

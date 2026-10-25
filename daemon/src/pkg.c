@@ -9,6 +9,7 @@
 #include "imagepolicy.h"
 #include "hostproc.h"
 #include "image.h"
+#include "iohelpers.h" /* cix_write_all(), for a producer's report (ADR-0356) */
 #include "btrfs.h"
 #include "ldap.h"
 #include "linux_compat.h"
@@ -842,6 +843,24 @@ struct pkg_chain {
 	 */
 	pid_t buildenv_composer;
 	/*
+	 * ADR-0356 (#617): the child producing the image version this
+	 * chain's install goes into -- or, while produce_waiting is set, a
+	 * waiter on another chain's producer for the same image -- and 0
+	 * when there is none. One image has one producer at a time: two
+	 * would snapshot the same version, and whichever was recorded second
+	 * would drop the other's files.
+	 *
+	 * produce_e is the entry being installed, which in a dependency
+	 * chain is not the chain's own name, and produce_prev_* is what it
+	 * was installed at before, so a production that fails puts an
+	 * upgrade back on it (#570).
+	 */
+	pid_t producer;
+	int produce_waiting;
+	struct pkg_entry *produce_e;
+	char produce_prev_version[PKG_VERSION_MAX];
+	char produce_prev_depends[PKG_DEPENDS_MAX];
+	/*
 	 * ADR-0307 clause 3: a cached .cixpkg has already been unpacked
 	 * for this job, so pkg_prepare_build_and_start() takes the fast
 	 * path when the unpack child's completion re-enters it.
@@ -1070,6 +1089,9 @@ static void chain_release(int chain_idx)
 	g_chains[chain_idx].name[0] = '\0';
 	g_chains[chain_idx].dep_queue_count = 0;
 	g_chains[chain_idx].buildenv_composer = 0;
+	g_chains[chain_idx].producer = 0;
+	g_chains[chain_idx].produce_waiting = 0;
+	g_chains[chain_idx].produce_e = NULL;
 	events_announce(EV_getSystemPkgBuildConfig);
 	events_announce(EV_listBuildEnvironments);
 }
@@ -1101,6 +1123,14 @@ static void chain_reap_stale(void)
 		const char *why;
 
 		if (g_chains[i].name[0] == '\0')
+			continue;
+		/*
+		 * ADR-0356: a chain whose producer (or waiter) is running is
+		 * held by a child the daemon watches, whose exit completes the
+		 * job. Its entry is still BUILDING and its build container is
+		 * gone, which below reads as a build that can never report.
+		 */
+		if (g_chains[i].producer > 0)
 			continue;
 		e = pkg_find(g_chains[i].name, g_chains[i].image);
 		if (e != NULL &&
@@ -1288,6 +1318,39 @@ static int image_has_job_in_flight(const char *image)
 		if (g_chains[i].name[0] == '\0')
 			continue;
 		if (strcmp(g_chains[i].image, image) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+/*
+ * ADR-0356: is a version of this image being produced in a helper child
+ * right now? A waiter does not count: it has snapshotted nothing. While
+ * one is, nothing else may produce the image (see struct pkg_chain).
+ */
+static int image_has_producer(const char *image)
+{
+	int i;
+
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+		if (g_chains[i].producer > 0 && !g_chains[i].produce_waiting &&
+		    strcmp(g_chains[i].image, image) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+/*
+ * ADR-0356: is e the entry a producer, or a waiter for one, is
+ * installing? Such an entry is still in its build's state, with no build
+ * container left behind it.
+ */
+static int entry_being_produced(const struct pkg_entry *e)
+{
+	int i;
+
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+		if (g_chains[i].producer > 0 && g_chains[i].produce_e == e)
 			return 1;
 	}
 	return 0;
@@ -5429,9 +5492,19 @@ static int header_includes_unresolved(const char *image, const struct pkg_entry 
 	return unresolved;
 }
 
-static int image_produce_new_version(const char *image,
-                                      int (*mutate)(const char *staging_rootfs, void *ctx),
-                                      void *ctx, const char *extra_identity)
+/*
+ * ADR-0356 (#617): producing a version is two halves. This one builds
+ * the tree and names it: the snapshot, the caller's mutate step, the
+ * hash and the placement. It touches only the image's own directory, so
+ * a helper child can run it. image_version_commit() below records what
+ * it built, and only the daemon may run that, because the record is
+ * what readers are told about (ADR-0339) and what the retention pass
+ * keys on (ADR-0343). out_version receives the version's name.
+ */
+static int image_version_build(const char *image,
+                               int (*mutate)(const char *staging_rootfs, void *ctx), void *ctx,
+                               const char *extra_identity, char *out_version,
+                               size_t out_version_size)
 {
 	char old_version[IMAGE_VERSION_MAX];
 	char old_rootfs[PATH_MAX];
@@ -5456,7 +5529,14 @@ static int image_produce_new_version(const char *image,
 		return produce_fail(image, NULL, "resolving the current version", 0);
 	image_version_rootfs_path(image, old_version, old_rootfs, sizeof(old_rootfs));
 
-	snprintf(staging, sizeof(staging), "%s/%s/.staging.%d", g_images_dir, image, (int)getpid());
+	/*
+	 * One name per image, because one image has one producer at a time
+	 * (ADR-0356): an install's producer waits for another into the same
+	 * image, and a delete is refused while one runs. The name used to
+	 * carry the daemon's pid, which a producer child does not share, so
+	 * a leftover would never have been found again.
+	 */
+	snprintf(staging, sizeof(staging), "%s/%s/.staging", g_images_dir, image);
 	/* Clear any leftover from a prior crashed attempt. Subvolume-aware:
 	 * on btrfs the leftover staging is a subvolume that rmdir cannot
 	 * remove (ADR-0207); on ext4 this is the same rmtree as before. */
@@ -5589,7 +5669,14 @@ static int image_produce_new_version(const char *image,
 		if (rename(staging, new_rootfs) != 0)
 			return produce_fail(image, staging, "renaming staging into place", 1);
 	}
+	snprintf(out_version, out_version_size, "%s", new_version);
+	return 0;
+}
 
+/* The daemon's half of producing a version (ADR-0356): record it as the
+ * image's current one, then keep the package set it was named from. */
+static int image_version_commit(const char *image, const char *new_version)
+{
 	stallwatch_step("image version: record it");
 	if (image_record_version(image, new_version) != IMAGE_OK)
 		return produce_fail(image, NULL, "recording the new version", 0);
@@ -5614,6 +5701,321 @@ static int image_produce_new_version(const char *image,
 		               "version is fine, but what it holds will not be answerable once the "
 		               "installed set moves on (#398)",
 		               image, new_version);
+	return 0;
+}
+
+/* Both halves at once, for the callers that still produce in the daemon
+ * itself: a delete, the toolchain bootstrap, and the build sandbox's
+ * one-time migration at start. The first two refuse while a child is
+ * producing the same image (ADR-0356). */
+static int image_produce_new_version(const char *image,
+                                      int (*mutate)(const char *staging_rootfs, void *ctx),
+                                      void *ctx, const char *extra_identity)
+{
+	char new_version[IMAGE_VERSION_MAX];
+
+	if (image_version_build(image, mutate, ctx, extra_identity, new_version,
+	                        sizeof(new_version)) != 0)
+		return -1;
+	return image_version_commit(image, new_version);
+}
+
+/*
+ * ADR-0356 (#617): what a producer child reports to the daemon, through
+ * the file at report_path (one per chain, which produces one version at
+ * a time). A build environment's composer was the first such child
+ * (#238); a package install's producer is the second.
+ *
+ * #606 is why the log entries travel too. The child closes every
+ * descriptor it inherited before producing (see the sweep below), the
+ * log store's open segment among them, so every logstore_write() it made
+ * -- including the reason a production failed -- went nowhere. A test
+ * saw only the parent's "could not compose a build environment from the
+ * declared tools" (0.2.57-513), and which exit it was could not be told.
+ * So the child holds its log entries (logstore_hold(), ADR-0340's
+ * arrangement) and writes them here with its reason; the parent replays
+ * them, so they are written by the process that accounts for the store.
+ *
+ * After the fixed part come file_count paths, each ending in a NUL,
+ * which no path can contain: the files an install's merge recorded,
+ * because the merge ran in the child and the entry the daemon keeps
+ * never saw it.
+ */
+#define PRODUCE_HELD_LOG_MAX 16384
+
+struct produce_report {
+	char reason[256];
+	char version[IMAGE_VERSION_MAX];
+	long long took_ms;
+	int file_count;
+	char held[PRODUCE_HELD_LOG_MAX];
+};
+
+static struct produce_report g_produce_report;
+
+static void produce_report_path(int chain_idx, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/.produce-report-%d", g_pkg_dir, chain_idx);
+}
+
+/* In the producer child, after producing: rc is its outcome, and
+ * files_of the entry whose recorded files go with it (NULL for none). */
+static void produce_report_write(const char *report_path, int rc, const char *version,
+                                 long long took_ms, const char *mutate_reason,
+                                 const struct pkg_entry *files_of)
+{
+	const char *reason = NULL;
+	int fd, i;
+
+	if (rc != 0)
+		reason = mutate_reason != NULL && mutate_reason[0] != '\0'
+		                 ? mutate_reason
+		                 : pkg_last_image_produce_failure();
+	snprintf(g_produce_report.reason, sizeof(g_produce_report.reason), "%s",
+	         reason != NULL ? reason : "");
+	snprintf(g_produce_report.version, sizeof(g_produce_report.version), "%s",
+	         rc == 0 ? version : "");
+	g_produce_report.took_ms = took_ms;
+	g_produce_report.file_count = rc == 0 && files_of != NULL ? files_of->file_count : 0;
+	fd = open(report_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+	if (fd < 0)
+		return;
+	if (cix_write_all(fd, &g_produce_report, sizeof(g_produce_report)) == 0) {
+		for (i = 0; i < g_produce_report.file_count; i++)
+			if (cix_write_all(fd, files_of->files[i], strlen(files_of->files[i]) + 1) != 0)
+				break;
+	}
+	close(fd);
+}
+
+/*
+ * In the daemon, once a producer has exited: replays what it logged and
+ * copies out its reason, the version it built and how long it took.
+ * Returns 1 when the child left a whole report, 0 when it left none --
+ * killed, or unable to write one -- and removes the file either way.
+ * The path list, when one follows, is returned in *out_files (NUL
+ * separated, *out_files_len bytes, the caller frees it) for the caller
+ * to apply once the version is recorded; NULL when there is none or it
+ * could not be read whole. *out_file_count is how many paths the child
+ * said it wrote, so the caller can tell those two apart.
+ */
+static int produce_report_take(const char *report_path, char *reason, size_t reason_size,
+                               char *version, size_t version_size, long long *took_ms,
+                               char **out_files, size_t *out_files_len, int *out_file_count)
+{
+	struct stat st;
+	size_t got = 0;
+	int fd;
+
+	reason[0] = '\0';
+	version[0] = '\0';
+	*took_ms = -1;
+	*out_files = NULL;
+	*out_files_len = 0;
+	*out_file_count = 0;
+	fd = open(report_path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+	while (got < sizeof(g_produce_report)) {
+		ssize_t n = read(fd, (char *)&g_produce_report + got, sizeof(g_produce_report) - got);
+
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			break;
+		got += (size_t)n;
+	}
+	if (got != sizeof(g_produce_report)) {
+		close(fd);
+		unlink(report_path);
+		return 0;
+	}
+	g_produce_report.reason[sizeof(g_produce_report.reason) - 1] = '\0';
+	g_produce_report.version[sizeof(g_produce_report.version) - 1] = '\0';
+	logstore_replay(g_produce_report.held, sizeof(g_produce_report.held));
+	snprintf(reason, reason_size, "%s", g_produce_report.reason);
+	snprintf(version, version_size, "%s", g_produce_report.version);
+	*took_ms = g_produce_report.took_ms;
+	*out_file_count = g_produce_report.file_count;
+
+	if (g_produce_report.file_count > 0 && fstat(fd, &st) == 0 &&
+	    st.st_size > (off_t)sizeof(g_produce_report)) {
+		size_t len = (size_t)st.st_size - sizeof(g_produce_report);
+		char *buf = malloc(len);
+		size_t have = 0;
+
+		while (buf != NULL && have < len) {
+			ssize_t n = read(fd, buf + have, len - have);
+
+			if (n < 0 && errno == EINTR)
+				continue;
+			if (n <= 0)
+				break;
+			have += (size_t)n;
+		}
+		if (buf != NULL && have == len && buf[len - 1] == '\0') {
+			*out_files = buf;
+			*out_files_len = len;
+		} else {
+			free(buf);
+		}
+	}
+	close(fd);
+	unlink(report_path);
+	return 1;
+}
+
+/*
+ * Replaces e's recorded files with the list a producer reported. 0, or
+ * -1 when the list did not hold the number of paths the report said, or
+ * one could not be recorded.
+ */
+static int produce_files_apply(struct pkg_entry *e, const char *files, size_t len, int expected)
+{
+	size_t off = 0;
+	int n = 0;
+
+	pkg_entry_free_files(e);
+	while (off < len) {
+		const char *path = files + off;
+		size_t plen = strlen(path);
+
+		if (pkg_entry_add_file(e, path) != 0)
+			return -1;
+		n++;
+		off += plen + 1;
+	}
+	return n == expected ? 0 : -1;
+}
+
+/*
+ * #618: a child that waits for another child of the daemon to exit, so
+ * a chain that needs what that child is making is re-entered when it is
+ * done -- a build environment another chain is composing, or (ADR-0356)
+ * a version of an image another chain is producing. It watches the other
+ * child through a pidfd opened here, in the parent: that child is not
+ * reaped until the daemon handles its exit, which clears the chain field
+ * naming it first, so the pid cannot have been reused. 0 with the
+ * waiter's pid and pidfd, or -1 when the other child has already gone or
+ * the fork failed.
+ */
+static int child_exit_waiter(pid_t other, pid_t *out_pid, int *out_pidfd)
+{
+	int tfd = sys_pidfd_open(other, 0);
+	pid_t pid;
+	int pidfd;
+
+	if (tfd < 0)
+		return -1;
+	pid = fork();
+	if (pid < 0) {
+		close(tfd);
+		return -1;
+	}
+	if (pid == 0) {
+		struct pollfd p;
+		int fd;
+
+		/* The producer child's sweep, for the same reason, keeping the
+		 * one descriptor this child exists to watch. */
+		for (fd = 3; fd < 4096; fd++)
+			if (fd != tfd)
+				close(fd);
+		p.fd = tfd;
+		p.events = POLLIN;
+		while (poll(&p, 1, -1) < 0 && errno == EINTR)
+			;
+		_exit(0);
+	}
+	close(tfd);
+	pidfd = sys_pidfd_open(pid, 0);
+	if (pidfd < 0) {
+		kill(pid, SIGKILL);
+		waitpid(pid, NULL, 0);
+		return -1;
+	}
+	*out_pid = pid;
+	*out_pidfd = pidfd;
+	return 0;
+}
+
+/*
+ * ADR-0356 (#617): forks a child that builds a new version of image --
+ * image_version_build(), so the snapshot, mutate, hash and placement --
+ * and reports it to report_path, for the daemon to record with
+ * image_version_commit() once the child has exited.
+ *
+ * The child is the daemon's memory at the moment of the fork, so the
+ * package set it hashes is the one the caller has just arranged, and
+ * whatever mutate() changes in it stays in the child. That is why an
+ * install's recorded files come back in the report (files_of), and why
+ * mutate_reason, a buffer mutate() may fill with its own explanation,
+ * is the child's copy of it.
+ *
+ * Measured before it, on 192.168.15.95 (GET /v1/system/stalls, #617):
+ * the mutate step of hibr's upgrade in jumpbox held the event loop
+ * 862 ms on 2026-10-23, 834 of them in 203 unlinks, and the same unlinks
+ * took 1219 ms over 386 calls on 2026-10-20.
+ *
+ * 0 with the child's pid and pidfd, or -1 with a reason in err.
+ */
+static int image_version_fork(const char *image,
+                              int (*mutate)(const char *staging_rootfs, void *ctx), void *ctx,
+                              const char *extra_identity, char *mutate_reason,
+                              const struct pkg_entry *files_of, const char *report_path,
+                              pid_t *out_pid, int *out_pidfd, char *err, size_t err_size)
+{
+	pid_t pid;
+	int pidfd;
+
+	unlink(report_path); /* a stale one would be taken for this child's */
+	pid = fork();
+	if (pid < 0) {
+		snprintf(err, err_size, "could not fork to produce a version of image %s: %s", image,
+		         strerror(errno));
+		return -1;
+	}
+	if (pid == 0) {
+		char version[IMAGE_VERSION_MAX];
+		struct timespec t0, t1;
+		int fd;
+		int rc;
+
+		/* #606: before the sweep, which closes the store's segment. */
+		logstore_hold(g_produce_report.held, sizeof(g_produce_report.held));
+		g_produce_fail_reason[0] = '\0';
+		if (mutate_reason != NULL)
+			mutate_reason[0] = '\0';
+		/*
+		 * Every descriptor this daemon holds was inherited by the
+		 * fork, and this one never execve()s, so SOCK_CLOEXEC does
+		 * nothing for it. Leaving them open would keep live client
+		 * sockets from reaching EOF for as long as production runs --
+		 * #237's symptom, from the other direction. Closed bluntly from
+		 * stderr up: this child needs the filesystem and nothing else.
+		 */
+		for (fd = 3; fd < 4096; fd++)
+			close(fd);
+		clock_gettime(CLOCK_MONOTONIC, &t0);
+		rc = image_version_build(image, mutate, ctx, extra_identity, version, sizeof(version));
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		produce_report_write(report_path, rc, version,
+		                     (long long)(t1.tv_sec - t0.tv_sec) * 1000 +
+		                             (t1.tv_nsec - t0.tv_nsec) / 1000000,
+		                     mutate_reason, files_of);
+		_exit(rc == 0 ? 0 : 1);
+	}
+
+	pidfd = sys_pidfd_open(pid, 0);
+	if (pidfd < 0) {
+		snprintf(err, err_size, "could not track the producer of image %s: %s", image,
+		         strerror(errno));
+		kill(pid, SIGKILL);
+		waitpid(pid, NULL, 0);
+		return -1;
+	}
+	*out_pid = pid;
+	*out_pidfd = pidfd;
 	return 0;
 }
 
@@ -6924,6 +7326,9 @@ enum pkg_error pkg_bootstrap_from_toolchain(const char *toolchain_path)
 	 */
 	if (squashfs_image_check(toolchain_path) != 1)
 		return PKG_ERR_INVALID_TOOLCHAIN;
+	/* ADR-0356: the same rule as pkg_delete(), for the same reason. */
+	if (image_has_producer(PKG_BUILD_SANDBOX_IMAGE))
+		return PKG_ERR_IMAGE_PRODUCING;
 
 	seed_ctx.toolchain_path = toolchain_path;
 	if (image_produce_new_version(PKG_BUILD_SANDBOX_IMAGE, toolchain_seed_mutate, &seed_ctx,
@@ -7681,148 +8086,6 @@ static long long buildenv_idle_seconds(const char *env_image)
  * handover: it calls this function a second time and takes the
  * already-composed fast path above.
  */
-/*
- * #606: what a composer child reports to the parent, through the file
- * at report_path (one per chain, which composes one environment at a
- * time).
- *
- * The child closes every descriptor it inherited before composing (see
- * the sweep below), the log store's open segment among them, so every
- * logstore_write() it made -- including the reason a composition failed
- * -- went nowhere. A test saw only the parent's "could not compose a
- * build environment from the declared tools" (0.2.57-513, #606), and
- * which exit it was could not be told. So the child holds its log
- * entries (logstore_hold(), ADR-0340's arrangement) and writes them here
- * with its reason; the parent replays them, so they are written by the
- * process that accounts for the store, and puts the reason in the
- * package's error.
- */
-#define BUILDENV_HELD_LOG_MAX 16384
-
-struct buildenv_report {
-	char reason[256];
-	char held[BUILDENV_HELD_LOG_MAX];
-};
-
-static struct buildenv_report g_buildenv_report;
-
-static void buildenv_report_path(int chain_idx, char *out, size_t out_size)
-{
-	snprintf(out, out_size, "%s/.buildenv-report-%d", g_pkg_dir, chain_idx);
-}
-
-/* In the composer child, after composing: rc is its outcome. */
-static void buildenv_report_write(const char *report_path, int rc)
-{
-	int fd;
-	size_t off = 0;
-	const char *reason = NULL;
-
-	if (rc != 0)
-		reason = g_buildenv_fail_reason[0] != '\0' ? g_buildenv_fail_reason
-		                                            : pkg_last_image_produce_failure();
-	snprintf(g_buildenv_report.reason, sizeof(g_buildenv_report.reason), "%s",
-	         reason != NULL ? reason : "");
-	fd = open(report_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-	if (fd < 0)
-		return;
-	while (off < sizeof(g_buildenv_report)) {
-		ssize_t n = write(fd, (const char *)&g_buildenv_report + off,
-		                  sizeof(g_buildenv_report) - off);
-
-		if (n < 0 && errno == EINTR)
-			continue;
-		if (n <= 0)
-			break;
-		off += (size_t)n;
-	}
-	close(fd);
-}
-
-/*
- * In the parent, once the composer has exited: replays what it logged
- * and copies its reason into reason (empty when it gave none, or left
- * no report -- killed, or unable to write one). Removes the report.
- */
-static void buildenv_report_take(int chain_idx, char *reason, size_t reason_size)
-{
-	char path[PATH_MAX];
-	int fd;
-	size_t got = 0;
-
-	reason[0] = '\0';
-	buildenv_report_path(chain_idx, path, sizeof(path));
-	fd = open(path, O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
-		return;
-	while (got < sizeof(g_buildenv_report)) {
-		ssize_t n = read(fd, (char *)&g_buildenv_report + got, sizeof(g_buildenv_report) - got);
-
-		if (n < 0 && errno == EINTR)
-			continue;
-		if (n <= 0)
-			break;
-		got += (size_t)n;
-	}
-	close(fd);
-	unlink(path);
-	if (got != sizeof(g_buildenv_report))
-		return;
-	g_buildenv_report.reason[sizeof(g_buildenv_report.reason) - 1] = '\0';
-	logstore_replay(g_buildenv_report.held, sizeof(g_buildenv_report.held));
-	snprintf(reason, reason_size, "%s", g_buildenv_report.reason);
-}
-
-/*
- * #618: a child that waits for another chain's composer to exit, so a
- * chain needing the same environment is re-entered when it is ready.
- * It watches that composer through a pidfd opened here, in the parent:
- * the composer is the daemon's own child and is not reaped until the
- * daemon handles its exit, which clears the chain's buildenv_composer
- * first, so the pid cannot have been reused. 0 with the waiter's pid
- * and pidfd, or -1 when the composer has already gone or the fork
- * failed.
- */
-static int buildenv_wait_for(pid_t composer, pid_t *out_pid, int *out_pidfd)
-{
-	int tfd = sys_pidfd_open(composer, 0);
-	pid_t pid;
-	int pidfd;
-
-	if (tfd < 0)
-		return -1;
-	pid = fork();
-	if (pid < 0) {
-		close(tfd);
-		return -1;
-	}
-	if (pid == 0) {
-		struct pollfd p;
-		int fd;
-
-		/* The composer child's sweep, for the same reason, keeping the
-		 * one descriptor this child exists to watch. */
-		for (fd = 3; fd < 4096; fd++)
-			if (fd != tfd)
-				close(fd);
-		p.fd = tfd;
-		p.events = POLLIN;
-		while (poll(&p, 1, -1) < 0 && errno == EINTR)
-			;
-		_exit(0);
-	}
-	close(tfd);
-	pidfd = sys_pidfd_open(pid, 0);
-	if (pidfd < 0) {
-		kill(pid, SIGKILL);
-		waitpid(pid, NULL, 0);
-		return -1;
-	}
-	*out_pid = pid;
-	*out_pidfd = pidfd;
-	return 0;
-}
-
 static int buildenv_image_for(const char *declared, char *out_image, size_t out_image_size,
                                char *err, size_t err_size, pid_t *out_pid, int *out_pidfd,
                                const char *report_path, int self_chain)
@@ -7912,7 +8175,7 @@ static int buildenv_image_for(const char *declared, char *out_image, size_t out_
 			    strcmp(g_chains[i].buildenv_image, out_image) != 0)
 				continue;
 			unlink(report_path); /* a waiter writes none; never take a stale one */
-			if (buildenv_wait_for(g_chains[i].buildenv_composer, out_pid, out_pidfd) == 0) {
+			if (child_exit_waiter(g_chains[i].buildenv_composer, out_pid, out_pidfd) == 0) {
 				logstore_write("cixd", "info",
 				               "pkg: build environment %s is being composed for %s@%s -- "
 				               "waiting for it rather than composing it twice",
@@ -7924,8 +8187,6 @@ static int buildenv_image_for(const char *declared, char *out_image, size_t out_
 	}
 	{
 		struct buildenv_ctx ctx;
-		pid_t pid;
-		int pidfd;
 
 		ctx.tools = tools;
 		ctx.tool_count = count;
@@ -7934,49 +8195,9 @@ static int buildenv_image_for(const char *declared, char *out_image, size_t out_
 		               "pkg: composing build environment %s from %d declared tool(s)", out_image,
 		               count);
 
-		unlink(report_path); /* a stale one would be taken for this child's */
-		pid = fork();
-		if (pid < 0) {
-			snprintf(err, err_size, "could not fork to compose a build environment: %s",
-			         strerror(errno));
+		if (image_version_fork(out_image, buildenv_mutate, &ctx, canonical, g_buildenv_fail_reason,
+		                       NULL, report_path, out_pid, out_pidfd, err, err_size) != 0)
 			return -1;
-		}
-		if (pid == 0) {
-			int fd;
-			int rc;
-
-			/* #606: before the sweep, which closes the store's segment. */
-			logstore_hold(g_buildenv_report.held, sizeof(g_buildenv_report.held));
-			g_buildenv_fail_reason[0] = '\0';
-			/*
-			 * Every descriptor this daemon holds was inherited by the
-			 * fork, and this one never execve()s, so SOCK_CLOEXEC does
-			 * nothing for it. (This used to read "unlike the fetch
-			 * child" -- that child does not execve() either, which is
-			 * why it now carries this same sweep; see #375.) Leaving them
-			 * open would keep live client sockets from reaching EOF for as
-			 * long as composition runs -- reintroducing #237's symptom
-			 * from the other direction, through the very change meant to
-			 * stop blocking clients. Closed bluntly from stderr up: this
-			 * child needs the filesystem and nothing else.
-			 */
-			for (fd = 3; fd < 4096; fd++)
-				close(fd);
-			rc = image_produce_new_version(out_image, buildenv_mutate, &ctx, canonical);
-			buildenv_report_write(report_path, rc);
-			_exit(rc == 0 ? 0 : 1);
-		}
-
-		pidfd = sys_pidfd_open(pid, 0);
-		if (pidfd < 0) {
-			snprintf(err, err_size, "could not track the build-environment composer: %s",
-			         strerror(errno));
-			kill(pid, SIGKILL);
-			waitpid(pid, NULL, 0);
-			return -1;
-		}
-		*out_pid = pid;
-		*out_pidfd = pidfd;
 		return 1;
 	}
 }
@@ -11313,7 +11534,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			return 0;
 		}
 
-		buildenv_report_path(chain_idx, report_path, sizeof(report_path));
+		produce_report_path(chain_idx, report_path, sizeof(report_path));
 		envr = buildenv_image_for(declared, env_image, sizeof(env_image), env_err,
 		                          sizeof(env_err), out_compose_pid, out_compose_pidfd,
 		                          report_path, chain_idx);
@@ -12084,9 +12305,10 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
  * Continues an install whose build environment was being composed in a
  * forked child (#238), once that child has exited.
  *
- * Success needs no handover at all: image state lives on disk, so this
- * simply re-enters pkg_prepare_build_and_start(), which asks
- * buildenv_image_for() again and gets the already-composed fast path.
+ * Success needs one handover: the child built the environment's version
+ * and the daemon records it (ADR-0356). Then this re-enters
+ * pkg_prepare_build_and_start(), which asks buildenv_image_for() again
+ * and gets the already-composed fast path.
  * The recipe and the upgrade flag are re-derived from the chain rather
  * than carried across, for the same reason -- there is no second copy
  * of them to go stale.
@@ -12105,14 +12327,47 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 	struct pkg_recipe recipe;
 	int is_final_upgrade;
 	char reason[256];
+	char report_path[PATH_MAX], version[IMAGE_VERSION_MAX];
+	char *files;
+	size_t files_len;
+	long long took_ms;
+	int file_count;
+	int reported;
 
 	*out_compose_pid = -1;
 	*out_compose_pidfd = -1;
 	stallwatch_step("build environment composed: replay its report"); /* #619 */
-	/* #606: on every path, so what the child logged is never lost. */
-	buildenv_report_take(chain_idx, reason, sizeof(reason));
+	/* #606: on every path, so what the child logged is never lost. A
+	 * waiter (#618) writes none, and neither does a killed composer. */
+	produce_report_path(chain_idx, report_path, sizeof(report_path));
+	reported = produce_report_take(report_path, reason, sizeof(reason), version, sizeof(version),
+	                               &took_ms, &files, &files_len, &file_count);
+	free(files); /* a composition records no package's files */
 	/* #618: the child this chain waited on has exited. */
 	g_chains[chain_idx].buildenv_composer = 0;
+
+	/*
+	 * ADR-0356: the composer built the version and the daemon records
+	 * it. A waiter's exit records nothing: the chain it waited on records
+	 * its own, and this one then finds the environment composed.
+	 */
+	if (reported && exit_status == 0 && g_chains[chain_idx].buildenv_image[0] != '\0') {
+		if (version[0] == '\0') {
+			snprintf(reason, sizeof(reason), "the composer reported no version");
+			exit_status = 1;
+		} else if (image_version_commit(g_chains[chain_idx].buildenv_image, version) != 0) {
+			const char *why = pkg_last_image_produce_failure();
+
+			snprintf(reason, sizeof(reason), "%s", why != NULL ? why : "recording it failed");
+			exit_status = 1;
+		} else {
+			/* ADR-0339: the environment's image has its version now. */
+			pkg_announce_jobs();
+			events_announce(EV_listBuildEnvironments);
+			logstore_write("cixd", "info", "pkg: build environment %s composed in %lld ms",
+			               g_chains[chain_idx].buildenv_image, took_ms);
+		}
+	}
 
 	/* Same stale-slot discriminator pkg_fetch_completed() uses (issue
 	 * #98): an entry that is no longer FETCHING cannot be the one whose
@@ -14170,8 +14425,10 @@ void pkg_build_output_close(int chain_idx)
 	g_build_output_entries[chain_idx] = NULL;
 }
 
-/* image_produce_new_version()'s own mutate() callback for a package
- * install/upgrade -- runs against the freshly copy-forwarded staging
+/* image_version_build()'s mutate() callback for a package install/
+ * upgrade, run in the producer child (ADR-0356), so what it does to e
+ * reaches the daemon only through the child's report -- runs against the
+ * freshly copy-forwarded staging
  * rootfs (never the old version's own immutable directory). On an
  * upgrade, the OLD manifest's files are unlinked first (a version that
  * renamed/dropped files shouldn't leave the old ones behind in the
@@ -14463,6 +14720,13 @@ static int install_mutate(const char *staging_rootfs, void *ctx_v)
 {
 	struct install_mutate_ctx *ctx = ctx_v;
 
+	/*
+	 * ADR-0356: the version is named after this step from the installed
+	 * set, which must include this package. This is the child's copy of
+	 * the entry; the daemon's becomes INSTALLED when it records the
+	 * version (pkg_produce_completed()).
+	 */
+	pkg_job_set_state(ctx->e, PKG_STATE_INSTALLED);
 	if (ctx->is_upgrade) {
 		unlink_manifest_files(ctx->e, staging_rootfs);
 		pkg_entry_free_files(ctx->e);
@@ -14589,6 +14853,14 @@ enum pkg_error pkg_cancel(const char *name, const char *image,
 		return PKG_ERR_NOT_FOUND;
 
 	if (e->state != PKG_STATE_FETCHING && e->state != PKG_STATE_BUILDING)
+		return PKG_ERR_NOT_BUILDING;
+	/*
+	 * ADR-0356: the build is over and its image version is being
+	 * produced. There is no container left to stop, and the producer's
+	 * exit finishes the install whatever a flag says, so a cancel here
+	 * would answer that it stopped something it did not.
+	 */
+	if (entry_being_produced(e))
 		return PKG_ERR_NOT_BUILDING;
 
 	e->cancel_requested = 1;
@@ -14783,6 +15055,549 @@ static void pin_follows_install(const char *image, const char *package, const ch
 	}
 }
 
+/*
+ * Where a finished build left its staged tree: the build container's
+ * base, and under its upper directory the path the build was told --
+ * what the build was told, not a second guess at it; see
+ * build_dest_rel's own comment. A cache hit never entered a container
+ * and may not have set it; its tree is at the same PKG_DEST_REL_CBS,
+ * which the unpack populated directly.
+ */
+static void install_staged_paths(const struct pkg_entry *e, char *container_base,
+                                 size_t container_base_size, char *dest_dir, size_t dest_dir_size)
+{
+	snprintf(container_base, container_base_size, "%s/%s", g_containers_dir,
+	         e->build_container_name);
+	snprintf(dest_dir, dest_dir_size, "%s/upper/%s", container_base,
+	         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_CBS);
+}
+
+/* Is this chain on its last job, the package it was asked for? */
+static int chain_job_is_final(int chain_idx)
+{
+	return g_chains[chain_idx].dep_queue_pos + 1 >= g_chains[chain_idx].dep_queue_count;
+}
+
+/*
+ * ADR-0356 (#617): starts producing the image version an install goes
+ * into, in a helper child (image_version_fork()), for the entry the
+ * chain has recorded in produce_e. If another chain is producing the
+ * same image, starts a waiter on that producer instead, and this is
+ * called again when the waiter exits. Either way the child is in
+ * *out_pid and *out_pidfd and the chain's producer, and its exit reaches
+ * pkg_produce_completed(). 0; -1 with a reason in err when production
+ * could not start; -2 with the refusal in err when a gate refused the
+ * package.
+ */
+static int install_produce_start(int chain_idx, pid_t *out_pid, int *out_pidfd, char *err,
+                                 size_t err_size)
+{
+	struct pkg_entry *e = g_chains[chain_idx].produce_e;
+	const char *image = g_chains[chain_idx].image;
+	struct install_mutate_ctx ctx;
+	char container_base[PATH_MAX], dest_dir[PATH_MAX], report_path[PATH_MAX];
+	int i;
+
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+		if (i == chain_idx || g_chains[i].producer <= 0 || g_chains[i].produce_waiting ||
+		    strcmp(g_chains[i].image, image) != 0)
+			continue;
+		/*
+		 * Not a fall-through to producing here when the waiter cannot be
+		 * started: the other producer has not been reaped (its exit
+		 * clears its chain's producer first), so it is still there,
+		 * and producing beside it is the race this exists to prevent.
+		 */
+		if (child_exit_waiter(g_chains[i].producer, out_pid, out_pidfd) != 0) {
+			snprintf(err, err_size,
+			         "could not wait for the version image %s is already producing: %s", image,
+			         strerror(errno));
+			return -1;
+		}
+		g_chains[chain_idx].producer = *out_pid;
+		g_chains[chain_idx].produce_waiting = 1;
+		logstore_write("cixd", "info",
+		               "pkg %s@%s: image %s is producing a version for %s -- waiting for it "
+		               "before producing this one (ADR-0356)",
+		               e->name, image, image,
+		               g_chains[i].produce_e != NULL ? g_chains[i].produce_e->name
+		                                             : g_chains[i].name);
+		return 0;
+	}
+
+	install_staged_paths(e, container_base, sizeof(container_base), dest_dir, sizeof(dest_dir));
+
+	/*
+	 * Issue #389, before a single byte is staged -- same discipline as
+	 * the #176 builtin check inside merge_tree(): a refused build leaves
+	 * nothing of itself behind.
+	 *
+	 * Here rather than inside install_mutate() so the refusal costs no
+	 * copy-forward of the image, and so the message names THIS package.
+	 * A failure raised from inside the mutate callback surfaces as
+	 * "image X could not produce a new version", which is the right
+	 * message for the failures that are the image's fault and exactly
+	 * the wrong one for this, where the package is at fault and is the
+	 * thing to fix.
+	 *
+	 * And here rather than as the build completes (ADR-0356): an install
+	 * into an image another one is producing waits above, and only once
+	 * that one's version is recorded do its files count as owned for
+	 * the #553 check below.
+	 */
+	stallwatch_step("pkg install: link and path-owner gates");
+	if (undeclared_link_gate(e, image, dest_dir, err, err_size) != 0)
+		return -2;
+	/* #553, at the same point and for the same reasons: nothing is
+	 * staged, and the message names both packages and the path. */
+	if (path_owner_gate(e, image, dest_dir, g_chains[chain_idx].fetch_resolved_replaces, err,
+	                    err_size) != 0) {
+		logstore_write("cixd", "error", "pkg install: %s: %s", e->name, err);
+		return -2;
+	}
+
+	ctx.dest_dir = dest_dir;
+	ctx.e = e;
+	ctx.is_upgrade = chain_job_is_final(chain_idx) && g_chains[chain_idx].dep_queue_is_upgrade;
+	ctx.keep_privileged = 1;
+	produce_report_path(chain_idx, report_path, sizeof(report_path));
+	if (image_version_fork(image, install_mutate, &ctx, NULL, NULL, e, report_path, out_pid,
+	                       out_pidfd, err, err_size) != 0)
+		return -1;
+	g_chains[chain_idx].producer = *out_pid;
+	g_chains[chain_idx].produce_waiting = 0;
+	return 0;
+}
+
+/*
+ * ADR-0356: an install whose image version could not be produced. The
+ * entry the daemon keeps was never touched by the merge, which ran in
+ * the child, so an upgrade stays installed at the version it had (#570).
+ * Releases the chain.
+ */
+static void install_produce_failed(int chain_idx, struct pkg_entry *e, int is_upgrade,
+                                   const char *why)
+{
+	/* Name the image and what it could not do, not this package -- the
+	 * package is usually blameless (#180). */
+	pkg_fail(e, is_upgrade, PIPELINE_INSTALL, "image \"%s\" could not produce a new version: %s",
+	         g_chains[chain_idx].image, why);
+	install_keep_prev_version(e, is_upgrade, g_chains[chain_idx].produce_prev_version,
+	                          g_chains[chain_idx].produce_prev_depends);
+	chain_release(chain_idx);
+}
+
+/*
+ * Starts an install's production and answers as pkg_build_completed()
+ * does: 2 with the child in *out_pid/*out_pidfd and its chain in
+ * *out_chain_idx, or 0 when the install is over -- a gate refused the
+ * package, or production could not start -- which is recorded.
+ */
+static int install_produce_begin(int chain_idx, struct pkg_entry *e, int is_upgrade, pid_t *out_pid,
+                                 int *out_pidfd, int *out_chain_idx)
+{
+	char err[512];
+	int r = install_produce_start(chain_idx, out_pid, out_pidfd, err, sizeof(err));
+
+	if (r == 0) {
+		*out_chain_idx = chain_idx;
+		return 2;
+	}
+	if (r == -2) {
+		/* Kept installed (#570): nothing reached the image. */
+		pkg_fail(e, is_upgrade, PIPELINE_INSTALL, "%s", err);
+		install_keep_prev_version(e, is_upgrade, g_chains[chain_idx].produce_prev_version,
+		                          g_chains[chain_idx].produce_prev_depends);
+		chain_release(chain_idx);
+		return 0;
+	}
+	install_produce_failed(chain_idx, e, is_upgrade, err);
+	return 0;
+}
+
+/*
+ * ADR-0356: the part of an ordinary install that follows its image
+ * version being recorded, run once the producer has exited. 0 to go on
+ * to install_finish(), or -1 when it failed, which it has recorded,
+ * releasing the chain.
+ */
+static int install_after_produce(int chain_idx, struct pkg_entry *e)
+{
+	char container_base[PATH_MAX], dest_dir[PATH_MAX];
+
+	install_staged_paths(e, container_base, sizeof(container_base), dest_dir, sizeof(dest_dir));
+
+	/*
+	 * #281: the merge said yes -- check that it meant it.
+	 *
+	 * Deliberately after the merge and before anything that
+	 * treats this install as done: save_state() in install_finish()
+	 * is what makes "installed" survive a restart, and an entry that
+	 * survives while its files do not is precisely the split this
+	 * issue is about.
+	 */
+	stallwatch_step("pkg install: check the installed files");
+	{
+		char first_missing[PKG_NAME_MAX + 128];
+		int missing = installed_files_missing(g_chains[chain_idx].image, e, first_missing,
+		                                       sizeof(first_missing));
+
+		if (missing > 0) {
+			char msg[448];
+
+			snprintf(msg, sizeof(msg),
+			         "installed into image \"%s\" but %d of %d file(s) are not in its "
+			         "current version, starting with \"%s\" -- an image version is a "
+			         "hash of the installed package set (ADR-0108), so re-installing an "
+			         "already-present name@version reproduces the same hash and the "
+			         "rebuilt tree is discarded (ADR-0155). Bump the package revision, "
+			         "or delete and recreate the image",
+			         g_chains[chain_idx].image, missing, e->file_count, first_missing);
+			logstore_write("cixd", "error", "pkg %s@%s: %s", e->name,
+			                g_chains[chain_idx].image, msg);
+			/* NOT kept installed (#570): the merge disturbed this entry's own
+			 * file list, and the files it names are not in the image's
+			 * current version. An entry claiming INSTALLED here is the
+			 * split this check exists to catch. */
+			pkg_fail(e, 0, PIPELINE_INSTALL, "%s", msg);
+			chain_release(chain_idx);
+			return -1;
+		}
+	}
+
+	/* ADR-0320: an operator's own install moves the pin with it; a
+	 * rolling rebuild installs exactly the pin and needs nothing. */
+	if (strcmp(g_chains[chain_idx].run_trigger, PKG_RUN_TRIGGER_REQUEST) == 0)
+		pin_follows_install(g_chains[chain_idx].image, e->name, e->version);
+	/* cix#553: paths this package declared it takes over change owner. */
+	transfer_replaced_paths(normalize_image(g_chains[chain_idx].image), e,
+	                        g_chains[chain_idx].fetch_resolved_replaces);
+
+	/*
+	 * #289: the package installed headers -- do they resolve?
+	 *
+	 * Logged and not fatal, unlike the check above it. That one
+	 * asks whether the files arrived, which has one answer; this
+	 * one reads C without a preprocessor and cannot claim the
+	 * same certainty, so it reports rather than refuses. It is
+	 * still said at the moment of the install, because the whole
+	 * failure this exists for is a broken interface shipping
+	 * quietly and surfacing later as someone else's build error.
+	 */
+	stallwatch_step("pkg install: check the header includes");
+	{
+		char first_bad[PKG_NAME_MAX + 320];
+		int bad = header_includes_unresolved(g_chains[chain_idx].image, e, first_bad,
+		                                      sizeof(first_bad));
+
+		if (bad > 0)
+			logstore_write("cixd", "error",
+			                "pkg %s@%s: installs %d header include(s) that do not "
+			                "resolve in this image, starting with \"%s\" -- the header "
+			                "is shipped and cannot be included, so anything compiling "
+			                "against it fails with an error naming neither this package "
+			                "nor the missing file (#289). Check whether the recipe "
+			                "builds every directory whose headers it installs",
+			                e->name, g_chains[chain_idx].image, bad, first_bad);
+	}
+
+	/* ADR-0122: a fresh, real build's own output is saved into the
+	 * local cache for next time (best-effort, LRU-evicting older
+	 * entries as needed); a cache/artifact hit's own dest_dir was
+	 * itself just extracted FROM the cache, so there's nothing new
+	 * to save -- just bump its mtime so LRU eviction correctly
+	 * treats it as recently used, not stale. */
+	stallwatch_step("pkg install: cache the artifact");
+	if (e->cache_hit) {
+		pkg_cache_touch(e->name, e->version);
+	} else {
+		/*
+		 * A CBS build leaves a finished .cixpkg -- CBS wrote it,
+		 * inside the container, after the finalize policy ran
+		 * (src/package.c:374 then :389) -- so cixd takes the file,
+		 * by rename. Nothing here tars a tree any more (#499,
+		 * cix#569).
+		 *
+		 * Read from the entry: the recipe declared the format, and
+		 * a CPDL recipe declaring anything but cixpkg is refused at
+		 * publish and by `cbs build` itself.
+		 */
+		if (strcmp(e->artifact_format, PKG_ARTIFACT_FORMAT_CIXPKG) == 0) {
+			char produced[PATH_MAX];
+			struct stat pst;
+
+			snprintf(produced, sizeof(produced), "%s/upper/%s", container_base,
+			         PKG_CBS_ARTIFACT_REL);
+			/*
+			 * Said out loud, because pkg_cache_save_from_file()
+			 * returns silently on a missing source and the next
+			 * thing an operator would see is the push worker
+			 * reporting "no artifact in the local cache" -- a
+			 * true statement about a cause two steps away. A
+			 * build that succeeded and produced no artifact
+			 * means cbs did not honour --output, which is worth
+			 * naming where it happened.
+			 */
+			if (stat(produced, &pst) != 0)
+				logstore_write("cixd", "error",
+				                "pkg %s@%s: the build succeeded but wrote no artifact at "
+				                "%s -- nothing to cache or publish (ADR-0307)",
+				                e->name, e->version, PKG_CBS_ARTIFACT);
+			else
+				pkg_cache_save_from_file(e->name, e->version, e->artifact_format,
+				                          produced);
+		} else {
+			/*
+			 * Unreachable, and said so rather than served. A
+			 * package artifact is a .cixpkg and never a tar.gz
+			 * (One Build System Mandate, ADR-0307): shell
+			 * recipes do not exist (cix#569), and nothing
+			 * here reads one; a CPDL recipe
+			 * declaring tar.gz is refused at publish and by
+			 * `cbs build` itself. This branch used to tar the
+			 * tree into the cache instead, a route back to the
+			 * legacy format; it now caches and publishes nothing
+			 * (#499).
+			 */
+			logstore_write("cixd", "error",
+			               "pkg %s@%s: built with artifact format \"%s\", which is not "
+			               ".cixpkg -- nothing cached or published",
+			               e->name, e->version, e->artifact_format);
+		}
+		/* Issue #129: a fresh build is the only thing worth
+		 * publishing -- a cache/artifact hit's bytes already came
+		 * from somewhere else. */
+		if (strcmp(e->artifact_format, PKG_ARTIFACT_FORMAT_CIXPKG) == 0)
+			pkg_artifact_push_enqueue(e->name, e->version);
+	}
+
+	/*
+	 * Issue #168: a successful install no longer folds into any
+	 * shared sandbox.
+	 *
+	 * It used to also merge into PKG_BUILD_SANDBOX_IMAGE -- which
+	 * is the `cix-builder` image -- so that a later recipe's build
+	 * could see it. That was a real fix for a real gap at the
+	 * time (sbsigntools needed bfd.h from binutils-dev, and the
+	 * sandbox was a snapshot nothing ever updated), but ADR-0199
+	 * solved the same problem properly: a build environment is
+	 * composed from the tools a recipe DECLARES, so a build sees
+	 * its dependencies because it named them, not because someone
+	 * happened to install them here first.
+	 *
+	 * Keeping both meant every install grew a user-facing image
+	 * forever, in a way no manifest described -- 66 versions of an
+	 * 8 GB rootfs on the first box to be looked at. Build-time
+	 * visibility now comes from declaration alone, which is the
+	 * only source of truth a recipe should have.
+	 */
+	return 0;
+}
+
+/*
+ * The end of every install -- an ordinary one once its image version is
+ * recorded, a hostbuild once its output is harvested: the run closes,
+ * state is saved, and the chain moves on to its next job. Returns what
+ * pkg_build_completed() returns.
+ */
+static int install_finish(int chain_idx, struct pkg_entry *e, int is_final, pid_t *out_pid,
+                          int *out_pidfd, int *out_chain_idx, char *out_hostbuild_done_name)
+{
+	/*
+	 * ADR-0272: the run closes HERE and not at the provisional
+	 * INSTALLED in pkg_build_completed(), whose own comment says both of
+	 * its branches may revert it. Every failure between the two returns
+	 * early through pkg_fail(), so reaching this line is what makes the
+	 * success final.
+	 */
+	stallwatch_step("pkg install: close the run and save state");
+	pkg_run_close(e);
+
+	save_state();
+	stallwatch_step("pkg build completion: the chain's next job");
+
+	if (g_chains[chain_idx].is_hostbuild)
+		snprintf(out_hostbuild_done_name, PKG_NAME_MAX, "%s", e->name);
+
+	if (!is_final) {
+		enum pkg_error perr;
+
+		/*
+		 * #531: the unpack flag belongs to the PACKAGE, not to the
+		 * chain slot, and it was only ever cleared when a slot was
+		 * handed out.
+		 *
+		 * The invariant is already written where it is cleared: "a
+		 * slot that came back round would otherwise report the
+		 * previous job's unpack as this one's, and skip the
+		 * extraction this job needs." That is exactly right and it
+		 * was applied one level too coarsely -- the next DEPENDENCY
+		 * in a chain is a different package needing its own
+		 * extraction, just as surely as the next job is.
+		 *
+		 * Left set, pkg_prepare_build_and_start()'s re-entry guard
+		 * takes its "already unpacked" branch for every dependency
+		 * after the first: no reset_build_container_dir(), no
+		 * dest_dir, and no unpack. Each one then merges whatever the
+		 * PREVIOUS package left in the shared container's dest, and
+		 * installs cleanly with the wrong contents.
+		 *
+		 * Measured on 192.168.15.95, 2026-09-26, installing binutils
+		 * into a fresh image: binutils declares zlib and flex at
+		 * runtime, so the chain is zlib, m4, flex, binutils. ONE
+		 * unpack was logged (zlib's), all four reported installed in
+		 * the same second, and all four recorded zlib's seven files.
+		 * The image really did receive only zlib, which is why every
+		 * later build in it failed finalize with "this package
+		 * produced ELF output but the build image has no strip" --
+		 * binutils was installed, and binutils was not there.
+		 *
+		 * Why it stayed latent is worth recording, because it is
+		 * not rarity: 163 of the corpus's 473 CPDL recipes declare
+		 * runtime dependencies. It is that resolve_chain() returns
+		 * early for anything already installed ("already
+		 * satisfied"), so a queue longer than ONE entry only forms
+		 * when the dependencies are genuinely absent -- a fresh
+		 * image, or a dependency a recipe has only just declared.
+		 * Every install into an established image has a
+		 * single-entry queue, never reaches this advance, and is
+		 * correct. That is also why the reproduction needs a new
+		 * image and cannot be seen on a working one.
+		 */
+		g_chains[chain_idx].unpacked = 0;
+
+		g_chains[chain_idx].dep_queue_pos++;
+		perr = start_fetch_for(g_chains[chain_idx].dep_queue[g_chains[chain_idx].dep_queue_pos],
+		                        chain_idx, out_pid, out_pidfd);
+		if (perr == PKG_OK) {
+			*out_chain_idx = chain_idx;
+			return 1;
+		}
+		/*
+		 * Couldn't start the next dependency: the chain is abandoned,
+		 * and it is said here because nothing else will say it. The
+		 * step that failed never got an entry, so GET /pkg shows the
+		 * dependencies that did install and then simply stops -- the
+		 * requested package has no row and no error. Measured on
+		 * 192.168.15.95, 2026-10-02: node into a fresh image stopped
+		 * after its fifth dependency with nothing logged at all,
+		 * because the package table was full.
+		 */
+		logstore_write("cixd", "error",
+		               "pkg %s@%s: install abandoned -- dependency %s could not start: %s (%d)",
+		               g_chains[chain_idx].dep_queue[g_chains[chain_idx].dep_queue_count - 1],
+		               g_chains[chain_idx].image,
+		               g_chains[chain_idx].dep_queue[g_chains[chain_idx].dep_queue_pos],
+		               perr == PKG_ERR_FULL ? "the package table is full" : "pkg_error", (int)perr);
+	}
+
+	chain_release(chain_idx);
+	return 0;
+}
+
+int pkg_produce_completed(int chain_idx, int exit_status, pid_t *out_pid, int *out_pidfd,
+                          int *out_chain_idx, char *out_hostbuild_done_name)
+{
+	struct pkg_entry *e;
+	char reason[256], version[IMAGE_VERSION_MAX], report_path[PATH_MAX];
+	char *files = NULL;
+	size_t files_len = 0;
+	long long took_ms = -1;
+	int file_count = 0;
+	int waited, reported, is_upgrade;
+
+	*out_pid = -1;
+	*out_pidfd = -1;
+	*out_chain_idx = -1;
+	out_hostbuild_done_name[0] = '\0';
+	if (chain_idx < 0 || chain_idx >= PKG_MAX_CONCURRENT_JOBS)
+		return 0;
+	e = g_chains[chain_idx].produce_e;
+	waited = g_chains[chain_idx].produce_waiting;
+	/* First, so nothing below sees this child as still producing. */
+	g_chains[chain_idx].producer = 0;
+	g_chains[chain_idx].produce_waiting = 0;
+	produce_report_path(chain_idx, report_path, sizeof(report_path));
+
+	/*
+	 * Nothing releases a chain while its producer runs -- chain_reap_
+	 * stale() skips it -- so this is not expected. Said rather than
+	 * assumed, because what the child built is then never recorded.
+	 */
+	if (g_chains[chain_idx].name[0] == '\0' || e == NULL || !e->in_use) {
+		if (!waited &&
+		    produce_report_take(report_path, reason, sizeof(reason), version, sizeof(version),
+		                        &took_ms, &files, &files_len, &file_count))
+			free(files);
+		logstore_write("cixd", "error",
+		               "pkg: the image producer of job slot %d exited (%d) after its job had "
+		               "been released, so nothing it built was recorded (ADR-0356)",
+		               chain_idx, exit_status);
+		return 0;
+	}
+	is_upgrade = chain_job_is_final(chain_idx) && g_chains[chain_idx].dep_queue_is_upgrade;
+
+	if (waited) {
+		stallwatch_step("pkg install: the image's other producer finished");
+		return install_produce_begin(chain_idx, e, is_upgrade, out_pid, out_pidfd,
+		                             out_chain_idx);
+	}
+
+	stallwatch_step("pkg install: read the producer's report");
+	reported = produce_report_take(report_path, reason, sizeof(reason), version, sizeof(version),
+	                               &took_ms, &files, &files_len, &file_count);
+	if (exit_status != 0 || !reported || version[0] == '\0') {
+		if (reason[0] == '\0')
+			snprintf(reason, sizeof(reason), "the producer exited %d and %s", exit_status,
+			         reported ? "gave no reason" : "left no report");
+		free(files);
+		install_produce_failed(chain_idx, e, is_upgrade, reason);
+		return 0;
+	}
+
+	stallwatch_step("pkg install: record the image version");
+	/*
+	 * INSTALLED now and not before (see pkg_build_completed()): the
+	 * record makes the image hold it, and the package set the record
+	 * keeps beside the version (#398) is read from this table, so the
+	 * entry has to be in it. A failure to record puts it back below.
+	 */
+	pkg_job_set_state(e, PKG_STATE_INSTALLED);
+	if (image_version_commit(g_chains[chain_idx].image, version) != 0) {
+		const char *why = pkg_last_image_produce_failure();
+
+		free(files);
+		install_produce_failed(chain_idx, e, is_upgrade, why != NULL ? why : "recording it failed");
+		return 0;
+	}
+	logstore_write("cixd", "info",
+	               "pkg %s@%s: image version %s produced in %lld ms, in a helper child "
+	               "(ADR-0356)",
+	               e->name, g_chains[chain_idx].image, version, took_ms);
+
+	/*
+	 * The merge ran in the child, so the files it recorded arrive here.
+	 * The version is recorded by now, so a list that did not arrive
+	 * whole is a failure that is NOT kept installed (#570): the entry's
+	 * own list no longer describes either version.
+	 */
+	if (produce_files_apply(e, files, files_len, file_count) != 0) {
+		free(files);
+		pkg_fail(e, 0, PIPELINE_INSTALL,
+		         "image \"%s\" has the new version %s, but the producer's list of this "
+		         "package's %d file(s) did not arrive whole",
+		         g_chains[chain_idx].image, version, file_count);
+		chain_release(chain_idx);
+		return 0;
+	}
+	free(files);
+
+	if (install_after_produce(chain_idx, e) != 0)
+		return 0;
+	return install_finish(chain_idx, e, chain_job_is_final(chain_idx), out_pid, out_pidfd,
+	                      out_chain_idx, out_hostbuild_done_name);
+}
+
 int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_pid,
                          int *out_pidfd, int *out_chain_idx, char *out_hostbuild_done_name,
                          int *out_kept)
@@ -14803,6 +15618,14 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 
 	chain_idx = pkg_build_container_chain_index(container_name);
 	if (chain_idx < 0)
+		return 0;
+	/*
+	 * ADR-0356: this chain's build already completed and its install is
+	 * producing the image version, so this is a second report of a build
+	 * that is over -- a stop or a cancel finding its container gone.
+	 * The producer's exit finishes the job; nothing here may.
+	 */
+	if (g_chains[chain_idx].producer > 0)
 		return 0;
 	pkg_build_memory_note_end(chain_idx); /* cix#558 */
 
@@ -15176,14 +15999,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	e->build_output_captured_len = 0;
 	e->last_output_at = 0;
 
-	snprintf(container_base, sizeof(container_base), "%s/%s", g_containers_dir,
-	         e->build_container_name);
-	/* What the build was told, not a second guess at it -- see
-	 * build_dest_rel's own comment. A cache hit never entered a
-	 * container and may not have set it; its tree is at the same
-	 * PKG_DEST_REL_CBS, which the unpack populated directly. */
-	snprintf(dest_dir, sizeof(dest_dir), "%s/upper/%s", container_base,
-	         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_CBS);
+	install_staged_paths(e, container_base, sizeof(container_base), dest_dir, sizeof(dest_dir));
 
 	/*
 	 * Move the entry to the version this job installed -- for a fresh
@@ -15212,32 +16028,39 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	}
 
 	/*
-	 * Marked INSTALLED here, before either branch below, rather than
-	 * only after both succeed -- the non-hostbuild branch's own
-	 * image_produce_new_version() call needs e's final post-install
-	 * state (name/version/state all correct) to compute the new
-	 * image version's own manifest hash (ADR-0108) for THIS package's
-	 * contribution.
+	 * When the entry becomes INSTALLED, and why then (ADR-0356).
 	 *
-	 * Safe, with one deliberate exception. Every failure below goes
-	 * through pkg_fail(), which writes PKG_STATE_FAILED unless the
-	 * caller asks it to keep the install -- so a failed merge never
-	 * leaves a falsely-INSTALLED entry. The four gates that refuse
-	 * BEFORE the image is touched do ask (#570): the entry stays
-	 * INSTALLED, and install_keep_prev_version() puts it back on the
-	 * version that is still there, so the INSTALLED it keeps is the
-	 * old one rather than this job's. The two failures after
-	 * install_mutate() has run do not ask, for the reasons recorded at
-	 * each of them.
+	 * An ordinary install becomes INSTALLED only when its image version
+	 * is recorded, in pkg_produce_completed(), because that is the
+	 * moment the image holds it: anything waiting for "installed" --
+	 * `cixctl pkg install --wait`, a test, a converge -- may use the
+	 * image straight away. Until then it stays in flight as it was, in
+	 * the install stage (#424's current_stage), and nothing persists it.
+	 * The producer child marks its own copy INSTALLED (install_mutate()),
+	 * since the version is named from the package set with this package
+	 * in it (ADR-0108). A hostbuild is marked here, at the start of its
+	 * branch, because it is harvested and finished in this one call.
+	 *
+	 * Every failure below goes through pkg_fail(), which writes
+	 * PKG_STATE_FAILED unless the caller asks it to keep the install.
+	 * The gates that refuse BEFORE the image is touched do ask (#570):
+	 * install_keep_prev_version() puts the entry back on the version
+	 * that is still there, so the INSTALLED it keeps is the old one
+	 * rather than this job's. So does a failed production, since the
+	 * merge that changes the entry's file list runs in the child
+	 * (install_produce_failed()). The two failures after the version is
+	 * recorded do not ask, for the reasons recorded at each.
 	 */
 	/* #424: the install stage begins here, where a successful build's
 	 * output starts going into the image. */
 	e->install_started_at = time(NULL);
-	pkg_job_set_state(e, PKG_STATE_INSTALLED);
 	e->error[0] = '\0';
 	e->status = PIPELINE_OK; /* a success that leaves a failed status set
 	                          * reports an installed package as failed to
 	                          * anything keying on it */
+	/* ADR-0339: the stage moved to install. Setting INSTALLED here
+	 * announced it, before ADR-0356 moved that to the version's record. */
+	pkg_announce_jobs();
 
 	/*
 	 * Issue #486: nothing staged is a failed build, not a package.
@@ -15271,6 +16094,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	}
 
 	if (g_chains[chain_idx].is_hostbuild) {
+		pkg_job_set_state(e, PKG_STATE_INSTALLED); /* see above */
 		/* A hostbuild's output is a standalone host artifact (a
 		 * bzImage, a cixd-root squashfs's own components), not
 		 * something that belongs inside any container image's
@@ -15341,323 +16165,26 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		if (!e->cache_hit)
 			pkg_artifact_push_enqueue(e->name, e->version);
 	} else {
-		struct install_mutate_ctx ctx;
-		char refused[512];
-
 		/*
-		 * Issue #389, before a single byte is staged -- same
-		 * discipline as the #176 builtin check inside merge_tree(): a
-		 * refused build leaves nothing of itself behind.
-		 *
-		 * Here rather than inside install_mutate() so the refusal
-		 * costs no copy-forward of the image, and so the message
-		 * names THIS package. A failure raised from inside the mutate
-		 * callback surfaces as "image X could not produce a new
-		 * version", which is the right message for the failures that
-		 * are the image's fault and exactly the wrong one for this,
-		 * where the package is at fault and is the thing to fix.
+		 * ADR-0356 (#617): the image version is produced in a helper
+		 * child, and the install goes on when it exits, in
+		 * pkg_produce_completed(). It held the event loop for as long as
+		 * the snapshot's unlinks and copies took (image_version_fork()).
+		 * The #389 and #553 gates run where production really begins,
+		 * which a second install into the same image waits for.
 		 */
-		stallwatch_step("pkg install: link and path-owner gates");
-		if (undeclared_link_gate(e, g_chains[chain_idx].image, dest_dir, refused,
-		                          sizeof(refused)) != 0) {
-			pkg_fail(e, is_upgrade, PIPELINE_INSTALL, refused);
-			install_keep_prev_version(e, is_upgrade, prev_version, prev_depends);
-			chain_release(chain_idx);
-			return 0;
-		}
-
-		/* #553, at the same point and for the same reasons: nothing is
-		 * staged, and the message names both packages and the path. */
-		if (path_owner_gate(e, g_chains[chain_idx].image, dest_dir,
-		                    g_chains[chain_idx].fetch_resolved_replaces, refused,
-		                    sizeof(refused)) != 0) {
-			logstore_write("cixd", "error", "pkg install: %s: %s", e->name, refused);
-			pkg_fail(e, is_upgrade, PIPELINE_INSTALL, refused);
-			install_keep_prev_version(e, is_upgrade, prev_version, prev_depends);
-			chain_release(chain_idx);
-			return 0;
-		}
-
-		ctx.dest_dir = dest_dir;
-		ctx.e = e;
-		ctx.is_upgrade = is_upgrade;
-		ctx.keep_privileged = 1;
-		stallwatch_step("pkg install: produce the image version");
-		if (image_produce_new_version(g_chains[chain_idx].image, install_mutate, &ctx, NULL) !=
-		    0) {
-			const char *why = pkg_last_image_produce_failure();
-			char msg[320];
-
-			/* Name the image and what it could not do, not this
-			 * package -- the package is usually blameless (#180). */
-			snprintf(msg, sizeof(msg),
-			         "image \"%s\" could not produce a new version%s%s",
-			         g_chains[chain_idx].image, why != NULL ? ": " : "",
-			         why != NULL ? why : "");
-			/* NOT kept installed (#570): install_mutate() frees this entry's
-			 * file list before merging, so a failure part-way leaves it
-			 * describing neither version. */
-			pkg_fail(e, 0, PIPELINE_INSTALL, msg);
-			chain_release(chain_idx);
-			return 0;
-		}
-
-		/*
-		 * #281: the merge said yes -- check that it meant it.
-		 *
-		 * Deliberately after the merge and before anything that
-		 * treats this install as done: save_state() below is what
-		 * makes "installed" survive a restart, and an entry that
-		 * survives while its files do not is precisely the split this
-		 * issue is about.
-		 */
-		stallwatch_step("pkg install: check the installed files");
-		{
-			char first_missing[PKG_NAME_MAX + 128];
-			int missing = installed_files_missing(g_chains[chain_idx].image, e, first_missing,
-			                                       sizeof(first_missing));
-
-			if (missing > 0) {
-				char msg[448];
-
-				snprintf(msg, sizeof(msg),
-				         "installed into image \"%s\" but %d of %d file(s) are not in its "
-				         "current version, starting with \"%s\" -- an image version is a "
-				         "hash of the installed package set (ADR-0108), so re-installing an "
-				         "already-present name@version reproduces the same hash and the "
-				         "rebuilt tree is discarded (ADR-0155). Bump the package revision, "
-				         "or delete and recreate the image",
-				         g_chains[chain_idx].image, missing, e->file_count, first_missing);
-				logstore_write("cixd", "error", "pkg %s@%s: %s", e->name,
-				                g_chains[chain_idx].image, msg);
-				/* NOT kept installed (#570): the merge disturbed this entry's own
-				 * file list, and the files it names are not in the image's
-				 * current version. An entry claiming INSTALLED here is the
-				 * split this check exists to catch. */
-				pkg_fail(e, 0, PIPELINE_INSTALL, "%s", msg);
-				chain_release(chain_idx);
-				return 0;
-			}
-		}
-
-		/* ADR-0320: an operator's own install moves the pin with it; a
-		 * rolling rebuild installs exactly the pin and needs nothing. */
-		if (strcmp(g_chains[chain_idx].run_trigger, PKG_RUN_TRIGGER_REQUEST) == 0)
-			pin_follows_install(g_chains[chain_idx].image, e->name, e->version);
-		/* cix#553: paths this package declared it takes over change owner. */
-		transfer_replaced_paths(normalize_image(g_chains[chain_idx].image), e,
-		                        g_chains[chain_idx].fetch_resolved_replaces);
-
-		/*
-		 * #289: the package installed headers -- do they resolve?
-		 *
-		 * Logged and not fatal, unlike the check above it. That one
-		 * asks whether the files arrived, which has one answer; this
-		 * one reads C without a preprocessor and cannot claim the
-		 * same certainty, so it reports rather than refuses. It is
-		 * still said at the moment of the install, because the whole
-		 * failure this exists for is a broken interface shipping
-		 * quietly and surfacing later as someone else's build error.
-		 */
-		stallwatch_step("pkg install: check the header includes");
-		{
-			char first_bad[PKG_NAME_MAX + 320];
-			int bad = header_includes_unresolved(g_chains[chain_idx].image, e, first_bad,
-			                                      sizeof(first_bad));
-
-			if (bad > 0)
-				logstore_write("cixd", "error",
-				                "pkg %s@%s: installs %d header include(s) that do not "
-				                "resolve in this image, starting with \"%s\" -- the header "
-				                "is shipped and cannot be included, so anything compiling "
-				                "against it fails with an error naming neither this package "
-				                "nor the missing file (#289). Check whether the recipe "
-				                "builds every directory whose headers it installs",
-				                e->name, g_chains[chain_idx].image, bad, first_bad);
-		}
-
-		/* ADR-0122: a fresh, real build's own output is saved into the
-		 * local cache for next time (best-effort, LRU-evicting older
-		 * entries as needed); a cache/artifact hit's own dest_dir was
-		 * itself just extracted FROM the cache, so there's nothing new
-		 * to save -- just bump its mtime so LRU eviction correctly
-		 * treats it as recently used, not stale. */
-		stallwatch_step("pkg install: cache the artifact");
-		if (e->cache_hit) {
-			pkg_cache_touch(e->name, e->version);
-		} else {
-			/*
-			 * A CBS build leaves a finished .cixpkg -- CBS wrote it,
-			 * inside the container, after the finalize policy ran
-			 * (src/package.c:374 then :389) -- so cixd takes the file,
-			 * by rename. Nothing here tars a tree any more (#499,
-			 * cix#569).
-			 *
-			 * Read from the entry: the recipe declared the format, and
-			 * a CPDL recipe declaring anything but cixpkg is refused at
-			 * publish and by `cbs build` itself.
-			 */
-			if (strcmp(e->artifact_format, PKG_ARTIFACT_FORMAT_CIXPKG) == 0) {
-				char produced[PATH_MAX];
-				struct stat pst;
-
-				snprintf(produced, sizeof(produced), "%s/upper/%s", container_base,
-				         PKG_CBS_ARTIFACT_REL);
-				/*
-				 * Said out loud, because pkg_cache_save_from_file()
-				 * returns silently on a missing source and the next
-				 * thing an operator would see is the push worker
-				 * reporting "no artifact in the local cache" -- a
-				 * true statement about a cause two steps away. A
-				 * build that succeeded and produced no artifact
-				 * means cbs did not honour --output, which is worth
-				 * naming where it happened.
-				 */
-				if (stat(produced, &pst) != 0)
-					logstore_write("cixd", "error",
-					                "pkg %s@%s: the build succeeded but wrote no artifact at "
-					                "%s -- nothing to cache or publish (ADR-0307)",
-					                e->name, e->version, PKG_CBS_ARTIFACT);
-				else
-					pkg_cache_save_from_file(e->name, e->version, e->artifact_format,
-					                          produced);
-			} else {
-				/*
-				 * Unreachable, and said so rather than served. A
-				 * package artifact is a .cixpkg and never a tar.gz
-				 * (One Build System Mandate, ADR-0307): shell
-				 * recipes do not exist (cix#569), and nothing
-				 * here reads one; a CPDL recipe
-				 * declaring tar.gz is refused at publish and by
-				 * `cbs build` itself. This branch used to tar the
-				 * tree into the cache instead, a route back to the
-				 * legacy format; it now caches and publishes nothing
-				 * (#499).
-				 */
-				logstore_write("cixd", "error",
-				               "pkg %s@%s: built with artifact format \"%s\", which is not "
-				               ".cixpkg -- nothing cached or published",
-				               e->name, e->version, e->artifact_format);
-			}
-			/* Issue #129: a fresh build is the only thing worth
-			 * publishing -- a cache/artifact hit's bytes already came
-			 * from somewhere else. */
-			if (strcmp(e->artifact_format, PKG_ARTIFACT_FORMAT_CIXPKG) == 0)
-				pkg_artifact_push_enqueue(e->name, e->version);
-		}
-
-		/*
-		 * Issue #168: a successful install no longer folds into any
-		 * shared sandbox.
-		 *
-		 * It used to also merge into PKG_BUILD_SANDBOX_IMAGE -- which
-		 * is the `cix-builder` image -- so that a later recipe's build
-		 * could see it. That was a real fix for a real gap at the
-		 * time (sbsigntools needed bfd.h from binutils-dev, and the
-		 * sandbox was a snapshot nothing ever updated), but ADR-0199
-		 * solved the same problem properly: a build environment is
-		 * composed from the tools a recipe DECLARES, so a build sees
-		 * its dependencies because it named them, not because someone
-		 * happened to install them here first.
-		 *
-		 * Keeping both meant every install grew a user-facing image
-		 * forever, in a way no manifest described -- 66 versions of an
-		 * 8 GB rootfs on the first box to be looked at. Build-time
-		 * visibility now comes from declaration alone, which is the
-		 * only source of truth a recipe should have.
-		 */
+		g_chains[chain_idx].produce_e = e;
+		snprintf(g_chains[chain_idx].produce_prev_version,
+		         sizeof(g_chains[chain_idx].produce_prev_version), "%s", prev_version);
+		snprintf(g_chains[chain_idx].produce_prev_depends,
+		         sizeof(g_chains[chain_idx].produce_prev_depends), "%s", prev_depends);
+		stallwatch_step("pkg install: start producing the image version");
+		return install_produce_begin(chain_idx, e, is_upgrade, out_pid, out_pidfd,
+		                             out_chain_idx);
 	}
 
-	/*
-	 * ADR-0272: the run closes HERE and not at the provisional
-	 * `e->state = PKG_STATE_INSTALLED` further up, whose own comment
-	 * says both branches above may revert it. Every failure between
-	 * the two returns early through pkg_fail(), so reaching this line
-	 * is what makes the success final.
-	 */
-	stallwatch_step("pkg install: close the run and save state");
-	pkg_run_close(e);
-
-	save_state();
-	stallwatch_step("pkg build completion: the chain's next job");
-
-	if (g_chains[chain_idx].is_hostbuild)
-		snprintf(out_hostbuild_done_name, PKG_NAME_MAX, "%s", e->name);
-
-	if (!is_final) {
-		enum pkg_error perr;
-
-		/*
-		 * #531: the unpack flag belongs to the PACKAGE, not to the
-		 * chain slot, and it was only ever cleared when a slot was
-		 * handed out.
-		 *
-		 * The invariant is already written where it is cleared: "a
-		 * slot that came back round would otherwise report the
-		 * previous job's unpack as this one's, and skip the
-		 * extraction this job needs." That is exactly right and it
-		 * was applied one level too coarsely -- the next DEPENDENCY
-		 * in a chain is a different package needing its own
-		 * extraction, just as surely as the next job is.
-		 *
-		 * Left set, pkg_prepare_build_and_start()'s re-entry guard
-		 * takes its "already unpacked" branch for every dependency
-		 * after the first: no reset_build_container_dir(), no
-		 * dest_dir, and no unpack. Each one then merges whatever the
-		 * PREVIOUS package left in the shared container's dest, and
-		 * installs cleanly with the wrong contents.
-		 *
-		 * Measured on 192.168.15.95, 2026-09-26, installing binutils
-		 * into a fresh image: binutils declares zlib and flex at
-		 * runtime, so the chain is zlib, m4, flex, binutils. ONE
-		 * unpack was logged (zlib's), all four reported installed in
-		 * the same second, and all four recorded zlib's seven files.
-		 * The image really did receive only zlib, which is why every
-		 * later build in it failed finalize with "this package
-		 * produced ELF output but the build image has no strip" --
-		 * binutils was installed, and binutils was not there.
-		 *
-		 * Why it stayed latent is worth recording, because it is
-		 * not rarity: 163 of the corpus's 473 CPDL recipes declare
-		 * runtime dependencies. It is that resolve_chain() returns
-		 * early for anything already installed ("already
-		 * satisfied"), so a queue longer than ONE entry only forms
-		 * when the dependencies are genuinely absent -- a fresh
-		 * image, or a dependency a recipe has only just declared.
-		 * Every install into an established image has a
-		 * single-entry queue, never reaches this advance, and is
-		 * correct. That is also why the reproduction needs a new
-		 * image and cannot be seen on a working one.
-		 */
-		g_chains[chain_idx].unpacked = 0;
-
-		g_chains[chain_idx].dep_queue_pos++;
-		perr = start_fetch_for(g_chains[chain_idx].dep_queue[g_chains[chain_idx].dep_queue_pos],
-		                        chain_idx, out_pid, out_pidfd);
-		if (perr == PKG_OK) {
-			*out_chain_idx = chain_idx;
-			return 1;
-		}
-		/*
-		 * Couldn't start the next dependency: the chain is abandoned,
-		 * and it is said here because nothing else will say it. The
-		 * step that failed never got an entry, so GET /pkg shows the
-		 * dependencies that did install and then simply stops -- the
-		 * requested package has no row and no error. Measured on
-		 * 192.168.15.95, 2026-10-02: node into a fresh image stopped
-		 * after its fifth dependency with nothing logged at all,
-		 * because the package table was full.
-		 */
-		logstore_write("cixd", "error",
-		               "pkg %s@%s: install abandoned -- dependency %s could not start: %s (%d)",
-		               g_chains[chain_idx].dep_queue[g_chains[chain_idx].dep_queue_count - 1],
-		               g_chains[chain_idx].image,
-		               g_chains[chain_idx].dep_queue[g_chains[chain_idx].dep_queue_pos],
-		               perr == PKG_ERR_FULL ? "the package table is full" : "pkg_error", (int)perr);
-	}
-
-	chain_release(chain_idx);
-	return 0;
+	return install_finish(chain_idx, e, is_final, out_pid, out_pidfd, out_chain_idx,
+	                      out_hostbuild_done_name);
 }
 
 /*
@@ -16021,21 +16548,19 @@ enum pkg_error pkg_delete(const char *name, const char *image)
 	}
 
 	/*
-	 * A PKG_STATE_FAILED entry never had its files actually committed
+	 * A PKG_STATE_FAILED entry almost never had its files committed
 	 * into any real, persisted image version: either the failure
 	 * happened before pkg_build_completed()'s own merge step ever ran
 	 * (e->files still empty -- the common case, a fetch or build
-	 * failure), or it happened inside image_produce_new_version()
-	 * itself, after install_mutate()'s own merge_tree() had already
-	 * populated e->files as a side effect of writing into that
-	 * attempt's own scratch staging directory --
-	 * image_produce_new_version() always discards that staging
-	 * directory on any failure (see its own comment) before ever
-	 * renaming it into a real version, so e->files in that case
-	 * describes content that was already deleted along with the
-	 * staging copy, not anything an operator can actually see in the
-	 * image. Either way there is nothing to unlink from a real image
-	 * and no new image version to produce for this removal --
+	 * failure), or it happened while the version was produced, in the
+	 * producer child (ADR-0356), whose merge never reaches the daemon's
+	 * copy of e, and whose staging is discarded on any failure before it
+	 * is renamed into a version. The exception is the two failures after
+	 * the version is recorded (install_after_produce()'s missing files,
+	 * and a file list that did not arrive whole): that version holds
+	 * them, and clearing the entry leaves them in it and in every
+	 * version produced from it. For this removal there is nothing to
+	 * unlink and no new image version to produce --
 	 * image_produce_new_version()/delete_mutate() below is for the
 	 * PKG_STATE_INSTALLED case only; a failed entry is cleared
 	 * directly. save_state() is harmless-but-not-load-bearing here
@@ -16066,6 +16591,16 @@ enum pkg_error pkg_delete(const char *name, const char *image)
 		pkg_announce_jobs();
 		return save_state() == 0 ? PKG_OK : PKG_ERR_PERSIST_FAILED;
 	}
+
+	/*
+	 * ADR-0356: an uninstall produces a version of the image too, here
+	 * in the daemon until #642 moves it, and a helper child producing one for another
+	 * install would snapshot the same version. Whichever was recorded
+	 * second would undo the other. A failed entry, cleared above, writes
+	 * no version and is not refused.
+	 */
+	if (image_has_producer(normalize_image(image)))
+		return PKG_ERR_IMAGE_PRODUCING;
 
 	/*
 	 * Uninstalling a package must, like an install/upgrade, produce a
@@ -22504,6 +23039,13 @@ int pkg_error_describe(enum pkg_error err, const char **phrase, char *msg, size_
 		         "a hostbuild is already running -- only one at a time, because two "
 		         "concurrent hostbuilds have panic-rebooted a host (#362); wait for it to "
 		         "finish, or cancel it with POST /v1/pkg/cancel");
+		return 409;
+	case PKG_ERR_IMAGE_PRODUCING:
+		*phrase = "Conflict";
+		snprintf(msg, msg_size,
+		         "this image is producing a new version for another install, and one image "
+		         "produces one version at a time (ADR-0356); nothing was changed -- ask again "
+		         "once that install has finished");
 		return 409;
 	case PKG_ERR_SPAWN_FAILED:
 	case PKG_ERR_PERSIST_FAILED:

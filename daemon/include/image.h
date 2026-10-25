@@ -113,8 +113,9 @@ enum image_error image_create(const char *name);
 int image_exists(const char *name);
 
 /* #551: deletes stored trees set aside as rootfs.replaced-* when a reused
- * version was found wrong. Startup only, before any container starts.
- * Returns how many it removed. */
+ * version was found wrong, and (ADR-0356) the .staging trees of versions
+ * a producer never finished. Startup only, before any container starts
+ * and while nothing is producing a version. Returns how many it removed. */
 int image_sweep_replaced_trees(void);
 
 /*
