@@ -2445,6 +2445,18 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 329: a container's CPU directory lists only its own CPUs (#363, 0.2.57-600)
+
+procfuse already served a container's own `online`, `present` and `possible`, but a file bind cannot remove a directory. `htop` counts the `cpuN` directories, so a container pinned to CPU 0 drew CPU 1 as offline; the owner's `jump` is such a container. `mountns_pivot()` now puts a read-only tmpfs over `/sys/devices/system/cpu`, holding the kernel's own entries bound in, minus the `cpuN` directories outside the child's affinity ([ADR-0355](../adr/0355-a-containers-cpu-directory-lists-only-its-own-cpus.md)). A container whose affinity covers every CPU keeps the real directory, and any failure detaches the view.
+
+**Measured on 192.168.15.95, 2026-10-25, at 0.2.57-600** (slot b, 12 containers running), in three scratch `jumpbox` containers:
+
+- **Pinned to CPU 0:** the directory lists `cpu0` alone, under a read-only tmpfs, and `htop` draws one meter with no `offline`.
+- **Pinned to CPU 1:** the directory lists `cpu1` alone, but `htop` still draws CPU 0 as offline, since it sizes itself from the highest CPU number.
+- **No cpuset:** the real directory, with no tmpfs.
+
+Before the release, the CPU-0 case drew `1 [ offline ]`. Compile probe 0.2.57-620 and the 600 release: `SELFTEST: PASS`.
+
 ## Part 328: the naming gate covers all of cix-recipes, and that repository's own gates run again (#628, 0.2.57-599)
 
 `test_naming` scanned only cix-recipes' `recipes/` directory. That repository's `test/test_toolchain_policy.c` and README still used the retired name for the build system. The test file had never compiled there: it named a suffix macro from a cix header it did not include. The Makefile's `CC ?= tcc` never applied, because make defines `CC`. So `make test` had failed at its first compile since the move (2026-09-21), and nothing had run it. The scan now covers the whole repository. In cix-recipes, the toolchain gate compiles, reads CPDL only, and lists the 41 gcc packages the corpus has, where its list had 32. `test_recipe_hygiene`, which checked only shell recipes, is removed. The `secrets` check allows the placeholder two immutable changelogs quote. The release recipe's test floor reads the corpus at `34dcb239`.
