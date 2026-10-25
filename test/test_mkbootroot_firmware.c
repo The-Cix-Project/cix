@@ -277,9 +277,7 @@ int main(void)
 	 * from the ISO, where it is also present. Only the installed host is
 	 * missing it, and only at runtime.
 	 *
-	 * Kept in sync by hand with the *_BIN defines across daemon/include
-	 * and daemon/src (grep for '_BIN "'). modprobe/modinfo are
-	 * deliberately absent: they come from the operator's own
+	 * modprobe/modinfo are deliberately absent: they come from the operator's own
 	 * kmod_bin_dir argument rather than this fixed table, and are
 	 * asserted directly above.
 	 */

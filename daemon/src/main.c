@@ -2110,30 +2110,6 @@ static int mount_or_fail(const char *source, const char *target, const char *fst
 }
 
 /*
- * Only reached with --init-mode, i.e. cixd running as PID 1 on a bare
- * kernel boot with no initramfs (Phase 11) -- nothing else has mounted
- * /proc, /sys, or cgroup2 yet. devtmpfs is populated by the kernel itself
- * (CONFIG_DEVTMPFS_MOUNT) before init ever runs, so /dev needs no mount
- * here. Same proc mount flags mountns_pivot() already uses for each
- * container's own /proc (src/mountns.c) -- one already-correct flag set,
- * not a second one invented.
- *
- * BASE_DIR is the real cix-containers partition (CONTAINERS_DEVICE) --
- * everything a running daemon persists (images/, containers/,
- * networks.json, dns_records.json, pki_certs.json, pkg_installed.json)
- * genuinely survives a real reboot, not just a plain daemon restart
- * within the same still-running kernel. Falls back to a tmpfs at the
- * same mount point when that device doesn't exist (parts 1/2's own
- * throwaway 2/3-partition test disks): a real, deliberate exception
- * for "not a real installed system," same posture as CONFIG_DEVICE's
- * own non-fatal mount below, not a bug in that fallback path. This
- * was originally meant to land in Phase 11 part 3 (the installer
- * already formats and names this partition for exactly this purpose)
- * but the swap itself never actually happened until now -- see
- * ADR-0018.
- */
-
-/*
  * Part 3 (bare-metal-readiness plan, ADR-0061): loads a curated,
  * boot-critical module list via the real, freshly-staged
  * /usr/bin/modprobe (kmod.recipe, staged onto this control-plane
@@ -2593,6 +2569,29 @@ static void resolve_platform_devices(void)
 	}
 }
 
+/*
+ * Only reached with --init-mode, i.e. cixd running as PID 1 on a bare
+ * kernel boot with no initramfs (Phase 11) -- nothing else has mounted
+ * /proc, /sys, or cgroup2 yet. devtmpfs is populated by the kernel itself
+ * (CONFIG_DEVTMPFS_MOUNT) before init ever runs, so /dev needs no mount
+ * here. Same proc mount flags mountns_pivot() already uses for each
+ * container's own /proc (src/mountns.c) -- one already-correct flag set,
+ * not a second one invented.
+ *
+ * BASE_DIR is the real cix-containers partition (CONTAINERS_DEVICE) --
+ * everything a running daemon persists (images/, containers/,
+ * networks.json, dns_records.json, pki_certs.json, pkg_installed.json)
+ * genuinely survives a real reboot, not just a plain daemon restart
+ * within the same still-running kernel. Falls back to a tmpfs at the
+ * same mount point when that device doesn't exist (parts 1/2's own
+ * throwaway 2/3-partition test disks): a real, deliberate exception
+ * for "not a real installed system," same posture as CONFIG_DEVICE's
+ * own non-fatal mount below, not a bug in that fallback path. This
+ * was originally meant to land in Phase 11 part 3 (the installer
+ * already formats and names this partition for exactly this purpose)
+ * but the swap itself never actually happened until now -- see
+ * ADR-0018.
+ */
 static int boot_init(void)
 {
 	int rtfd;
@@ -11908,7 +11907,7 @@ static const char *iso_child_failure_what(int status)
 /*
  * Reads the version out of a minisign signature's trusted comment.
  *
- * The file's third line is "trusted comment: cix installer iso, vX.Y.Z"
+ * The file's third line is "trusted comment: cix installer iso, 0.2.57-NNN"
  * -- this project's own wording, written by sign_finished_iso(). A
  * signature that does not carry it (someone else's, or a future format
  * change) simply yields nothing rather than a guess.

@@ -802,11 +802,11 @@
 					regenerable from recipes and sources, unlike state or logs.</p>
 
 				<h3>Backup and swap</h3>
-				<p class="hint">Two more placements live on their own pages, and are linked rather than
+				<p class="hint">Two more placements live beside what they place, and are linked rather than
 					repeated here &mdash; one control in two places is one that drifts.
-					<a href="#backup">Maintenance &gt; Backup</a> chooses the disk automatic snapshots are
-					written to; <a href="#host-swap">Host &gt; Swap</a> chooses the disk the swap file lives
-					on (ADR-0169).</p>
+					<a href="#backup">Storage &gt; System Backup</a> chooses the disk automatic snapshots are
+					written to; <a href="#host-swap">Host &gt; Configuration &gt; Swap</a> chooses the disk
+					the swap file lives on (ADR-0169).</p>
 			</div>
 		</div>
 
@@ -2323,7 +2323,7 @@
 				<tbody id="vd-snapshots-body"></tbody>
 			</table>
 			<p class="hint">Snapshots go to the disk carrying the <code>backup</code> role, configured
-				under <a href="#volume-backup-config">System &gt; Maintenance &gt; Volume Backups</a>.
+				under <a href="#volume-backup-config">Storage &gt; Volume Backups</a>.
 				Restoring <strong>replaces</strong> everything currently in the volume, and is always
 				refused while a container mounting it is running.</p>
 			<p class="hint">The middle setting above decides whether this volume is ever actually

@@ -1039,12 +1039,12 @@ int main(int argc, char **argv)
 	kmod_bin_dir = argv[8];
 	/*
 	 * Part D (from-source host-tools bootstrap, ADR-0078): the rootfs of
-	 * the cix-hosttools image -- when given, the host_tool_bins[] below
-	 * (btrfs and mksquashfs) are copied from THIS tree instead
-	 * of the build host. "" keeps the build-host source, the same
-	 * tolerant default firmware_dir/modules_dir/kmod_bin_dir above
-	 * already established. tar, gzip, xz and bzip2 are not staged at
-	 * all (cix#569).
+	 * the cix-hosttools image, which every program in
+	 * include/controlplane_programs.h is copied from. Unlike the
+	 * arguments above it is required: "" is refused where the programs
+	 * are staged (cix#350), because there is no build-host source to
+	 * fall back to. tar, gzip, xz and bzip2 are not staged at all
+	 * (cix#569).
 	 */
 	host_tools_dir = argv[9];
 

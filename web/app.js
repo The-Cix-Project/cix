@@ -1456,8 +1456,8 @@ updateAuthUi();
  * startLiveRead(), ADR-0339 phase 2). The two are kept apart -- serverLogs is
  * replaced wholesale by each sample, clientLogs is only ever appended to
  * here -- and combined at render time, capped at MAX_LOG_ENTRIES across
- * both (a dedicated Logs page still exists, under System > Server,
- * for browsing/configuring the server's own full history/size cap;
+ * both (the Log Store tab, under Host > Health, browses and
+ * configures the server's own full history and size cap;
  * this panel is a live tail, not a history browser).
  */
 const MAX_LOG_ENTRIES = 300;
