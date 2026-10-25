@@ -2445,6 +2445,18 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 331: a package verification is made in a helper child (#643, 0.2.57-602)
+
+`GET /v1/pkg/verify` stats every recorded file of every installed package and reads every installed header. It did that on the event loop, and on 2026-10-25 held it 8581 ms with 310 packages. The report is now made in `verify_work()`, a helper child, through a new park kind, `PARK_VERIFY`. One runs at a time, four more can wait, and beyond that the answer is 503 with `Retry-After`. `test_blocking_waits` counts the call sites.
+
+**Measured on 192.168.15.95, 2026-10-25, at 0.2.57-602** (slot b, 12 containers running):
+
+- **Cold, just after boot:** 308 packages verified, 200 in 9.74 s. Meanwhile `GET /v1/whoami`, polled every half second, answered in 0.7–3.7 ms.
+- **Six at once:** five answered 200 one after another, in 0.73 s to 3.58 s, and the sixth 503 in 1 ms.
+- **No slow pass** recorded for any of them in `GET /v1/system/stalls`.
+
+The 602 hostbuild ran under 601, so it was also the first hostbuild through #617's restructured completion: it installed with no error and assembled. Compile probe 0.2.57-622 and the 602 release: `SELFTEST: PASS`.
+
 ## Part 330: an install's image version is produced in a helper child (#617, 0.2.57-601)
 
 An install ended by producing its image's next version on the event loop: the snapshot, the merge of the package's files (an upgrade's unlinks first) and the placement. `hibr`'s upgrade in `jumpbox` held the loop 862 ms on 2026-10-23, 834 of them in 203 `unlink()` calls. That work now runs in `image_version_fork()`'s child, which the build-environment composer shares. The daemon records the version, applies the file list the child reports and finishes the install when the child exits ([ADR-0356](../adr/0356-an-installs-image-version-is-produced-in-a-helper-child.md)). One image has one producer at a time. An ordinary install becomes `installed` when its version is recorded. A delete still produces on the loop (#642), and answers 409 while that image's producer runs.

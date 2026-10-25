@@ -10,6 +10,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** the verification report is made in a helper child while the request waits, a new park kind (`PARK_VERIFY`, ADR-0342's one park), one at a time with up to four waiting. Beyond that the answer is 503 with `Retry-After: 5`, and a report that never arrives is a 500. A client that leaves has its verification killed, as a log read's is. `test_blocking_waits` counts the calls to `pkg_write_verify_json()`.
 - **Why:** it stats every recorded file of every installed package and reads every installed header, on the event loop. On 192.168.15.95, 2026-10-25, with 310 packages, it held the loop 8581 ms, and a second call 29 s later 939 ms.
+- **Verified:** compile probe 0.2.57-622 and the 0.2.57-602 release: `SELFTEST: PASS`. 602 is live on 192.168.15.95 (slot b, 12 containers running). Just after boot, a verification of 308 packages answered 200 in 9.74 s, while `GET /v1/whoami`, polled every half second through it, answered in 0.7–3.7 ms. Six sent at once: five answered 200 one after another, in 0.73 s to 3.58 s, and the sixth 503 in 1 ms. `GET /v1/system/stalls` recorded no slow pass for any of them.
 
 ### An install's image version is produced in a helper child (#617)
 
