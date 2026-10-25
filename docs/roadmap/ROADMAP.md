@@ -2445,6 +2445,18 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 330: an install's image version is produced in a helper child (#617, 0.2.57-601)
+
+An install ended by producing its image's next version on the event loop: the snapshot, the merge of the package's files (an upgrade's unlinks first) and the placement. `hibr`'s upgrade in `jumpbox` held the loop 862 ms on 2026-10-23, 834 of them in 203 `unlink()` calls. That work now runs in `image_version_fork()`'s child, which the build-environment composer shares. The daemon records the version, applies the file list the child reports and finishes the install when the child exits ([ADR-0356](../adr/0356-an-installs-image-version-is-produced-in-a-helper-child.md)). One image has one producer at a time. An ordinary install becomes `installed` when its version is recorded. A delete still produces on the loop (#642), and answers 409 while that image's producer runs.
+
+**Measured on 192.168.15.95, 2026-10-25, at 0.2.57-601** (slot a, 12 containers running), in scratch images:
+
+- **Fresh installs:** `zlib` and `xz` installed into an empty image, and each logged `image version … produced in 44 ms` and `34 ms`, `in a helper child`. The image's current version is xz's. The two entries came back with 7 and 296 files.
+- **An upgrade at scale:** `go` 1.24.9-3 upgraded to -4, 6,943 files. Its production took 1,035 ms, in the child. `GET /v1/system/stalls` recorded no slow pass for it.
+- **The one-producer rule:** a `DELETE /v1/pkg/zlib@probe617b` sent while go's version was being produced answered 409, naming ADR-0356. Meanwhile the entry read `building` with `current_stage: install`. zlib stayed installed, and go finished at -4.
+
+The two installs did not overlap, so the wait path, where a second install waits for the first's producer, has not run live; whether a selftest case reaches it was not checked. Compile probe 0.2.57-621 and the 601 release: `SELFTEST: PASS`, `test_blocking_waits` and the floor tests included. The only slow passes in this boot's stall record were two `GET /v1/pkg/verify` calls made while checking: 8,581 ms and 939 ms, filed as #643.
+
 ## Part 329: a container's CPU directory lists only its own CPUs (#363, 0.2.57-600)
 
 procfuse already served a container's own `online`, `present` and `possible`, but a file bind cannot remove a directory. `htop` counts the `cpuN` directories, so a container pinned to CPU 0 drew CPU 1 as offline; the owner's `jump` is such a container. `mountns_pivot()` now puts a read-only tmpfs over `/sys/devices/system/cpu`, holding the kernel's own entries bound in, minus the `cpuN` directories outside the child's affinity ([ADR-0355](../adr/0355-a-containers-cpu-directory-lists-only-its-own-cpus.md)). A container whose affinity covers every CPU keeps the real directory, and any failure detaches the view.
