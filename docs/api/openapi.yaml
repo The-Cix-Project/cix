@@ -11504,12 +11504,12 @@ paths:
 
         The cost is real and is stated rather than waved at. Measured
         on 192.168.15.95 with 202 installed packages: **2.66 s**, and
-        `GET /v1/system/stalls` attributes its worst loop pass of the
-        boot to this endpoint by name. That is below the 5 s stall
-        threshold and above the 750 ms slow-pass one, so a call blocks
-        the control plane for roughly the length of one dashboard poll.
-        Acceptable for a verb an operator runs; not acceptable on a
-        polled path, which is the whole reason it is not on one.
+        with 310 on 2026-10-25: **8.58 s**, each attributed by name in
+        `GET /v1/system/stalls`, because the report was made on the
+        event loop. Since #643 it is made in a helper child while the
+        request waits, one at a time with up to four queued, so a call
+        no longer stops the control plane; when the queue is full the
+        answer is 503 with Retry-After.
 
 
         Reports rather than acts -- the repair is to bump the package
@@ -11526,6 +11526,29 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PkgVerifyReport"
+        "500":
+          description: The verification ran and produced no report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            No verification could start (#643). A verification stats every
+            file of every installed package, so it runs off the daemon's
+            event loop, one at a time with up to 4 more waiting their turn;
+            one arriving beyond that is answered at once. Retry after the
+            header's interval.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                enum: [5]
+              description: Seconds to wait before retrying.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /pkg/cache:
     get:

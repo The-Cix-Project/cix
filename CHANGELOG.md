@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### GET /v1/pkg/verify is answered from a helper child (#643)
+
+- **What changed:** the verification report is made in a helper child while the request waits, a new park kind (`PARK_VERIFY`, ADR-0342's one park), one at a time with up to four waiting. Beyond that the answer is 503 with `Retry-After: 5`, and a report that never arrives is a 500. A client that leaves has its verification killed, as a log read's is. `test_blocking_waits` counts the calls to `pkg_write_verify_json()`.
+- **Why:** it stats every recorded file of every installed package and reads every installed header, on the event loop. On 192.168.15.95, 2026-10-25, with 310 packages, it held the loop 8581 ms, and a second call 29 s later 939 ms.
+
 ### An install's image version is produced in a helper child (#617)
 
 - **What changed:** once a build succeeds, the snapshot of its image, the merge of its files (an upgrade's unlinks first) and the placement of the new version run in a forked child, `image_version_fork()`, which the build-environment composer now shares ([ADR-0356](docs/adr/0356-an-installs-image-version-is-produced-in-a-helper-child.md)). The daemon records the version, applies the file list the child reports and finishes the install when it exits (`pkg_produce_completed()`). One image has one producer at a time: a second install into it waits for the first, and `DELETE /v1/pkg/{name}` in that image or `POST /v1/pkg/bootstrap` for the build sandbox answers 409 meanwhile. The #389 and #553 gates run where production begins, after any wait. An ordinary install becomes `installed` when its version is recorded, not when its build ends, and a production that fails keeps an upgrade on the version it had. The staging tree is `.staging`, without a pid, and the start-up sweep removes leftovers of either spelling.

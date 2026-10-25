@@ -600,6 +600,24 @@ static const char *const g_produce_calls[] = {
 	NULL,
 };
 
+/*
+ * A NINTH COUNTED SET (#643): verifying the installed packages.
+ * pkg_write_verify_json() stats every recorded file of every installed
+ * package and reads every installed header: 8581 ms of loop on
+ * 192.168.15.95 on 2026-10-25, with 310 packages. Its one caller is
+ * verify_work(), the helper child GET /v1/pkg/verify reaches through
+ * verify_ask().
+ */
+static const struct call_budget g_verify_budgets[] = {
+	{ "pkg.c", "pkg_write_verify_json(", 1, "the definition, not a call" },
+	{ "main.c", "pkg_write_verify_json(", 1, "verify_work(), which runs only in a helper child" },
+};
+
+static const char *const g_verify_calls[] = {
+	"pkg_write_verify_json(",
+	NULL,
+};
+
 struct call_set {
 	const char *what;
 	const struct call_budget *budgets;
@@ -641,6 +659,11 @@ static const struct call_set g_call_sets[] = {
 	  "costs as long as the files take, and cixd has one event loop. Produce it through "
 	  "image_version_fork() (ADR-0356), which builds it in a helper child, and record it with "
 	  "image_version_commit() when the child has exited." },
+	{ "package verification", g_verify_budgets,
+	  (int)(sizeof(g_verify_budgets) / sizeof(g_verify_budgets[0])), g_verify_calls,
+	  "Verifying the installed packages stats every file of every one of them, and cixd has "
+	  "one event loop. Ask for it through verify_ask() (#643), which parks the request and "
+	  "makes the report in a helper child." },
 };
 
 #define CALL_SET_COUNT ((int)(sizeof(g_call_sets) / sizeof(g_call_sets[0])))

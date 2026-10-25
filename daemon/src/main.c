@@ -1415,6 +1415,8 @@ enum park_body_answer {
  * park records further down). */
 static enum park_body_answer park_body_take(int *result_fd);
 static enum park_body_answer backup_ask(const char *target, int *result_fd);
+/* #643: and so does a package verification (verify_ask()). */
+static enum park_body_answer verify_ask(int *result_fd);
 static int backup_submit_daemon_job(const char *target);
 
 /* #631: a system update writes the inactive slot in a helper child
@@ -26706,15 +26708,29 @@ static void handle_pkg_drift_get(int fd)
  * "Is any package this host reports as installed actually missing from
  * its image?" The install path refuses to create that state now; this
  * answers it for everything installed before it did.
+ *
+ * #643: the report is made in a helper child while the request waits.
  */
 static void handle_pkg_verify_get(int fd)
 {
-	struct json_writer w;
+	int rfd = -1;
 
-	jw_init(&w);
-	pkg_write_verify_json(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
+	switch (verify_ask(&rfd)) {
+	case PARK_ANSWER_ASK:
+		return; /* parked */
+	case PARK_ANSWER_BUSY:
+		respond_error_hdrs(fd, 503, "Service Unavailable", "Retry-After: 5\r\n",
+		                   "package verifications are busy -- try again shortly", 0);
+		return;
+	case PARK_ANSWER_FAILED:
+		respond_error(fd, 500, "Internal Server Error",
+		              "the package verification ended without a result");
+		return;
+	case PARK_ANSWER_READY:
+	default:
+		break;
+	}
+	respond_json_from_fd(fd, rfd, "the package verification");
 }
 
 static void handle_pkg_cache_delete(int fd)
@@ -33127,6 +33143,7 @@ enum park_kind {
 	PARK_BACKUP,
 	PARK_UPDATE,
 	PARK_BOOTMGR,
+	PARK_VERIFY,
 	PARK_KINDS
 };
 
@@ -33178,7 +33195,9 @@ struct park {
  * and one queued behind would only overwrite what the first staged.
  * handle_system_update() refuses a second with a 409 before it asks.
  * Boot manager installs: the same, one and none waiting (#633), since
- * two would race on BOOTX64.EFI.new.
+ * two would race on BOOTX64.EFI.new. Package verifications: one at a
+ * time and 4 waiting (#643), like a backup -- each stats every file of
+ * every installed package, and two at once would only share the disk.
  */
 struct park_queue {
 	int running_max;
@@ -33194,6 +33213,7 @@ struct park_queue {
 #define LOGREAD_WAIT_MAX 16
 #define KMOD_WAIT_MAX 256
 #define BACKUP_WAIT_MAX 4
+#define VERIFY_WAIT_MAX 4
 static struct park_queue g_park_q[PARK_KINDS] = {
 	[PARK_CRED] = { .running_max = 1, .wait_max = CRED_WAIT_MAX },
 	[PARK_LOGREAD] = { .running_max = LOGREAD_RUNNING_MAX, .wait_max = LOGREAD_WAIT_MAX },
@@ -33201,6 +33221,7 @@ static struct park_queue g_park_q[PARK_KINDS] = {
 	[PARK_BACKUP] = { .running_max = 1, .wait_max = BACKUP_WAIT_MAX },
 	[PARK_UPDATE] = { .running_max = 1, .wait_max = 0 },
 	[PARK_BOOTMGR] = { .running_max = 1, .wait_max = 0 },
+	[PARK_VERIFY] = { .running_max = 1, .wait_max = VERIFY_WAIT_MAX },
 };
 
 static void serve_request(struct conn *cc);
@@ -33210,6 +33231,7 @@ static void kmod_job_done(int exit_status, void *ctx);
 static void backup_done(int exit_status, void *ctx);
 static void update_done(int exit_status, void *ctx);
 static void bootmgr_done(int exit_status, void *ctx);
+static void verify_done(int exit_status, void *ctx);
 
 static struct park *park_new(enum park_kind kind, struct conn *cc)
 {
@@ -33279,7 +33301,8 @@ static void park_abandon(struct park *p)
 {
 	if (p->running) {
 		p->cc = NULL;
-		if ((p->kind == PARK_LOGREAD ||
+		/* A verification (#643) only reads, like a log read. */
+		if ((p->kind == PARK_LOGREAD || p->kind == PARK_VERIFY ||
 		     (p->kind == PARK_BACKUP && p->backup_target[0] == '\0')) &&
 		    p->pid > 0)
 			kill(p->pid, SIGKILL);
@@ -33459,6 +33482,39 @@ static int backup_start(struct park *p)
 	return 0;
 }
 
+/* The helper child of a package verification (#643): the report, into
+ * the memory file the parent made before the fork. It reads the
+ * package table as it was at the fork and the image trees on disk, and
+ * writes nothing the parent reads. */
+static int verify_work(void *arg)
+{
+	struct park *p = arg;
+	struct json_writer w;
+	int rc;
+
+	jw_init(&w);
+	pkg_write_verify_json(&w);
+	rc = cix_write_all(p->memfd, w.buf, w.len);
+	jw_free(&w);
+	return rc == 0 ? 0 : 1;
+}
+
+/* Forks a verification. A memfd, as for a log read: the report names
+ * every package with a finding, and nothing bounds how many. */
+static int verify_start(struct park *p)
+{
+	p->memfd = memfd_create("cix-verify", MFD_CLOEXEC);
+	if (p->memfd < 0)
+		return -1;
+	if (helper_run_pid(verify_work, p, verify_done, p, "a package verification", &p->pid) !=
+	    0) {
+		close(p->memfd);
+		p->memfd = -1;
+		return -1;
+	}
+	return 0;
+}
+
 /* The helper child of a system update (#631): update_stage(), its
  * verdict and its held log lines into the memory file the parent made
  * before the fork. It changes nothing the parent reads; what it writes
@@ -33561,6 +33617,9 @@ static int park_start(struct park *p)
 	case PARK_BOOTMGR:
 		rc = bootmgr_start(p);
 		break;
+	case PARK_VERIFY:
+		rc = verify_start(p);
+		break;
 	case PARK_KMOD:
 	default:
 		rc = kmod_job_start(p);
@@ -33612,7 +33671,7 @@ static void park_unavailable(struct conn *cc, enum park_kind kind)
 	if (kind == PARK_CRED)
 		cc->cred_state = CRED_UNAVAILABLE;
 	else if (kind == PARK_LOGREAD || kind == PARK_BACKUP || kind == PARK_UPDATE ||
-	         kind == PARK_BOOTMGR)
+	         kind == PARK_BOOTMGR || kind == PARK_VERIFY)
 		cc->body_state = PARK_BODY_UNAVAILABLE;
 	else
 		cc->kmod_state = KMODJOB_STATE_UNAVAILABLE;
@@ -33954,6 +34013,30 @@ static void backup_done(int exit_status, void *ctx)
 		backupconfig_record_attempt(exit_status == 0,
 		                            exit_status == 0 ? NULL : "failed to write snapshot to disk");
 	park_body_done(p, exit_status, "a system backup");
+}
+
+/*
+ * #643: a package verification for the request being served. It stats
+ * every recorded file of every installed package and reads every
+ * installed header; on 192.168.15.95 it held the loop 8581 ms, with 310
+ * packages, on 2026-10-25. So it runs in a helper child, like a backup.
+ */
+static enum park_body_answer verify_ask(int *result_fd)
+{
+	enum park_body_answer a = park_body_take(result_fd);
+	struct park *p;
+
+	if (a != PARK_ANSWER_ASK)
+		return a;
+	p = park_new(PARK_VERIFY, g_response_conn);
+	if (p == NULL)
+		return PARK_ANSWER_BUSY;
+	return park_body_submit(p);
+}
+
+static void verify_done(int exit_status, void *ctx)
+{
+	park_body_done(ctx, exit_status, "a package verification");
 }
 
 /* #631: whether a slot is being written now, by a request or the roll. */

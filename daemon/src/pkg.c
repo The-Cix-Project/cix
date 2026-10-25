@@ -16264,6 +16264,11 @@ void pkg_write_json_list(struct json_writer *w)
  * single largest source of event-loop stalls; adding a stat of every
  * file of every package to it would be a self-inflicted outage. This
  * one is a verb an operator runs.
+ *
+ * And a verb an operator runs still held the loop: 8581 ms with 310
+ * packages on 192.168.15.95, 2026-10-25 (#643). So this is called only
+ * from verify_work() in main.c, a helper child, and reads the package
+ * table as the fork left it. test_blocking_waits counts the calls.
  */
 void pkg_write_verify_json(struct json_writer *w)
 {
