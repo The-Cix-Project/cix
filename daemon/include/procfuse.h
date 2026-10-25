@@ -84,12 +84,15 @@
  * already a kernel range list and is the same set /proc/stat's per-cpu
  * lines are filtered to -- so the two views cannot disagree.
  *
- * What this deliberately does NOT fix: `_SC_NPROCESSORS_CONF` counts
- * cpuN DIRECTORIES under /sys/devices/system/cpu, and no file bind can
- * remove a directory. htop takes its meter count from that, which is
- * why it draws a meter for a CPU the container cannot use and marks it
- * offline. Fixing that means serving a synthetic directory in place of
- * the real one, which is a different and much larger job -- see #363.
+ * The cpuN DIRECTORIES are not this server's: no file bind can remove a
+ * directory, and htop counts them, so it drew a meter for a CPU the
+ * container cannot use and marked it offline. mountns_pivot() replaces
+ * the directory itself with one listing only the container's CPUs
+ * (src/mountns.c, mount_own_cpu_dir(), #363). This comment used to say
+ * `_SC_NPROCESSORS_CONF` counts those directories; on this platform's
+ * glibc it does not -- the same container measured `getconf
+ * _NPROCESSORS_CONF` = 1 (192.168.15.95, 2026-10-25), so it reads
+ * `possible`, which this table already serves.
  */
 #define PROCFUSE_FILES                                                         \
 	{                                                                          \

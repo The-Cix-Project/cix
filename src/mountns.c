@@ -1,6 +1,7 @@
 #include "internal.h"
 #include "linux_compat.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -92,6 +93,164 @@ static int mount_container_tmpfs(const char *target, const char *opts, unsigned 
 		return -1;
 	}
 	return mount("tmpfs", target, "tmpfs", flags, full);
+}
+
+#define CPU_SYSFS_DIR "/sys/devices/system/cpu"
+
+/*
+ * Whether `name` is a per-CPU directory ("cpu" and decimal digits, nothing
+ * else -- "cpufreq" and "cpuidle" sit beside them and are not CPUs), and
+ * if so which one.
+ */
+static int cpu_dir_entry_id(const char *name, unsigned long *id)
+{
+	const char *p = name + 3;
+	unsigned long v = 0;
+
+	if (strncmp(name, "cpu", 3) != 0 || *p == '\0')
+		return 0;
+	for (; *p != '\0'; p++) {
+		if (*p < '0' || *p > '9' || v > (ULONG_MAX - 9) / 10)
+			return 0;
+		v = v * 10 + (unsigned long)(*p - '0');
+	}
+	*id = v;
+	return 1;
+}
+
+/* A cpuN entry this process can never run on. */
+static int cpu_dir_entry_hidden(const char *name, const cpu_set_t *allowed)
+{
+	unsigned long id;
+
+	return cpu_dir_entry_id(name, &id) && id < CPU_SETSIZE && !CPU_ISSET((int)id, allowed);
+}
+
+/*
+ * #363: /sys/devices/system/cpu lists only the CPUs this container can
+ * run on.
+ *
+ * procfuse already serves the container's own online/present/possible
+ * (procfuse.h), but a file bind cannot remove a directory, so cpu1/ stayed
+ * listed for a container pinned to CPU 0 -- and htop counts those
+ * directories. Measured on 192.168.15.95, 2026-10-25, a jumpbox container
+ * with cpuset_cpus "0" on a 2-CPU host: online, present and possible read
+ * "0", nproc and both getconf processor counts read 1, /proc/stat had a
+ * cpu0 line only, and htop drew "1 [ offline ]" beside CPU 0.
+ *
+ * So the directory itself is replaced: a tmpfs over it, holding a
+ * placeholder per entry of the real directory with that entry bound onto
+ * it, except the cpuN directories outside this process's affinity. The
+ * child was born into its cgroup (CLONE_INTO_CGROUP) and its affinity is
+ * that cgroup's effective cpuset, which is the set procfuse renders
+ * `online` from and nproc reports, so the three views cannot disagree.
+ * Nothing about any entry is synthesised; a kept entry is the kernel's
+ * own, bound from the fresh sysfs mounted above through an fd taken
+ * before the tmpfs covers it.
+ *
+ * A container whose affinity covers every listed CPU -- every container
+ * without a cpuset, on a host whose CPUs are all online -- keeps the real
+ * directory untouched: the first pass finds nothing to hide and nothing
+ * is mounted. (An offline host CPU is in no task's affinity, so it is
+ * hidden too, which is what procfuse's `online` already says of it.)
+ *
+ * All or nothing. A partial view is worse than the host's, so any failure
+ * after the tmpfs is mounted detaches it, with every bind inside it, and
+ * the container sees the real directory, as it did before this existed.
+ * Only directories and regular files are expected (measured: those are
+ * all the real one holds); anything else aborts rather than guessing.
+ *
+ * The tmpfs is made read-only once populated, so nothing can be created
+ * beside the kernel's entries. Its placeholders are created by this
+ * process, which is already the container's mapped root here
+ * (container.c's setgid/setuid(0) before the pivot), so a user namespace
+ * container can create them.
+ */
+static void mount_own_cpu_dir(void)
+{
+	cpu_set_t allowed;
+	struct dirent *de;
+	DIR *d;
+	int fd, hide = 0, failed = 0;
+
+	CPU_ZERO(&allowed);
+	if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0) {
+		perror("mountns_pivot: sched_getaffinity -- " CPU_SYSFS_DIR " left as the host's");
+		return;
+	}
+	fd = open(CPU_SYSFS_DIR, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (fd < 0)
+		return;
+	d = fdopendir(fd);
+	if (d == NULL) {
+		close(fd);
+		return;
+	}
+	while ((de = readdir(d)) != NULL)
+		if (cpu_dir_entry_hidden(de->d_name, &allowed))
+			hide++;
+	if (hide == 0) {
+		closedir(d);
+		return;
+	}
+
+	if (mount_container_tmpfs(CPU_SYSFS_DIR, "mode=0755", MS_NOSUID | MS_NODEV | MS_NOEXEC) !=
+	    0) {
+		perror("mountns_pivot: mount(tmpfs " CPU_SYSFS_DIR ")");
+		closedir(d);
+		return;
+	}
+
+	rewinddir(d);
+	while (!failed && (de = readdir(d)) != NULL) {
+		char src[PATH_MAX];
+		char dst[PATH_MAX];
+		struct stat st;
+		int pfd;
+
+		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0 ||
+		    cpu_dir_entry_hidden(de->d_name, &allowed))
+			continue;
+		if (snprintf(src, sizeof(src), "/proc/self/fd/%d/%s", fd, de->d_name) >=
+		        (int)sizeof(src) ||
+		    snprintf(dst, sizeof(dst), CPU_SYSFS_DIR "/%s", de->d_name) >= (int)sizeof(dst)) {
+			errno = ENAMETOOLONG;
+			failed = 1;
+			break;
+		}
+		if (fstatat(fd, de->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+			failed = 1;
+			break;
+		}
+		if (S_ISDIR(st.st_mode)) {
+			if (mkdir(dst, 0755) != 0)
+				failed = 1;
+		} else if (S_ISREG(st.st_mode)) {
+			pfd = open(dst, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0444);
+			if (pfd < 0)
+				failed = 1;
+			else
+				close(pfd);
+		} else {
+			errno = EINVAL;
+			failed = 1;
+		}
+		if (!failed && mount(src, dst, NULL, MS_BIND, NULL) != 0)
+			failed = 1;
+		if (failed)
+			fprintf(stderr, "mountns_pivot: own " CPU_SYSFS_DIR " view: %s: %s\n", de->d_name,
+			        strerror(errno));
+	}
+	if (!failed &&
+	    mount(NULL, CPU_SYSFS_DIR, NULL, MS_REMOUNT | MS_BIND | MS_RDONLY | MS_NOSUID | MS_NODEV |
+	                                         MS_NOEXEC,
+	          NULL) != 0) {
+		perror("mountns_pivot: remount " CPU_SYSFS_DIR " read-only");
+		failed = 1;
+	}
+	if (failed && umount2(CPU_SYSFS_DIR, MNT_DETACH) != 0)
+		perror("mountns_pivot: umount2(" CPU_SYSFS_DIR ") after a failed view");
+	closedir(d);
 }
 
 int mountns_pivot(const struct mount_spec *mnt)
@@ -401,6 +560,14 @@ int mountns_pivot(const struct mount_spec *mnt)
 	if (mnt != NULL && mnt->procfuse_dir != NULL && mnt->procfuse_dir[0] != '\0' &&
 	    mnt->procfuse_files != NULL) {
 		int i;
+
+		/*
+		 * Before the binds, which land on online/present/possible
+		 * inside it. Under the same condition: a container that does
+		 * not get its own CPU files does not get its own CPU directory
+		 * either, so what it sees stays the host's throughout.
+		 */
+		mount_own_cpu_dir();
 
 		for (i = 0; i < mnt->procfuse_file_count; i++) {
 			char src[PATH_MAX];

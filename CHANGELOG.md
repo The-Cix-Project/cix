@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container's /sys/devices/system/cpu lists only its own CPUs (#363)
+
+- **What changed:** `mountns_pivot()` replaces `/sys/devices/system/cpu` with a read-only tmpfs holding the kernel's own entries bound in, minus the `cpuN` directories outside the child's affinity ([ADR-0355](docs/adr/0355-a-containers-cpu-directory-lists-only-its-own-cpus.md)). It applies only when the container gets its procfuse files and a CPU is to be hidden; any failure detaches the view and leaves the real directory.
+- **Why:** a `jumpbox` container pinned to CPU 0 on .95 already read `0` from `online`, `present` and `possible`, and 1 from `nproc` and both `getconf` counts, but `cpu1/` was still listed and `htop` drew `1 [ offline ]`. The owner's `jump` has `cpuset=0`.
+- **Corrected:** `procfuse.h` and `docs/api/README.md` said `_SC_NPROCESSORS_CONF` counts the `cpuN` directories. The same container measured `getconf _NPROCESSORS_CONF` = 1, so on this glibc it reads `possible`.
+
 ### test_naming scans the whole cix-recipes repository, and its gates run again (#628)
 
 - **What changed:** `test_naming` scans the cix-recipes repository from its root, skipping `.git`, covering `.cbs`, `.json`, C sources, headers, Markdown and the Makefile. Before, it scanned only `recipes/`. The release and compile-probe recipes pin the corpus at cix-recipes `34dcb239`, which no longer uses the retired name. In cix-recipes: `test_toolchain_policy.c` compiles, reads CPDL only, and lists the 41 gcc packages the corpus has, up from a list of 32. The Makefile builds the gates with `CC = tcc`. The `secrets` check allows the placeholder two published changelogs quote. `test_recipe_hygiene.c` is removed, because it checked only shell recipes. The README names the formats that exist.
