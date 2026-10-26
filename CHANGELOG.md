@@ -6,6 +6,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### btrfs formats again, and test_installer passes on a Cix host (#650, #649)
+
+- **What changed:** libuuid 2.42.2-8 is built with gcc, and cix-hosttools 2.4.6 names it, so the control-plane root carries it once reassembled. test_installer takes its work directory from `$TMPDIR`, checks the management address line cixd prints, boots the installed disk twice without Secure Boot, and reads `state/` from the config partition.
+- **Why:** every btrfs format on a Cix host failed. `mkfs.btrfs` crashed in `rewind(NULL)` inside libuuid's `uuid_generate()`, because the tcc build placed libuuid's thread-local clock state at local-exec TLS offsets. That model is valid only in an executable, and in a shared library those offsets alias the program's own TLS. Measured on 192.168.15.95 with a preloaded `SIGSEGV` handler and libuuid's disassembly (ROADMAP Part 335). CLAUDE.md records the TCC rule.
+- **Verified:** on .95, `storage format vdb6 --fs-type=btrfs` answered `ready` after the reassembly, where it had failed before. `probe-cix-instest@1-6` printed `INSTALLER RESULT: PASS` (348 s). The box's ISO was rebuilt on the fixed root.
+- **Not changed:** test_installer is in no release gate. Other tcc-built shared libraries with thread-local data are #652.
+
 ### The installer ISO is built from the iso-builder image, and test_installer is made to run on a Cix host (#649)
 
 - **What changed:** `POST /v1/system/iso` hands `mkinstalleriso` the `iso-builder` image's current rootfs as its tools root, and logs the image version it used. `mkinstalleriso` reads every ISO tool at its package path beneath that root: `usr/bin`, `usr/sbin/mkfs.fat`, `usr/lib/grub/x86_64-efi`, `usr/share/grub`, `usr/lib/shim` ([ADR-0358](docs/adr/0358-the-installer-iso-is-built-from-the-iso-builder-image.md)). The `isotools` hostbuild is retired. A host with no iso-builder image gets a 400 naming it.
