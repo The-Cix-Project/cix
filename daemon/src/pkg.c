@@ -16688,6 +16688,17 @@ static int delete_mutate(const char *staging_rootfs, void *ctx_v)
  * artifact directory is the one outcome worse than either extreme:
  * the record says gone, the bytes say deployable, and nothing says
  * which.
+ *
+ * Two functions, one per process. remove_hostbuild_artifacts() deletes
+ * the tree, and runs only in an uninstall's producer child
+ * (delete_mutate(), ADR-0357). discard_hostbuild_artifacts() runs on
+ * the event loop, for a failed entry cleared at once (#644): it sets
+ * the directory aside with one rename and ADR-0341's queue deletes it
+ * in a helper child. The child cannot use the queue, which is the
+ * daemon's memory and registers on its epoll. The rename is also all
+ * that removal needs to mean here: the path is empty the moment it
+ * returns, and a rename either happens or does not, so the loop's path
+ * cannot leave a half-removed directory.
  */
 static int remove_hostbuild_artifacts(const char *name, char *out_err, size_t err_size)
 {
@@ -16701,6 +16712,19 @@ static int remove_hostbuild_artifacts(const char *name, char *out_err, size_t er
 		return 0;
 	}
 	if (persist_remove_tree(artifact_dir) != 0) {
+		snprintf(out_err, err_size, "%s", strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+static int discard_hostbuild_artifacts(const char *name, char *out_err, size_t err_size)
+{
+	char artifact_dir[PATH_MAX];
+
+	snprintf(artifact_dir, sizeof(artifact_dir), "%s/%s", g_artifacts_dir, name);
+	/* 0 when the directory was never there, too. */
+	if (rootfs_discard(name, artifact_dir, g_artifacts_dir) != 0) {
 		snprintf(out_err, err_size, "%s", strerror(errno));
 		return -1;
 	}
@@ -16893,10 +16917,11 @@ static enum pkg_error delete_start(const char *name, const char *image, int is_s
 		 * something and then died. Those bytes are consumed by path
 		 * like any other, so leaving them is the same bug in its
 		 * worst form: output from a build that is on record as having
-		 * failed.
+		 * failed. This runs on the event loop, so the directory is set
+		 * aside rather than deleted here (#644).
 		 */
 		if (strcmp(normalize_image(image), PKG_HOSTBUILD_IMAGE) == 0 &&
-		    remove_hostbuild_artifacts(name, rmerr, sizeof(rmerr)) != 0) {
+		    discard_hostbuild_artifacts(name, rmerr, sizeof(rmerr)) != 0) {
 			logstore_write("cixd", "error",
 			               "pkg delete: %s: could not remove the artifact directory: %s -- the "
 			               "package record was left in place so the two do not disagree",

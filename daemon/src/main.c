@@ -14585,8 +14585,8 @@ static void rootfs_discard_done(int exit_status, void *ctx)
 
 	if (exit_status != 0)
 		logstore_write("cixd", "warn",
-		                "could not delete %s, set aside when it stopped being a container's "
-		                "rootfs -- the next daemon start tries again",
+		                "could not delete %s, set aside to be deleted -- the next daemon "
+		                "start tries again",
 		                job->entry);
 	free(job);
 	g_rootfs_discard_running--;
@@ -14651,7 +14651,9 @@ static void rootfs_discard_entry(const char *trash, const char *leaf, char *out,
  * rename cannot cross one: CONTAINER_ROOTFS_DIR for a rootfs, and the
  * container root for anything in a container's base. Keeping the trash
  * at those two levels, never inside a base, is what lets a base itself
- * be set aside, and lets the sweeps find every entry.
+ * be set aside, and lets the sweeps find every entry. Two more trash
+ * parents have their own sweep: IMAGES_DIR (ADR-0343) and ARTIFACTS_DIR,
+ * for a failed hostbuild's artifact directory (#644).
  *
  * 0 when nothing is left at `path`: it was absent, or it is now in the
  * trash. A delete that cannot be queued is not a failure of this call
@@ -39398,6 +39400,7 @@ static int cixd_main(int argc, char **argv)
 	rootfs_discard_sweep(CONTAINER_ROOTFS_DIR);
 	rootfs_discard_sweep(CONTAINERS_DIR);
 	rootfs_discard_sweep(IMAGES_DIR); /* ADR-0343 */
+	rootfs_discard_sweep(ARTIFACTS_DIR); /* #644: a failed hostbuild's output */
 	pki_set_key_source(keypool_take); /* ADR-0353 */
 	containerdef_autostart_all();
 	rearm_roll_watches(); /* ADR-0323 answer 4 */

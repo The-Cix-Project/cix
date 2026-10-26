@@ -13,7 +13,8 @@
  * The definition stays in main.c beside the queue and helper_run(),
  * the way daemonpaths.h makes main.c's paths visible. pkg.c is the
  * second caller (#626): a build slot's previous tree goes the same way
- * a deleted container's base does. Never add a second delete queue.
+ * a deleted container's base does, and so does a failed hostbuild's
+ * artifact directory (#644). Never add a second delete queue.
  */
 int rootfs_discard(const char *name, const char *path, const char *trash_parent);
 

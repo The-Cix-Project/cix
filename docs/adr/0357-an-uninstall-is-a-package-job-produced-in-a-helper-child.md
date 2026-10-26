@@ -47,5 +47,5 @@ The rolling drain calls the delete too. `converge_uninstall_strays()` (ADR-0330)
 - With the ceiling at 10, as on 192.168.15.95, a delete is refused while ten jobs are in flight, and a build start is refused while nine builds and an uninstall are. Neither was possible before.
 - The drain takes one pass per stray, each after the previous uninstall's exit, rather than all in one pass.
 - After a request's uninstall, the retention pass now runs for its image when no job is left, as it does after an install. Before, the mark a delete left waited for the next job to end.
-- Clearing a failed hostbuild's partial artifact directory still runs on the loop (#644). It was not measured.
+- Clearing a failed hostbuild's partial artifact directory still ran on the loop (#644). It was not measured. *Corrected 2026-10-26:* since #644 it is set aside with one rename and deleted by ADR-0341's queue.
 - Renaming an image while a job for it is producing is not refused, as it was not for an install under ADR-0356. Read from the code and not run: the job records by the old name, so it should fail with the entry left installed.
