@@ -2462,6 +2462,7 @@ TCC compiles `__thread` in a shared library with the local-exec TLS model, which
     - openldap-client 2.6.14-7 is therefore gcc too.
     - 0.9.13-13 builds as `gnu17`, because gcc 16 defaults to C23, where `cfg.c`'s parameter named `bool` is a keyword.
   - **jumpbox 2.9.9** carries nss-pam-ldapd 0.9.13-13, openldap-client 2.6.14-7 and libuuid 2.42.2-8. jumpbox had still held the defective 2.42.2-7.
+  - **`base` and `probe-cu`** also held 2.42.2-7. Both are manual images and were upgraded by hand, so every libuuid row in `pkg ls` now reads 2.42.2-8.
   - `probe-tlssig@3-1`: both gcc libraries now carry a DTPMOD64 and import `__tls_get_addr`.
   - jump rolled to image version 87e1ec112a0f and stayed up past its 300 s probation, with nslcd and sshd running. An LDAP login was not tried, because jump is not a test target.
 - **The release:** compile probe 0.2.57-630 and the 0.2.57-607 release printed `test_elfcheck_gcc PASS`, `test_installer PASS` and `SELFTEST: PASS`. The test builds the same `__thread` source three ways: tcc `-shared` is refused, while gcc `-fPIC` and a tcc executable are accepted. It also runs the check over every shared object in its build container. 607 booted (slot b, 12 containers running).
