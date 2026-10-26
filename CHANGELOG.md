@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### test_installer gates every release, and the isotools recipes are gone (#649)
+
+- **What changed:** `test_installer` is in `BOOT_SELFTESTS`, so every release builds an installer ISO, installs it twice under qemu and OVMF, and boots the installed disk twice before it ships. `selftest` builds the binaries the test runs (cix-install, cix-recover, cix-xorriso). The cix release recipe and the compile probe declare the ISO toolchain (grub, sbsigntools, xorriso, mokutil, shim, efivar, keyutils, libxcrypt) and libuuid 2.42.2-8 as tools, and give the selftest a `TMPDIR` on disk. Both were the owner's decisions of 2026-10-26. The isotools recipes are removed from cix-recipes (a9611ef) and from .95's store.
+- **Cost:** about 6 minutes a release (348 s in probe-cix-instest@1-6).
+- **Verified:** compile probe 0.2.57-628 and the 0.2.57-606 release ran `test_installer` in the gate: `PASS`, `SELFTEST: PASS`. 606 is live on 192.168.15.95 (slot a, 12 containers running). `GET /v1/pkg/recipes/isotools` answers 404.
+
 ### btrfs formats again, and test_installer passes on a Cix host (#650, #649)
 
 - **What changed:** libuuid 2.42.2-8 is built with gcc, and cix-hosttools 2.4.6 names it, so the control-plane root carries it once reassembled. test_installer takes its work directory from `$TMPDIR`, checks the management address line cixd prints, boots the installed disk twice without Secure Boot, and reads `state/` from the config partition.
