@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The installer ISO is built from the iso-builder image, and test_installer is made to run on a Cix host (#649)
+
+- **What changed:** `POST /v1/system/iso` hands `mkinstalleriso` the `iso-builder` image's current rootfs as its tools root, and logs the image version it used. `mkinstalleriso` reads every ISO tool at its package path beneath that root: `usr/bin`, `usr/sbin/mkfs.fat`, `usr/lib/grub/x86_64-efi`, `usr/share/grub`, `usr/lib/shim` ([ADR-0358](docs/adr/0358-the-installer-iso-is-built-from-the-iso-builder-image.md)). The `isotools` hostbuild is retired. A host with no iso-builder image gets a 400 naming it.
+- **Why:** on 192.168.15.95 on 2026-10-26, `pkg hostbuild isotools` failed at its first `copy "/usr/bin/grub-mkrescue"`: cbs v0.1.107 confines `copy` and answered EPERM. The contract route, `stage file` and `stage tree`, cannot reach `/usr/sbin` or `/usr/share`. No isotools artifact is in the cache, so no host could rebuild one. The iso-builder image already holds every package isotools copied.
+- **test_installer:** no longer copies a Debian machine's grub, shim and mokutil; its tools root is `/`, its composed build environment. It boots Cix's `OVMF_VARS.fd` instead of Debian's `_4M` files, finds `btrfs` at `/usr/sbin` and signs with a throwaway pair made per run, so it needs no release key. The Secure Boot sessions (the MOK confirmation and the two enforced boots) are gone until a Secure Boot OVMF build exists (#647). The installed disk is booted twice without it, and the install no longer forces a MOK enrollment that shim would act on.
+- **A NIC under qemu on a Cix host:** `test_disk_image.c` attaches its virtio NIC with `romfile=` (empty), so qemu loads no option ROM. Cix's qemu ships none of qemu's prebuilt ROMs. A guest booted from disk or `-kernel` drives the NIC with its own `virtio_net`.
+- **Not changed:** the tools still run off the control-plane root with `PATH` and `LD_LIBRARY_PATH` pointed into the tools root (ADR-0154). The isotools recipes are still in cix-recipes.
+
 ### A failed hostbuild's artifact directory leaves through the discard queue (#644)
 
 - **What changed:** clearing a failed `@__hostbuild` entry sets its artifact directory aside into `<artifacts>/.discard` with one rename, and ADR-0341's queue deletes it in a helper child (`discard_hostbuild_artifacts()` in `daemon/src/pkg.c`). It was an rmtree on the event loop. The daemon's start sweeps `<artifacts>/.discard` as it sweeps the other three trash directories. An installed hostbuild's uninstall still deletes the directory in its producer child (ADR-0357), which cannot use the daemon's queue.

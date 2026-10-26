@@ -13,7 +13,7 @@ cixctl pkg hostbuild cix --upgrade --deploy
 cixctl reboot
 ```
 
-`cix` is a hostbuild package. `pkg hostbuild cix --upgrade` fetches the signed artifact from the artifact cache when one is published there, and builds only when it is not ([ADR-0289](../adr/0289-a-hostbuild-package-is-consumed-from-the-cache-like-any-other.md)). `kernel` and `isotools` work the same way. `--deploy` waits for the result and writes it to the inactive A/B slot with `update`. It does not reboot.
+`cix` is a hostbuild package. `pkg hostbuild cix --upgrade` fetches the signed artifact from the artifact cache when one is published there, and builds only when it is not ([ADR-0289](../adr/0289-a-hostbuild-package-is-consumed-from-the-cache-like-any-other.md)). `kernel` works the same way. `--deploy` waits for the result and writes it to the inactive A/B slot with `update`. It does not reboot.
 
 Writing and booting are separate steps, as for a kernel update, and the newly booted daemon confirms the slot itself once it is healthy (see [how A/B updates work](kernel-build-and-ab-updates.md#background-how-ab-kernel-updates-work-here); root and kernel share the slot and its boot counter). To write a squashfs you already have, use `update` directly. An installed host has no shell, so the daemon fetches the image itself:
 

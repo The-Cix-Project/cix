@@ -98,7 +98,7 @@
  *     not optional for us: grub_util_get_pkglibdir() reads no
  *     environment variable (unlike pkgdatadir, which is how the font
  *     lookup was redirected), so -d is the only way to point it at the
- *     isotools artifact.
+ *     tools root's module tree (ADR-0358).
  *   - Patching grub's source would mean carrying a modification to
  *     unmodified upstream code across every future version.
  *

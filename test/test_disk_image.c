@@ -451,21 +451,23 @@ enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char
 		qemu_argv[argc++] = disk2_arg;
 	}
 	/*
-	 * with_nic CANNOT RUN on a Cix host yet, for the same reason the
-	 * -vga none above exists: qemu loads a NIC's option ROM at
-	 * startup, Cix's `qemu` package ships none of qemu's prebuilt
-	 * firmware, and so `failed to find romfile "efi-virtio.rom"`
-	 * exits 1 before any guest runs. libslirp IS packaged and slirp
-	 * IS enabled in qemu@11.1.2-9, so -netdev user itself is fine --
-	 * it is the device's ROM that is missing, which cix#587 tracks.
-	 * Measured on 192.168.15.95, 2026-10-09 (probe-qemu-boot@3-1 hit
-	 * the identical failure for e1000e).
+	 * romfile= (empty) tells qemu to load no option ROM for the NIC.
+	 * Without it, qemu loads one at startup, Cix's `qemu` package ships
+	 * none of qemu's prebuilt firmware, and `failed to find romfile
+	 * "efi-virtio.rom"` exits 1 before any guest runs (192.168.15.95,
+	 * 2026-10-09; probe-qemu-boot@3-1 hit the same for e1000e). The ROM
+	 * is only the firmware's network-boot driver: these guests boot from
+	 * disk or -kernel, and Linux drives the NIC with its own virtio_net
+	 * (CONFIG_VIRTIO_NET=y). A guest that boots from the network still
+	 * needs the ROM built from source, which is cix#587. libslirp IS
+	 * packaged and slirp IS enabled in qemu@11.1.2-9, so -netdev user
+	 * itself is fine.
 	 */
 	if (opts->with_nic) {
 		qemu_argv[argc++] = "-netdev";
 		qemu_argv[argc++] = "user,id=n0";
 		qemu_argv[argc++] = "-device";
-		qemu_argv[argc++] = "virtio-net-pci,netdev=n0";
+		qemu_argv[argc++] = "virtio-net-pci,netdev=n0,romfile=";
 	} else {
 		/*
 		 * And without one, q35 still makes its default e1000e, whose

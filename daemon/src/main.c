@@ -9954,6 +9954,14 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
 #define HOST_TOOLS_IMAGE "cix-hosttools"
 
 /*
+ * ADR-0358: the image holding the ISO toolchain (grub, shim, mokutil,
+ * sbsigntools, xorriso, mtools, dosfstools and their libraries). Its
+ * current version's rootfs is the tools root POST /v1/system/iso hands
+ * mkinstalleriso, as HOST_TOOLS_IMAGE's is mkbootroot's.
+ */
+#define ISO_BUILDER_IMAGE "iso-builder"
+
+/*
  * #30, extending ADR-0029: the well-known name of the image holding
  * device firmware, resolved and staged the same way HOST_TOOLS_IMAGE
  * above is -- an operator builds it with ordinary `pkg install
@@ -10836,8 +10844,8 @@ static int action_system_roll(const char *params, char *reason, size_t reason_si
  * ISO assembly is explicitly, separately triggered -- it has real
  * inputs of its own (the target's disk/ip/prefix/gateway/interface)
  * a hostbuild completion has no way to supply, and reuses whatever the
- * most recent "cix"/"kernel"/"isotools" hostbuild rounds already
- * harvested rather than forcing a fresh rebuild of any of them.
+ * most recent "cix"/"kernel" hostbuild rounds harvested and the
+ * iso-builder image holds, rather than forcing a fresh rebuild.
  *
  * Only one ISO build is ever in flight at a time (the same v1 single-
  * job constraint pkg.c's own install/hostbuild pipeline already has) --
@@ -11572,7 +11580,7 @@ static int iso_disk_guid_derive(const char *version, char *out, size_t out_size)
 
 /*
  * Validates every real precondition (the "cix"/"kernel" hostbuild
- * artifacts, the "isotools" hostbuild artifact, and the operator-
+ * artifacts, the iso-builder image (ADR-0358), and the operator-
  * populated signing key pair at SIGNING_KEYS_DIR) up front, so a
  * missing one fails the POST itself with a specific, actionable
  * message -- never a background failure the caller has to poll for
@@ -11595,6 +11603,7 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	char bzimage_path[PATH_MAX];
 	char squashfs_path[PATH_MAX];
 	char isotools_root[PATH_MAX];
+	char iso_tools_version[IMAGE_VERSION_MAX];
 	char seed_dir[PATH_MAX];
 	char signing_key[PATH_MAX];
 	char signing_cert_pem[PATH_MAX];
@@ -11643,7 +11652,7 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	    {cix_boot_bin, "cix-boot.efi (from a \"cix\" hostbuild, ADR-0215)", 0},
 	    {bzimage_path, "bzImage (from a \"kernel\" hostbuild)", 0},
 	    {squashfs_path, "cixd-root.squashfs (assembled after a \"cix\" hostbuild)", 1},
-	    {isotools_root, "isotools artifact directory (from an \"isotools\" hostbuild)", 0},
+	    {isotools_root, "the " ISO_BUILDER_IMAGE " image's rootfs (ADR-0358)", 0},
 	    {signing_key, "signing key (operator-provided at SIGNING_KEYS_DIR)", 0},
 	    {signing_cert_pem, "signing cert .crt (operator-provided at SIGNING_KEYS_DIR)", 0},
 	    {signing_cert_der, "signing cert .cer (operator-provided at SIGNING_KEYS_DIR)", 0},
@@ -11659,7 +11668,18 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	snprintf(cix_boot_bin, sizeof(cix_boot_bin), "%s/cix/cix-boot.efi", ARTIFACTS_DIR);
 	snprintf(bzimage_path, sizeof(bzimage_path), "%s/kernel/bzImage", ARTIFACTS_DIR);
 	snprintf(squashfs_path, sizeof(squashfs_path), "%s/cixd-root.squashfs", BOOTROOT_DIR);
-	snprintf(isotools_root, sizeof(isotools_root), "%s/isotools", ARTIFACTS_DIR);
+	/* ADR-0358: the image's current version, resolved now; the version
+	 * rootfs it names is immutable, so the build reads one version. */
+	if (image_current_version(ISO_BUILDER_IMAGE, iso_tools_version, sizeof(iso_tools_version)) !=
+	    IMAGE_OK) {
+		snprintf(err_msg, err_msg_size,
+		         "no %s image with a current version -- it holds the ISO toolchain (ADR-0358); "
+		         "create it with POST /v1/images and install its recipe's packages",
+		         ISO_BUILDER_IMAGE);
+		return -1;
+	}
+	image_version_rootfs_path(ISO_BUILDER_IMAGE, iso_tools_version, isotools_root,
+	                          sizeof(isotools_root));
 	snprintf(signing_key, sizeof(signing_key), "%s/cix-signing.key", SIGNING_KEYS_DIR);
 	snprintf(signing_cert_pem, sizeof(signing_cert_pem), "%s/cix-signing.crt", SIGNING_KEYS_DIR);
 	snprintf(signing_cert_der, sizeof(signing_cert_der), "%s/cix-signing.cer", SIGNING_KEYS_DIR);
@@ -11933,6 +11953,10 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	register_iso_assemble_pidfd(pid, pidfd);
 	g_iso_build_state = ISO_BUILD_BUILDING;
 	g_iso_build_error[0] = '\0';
+	/* ADR-0358: the toolchain's version, which the isotools artifact's
+	 * own version used to say. */
+	logstore_write("cixd", "info", "iso: building with the ISO toolchain from image %s version %s",
+	               ISO_BUILDER_IMAGE, iso_tools_version);
 	return 0;
 }
 

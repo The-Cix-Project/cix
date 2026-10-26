@@ -50,6 +50,8 @@ Stated by the owner on 2026-09-17, in these words: *"Nothing runs in the sandbox
 
   **A TWENTY-THIRD on 2026-10-26, at the other end of a command: `sed -i 's/^\tpid_t pid;\n\tint pidfd, chain_idx;$//'` appended after two guarded `sed -i` deletes in main.c (#642).** No interpreter ran, and it changed nothing, because sed matches one line at a time and a `\n` in the pattern can never match. It was a half-formed edit that belonged to the Edit tool, written into the same command as the real work instead. The advisor caught it in review. Same instruction: re-read the command string before sending it.
 
+  **A TWENTY-FOURTH the same day, the same shape: `s/"could not extract ... after session 4\\n");\n\t\t\tok = 0;/X/`, a no-op substitution appended to a `sed -i` renumbering test_installer.c.** I noticed it in the output, which is not the same as reading the command before it ran.
+
   **A TWELFTH on 2026-10-09, the stray prefix again: `python3 --version 2>/dev/null;` in front of a `cat` heredoc.** Its output was discarded, the `cat` did the whole job, and nothing in the task wanted a language runtime. Same shape as the seventh, eighth, ninth and eleventh. What is new is only where it sat: in the middle of writing THIS FILE, in a command whose entire purpose was to record durable findings — including, three bullets later, a note about reading a command before sending it. So the session that documents the defence committed the defect while documenting it, which is the eighth data point for the sentence already here: writing a rule, restating a rule and sharpening a rule are the same non-action. The instruction does not change and does not want changing: **re-read the command string, token by token, before sending, and delete every token that is not doing work.** Twelve data points say that sentence is not self-executing.
 
   **A THIRTEENTH on 2026-10-10: `python3 --version 2>/dev/null;` in front of a two-part `sed -i` on a test file.** Output discarded, the `sed` did the whole job, and the task wanted no runtime. It adds no new SHAPE -- it is the seventh and eighth exactly -- and that is the only thing worth recording about it: thirteen data points, one unchanging instruction, and the instruction has never once been what failed. What failed every time is the half-second of reading the string back. Context, for whatever it is worth: it happened mid-way through a careful piece of work that was going well -- hunting a parser bug with probe-measured evidence, having just found the exact broken line -- which is the eleventh's context too. So the correlation is not fatigue or ignorance but ATTENTION BEING ELSEWHERE, and a command assembled while thinking about something else carries whatever was in the fragment. **Re-read the command string, token by token, before sending, and delete every token that is not doing work.**
@@ -428,6 +430,14 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **The refusal belongs to the request, not to `pkg_install_start()`.** Dependencies, hostbuild, build environments, image-recipe apply and the rolling drain pass images the daemon chose; do not move the check down into them.
 - **A test that installs into its own image creates it first** (`create_image()` in `test_pkg`; the loop in `test_pkg_cache`). An omitted image is `base`, which the daemon creates at boot.
 
+
+## The installer ISO's tools come from the iso-builder image
+
+**`POST /v1/system/iso` hands `mkinstalleriso` the `iso-builder` image's current rootfs, and `mkinstalleriso` reads every ISO tool at its package path beneath it** -- [ADR-0358](docs/adr/0358-the-installer-iso-is-built-from-the-iso-builder-image.md), the owner's choice of 2026-10-26 over keeping the isotools package.
+
+- **There is no isotools artifact.** Never reintroduce a package whose content is a copy of other packages' files. cbs refuses `copy` from `/usr` by design, and that is the contract, not a gap to route around.
+- **A tool the ISO needs belongs in the iso-builder image's recipe**, which is `recipe: follow` on .95.
+- **In a composed build the tools root is `/`**, as it is for mkbootroot's host-tools root. A test that builds an ISO declares the ISO packages as tools.
 
 ## One package owns a path
 

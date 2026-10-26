@@ -44,7 +44,7 @@ sudo build/mkinstalleriso build/iso_stage build/cix-install build/cix-recover \
      image/keys/cix-signing.key image/keys/cix-signing.crt image/keys/cix-signing.cer \
      build/cix-install.iso \
      "" \
-     /path/to/isotools-artifact \
+     /path/to/iso-builder-rootfs \
      /path/to/seed \
      /path/to/kernel-hostbuild-artifact/lib/modules \
      /path/to/kmod-usr-bin \
@@ -57,7 +57,7 @@ sudo build/mkinstalleriso build/iso_stage build/cix-install build/cix-recover \
 - **modules dir** and **kmod bin dir**: see **Kernel modules** below; `""` skips them.
 - **host-tools rootfs**: the rootfs of the `cix-hosttools` image (ADR-0078). **Required** — every program and every library in the root comes from it, and `""` is refused, because a root with no `cbs` cannot install a package and a root with no `mksquashfs` cannot assemble its own successor. It was a tolerant default until cix#350 ([ADR-0337](../adr/0337-the-root-is-derived-from-one-list-with-no-build-host-fallback.md)), and what the fallback actually did was copy the assembling host's own files — which on a Cix host is the running control-plane root, so each assembly carried the previous one's forward indefinitely.
 
-`mkinstalleriso` takes sixteen. The last five are worth a word. **isotools-root** is the harvested `isotools` hostbuild artifact (ADR-0064) holding `grub-mkrescue`, `xorriso`, `sbsign`, `mokutil`, shim and their libraries. It is an argument so this tool can run on a Cix host, which has none of those at Debian's paths.
+`mkinstalleriso` takes sixteen. The last five are worth a word. **isotools-root** is a rootfs with the ISO toolchain's packages installed: on a host, the `iso-builder` image's ([ADR-0358](../adr/0358-the-installer-iso-is-built-from-the-iso-builder-image.md)). `mkinstalleriso` reads `grub-mkrescue`, `xorriso`, `sbsign`, `mokutil`, shim, `mkfs.fat` and their libraries at their package paths beneath it. It is an argument because the control-plane root carries none of them.
 
 **kernel-modules-dir** and **kmod-bin-dir** are the same two inputs `mkbootroot` takes, and here they supply the installer's NIC drivers (#429). The six NIC drivers this platform supports are kernel *modules*, so without them `cix-install` can list only interfaces whose driver is built into the kernel, which in practice is `virtio_net` alone. Only the NIC modules and their dependency closure are staged, read from the tree's own `modules.dep` (`ixgbe`, `r8169` and `tg3` all pull in `libphy`/`mdio_bus`), plus `modprobe` to load them. With both `""` the media still installs on virtio, and `cix-install` says on screen which of the two it lacks.
 

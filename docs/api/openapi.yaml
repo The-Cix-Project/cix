@@ -6263,8 +6263,9 @@ paths:
         daemon capability, forked and pidfd-tracked exactly like POST
         /pkg/hostbuild's own async jobs (the response is 202, poll GET
         /system/iso for the result). Reuses whatever the most recent
-        "cix"/"kernel"/"isotools" hostbuild rounds already harvested
-        (POST /pkg/hostbuild) -- it does not trigger any of them itself.
+        "cix"/"kernel" hostbuild rounds already harvested, and the
+        ISO toolchain the iso-builder image holds (ADR-0358) -- it does
+        not trigger any of them itself.
 
 
         The media carries a **package seed** (issue #135, ADR-0229):
@@ -6349,7 +6350,8 @@ paths:
         "400":
           description: >
             Invalid JSON body, or a real precondition is missing --
-            the "cix"/"kernel"/"isotools" hostbuild artifacts, the
+            the "cix"/"kernel" hostbuild artifacts, an iso-builder
+            image with a current version (ADR-0358), the
             operator-provided signing key pair, or a package seed that
             cannot be staged at all (a seed package installed nowhere,
             or no installed version of one carrying either a cached

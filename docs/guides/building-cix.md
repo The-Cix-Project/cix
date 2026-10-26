@@ -108,13 +108,13 @@ Read the `image_*` fields rather than the generation counters. The counters live
 
 ### 4. Build a fresh installer ISO, server-side
 
-The same round also produces `cix-install` and `mkinstalleriso` — enough to assemble a new installer ISO (see [`installing.md`](installing.md) for what the ISO contains and how to boot it) via `POST /system/iso` ([ADR-0064](../adr/0064-rest-driven-iso-assembly.md)). The ISO tools themselves — GRUB, `sbsign`, `xorriso`, `mtools`, `shim`, `mokutil`, `mkfs.fat` — come from one more hostbuild artifact:
+The same round also produces `cix-install` and `mkinstalleriso` — enough to assemble a new installer ISO (see [`installing.md`](installing.md) for what the ISO contains and how to boot it) via `POST /system/iso` ([ADR-0064](../adr/0064-rest-driven-iso-assembly.md)). The ISO tools themselves — GRUB, `sbsign`, `xorriso`, `mtools`, `shim`, `mokutil`, `mkfs.fat` — come from the `iso-builder` image, whose current version's rootfs `POST /system/iso` hands `mkinstalleriso` ([ADR-0358](../adr/0358-the-installer-iso-is-built-from-the-iso-builder-image.md)). On a host without one, materialize it from its recipe in cix-recipes, which creates the image and installs every package the recipe names:
 
 ```
-cixctl pkg hostbuild isotools --upgrade --wait
+cixctl image materialize iso-builder
 ```
 
-The `isotools` recipe builds nothing: it declares the installed `grub`, `sbsigntools`, `xorriso`, `mtools`, `mokutil`, `shim` and `dosfstools` packages (plus the libraries they link) as its build tools, and harvests those binaries and their shared-library closure into a single portable artifact.
+There is no `isotools` hostbuild any more. It used to copy those packages' files into an artifact of its own, which cbs no longer lets a recipe do.
 
 ISO assembly signs the EFI binaries with the host's Secure Boot key pair, stored under the daemon's state directory (`<state-dir>/keys/cix-signing.{key,crt,cer}`) and installed over REST ([ADR-0212](../adr/0212-signing-keys-over-rest.md)):
 

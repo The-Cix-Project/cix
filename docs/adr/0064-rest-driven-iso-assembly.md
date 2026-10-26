@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Its transport half is superseded by [ADR-0212](0212-signing-keys-over-rest.md); its security reasoning stands.
+Accepted. Its transport half is superseded by [ADR-0212](0212-signing-keys-over-rest.md), and its `isotools` aggregator by [ADR-0358](0358-the-installer-iso-is-built-from-the-iso-builder-image.md); its security reasoning stands.
 
 ## Context
 

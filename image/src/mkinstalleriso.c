@@ -49,55 +49,41 @@
 extern char **environ;
 
 /*
- * grub-mkrescue/sbsign/xorriso/mformat/mcopy are no longer a hardcoded
- * /usr/bin path -- ADR-0064 closes the API-First Mandate gap ADR-0063
- * left open (cixd itself can now assemble an ISO server-side, via
- * POST /v1/system/iso) by pointing these at a real, self-built
- * isotools hostbuild artifact (recipes/package/isotools) instead of
- * whatever happens to be pre-installed on the machine running this
- * tool. g_isotools_root is set once in main() from argv and used by
- * every helper below.
- *
- * It used to be documented that a bare dev invocation could pass a
- * plain "/usr" and get the host-borrowed behaviour this tool always
- * had. That stopped being true the moment the tool began reading
- * Cix-BUILT binaries -- their library closure is not a Debian box's,
- * and a plain /usr carries none of the shim/, sbin/mkfs.fat or
- * bin/mokutil layout this reads. Continuing to assert it produced a
- * dev path that failed on files nobody had noticed were Cix-specific. test/test_installer.c
- * builds a real isotools-root fixture instead: the same layout, filled
- * from the development machine's own tools. A fixture is honest about
- * what it is; "/usr" was pretending to be an artifact. */
+ * The tools root: a rootfs with the ISO toolchain's packages installed
+ * (grub, sbsigntools, xorriso, mtools, mokutil, shim, dosfstools), each
+ * read at its own package path beneath it (ADR-0358). cixd passes the
+ * iso-builder image's current version; test_installer passes "/", its
+ * composed build environment. It used to be the isotools hostbuild
+ * artifact (ADR-0064), a copy of those packages' files in a layout of
+ * its own, which cbs no longer lets a recipe make. g_isotools_root is
+ * set once in main() from argv and used by every helper below.
+ */
 static char g_isotools_root[512];
 static char g_grub_mkrescue_bin[600];
 static char g_sbsign_bin[600];
 
 /* Secure Boot chain for the *target* disk's ESP (cix-install.c's own
  * populate_esp() writes these three under EFI/BOOT/ -- see ADR-0015).
- * Both are pre-signed by Debian directly; no re-signing needed. */
+ * shim and MokManager are copied as the shim package built them, never
+ * re-signed here; what Secure Boot firmware trusts them by is cix#647. */
 /*
- * shim, MokManager and mokutil come out of the isotools artifact, not
- * off this machine. They used to be read from /usr/lib/shim/ and
- * /usr/bin/mokutil -- absolute paths that exist on a Debian development
- * box and on no Cix control-plane root, which is a large part of why
- * POST /v1/system/iso has never been servable on a real host. They are
- * packages now (shim 16.1-1, mokutil 0.7.2-2) and isotools 2.14-3
- * harvests them, so this tool reads them the same way it already reads
- * grub-mkrescue, xorriso, sbsign and mtools.
+ * shim, MokManager and mokutil come out of the tools root, not off the
+ * control-plane root, which carries none of them. Each is at its
+ * package's own path (shim 16.1-2, mokutil 0.7.2-4), measured from the
+ * iso-builder image's file lists on 192.168.15.95, 2026-10-26
+ * (ADR-0358), and read the same way as grub-mkrescue, xorriso, sbsign
+ * and mtools.
  */
-#define SHIM_EFI_REL "/shim/shimx64.efi.signed"
-#define MOKMANAGER_EFI_REL "/shim/mmx64.efi.signed"
-#define MOKUTIL_REL "/bin/mokutil"
+#define SHIM_EFI_REL "/usr/lib/shim/shimx64.efi.signed"
+#define MOKMANAGER_EFI_REL "/usr/lib/shim/mmx64.efi.signed"
+#define MOKUTIL_REL "/usr/bin/mokutil"
 
 /* mkfs.fat: the ESP formatter, which no Cix control-plane root carries
  * and rightly so -- cixd never formats FAT, only the installer does. See
  * the staging block in build_installer_root() for why it comes from the
- * artifact while sfdisk and the mkfs pair come off the host.
- *
- * "/sbin/", not "/bin/", matching where isotools.recipe stages it and
- * where a development machine keeps its own copy (/usr/sbin/mkfs.fat),
- * which is what test_installer's fixture fills this slot from. */
-#define MKFS_FAT_REL "/sbin/mkfs.fat"
+ * tools root while sfdisk and the mkfs pair come off the host.
+ * dosfstools 4.2-3 installs it in usr/sbin. */
+#define MKFS_FAT_REL "/usr/sbin/mkfs.fat"
 
 
 
@@ -948,15 +934,12 @@ int main(int argc, char **argv)
 		        "  with no feedback until the installer refused to start. Supply real\n"
 		        "  values here only to build an unattended-install ISO for one specific\n"
 		        "  machine.\n"
-		"  isotools-root: directory holding <root>/bin/{grub-mkrescue,sbsign,\n"
-		        "  xorriso,mcopy,mformat,mokutil}, <root>/shim/{shimx64,mmx64}.efi.signed,\n"
-		        "  <root>/lib/grub/x86_64-efi/ and <root>/" CIX_LIB_DIR_RUNTIME "/ (isotools\n"
-		        "  2.14-3's hostbuild artifact layout, ADR-0064). mokutil, shim and\n"
-		        "  mokutil's library closure moved here from absolute host paths: they\n"
-		        "  exist on a Debian development box and on no Cix control-plane root,\n"
-		        "  so reading them from the host is why this tool could not run on a\n"
-		        "  real installed machine. A plain \"/usr\" no longer reproduces the old\n"
-		        "  host-borrowed behaviour for those inputs.\n"
+		"  isotools-root: a rootfs with the ISO toolchain's packages installed,\n"
+		        "  holding <root>/usr/bin/{grub-mkrescue,sbsign,xorriso,mcopy,mformat,\n"
+		        "  mokutil}, <root>/usr/sbin/mkfs.fat, <root>/usr/lib/shim/{shimx64,\n"
+		        "  mmx64}.efi.signed, <root>/usr/lib/grub/x86_64-efi/, <root>/usr/share/\n"
+		        "  grub/ and their libraries. On a host, the iso-builder image's rootfs;\n"
+		        "  in a composed build environment, \"/\" (ADR-0358).\n"
 		        "  seed-dir: optional (pass \"\" for none) -- a directory holding\n"
 		        "  <seed>/recipes/ and <seed>/artifacts/, staged onto the media so a\n"
 		        "  freshly installed box has a package source before it has a network\n"
@@ -1020,10 +1003,11 @@ int main(int argc, char **argv)
 	 */
 	setenv("CIX_ISO_DISK_GUID", disk_guid, 1);
 
-	snprintf(g_grub_mkrescue_bin, sizeof(g_grub_mkrescue_bin), "%s/bin/grub-mkrescue",
+	snprintf(g_grub_mkrescue_bin, sizeof(g_grub_mkrescue_bin), "%s/usr/bin/grub-mkrescue",
 	         g_isotools_root);
-	snprintf(g_sbsign_bin, sizeof(g_sbsign_bin), "%s/bin/sbsign", g_isotools_root);
-	snprintf(grub_module_dir, sizeof(grub_module_dir), "%s/lib/grub/x86_64-efi", g_isotools_root);
+	snprintf(g_sbsign_bin, sizeof(g_sbsign_bin), "%s/usr/bin/sbsign", g_isotools_root);
+	snprintf(grub_module_dir, sizeof(grub_module_dir), "%s/usr/lib/grub/x86_64-efi",
+	         g_isotools_root);
 	/*
 	 * grub-mkrescue is pointed at cix-xorriso, not at xorriso itself.
 	 * That filter strips the Apple HFS+ metadata arguments
@@ -1040,7 +1024,7 @@ int main(int argc, char **argv)
 	 * co-located, so deriving the path keeps the caller's contract
 	 * unchanged.
 	 */
-	snprintf(xorriso_bin, sizeof(xorriso_bin), "%s/bin/xorriso", g_isotools_root);
+	snprintf(xorriso_bin, sizeof(xorriso_bin), "%s/usr/bin/xorriso", g_isotools_root);
 	setenv("CIX_REAL_XORRISO", xorriso_bin, 1);
 	{
 		char self_dir[PATH_MAX];
@@ -1061,16 +1045,16 @@ int main(int argc, char **argv)
 			return 1;
 		}
 	}
-	snprintf(isotools_bin_dir, sizeof(isotools_bin_dir), "%s/bin", g_isotools_root);
+	snprintf(isotools_bin_dir, sizeof(isotools_bin_dir), "%s/usr/bin", g_isotools_root);
 	/*
 	 * Every directory this platform puts libraries in, rooted at the
-	 * artifact -- not one hand-picked path.
+	 * tools root -- not one hand-picked path.
 	 *
 	 * The children below are dynamically linked binaries from the
-	 * isotools artifact, exec'd off the bare host rather than inside a
+	 * tools root, exec'd off the bare host rather than inside a
 	 * chroot, so this is the only thing that points the loader at
 	 * their own libraries (ADR-0154). Naming a single directory made
-	 * that silently wrong the moment the artifact's libraries sat
+	 * that silently wrong the moment the tools' libraries sat
 	 * somewhere else -- and silently is the word: a genuinely missing
 	 * library aborts loudly, but a host that happens to carry a
 	 * same-named one is used instead, and the child exits 0 having run
@@ -1101,14 +1085,10 @@ int main(int argc, char **argv)
 	 * own research) by literal name via $PATH -- these child processes
 	 * inherit this process's own environ, so PATH must include
 	 * isotools_bin_dir before grub-mkrescue ever runs.
-	 * LD_LIBRARY_PATH covers isotools.recipe's own real, measured
-	 * shared-library closure for a deployed host whose own system
-	 * paths don't otherwise carry it: libz.so.1 (xorriso) and
-	 * libcrypto.so.3 (sbsign/sbverify), plus libc.so.6. It named
-	 * liblzma.so.5 and libbz2.so.1.0 until isotools 2.14-2 -- neither
-	 * is linked by any of these binaries at any level of the closure;
-	 * both were read off the pre-ADR-0199 shared build sandbox that
-	 * carried the build host's entire /usr (issue #168).
+	 * LD_LIBRARY_PATH points the loader at the tools root's own
+	 * libraries for a host whose system paths do not carry them:
+	 * libz.so.1 (xorriso) and libcrypto.so.3 (sbsign/sbverify), plus
+	 * libc.so.6, as the isotools artifact measured them.
 	 */
 	setenv("PATH", isotools_bin_dir, 1);
 	setenv("LD_LIBRARY_PATH", isotools_lib_dir, 1);
@@ -1164,7 +1144,7 @@ int main(int argc, char **argv)
 	{
 		char grub_data_dir[700];
 
-		snprintf(grub_data_dir, sizeof(grub_data_dir), "%s/share/grub", g_isotools_root);
+		snprintf(grub_data_dir, sizeof(grub_data_dir), "%s/usr/share/grub", g_isotools_root);
 		setenv("pkgdatadir", grub_data_dir, 1);
 	}
 
@@ -1215,7 +1195,7 @@ int main(int argc, char **argv)
 	if (ensure_dir_under(stage_dir, "usr/sbin") != 0)
 		return 1;
 	/*
-	 * mkfs.fat comes out of the isotools artifact; sfdisk,
+	 * mkfs.fat comes out of the tools root; sfdisk,
 	 * mkfs.ext4 and mkfs.btrfs come off this host. The split is not
 	 * arbitrary -- it follows what a Cix control-plane root actually
 	 * contains, which is exactly the set mkbootroot.c stages, which is
@@ -1228,7 +1208,7 @@ int main(int argc, char **argv)
 	 * and mokutil had: an absolute path true on a Debian development
 	 * box and on no Cix host, and one of the reasons POST
 	 * /v1/system/iso has never been servable on a real machine. It is a
-	 * package now (dosfstools 4.2-1) and isotools harvests it.
+	 * package now (dosfstools), in the iso-builder image.
 	 *
 	 * It needs no library beyond libc -- asserted in its own recipe
 	 * against the real ELF -- so it adds nothing to the closures staged
@@ -1330,13 +1310,13 @@ int main(int argc, char **argv)
 
 		/*
 		 * The SAME layout list as the host dirs above, rooted at the
-		 * artifact instead of at /.
+		 * tools root instead of at /.
 		 *
 		 * This was two hand-written entries -- lib/x86_64-linux-gnu
 		 * and lib64 -- which is precisely the "list that has to be
 		 * remembered separately here" the comment above warns against.
-		 * It omitted usr/lib, which is where the isotools artifact
-		 * actually puts libcrypto, libefivar and the rest, so staging
+		 * It omitted usr/lib, which is where the tools' packages
+		 * actually put libcrypto, libefivar and the rest, so staging
 		 * mokutil's closure failed with nothing but the last directory
 		 * tried as its message. #184 gave this platform one definition
 		 * of where libraries live and fixed the host side; the
@@ -1354,7 +1334,7 @@ int main(int argc, char **argv)
 			if (test_image_fixture_stage_closure(stage_dir, host_bins[bi], host_dirs) != 0)
 				return 1;
 		}
-		/* Resolved from the artifact, but read from where they were
+		/* Resolved against the tools root, but read from where they were
 		 * staged -- same bytes either way, and this keeps the call
 		 * uniform. */
 		snprintf(staged, sizeof(staged), "%s/usr/bin/mokutil", stage_dir);

@@ -110,7 +110,7 @@ cixctl --host=<host> iso build --wait
 cixctl --host=<host> iso publish --wait
 ```
 
-The build needs the `cix`, `kernel` and `isotools` hostbuild artifacts and the
+The build needs the `cix` and `kernel` hostbuild artifacts, the `iso-builder` image and the
 Secure Boot signing pair, and fails with a 400 naming what is missing.
 `iso publish` puts the ISO and its signature in the artifact cache, so the media
 can be fetched from somewhere other than the host about to be wiped. The cache

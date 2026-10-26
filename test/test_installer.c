@@ -6,44 +6,39 @@
  * -cdrom, not a test-only disk-image approximation) partitions its role-
  * detection, formats, writes the real payload, and configures a static
  * IP -- then more, completely separate boots prove the freshly-installed
- * disk actually comes up as a real, running cixd *with Secure Boot
- * genuinely enforced* (ADR-0015). "Install" and "boot what was
+ * disk actually comes up as a real, running cixd with its management
+ * network up. "Install" and "boot what was
  * installed" are the same real code paths already proven in parts 1-2,
  * and "the ISO an operator would actually use" is now the same artifact
  * this test boots, not a separate, untested approximation of it (part 3's
  * own test built a private squashfs-based disk instead -- this part
  * replaces that with the real thing).
  *
- * Two disks, four QEMU sessions -- one smoke test proving the real,
- * unmodified boot mechanism an operator actually drives (GRUB's own
- * menu), then the three-session Secure Boot flow. A second smoke test
- * covering an interactive fdisk session sat alongside it until ADR-0214
- * removed that path; see step 4's own comment:
- *   1. build/mkinstalleriso's real .iso + a blank target disk,
- *      partitioned by cix-install itself, which is what it does unless
- *      told otherwise (its own scripted sfdisk -- this session's own job
- *      is proving the installer's role-detection/format/write logic).
- *      This is now the only partitioning path there is. Since the boot
+ * Five QEMU sessions, none with Secure Boot (cix#647):
+ *   1. GRUB smoke: the real .iso through its own grub-mkrescue-built
+ *      BOOTX64.EFI and menu, the way an operator boots it.
+ *   2. The unattended install: the .iso plus a blank target disk,
+ *      partitioned by cix-install's own scripted sfdisk. Since the boot
  *      medium is a CD-ROM (a separate ATAPI/SCSI bus), the target disk
- *      is the *only* virtio-blk device
- *      present and is /dev/vda, not /dev/vdb. Booted via direct_kernel
- *      (QEMU's own "-kernel" injection, bypassing firmware's normal
- *      LoadImage-based Secure Boot check -- a test-harness-only
- *      convenience standing in for "Secure Boot off for this one boot"
- *      on real hardware, see ADR-0015) against the *real*, already-User-
- *      Mode ovmf_vars template, so this session's own enroll_signing_key()
- *      (mokutil --import) stages its MOK request into the exact same
- *      vars file session 2 reads.
- *   2. The target disk, Secure Boot genuinely enforced (secure_boot=1),
- *      scripted through shim's real MokManager UI to confirm the
- *      pending enrollment.
- *   3. The target disk again, Secure Boot still enforced, boots for
- *      real -- cixd --init-mode --slot=a off the partition
- *      cix-install wrote, now via the fully-trusted shim -> signed
- *      systemd-boot -> signed kernel chain.
+ *      is the only virtio-blk device present and is /dev/vda. Booted via
+ *      direct_kernel (QEMU's "-kernel"), so the installer's arguments
+ *      are this test's.
+ *   3. The interactive install a shipped ISO does: no arguments, every
+ *      answer typed at a prompt, on its own blank disk.
+ *   4. The target disk, booted alone through what cix-install wrote
+ *      (shim -> cix-boot.efi -> the kernel), to "default image: ready"
+ *      with its management network up from the installed net.conf.
+ *   5. The same disk again, an independent boot, for persistence.
+ *
+ * The Secure Boot sessions -- confirming the MOK enrollment in shim's
+ * MokManager, then booting the signed chain with Secure Boot enforced --
+ * need an OVMF built with SECURE_BOOT_ENABLE=TRUE and a vars template
+ * holding a platform key. Cix's ovmf@202608-1 is neither, so they return
+ * with that build (cix#647). The signing pair is a throwaway made per
+ * run (make_signing_pair()), so the test needs no release key.
  *
  * Verification of what the installer actually wrote happens from the
- * host side after session 1 -- the ESP via mtools' disk.img@@offset
+ * host side after session 2 -- the ESP via mtools' disk.img@@offset
  * addressing (no mount needed, same pattern test_boot_ab.c already
  * established for inspecting loader-entry counter state), the config
  * and containers partitions (btrfs since ADR-0207 phase 4) via `btrfs
@@ -75,38 +70,24 @@
 #define CIX_RECOVER_BIN "build/cix-recover"
 #define CIX_BOOT_BIN "build/cix-boot.efi"
 #define MKINSTALLERISO_BIN "build/mkinstalleriso"
+/* Where Cix's util-linux and btrfs-progs install them: btrfs-progs@7.1-12
+ * ships usr/sbin/btrfs (GET /v1/pkg/btrfs-progs@cix-hosttools on
+ * 192.168.15.95, 2026-10-26), not Debian's usr/bin. */
 #define SFDISK_BIN "/usr/sbin/sfdisk"
-#define BTRFS_BIN "/usr/bin/btrfs"
-#define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS_4M.ms.fd"
-#define SIGNING_KEY "image/keys/cix-signing.key"
-#define SIGNING_CERT_PEM "image/keys/cix-signing.crt"
-#define SIGNING_CERT_DER "image/keys/cix-signing.cer"
+#define BTRFS_BIN "/usr/sbin/btrfs"
+/* Cix's ovmf package, the same firmware test_disk_image.c boots
+ * (OVMF_CODE there). Every session here starts from a fresh copy. */
+#define OVMF_VARS_TEMPLATE "/usr/share/OVMF/OVMF_VARS.fd"
+#define OPENSSL_BIN "/usr/bin/openssl"
 /*
- * ADR-0064: mkinstalleriso takes an explicit isotools-root rather than
- * a hardcoded /usr/bin/grub-mkrescue. This test used to pass a plain
- * "/usr", on the reasoning that it reproduced the tool's original
- * host-borrowed behaviour.
- *
- * That reasoning expired without anyone noticing. Once mkinstalleriso
- * started reading Cix-BUILT binaries out of the artifact -- shim,
- * MokManager, mokutil, mkfs.fat -- their library closure stopped being
- * a Debian box's. A development machine has no libcrypt.so.2 at all
- * (it keeps the obsolete DES/NIS ABI and ships .so.1; our libxcrypt
- * drops it, so the soname differs), and no /usr has the shim/ or
- * bin/mokutil layout this reads. "/usr" was pretending to be an
- * artifact, and the pretence failed the first time this test was run
- * afterwards:
- *
- *   /usr/lib/x86_64-linux-gnu/libcrypt.so.2: No such file or directory
- *
- * So build a real one instead. build_isotools_fixture() below fills the
- * artifact's own layout from this machine's tools -- the same
- * directory structure isotools.recipe produces, with Debian's binaries
- * and Debian's measured closure in it. A fixture is honest about being
- * a stand-in; "/usr" was not.
+ * ADR-0358: mkinstalleriso's tools root is a rootfs with the ISO
+ * toolchain's packages installed -- the iso-builder image's on a host.
+ * Here it is "/": the composed build container this test runs in holds
+ * those packages as declared tools, which is the same answer this test
+ * gives mkbootroot for its host-tools root. It used to build a stand-in
+ * from a Debian machine's grub, shim and mokutil, which no Cix host has.
  */
-#define ISOTOOLS_FIXTURE_DIRNAME "isotools_fixture"
-#define MOK_PASSWORD "cixtest"
+#define ISOTOOLS_ROOT "/"
 
 
 #define TARGET_ESP_SIZE_MIB 64
@@ -177,41 +158,6 @@
  * Part 0.5). */
 #define TEST_IFACE "eth0"
 
-/* A blank disk file of the standard test size -- shared by the real
- * GRUB-path smoke test and the main Secure Boot flow below, each
- * against its own disk file. Unpartitioned: every session in this file
- * now boots with no partition flag at all, i.e. cix-install's own scripted
- * sfdisk, image/src/cix-install.c) rather than this test pre-
- * partitioning host-side -- one source of truth for the partition
- * layout, not two copies of the same sfdisk script kept in sync by
- * hand. */
-/*
- * Builds a stand-in isotools artifact from this development machine's
- * own tools, in exactly the layout isotools.recipe produces and
- * mkinstalleriso reads:
- *
- *   bin/     grub-mkrescue, sbsign, xorriso, mtools (+ mcopy/mformat),
- *            mokutil            -- PATH is set to ONLY this directory,
- *                                  so anything grub-mkrescue shells out
- *                                  to by name has to be here
- *   sbin/    mkfs.fat
- *   lib/grub/x86_64-efi/        -- grub's own module tree
- *   share/grub/                 -- grub's own data files, above all
- *                                  unicode.pf2: grub-mkrescue always
- *                                  embeds a font for the media label and
- *                                  reads it from the directory
- *                                  mkinstalleriso points "pkgdatadir" at
- *   shim/    shimx64.efi.signed, mmx64.efi.signed
- *   lib/x86_64-linux-gnu/       -- the closure staged INTO the installer
- *                                  image, measured off THIS machine's
- *                                  mokutil rather than copied from the
- *                                  Cix one, since it is this machine's
- *                                  mokutil that goes in
- *
- * Every file named here must exist: a missing one fails the test now,
- * with the path, rather than producing an ISO whose mokutil dies at
- * load time inside a QEMU boot nobody can see into.
- */
 /* Creates every component of `path`, EEXIST tolerated. test_image_fixture
  * exposes no mkdir_p and the fixture needs nested directories. */
 static int fixture_mkdir_p(const char *path)
@@ -236,16 +182,6 @@ static int fixture_mkdir_p(const char *path)
 		return -1;
 	}
 	return 0;
-}
-
-static int copy_into(const char *dir, const char *src)
-{
-	const char *base = strrchr(src, '/');
-	char dst[PATH_MAX];
-
-	base = base != NULL ? base + 1 : src;
-	snprintf(dst, sizeof(dst), "%s/%s", dir, base);
-	return test_image_fixture_copy_file(src, dst);
 }
 
 /*
@@ -317,98 +253,35 @@ static int extract_seed_loader(const char *workdir, char *out_path, size_t out_p
 	return access(out_path, R_OK) == 0 ? 0 : -1;
 }
 
-static int build_isotools_fixture(const char *workdir, char *out_root, size_t out_root_len)
+/*
+ * A signing pair made for this run alone: the key, its certificate as
+ * PEM for sbsign, and as DER for the MOK enrollment the ISO carries.
+ * No session here enforces Secure Boot (cix#647), so nothing checks
+ * what signed the chain, and a test must never need the release key --
+ * image/keys/cix-signing.key is gitignored and absent from every
+ * checkout but the owner's.
+ */
+static int make_signing_pair(const char *workdir, char *key, char *crt, char *cer, size_t size)
 {
-	/* mkinstalleriso sets PATH to <root>/bin alone, so grub-mkrescue's
-	 * own children (xorriso, and mformat/mcopy, which it execs by
-	 * literal name with no override flag) must resolve there. */
-	static const char *const bin_tools[] = {
-		"/usr/bin/grub-mkrescue", "/usr/bin/sbsign",  "/usr/bin/sbverify",
-		"/usr/bin/xorriso",       "/usr/bin/mtools",  "/usr/bin/mcopy",
-		"/usr/bin/mformat",       "/usr/bin/mokutil", NULL,
-	};
-	/*
-	 * THIS machine's mokutil closure, not the Cix artifact's. They
-	 * differ, and that difference is the whole reason this fixture
-	 * exists: Debian keeps libcrypt's obsolete DES/NIS ABI and ships
-	 * libcrypt.so.1, while our libxcrypt drops it and so has a
-	 * different soname; Debian's mokutil links libdl where ours does
-	 * not, and does not link libssl where ours does. Taken from a real
-	 * `ldd /usr/bin/mokutil` on this machine, not guessed.
-	 */
-	static const char *const artifact_libs[] = {
-		"/lib/x86_64-linux-gnu/libcrypto.so.3",   "/lib/x86_64-linux-gnu/libefivar.so.1",
-		"/lib/x86_64-linux-gnu/libkeyutils.so.1", "/lib/x86_64-linux-gnu/libcrypt.so.1",
-		"/lib/x86_64-linux-gnu/libdl.so.2",       NULL,
-	};
-	char bin_dir[PATH_MAX], sbin_dir[PATH_MAX], shim_dir[PATH_MAX];
-	char lib_dir[PATH_MAX], grub_dir[PATH_MAX], artifact_lib_dir[PATH_MAX];
-	int i;
+	char *req_argv[] = { (char *)OPENSSL_BIN, "req", "-new", "-x509", "-newkey", "rsa:2048",
+		             "-nodes", "-sha256", "-days", "1", "-subj", "/CN=cix test_installer",
+		             "-keyout", key, "-out", crt, NULL };
+	char *der_argv[] = { (char *)OPENSSL_BIN, "x509", "-in", crt, "-outform", "DER", "-out", cer,
+		             NULL };
 
-	if ((size_t)snprintf(out_root, out_root_len, "%s/" ISOTOOLS_FIXTURE_DIRNAME, workdir) >=
-	    out_root_len)
+	snprintf(key, size, "%s/signing.key", workdir);
+	snprintf(crt, size, "%s/signing.crt", workdir);
+	snprintf(cer, size, "%s/signing.cer", workdir);
+	if (run_subprocess(OPENSSL_BIN, req_argv) != 0 || run_subprocess(OPENSSL_BIN, der_argv) != 0) {
+		fprintf(stderr, "could not make a signing pair with %s\n", OPENSSL_BIN);
 		return -1;
-
-	snprintf(bin_dir, sizeof(bin_dir), "%s/bin", out_root);
-	snprintf(sbin_dir, sizeof(sbin_dir), "%s/sbin", out_root);
-	snprintf(shim_dir, sizeof(shim_dir), "%s/shim", out_root);
-	snprintf(lib_dir, sizeof(lib_dir), "%s/lib", out_root);
-	snprintf(grub_dir, sizeof(grub_dir), "%s/lib/grub/x86_64-efi", out_root);
-	snprintf(artifact_lib_dir, sizeof(artifact_lib_dir), "%s/lib/x86_64-linux-gnu", out_root);
-
-	if (fixture_mkdir_p(bin_dir) != 0 ||
-	    fixture_mkdir_p(sbin_dir) != 0 ||
-	    fixture_mkdir_p(shim_dir) != 0 ||
-	    fixture_mkdir_p(lib_dir) != 0 ||
-	    fixture_mkdir_p(artifact_lib_dir) != 0)
-		return -1;
-
-	for (i = 0; bin_tools[i] != NULL; i++) {
-		if (copy_into(bin_dir, bin_tools[i]) != 0)
-			return -1;
-	}
-	if (copy_into(sbin_dir, "/usr/sbin/mkfs.fat") != 0)
-		return -1;
-	if (copy_into(shim_dir, "/usr/lib/shim/shimx64.efi.signed") != 0 ||
-	    copy_into(shim_dir, "/usr/lib/shim/mmx64.efi.signed") != 0)
-		return -1;
-	for (i = 0; artifact_libs[i] != NULL; i++) {
-		if (copy_into(artifact_lib_dir, artifact_libs[i]) != 0)
-			return -1;
-	}
-
-	/*
-	 * grub's module tree, copied wholesale -- grub-mkrescue reads a
-	 * great many of these by name and there is no useful subset.
-	 * copy_dir_recursive() requires its destination NOT to exist (it is
-	 * `cp -a` underneath, which nests rather than merges otherwise), so
-	 * only the parent is created here.
-	 */
-	{
-		char grub_parent[PATH_MAX];
-
-		char share_grub[PATH_MAX];
-
-		snprintf(grub_parent, sizeof(grub_parent), "%s/lib/grub", out_root);
-		if (fixture_mkdir_p(grub_parent) != 0)
-			return -1;
-		if (test_image_fixture_copy_dir_recursive("/usr/lib/grub/x86_64-efi", grub_dir) != 0)
-			return -1;
-
-		/* grub's data files, which mkinstalleriso resolves through
-		 * GRUB's own "pkgdatadir" variable. A real isotools artifact
-		 * carries these because grub 2.14-7 generates them; this
-		 * fixture stands in for one. */
-		snprintf(share_grub, sizeof(share_grub), "%s/share", out_root);
-		if (fixture_mkdir_p(share_grub) != 0)
-			return -1;
-		snprintf(share_grub, sizeof(share_grub), "%s/share/grub", out_root);
-		if (test_image_fixture_copy_dir_recursive("/usr/share/grub", share_grub) != 0)
-			return -1;
 	}
 	return 0;
 }
 
+/* A blank, unpartitioned disk of the standard size: every install here
+ * partitions with cix-install's own scripted sfdisk, the one source of
+ * the layout. */
 static int create_blank_disk(const char *path)
 {
 	int fd = open(path, O_CREAT | O_WRONLY, 0644);
@@ -541,6 +414,7 @@ int main(void)
 		return 1;
 
 	char workdir[] = "/tmp/cix_test_installer_XXXXXX";
+	char signing_key[PATH_MAX], signing_crt[PATH_MAX], signing_cer[PATH_MAX];
 	char stage_dir[600], control_plane_squashfs[600], installer_stage[600], installer_iso[600];
 	char target_disk_img[600];
 	char ovmf_vars[600];
@@ -602,20 +476,28 @@ int main(void)
 	 * sfdisk, added as a convenience once typing the fixed fdisk sequence
 	 * by hand for every VM/scripted install proved to be pure friction --
 	 * gets exercised for real right here, this session's own install). */
+	/*
+	 * No --enroll-key: the default, "auto", enrols the MOK only on
+	 * firmware enforcing Secure Boot, and none here does (cix#647).
+	 * Forcing it would leave a MokNew request that shim acts on whatever
+	 * the firmware enforces, putting MokManager in front of session 4.
+	 */
 	snprintf(kernel_args, sizeof(kernel_args),
-	         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s --interface=%s "
-	         "--enroll-key=always",
-	         TEST_IP, TEST_PREFIX, TEST_GATEWAY, TEST_IFACE);
+	         "--disk=/dev/vda --ip=%s --prefix=%d --gateway=%s --interface=%s", TEST_IP,
+	         TEST_PREFIX, TEST_GATEWAY, TEST_IFACE);
+	if (make_signing_pair(workdir, signing_key, signing_crt, signing_cer, PATH_MAX) != 0) {
+		printf("INSTALLER RESULT: FAIL\n");
+		return 1;
+	}
 	{
-		char isotools_root[PATH_MAX];
 		char seed_root[PATH_MAX];
 		char *mkiso_argv[] = { (char *)MKINSTALLERISO_BIN, installer_stage,
 			                (char *)CIX_INSTALL_BIN,    (char *)CIX_RECOVER_BIN,
 			                (char *)CIX_BOOT_BIN,
 			                (char *)BZIMAGE_PATH,          control_plane_squashfs,
-			                (char *)SIGNING_KEY,           (char *)SIGNING_CERT_PEM,
-			                (char *)SIGNING_CERT_DER,      installer_iso,
-			                kernel_args,                   isotools_root,
+			                signing_key,                   signing_crt,
+			                signing_cer,                   installer_iso,
+			                kernel_args,                   (char *)ISOTOOLS_ROOT,
 			                seed_root,
 			                /*
 			                 * #429 follow-on: the kernel module tree and
@@ -657,11 +539,6 @@ int main(void)
 			                (char *)"11111111-2222-3333-4400-555555555555",
 			                NULL };
 
-		if (build_isotools_fixture(workdir, isotools_root, sizeof(isotools_root)) != 0) {
-			fprintf(stderr, "could not build the isotools fixture\n");
-			printf("INSTALLER RESULT: FAIL\n");
-			return 1;
-		}
 		/* The package seed (#189): the real glibc recipe and the real
 		 * artifact it approves, so the installed box has a package
 		 * source before it has a network. Both come from this repo and
@@ -679,10 +556,9 @@ int main(void)
 	/* 3. GRUB-path smoke test: boot the actual .iso the way a human
 	 * operator really experiences it -- through its own grub-mkrescue-
 	 * built BOOTX64.EFI and grub.cfg via a normal -cdrom attach, not the
-	 * direct_kernel bypass session 1 below uses to solve a different,
-	 * Secure-Boot-specific problem. Secure Boot off (a throwaway, never-
-	 * enrolled vars copy), matching ADR-0015: the installer media itself
-	 * is never signed. This is the ONLY place this test suite exercises
+	 * direct_kernel boot session 2 below uses to pass its own arguments.
+	 * Its own fresh vars copy; the installer media itself is never
+	 * signed (ADR-0015). This is the ONLY place this test suite exercises
 	 * the real GRUB menu/config path at all -- it's what would have
 	 * caught a genuine `timeout=0` bug (the menu booted instantly, with
 	 * no visible window to press 'e' and edit --disk=/--ip=/...) that
@@ -691,30 +567,16 @@ int main(void)
 	 * runs (not an instant, uninterruptible auto-boot) before the
 	 * default entry boots and completes -- a throwaway disk, since this
 	 * is only proving the boot *mechanism*, not re-verifying what
-	 * cix-install itself writes (already covered by session 1). */
+	 * cix-install itself writes (already covered by session 2). */
 	{
 		char grub_smoke_disk[600], grub_smoke_vars[600];
 		struct qemu_boot_opts opts;
-		/*
-		 * Kept, but it usually does not fire any more (#271).
-		 *
-		 * cix-install now enrols the MOK only when the firmware is
-		 * actually ENFORCING Secure Boot, and this boot uses plain
-		 * OVMF_VARS, which does not. The entries stay because scripted
-		 * input is prompt-driven -- an entry whose prompt never appears
-		 * costs nothing -- and because a secure-boot OVMF variant here
-		 * would need them again immediately.
-		 */
-		struct qemu_scripted_input mok_password[] = {
-			{ "input password: ", MOK_PASSWORD "\n" },
-			{ "input password again: ", MOK_PASSWORD "\n" },
-		};
 
 		snprintf(grub_smoke_disk, sizeof(grub_smoke_disk), "%s/grub_smoke_disk.img", workdir);
 		snprintf(grub_smoke_vars, sizeof(grub_smoke_vars), "%s/grub_smoke_vars.fd", workdir);
 		if (create_blank_disk(grub_smoke_disk) != 0)
 			return 1;
-		if (test_image_fixture_copy_file("/usr/share/OVMF/OVMF_VARS_4M.fd", grub_smoke_vars) != 0)
+		if (test_image_fixture_copy_file(OVMF_VARS_TEMPLATE, grub_smoke_vars) != 0)
 			return 1;
 
 		memset(&opts, 0, sizeof(opts));
@@ -724,8 +586,6 @@ int main(void)
 		opts.ovmf_vars = grub_smoke_vars;
 		opts.success_marker = INSTALL_SUCCESS_MARKER;
 		opts.timeout_seconds = INSTALL_TIMEOUT_SECONDS;
-		opts.scripted_input = mok_password;
-		opts.n_scripted_input = 2;
 		outcome = qemu_boot_capture(&opts, captured, sizeof(captured));
 		if (outcome != QEMU_BOOT_SUCCESS || strstr(captured, "Cix Install") == NULL ||
 		    strstr(captured, "will be executed automatically") == NULL) {
@@ -758,7 +618,7 @@ int main(void)
 	 * and leaves the remainder unallocated for the REST partition API,
 	 * which is a better answer to the same need. Session 1 below covers
 	 * the partitioning path that remains. */
-	/* 5. Target disk: blank -- session 1's own default partitioning (kernel_args
+	/* 5. Target disk: blank -- session 2's own default partitioning (kernel_args
 	 * above) partitions it, same as a real install would. */
 	if (create_blank_disk(target_disk_img) != 0)
 		return 1;
@@ -766,34 +626,19 @@ int main(void)
 	if (test_image_fixture_copy_file(OVMF_VARS_TEMPLATE, ovmf_vars) != 0)
 		return 1;
 
-	/* 6. Session 1: boot the real .iso via -cdrom against the target
+	/* 6. Session 2: boot the real .iso via -cdrom against the target
 	 * disk. No NIC needed -- formatting/writing doesn't touch the
 	 * network. A completed install ends with init exiting -- an
 	 * expected, harmless "Attempted to kill init!" panic, not a
 	 * failure, hence no panic_marker here.
 	 *
-	 * This installer boot itself stays unsigned/Secure-Boot-off on real
-	 * hardware (ADR-0015) -- ovmf_vars here is nonetheless the real
-	 * User-Mode template (Microsoft's own certs already enrolled), same
-	 * as MOK-confirm/final-boot below, so the pending MOK request
-	 * enroll_signing_key() stages lands in the SAME vars file shim will
-	 * later check -- no separate vars-file merge step needed. Booting via
-	 * direct_kernel (QEMU's own "-kernel" fw_cfg injection, confirmed
-	 * empirically to bypass firmware's normal LoadImage-based Secure Boot
-	 * check entirely) is what makes this safe: a pure test-harness
-	 * convenience standing in for what, on real hardware, is a genuine
-	 * "Secure Boot off for this one boot" step -- cix-install's own
-	 * code runs identically either way.
-	 *
-	 * enroll_signing_key()'s "mokutil --import" prompts twice for a
-	 * password (exact wording confirmed against the real mokutil binary)
-	 * that MOK-confirm below needs again. */
+	 * direct_kernel (QEMU's "-kernel" fw_cfg injection) boots the
+	 * installer with this test's arguments; the GRUB path above already
+	 * proved the media boots on its own. The vars file is session 4's
+	 * and 5's too, so the boot entries the installer writes are the ones
+	 * those sessions boot from. */
 	{
 		struct qemu_boot_opts opts;
-		struct qemu_scripted_input mok_password[] = {
-			{ "input password: ", MOK_PASSWORD "\n" },
-			{ "input password again: ", MOK_PASSWORD "\n" },
-		};
 		char direct_args[512];
 
 		snprintf(direct_args, sizeof(direct_args),
@@ -810,8 +655,6 @@ int main(void)
 		opts.ovmf_vars = ovmf_vars;
 		opts.success_marker = INSTALL_SUCCESS_MARKER;
 		opts.timeout_seconds = INSTALL_TIMEOUT_SECONDS;
-		opts.scripted_input = mok_password;
-		opts.n_scripted_input = 2;
 		outcome = qemu_boot_capture(&opts, captured, sizeof(captured));
 	}
 	if (outcome != QEMU_BOOT_SUCCESS) {
@@ -981,11 +824,10 @@ int main(void)
 	 * read-only media out of the disk list, so exactly one disk is
 	 * offered and "1" is the whole answer.
 	 *
-	 * Deliberately no --enroll-key here, unlike session 1: this boot does
-	 * not enforce Secure Boot, so the default "auto" must SKIP the MOK
-	 * password entirely. If that regressed, the scripted answers would
-	 * run out at a password prompt and this would time out rather than
-	 * pass quietly.
+	 * No --enroll-key here either: this boot does not enforce Secure
+	 * Boot, so the default "auto" must SKIP the MOK password entirely. If
+	 * that regressed, the scripted answers would run out at a password
+	 * prompt and this would time out rather than pass quietly.
 	 */
 	{
 		char interactive_disk[600], interactive_vars[600], interactive_args[600];
@@ -1005,8 +847,7 @@ int main(void)
 			printf("INSTALLER RESULT: FAIL\n");
 			return 1;
 		}
-		if (test_image_fixture_copy_file("/usr/share/OVMF/OVMF_VARS_4M.fd", interactive_vars) !=
-		    0) {
+		if (test_image_fixture_copy_file(OVMF_VARS_TEMPLATE, interactive_vars) != 0) {
 			printf("INSTALLER RESULT: FAIL\n");
 			return 1;
 		}
@@ -1072,75 +913,19 @@ int main(void)
 		}
 	}
 
-	/* 8. Session 2: MOK-confirm boot -- the target disk, for real, with
-	 * Secure Boot actually enforced (secure_boot=1, same ovmf_vars as
-	 * session 1, so the real Microsoft certs baked into the .ms.fd
-	 * template and the pending MOK request enroll_signing_key() staged
-	 * during session 1 are both present in the SAME vars file). shim
-	 * (Microsoft-signed) loads cleanly; finding the pending request, it
-	 * shows its own MokManager UI instead of proceeding straight to
-	 * grubx64.efi (not yet trusted at this point -- confirmed separately
-	 * that boot fails safely, "Security Violation", if this step is
-	 * skipped). The exact menu text/navigation below was discovered by
-	 * driving a real run interactively (piped scripted input, observing
-	 * the raw captured output) rather than assumed: "Press any key" (a
-	 * 10s countdown otherwise falls through to the same safe failure) ->
-	 * "Perform MOK management" (Continue boot / Enroll MOK / ...,
-	 * "Enroll MOK" one down-arrow away) -> "View key 0 / Continue" (one
-	 * down-arrow to Continue) -> "Enroll the key(s)? No / Yes" (one
-	 * down-arrow to Yes) -> "Password:" (the same password
-	 * enroll_signing_key() used) -> back at "Perform MOK management",
-	 * now offering "Reboot" as the top entry.
-	 *
-	 * MokManager's own reset after confirming reboots the machine; with
-	 * QEMU's -no-reboot flag that means the QEMU process itself exits --
-	 * there is no serial marker for "about to reset", so QEMU_BOOT_EOF
-	 * (not QEMU_BOOT_SUCCESS) is this session's own expected, successful
-	 * outcome, the same "this termination is expected, not a failure"
-	 * posture session 1's own harmless install-complete panic already
-	 * has. */
-	{
-		struct qemu_boot_opts opts;
-		struct qemu_scripted_input mok_confirm[] = {
-			{ "Press any key to perform MOK management", " " },
-			{ "Enroll MOK", "\x1b[B\r" },
-			{ "View key 0", "\x1b[B\r" },
-			{ "Enroll the key(s)?", "\x1b[B\r" },
-			{ "Password:", MOK_PASSWORD "\r" },
-			{ "Reboot", "\r" },
-		};
-
-		memset(&opts, 0, sizeof(opts));
-		opts.disk_img = target_disk_img;
-		opts.secure_boot = 1;
-		opts.ovmf_vars = ovmf_vars;
-		opts.timeout_seconds = 90;
-		opts.scripted_input = mok_confirm;
-		opts.n_scripted_input = 6;
-		outcome = qemu_boot_capture(&opts, captured, sizeof(captured));
-	}
-	if (outcome != QEMU_BOOT_EOF) {
-		fprintf(stderr, "MOK-confirm boot did not end as expected (outcome=%d)\n", (int)outcome);
-		printf("INSTALLER RESULT: FAIL\n");
-		return 1;
-	}
-
-	/* 9. Session 3: the actual end-to-end proof -- boot the target disk
-	 * alone, for real, with Secure Boot still enforced (secure_boot=1)
-	 * and a real NIC attached this time, and confirm it comes up as a
-	 * genuinely working cixd that actually bootstrapped its
-	 * management network from the static IP/gateway/interface configured at
-	 * install time (Part 0.5). Nothing here is test-built; this is
-	 * exactly what an operator would see after rebooting a freshly
-	 * installed, MOK-confirmed machine -- shim -> the Cix-signed
-	 * grubx64.efi (systemd-boot) -> the Cix-signed kernel, all now
-	 * trusted, zero further exceptions. */
+	/* 8. Session 4: the end-to-end proof -- boot the target disk alone,
+	 * with a NIC attached this time, and confirm it comes up as a working
+	 * cixd that bootstrapped its management network from the static
+	 * IP/gateway/interface configured at install time (Part 0.5). Nothing
+	 * here is test-built: it is the chain cix-install wrote, shim ->
+	 * cix-boot.efi (installed as grubx64.efi) -> the kernel, which is
+	 * what an operator's machine boots after the install. Secure Boot is
+	 * not enforced (cix#647), so nothing checks the signatures on it. */
 	{
 		struct qemu_boot_opts opts;
 
 		memset(&opts, 0, sizeof(opts));
 		opts.disk_img = target_disk_img;
-		opts.secure_boot = 1;
 		opts.with_nic = 1;
 		opts.ovmf_vars = ovmf_vars;
 		opts.success_marker = SEED_READY_MARKER;
@@ -1160,7 +945,7 @@ int main(void)
 		return 1;
 	}
 
-	/* 10. The persistence proof (ADR-0018), btrfs edition. BASE_DIR
+	/* 9. The persistence proof (ADR-0018), btrfs edition. BASE_DIR
 	 * (/var/lib/cix) must be the real cix-containers partition
 	 * boot_init() mounts, not a fresh tmpfs -- proven by reading the
 	 * real on-disk partition, never by believing a boot succeeded.
@@ -1173,7 +958,7 @@ int main(void)
 	 * the guest page cache, it never appears later either). So every
 	 * assertion here relies only on data with a deterministic path to
 	 * disk: content the installer wrote under a clean umount, and
-	 * session-3 writes old enough (cixd's first-boot init, minutes of
+	 * session-4 writes old enough (cixd's first-boot init, minutes of
 	 * TCG guest time before the success marker) to have crossed
 	 * btrfs's 30s commit interval. What this proves is the property
 	 * that matters: installer-seeded content survives two real,
@@ -1210,7 +995,7 @@ int main(void)
 		if (extract_partition(target_disk_img, containers_start_sec * SECTOR_SIZE,
 		                       containers_size_sec * SECTOR_SIZE, containers_extract) != 0 ||
 		    btrfs_restore_tree(containers_extract, containers_tree) != 0) {
-			fprintf(stderr, "could not extract containers partition after session 3\n");
+			fprintf(stderr, "could not extract containers partition after session 4\n");
 			ok = 0;
 		} else {
 			/* ADR-0210: the default image is created by the DAEMON at
@@ -1234,7 +1019,7 @@ int main(void)
 			} else if (files_identical(runtime_path, ld_so_src) != 0) {
 				fprintf(stderr,
 				        "the default image's ld.so does not match the build host source "
-				        "after session 3 -- content corrupted on the way to disk\n");
+				        "after session 4 -- content corrupted on the way to disk\n");
 				ok = 0;
 			} else {
 				printf("first boot materialized the default image with its baseline "
@@ -1248,9 +1033,8 @@ int main(void)
 		}
 
 		/*
-		 * Session 4: the same target disk, a completely independent
-		 * QEMU process/boot, Secure Boot still enforced (the same
-		 * ovmf_vars, already MOK-confirmed by session 2).
+		 * Session 5: the same target disk, a completely independent
+		 * QEMU process/boot, with the same ovmf_vars.
 		 *
 		 * The NIC is kept because a realistic boot of this disk has
 		 * one: net.conf names an address that lives on it. It is no
@@ -1299,14 +1083,14 @@ int main(void)
 		if (extract_partition(target_disk_img, containers_start_sec * SECTOR_SIZE,
 		                       containers_size_sec * SECTOR_SIZE, containers_extract) != 0 ||
 		    btrfs_restore_tree(containers_extract, containers_tree) != 0) {
-			fprintf(stderr, "could not extract containers partition after session 4\n");
+			fprintf(stderr, "could not extract containers partition after session 5\n");
 			ok = 0;
 		} else {
 			char dir_path[700];
 
 			/* Session 3's own first-boot writes, now stably on disk
-			 * (they had session 3's whole multi-minute init runtime to
-			 * commit; session 4 does not undo them): the grouped
+			 * (they had session 4's whole multi-minute init runtime to
+			 * commit; session 5 does not undo them): the grouped
 			 * layout's non-empty top-level directories, and the seeded
 			 * runtime at its migrated, grouped path -- still
 			 * byte-identical to the build host source after TWO real,
@@ -1317,13 +1101,13 @@ int main(void)
 			snprintf(dir_path, sizeof(dir_path), "%s/state", containers_tree);
 			if (stat(dir_path, &pst) != 0) {
 				fprintf(stderr, "state/ missing from the raw containers partition after "
-				                "session 4 -- BASE_DIR was not the real partition\n");
+				                "session 5 -- BASE_DIR was not the real partition\n");
 				ok = 0;
 			}
 			snprintf(dir_path, sizeof(dir_path), "%s/rebuildable", containers_tree);
 			if (stat(dir_path, &pst) != 0) {
 				fprintf(stderr, "rebuildable/ missing from the raw containers partition "
-				                "after session 4 -- BASE_DIR was not the real partition\n");
+				                "after session 5 -- BASE_DIR was not the real partition\n");
 				ok = 0;
 			}
 			{
@@ -1331,7 +1115,7 @@ int main(void)
 
 				if (find_default_image_runtime(containers_tree, runtime_path,
 				                               sizeof(runtime_path)) != 0) {
-					fprintf(stderr, "the default image is missing after session 4\n");
+					fprintf(stderr, "the default image is missing after session 5\n");
 					ok = 0;
 				} else if (files_identical(runtime_path, ld_so_src) != 0) {
 					fprintf(stderr,
