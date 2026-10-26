@@ -15037,6 +15037,20 @@ async function refreshBuildOverview() {
 		try {
 			const e = await apiRequest("GET", CIX_API.getPkg(key));
 
+			/* ADR-0357 (#642): an uninstall holds a slot too. It has no
+			 * build, container or log, so it gets none of those rows and
+			 * the card does not offer a log. */
+			if (e.uninstalling) {
+				add("state", "uninstalling");
+				add("image", e.image || image);
+				add("version", e.version || "—");
+				card.removeAttribute("role");
+				card.removeAttribute("tabindex");
+				card.title = "Being uninstalled: the image's next version is being produced";
+				card.appendChild(dl);
+				list.appendChild(card);
+				continue;
+			}
 			add("state", e.state || "?");
 			add("image", e.image || image);
 			add("version", e.version || e.available_version || "\u2014");

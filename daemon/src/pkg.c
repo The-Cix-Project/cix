@@ -1409,6 +1409,18 @@ static int entry_being_produced(const struct pkg_entry *e)
 	return 0;
 }
 
+/* ADR-0357 (#642): is a chain uninstalling e right now? */
+static int entry_being_uninstalled(const struct pkg_entry *e)
+{
+	int i;
+
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+		if (g_chains[i].name[0] != '\0' && g_chains[i].is_delete && g_chains[i].produce_e == e)
+			return 1;
+	}
+	return 0;
+}
+
 /*
  * True when a chain slot is already building or installing `package`,
  * for any image.
@@ -6583,6 +6595,10 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 		jw_str(w, e->kept_build_container);
 	else
 		jw_null(w);
+	/* ADR-0357 (#642): the entry stays installed while its uninstall's
+	 * version is produced, so state alone cannot say one is in flight. */
+	jw_key(w, "uninstalling");
+	jw_bool(w, entry_being_uninstalled(e));
 	jw_key(w, "available_version");
 	if (has_available)
 		jw_str(w, available_version);
@@ -15652,8 +15668,10 @@ int pkg_produce_completed(int chain_idx, int exit_status, pid_t *out_pid, int *o
 		if (g_chains[chain_idx].is_delete) {
 			*out_deleted_chain = chain_idx;
 			*out_delete_result = PKG_ERR_PERSIST_FAILED;
-			if (g_chains[chain_idx].name[0] != '\0')
+			if (g_chains[chain_idx].name[0] != '\0') {
 				chain_release(chain_idx);
+				pkg_announce_jobs();
+			}
 		}
 		return 0;
 	}
@@ -16742,6 +16760,7 @@ static void delete_finish(int chain_idx, struct pkg_entry *e, enum pkg_error res
 		}
 	}
 	chain_release(chain_idx);
+	pkg_announce_jobs(); /* ADR-0339: nothing reads uninstalling any more */
 	*out_result = result;
 }
 
@@ -16912,10 +16931,12 @@ static enum pkg_error delete_start(const char *name, const char *image, int is_s
 	g_chains[chain_idx].is_stray = is_stray;
 	chain_set_buildenv(chain_idx, "");
 	chain_claim(chain_idx, e->name);
+	pkg_announce_jobs(); /* ADR-0339: the entry reads uninstalling now */
 	if (delete_produce_start(chain_idx, out_pid, out_pidfd, err, sizeof(err)) != 0) {
 		logstore_write("cixd", "error", "pkg %s@%s: not uninstalled -- %s", e->name,
 		               g_chains[chain_idx].image, err);
 		chain_release(chain_idx);
+		pkg_announce_jobs();
 		return PKG_ERR_SPAWN_FAILED;
 	}
 	*out_chain_idx = chain_idx;

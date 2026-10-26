@@ -24417,6 +24417,16 @@ components:
             exact name to pass to GET /containers/{name}/files?path=... or
             DELETE /containers/{name} afterward. null otherwise, including for
             every successful install.
+        uninstalling:
+          type: boolean
+          description: >
+            True while an uninstall of this entry is in flight (ADR-0357,
+            #642): a DELETE, or the rolling drain removing a stray, is
+            producing the image version without it. The entry stays
+            "installed" until that version is recorded, because until then
+            the image still holds it, so state alone cannot say so. The
+            uninstall holds a package job slot meanwhile, which is why it
+            appears in getSystemPkgBuildConfig's active_job_names.
         available_version:
           type: string
           nullable: true
