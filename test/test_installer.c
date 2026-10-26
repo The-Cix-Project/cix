@@ -1093,7 +1093,6 @@ int main(void)
 
 			memset(&opts, 0, sizeof(opts));
 			opts.disk_img = target_disk_img;
-			opts.secure_boot = 1;
 			opts.with_nic = 1;
 			opts.ovmf_vars = ovmf_vars;
 			opts.success_marker = BOOT_SUCCESS_MARKER;
