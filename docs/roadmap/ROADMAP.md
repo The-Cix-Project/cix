@@ -2445,6 +2445,20 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 332: an uninstall is a package job, produced in a helper child (#642, 0.2.57-603)
+
+Deleting `node` from a scratch image held the event loop 825 ms on 0.2.57-601, 555 ms of it writing the version's package snapshot. An uninstall now claims a package job slot, produces its version in `image_version_fork()`'s child and waits for any other producer in its image as an install does. Its entry stays `installed`, with `uninstalling: true`, until the daemon records the version. `DELETE /v1/pkg/{name}` waits on that job (`PARK_PKGDELETE`), and the rolling drain removes one stray per pass. The package snapshot is now written with the tree in the child, for installs too ([ADR-0357](../adr/0357-an-uninstall-is-a-package-job-produced-in-a-helper-child.md)).
+
+**Measured on 192.168.15.95, 2026-10-26, at 0.2.57-603** (slot a, 12 containers running), in a scratch image holding `node` and its six dependencies:
+
+- **`node` (1,932 files):** `DELETE` answered 204 in 0.17 s, timed from the client. The daemon logged the version produced in 87 ms in a helper child. It hashed to the image's earlier version without node, so the child discarded its tree and the image went back to that version. Afterwards `GET /v1/pkg/node@probe642` answered 404.
+- **`gcc` (1,094 files), into a version the image never had:** 204 in 0.17 s, and the child produced it in 86 ms. That version's manifest snapshot, `GET /v1/images/probe642/versions/{version}/manifest`, lists the other six packages and not gcc, so the child wrote it from the right set.
+- **The loop stayed free:** `GET /v1/whoami`, polled every half second through both deletes, answered in 0.7 to 23 ms. `GET /v1/system/stalls` recorded no slow pass at all from the boot to the end of the test, eight deletes and eight installs included.
+- **In flight:** one of the 30 reads taken 0.2 s apart during node's delete caught `"state":"installed"` with `"uninstalling":true`, and `active_job_names` reading `node@probe642`. The nine reads before it showed `uninstalling: false` and no job, and the twenty after it found the entry gone and no job.
+- **Cleanup:** the six remaining packages were deleted the same way, 109 to 174 ms each, and then the image.
+
+Not exercised live: an uninstall waiting for another producer in its image, an install waiting for an uninstall, and the drain's one-stray-per-pass path, which runs only for a followed image. The Build overview's uninstall card was not rendered in Chromium, since a delete was in flight for under 0.2 s. Compile probes 0.2.57-623 and -624 and the 603 release: `SELFTEST: PASS`, `test_blocking_waits`, the web gates and `test_apishape` included.
+
 ## Part 331: a package verification is made in a helper child (#643, 0.2.57-602)
 
 `GET /v1/pkg/verify` stats every recorded file of every installed package and reads every installed header. It did that on the event loop, and on 2026-10-25 held it 8581 ms with 310 packages. The report is now made in `verify_work()`, a helper child, through a new park kind, `PARK_VERIFY`. One runs at a time, four more can wait, and beyond that the answer is 503 with `Retry-After`. `test_blocking_waits` counts the call sites.
