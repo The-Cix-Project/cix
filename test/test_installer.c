@@ -1117,21 +1117,34 @@ int main(void)
 		} else {
 			char dir_path[700];
 
-			/* Session 3's own first-boot writes, now stably on disk
+			/* Session 4's own first-boot writes, now stably on disk
 			 * (they had session 4's whole multi-minute init runtime to
-			 * commit; session 5 does not undo them): the grouped
-			 * layout's non-empty top-level directories, and the seeded
-			 * runtime at its migrated, grouped path -- still
-			 * byte-identical to the build host source after TWO real,
-			 * independent boots. CONTAINERS_DIR itself is deliberately
-			 * not asserted: it is empty (no containers exist in this
-			 * test), and `btrfs restore`'s handling of an empty
-			 * directory is not a contract this test should depend on. */
-			snprintf(dir_path, sizeof(dir_path), "%s/state", containers_tree);
-			if (stat(dir_path, &pst) != 0) {
-				fprintf(stderr, "state/ missing from the raw containers partition after "
-				                "session 5 -- BASE_DIR was not the real partition\n");
-				ok = 0;
+			 * commit; session 5 does not undo them): rebuildable/ on the
+			 * containers partition, state/ on the config partition, and
+			 * the seeded runtime at its grouped path -- still
+			 * byte-identical to the source after TWO real, independent
+			 * boots. state/ is read from cix-config because an installed
+			 * host keeps it there (STATE_DIR is CONFIG_DIR/state, #250);
+			 * this used to look for it on the containers partition.
+			 * CONTAINERS_DIR itself is deliberately not asserted: it is
+			 * empty (no containers exist in this test), and `btrfs
+			 * restore`'s handling of an empty directory is not a
+			 * contract this test should depend on. */
+			{
+				char config_extract[600], config_tree[600];
+
+				snprintf(config_extract, sizeof(config_extract), "%s/config_extract_s5.img",
+				         workdir);
+				snprintf(config_tree, sizeof(config_tree), "%s/config_tree_s5", workdir);
+				snprintf(dir_path, sizeof(dir_path), "%s/state", config_tree);
+				if (extract_partition(target_disk_img, config_start_sec * SECTOR_SIZE,
+				                       config_size_sec * SECTOR_SIZE, config_extract) != 0 ||
+				    btrfs_restore_tree(config_extract, config_tree) != 0 ||
+				    stat(dir_path, &pst) != 0) {
+					fprintf(stderr, "state/ missing from the raw config partition after "
+					                "session 5 -- STATE_DIR was not the real partition\n");
+					ok = 0;
+				}
 			}
 			snprintf(dir_path, sizeof(dir_path), "%s/rebuildable", containers_tree);
 			if (stat(dir_path, &pst) != 0) {
