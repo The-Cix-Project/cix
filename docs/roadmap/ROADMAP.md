@@ -2452,7 +2452,7 @@ Clearing a failed `@__hostbuild` entry removed whatever artifact directory the b
 **Measured on 192.168.15.95, 2026-10-26, at 0.2.57-604** (slot b, 12 containers running):
 
 - **A failed hostbuild entry:** `probe-cix-tarball@646-1`, hostbuilt, failed at fetch by design and read `failed:fetch/failed`. `DELETE /v1/pkg/probe-cix-tarball@__hostbuild` answered 204 in 0.09 s, and the entry was gone from `pkg ls`.
-- **No warnings:** the cixd log since boot has no "could not delete" or "could not start deleting" line, so the start-time sweep of `<artifacts>/.discard` ran clean. `GET /v1/system/stalls` recorded no slow pass since boot.
+- **No warnings:** the cixd log since boot has no "could not delete" or "could not start deleting" line, and `GET /v1/system/stalls` recorded no slow pass since boot. No `<artifacts>/.discard` existed at that boot, so the start-time sweep had nothing to do; its path over a real entry is unrun, like the set-aside below.
 - **The tag's archive** hashes as its commit's: 6622831 bytes, `b869a0c5…`, from that same probe.
 
 Not exercised live: a failed entry with a populated artifact directory. A fetch failure leaves none, and a failed upgrade stays installed at its previous version, so nothing cheap produces one; the set-aside of an existing directory is read from the code, not run. Compile probe 0.2.57-625 and the 604 release: `SELFTEST: PASS`. Filed while choosing this: #645 (a hostbuild's harvest still clears and refills its artifact directory on the loop) and #646 (the announcement self-check's in-process `GET /v1/pkg/cache` held the loop 5606 ms on 2026-10-25, cause not established).
