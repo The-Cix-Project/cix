@@ -2445,6 +2445,18 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 333: a failed hostbuild's artifact directory leaves through the discard queue (#644, 0.2.57-604)
+
+Clearing a failed `@__hostbuild` entry removed whatever artifact directory the build had left, with an rmtree on the event loop. It was the one tree delete left on the loop in a package delete. The directory is now set aside into `<artifacts>/.discard` with one rename, and ADR-0341's queue deletes it in a helper child. The daemon's start sweeps that trash directory too. An installed hostbuild's uninstall still deletes the directory in its producer child (ADR-0357), because a child cannot use the daemon's queue. Its cost on the loop was never measured: no retained slow pass on 192.168.15.95 since 2026-10-18 names it.
+
+**Measured on 192.168.15.95, 2026-10-26, at 0.2.57-604** (slot b, 12 containers running):
+
+- **A failed hostbuild entry:** `probe-cix-tarball@646-1`, hostbuilt, failed at fetch by design and read `failed:fetch/failed`. `DELETE /v1/pkg/probe-cix-tarball@__hostbuild` answered 204 in 0.09 s, and the entry was gone from `pkg ls`.
+- **No warnings:** the cixd log since boot has no "could not delete" or "could not start deleting" line, so the start-time sweep of `<artifacts>/.discard` ran clean. `GET /v1/system/stalls` recorded no slow pass since boot.
+- **The tag's archive** hashes as its commit's: 6622831 bytes, `b869a0c5…`, from that same probe.
+
+Not exercised live: a failed entry with a populated artifact directory. A fetch failure leaves none, and a failed upgrade stays installed at its previous version, so nothing cheap produces one; the set-aside of an existing directory is read from the code, not run. Compile probe 0.2.57-625 and the 604 release: `SELFTEST: PASS`. Filed while choosing this: #645 (a hostbuild's harvest still clears and refills its artifact directory on the loop) and #646 (the announcement self-check's in-process `GET /v1/pkg/cache` held the loop 5606 ms on 2026-10-25, cause not established).
+
 ## Part 332: an uninstall is a package job, produced in a helper child (#642, 0.2.57-603)
 
 Deleting `node` from a scratch image held the event loop 825 ms on 0.2.57-601, 555 ms of it writing the version's package snapshot. An uninstall now claims a package job slot, produces its version in `image_version_fork()`'s child and waits for any other producer in its image as an install does. Its entry stays `installed`, with `uninstalling: true`, until the daemon records the version. `DELETE /v1/pkg/{name}` waits on that job (`PARK_PKGDELETE`), and the rolling drain removes one stray per pass. The package snapshot is now written with the tree in the child, for installs too ([ADR-0357](../adr/0357-an-uninstall-is-a-package-job-produced-in-a-helper-child.md)).

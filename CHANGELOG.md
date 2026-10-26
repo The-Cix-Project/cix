@@ -13,6 +13,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **Also:** the queue's failure warning no longer says every entry was a container's rootfs.
 - **Not changed:** a hostbuild's harvest still clears and refills its artifact directory on the loop (`persist_fresh_output_dir()` and `merge_tree()`), #645, because ADR-0253 makes that clear one named operation in `persist.c`, which cannot reach main.c's queue.
 - **Not gated:** `test_blocking_waits` does not count tree deletes. Counting them would mean budgeting main.c's, image.c's and volume.c's unaudited sites as they are.
+- **Verified:** compile probe 0.2.57-625 and the 0.2.57-604 release: `SELFTEST: PASS`. 604 is live on 192.168.15.95 (slot b, 12 containers running). A hostbuild of `probe-cix-tarball@646-1` failed at fetch by design, and deleting that FAILED `@__hostbuild` entry answered 204 in 0.09 s and removed it, with no discard warning in the log and no slow pass since boot. A failed entry with a populated artifact directory was not run.
 
 ### An uninstall is a package job, produced in a helper child (#642)
 
