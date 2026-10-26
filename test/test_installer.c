@@ -938,11 +938,29 @@ int main(void)
 		printf("INSTALLER RESULT: FAIL\n");
 		return 1;
 	}
-	if (strstr(captured, "init-mode: management network") == NULL || strstr(captured, TEST_IP) == NULL ||
-	    strstr(captured, TEST_GATEWAY) == NULL || strstr(captured, TEST_IFACE) == NULL) {
-		fprintf(stderr, "installed system booted but never bootstrapped its management network\n");
-		printf("INSTALLER RESULT: FAIL\n");
-		return 1;
+	/*
+	 * What cixd's init mode prints once the address is up (main.c,
+	 * "init-mode: management address %s on network %s%s"), and the
+	 * kernel's line for the interface joining that network's bridge.
+	 * The line ends in " (no default route)" when net.conf names no
+	 * gateway, so its absence is the gateway's evidence. This used to
+	 * look for "init-mode: management network", which cixd no longer
+	 * prints, and for TEST_GATEWAY anywhere, which "192.168.50.10"
+	 * already contains.
+	 */
+	{
+		const char *addr_line =
+		        strstr(captured, "init-mode: management address " TEST_IP " on network ");
+		const char *eol = addr_line != NULL ? strchr(addr_line, '\n') : NULL;
+		const char *no_route = addr_line != NULL ? strstr(addr_line, "(no default route)") : NULL;
+
+		if (addr_line == NULL || (no_route != NULL && (eol == NULL || no_route < eol)) ||
+		    strstr(captured, "(" TEST_IFACE ") entered forwarding state") == NULL) {
+			fprintf(stderr,
+			        "installed system booted but never bootstrapped its management network\n");
+			printf("INSTALLER RESULT: FAIL\n");
+			return 1;
+		}
 	}
 
 	/* 9. The persistence proof (ADR-0018), btrfs edition. BASE_DIR
