@@ -4939,6 +4939,29 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 					return merge_fail(child_rel, "carrying an undefined compiler builtin", 0);
 				}
 			}
+			/*
+			 * Issue #653: refuse a shared library whose thread-local
+			 * data is addressed as an executable's would be. TCC
+			 * builds `__thread` in a library that way, and libuuid
+			 * 2.42.2-7 broke every btrfs format on .95 with it (#650)
+			 * while installing and booting cleanly. A library with
+			 * TLS and no dynamic means of reaching it is wrong
+			 * whatever built it, so this too refuses outright.
+			 */
+			t = stallwatch_tally_start();
+			rc = elfcheck_unreachable_tls(src_path);
+			stallwatch_tally("elfcheck", t);
+			if (rc == 1) {
+				closedir(d);
+				logstore_write("cixd", "error",
+				               "pkg install: %s is a shared library with thread-local data "
+				               "addressed at fixed offsets from the thread pointer, which in a "
+				               "library lands on the loading program's own thread-local variables "
+				               "-- tcc builds __thread in a shared library this way, so build "
+				               "this package with compiler \"gcc\" (#653)",
+				               child_rel);
+				return merge_fail(child_rel, "carrying thread-local data it cannot reach", 0);
+			}
 
 			t = stallwatch_tally_start();
 			unlink(dst_path);

@@ -498,6 +498,12 @@ Two rules for the shim:
 
 #208 tracks implementing the byte-swap builtins in TCC itself, after which these shims should be deleted rather than copied into another recipe.
 
+### A shared library with thread-local data is built with gcc
+
+TCC compiles `__thread` in a `-shared` object with the local-exec TLS model: fixed offsets from the thread pointer, which are correct only in an executable. In a library those offsets land on the loading program's own thread-local variables. libuuid 2.42.2-7 shipped that way and broke every btrfs format on a Cix host (#650): it installed, booted and worked in most programs, and corrupted `mkfs.btrfs`, whose own TLS sat where libuuid's offsets pointed.
+
+The install-time ELF gate refuses such a library (#653). It names the file and says the package needs gcc. A shared object that has a `PT_TLS` segment but neither a TLS dynamic relocation nor an import of `__tls_get_addr` cannot reach its data correctly, whatever built it. So a third-party package whose shared library has thread-local data declares `compiler "gcc"`, with a `toolchain "gcc" { reason }` that cites the refusal. `libuuid@2.42.2-8.cbs` is the reference.
+
 ### `#!/bin/bash` does not work in the build sandbox
 
 The bash package ships exactly two entry points:

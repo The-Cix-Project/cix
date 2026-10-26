@@ -6,9 +6,11 @@
  * tcc and gcc actually emit, not what they emitted when the test was
  * written.
  */
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "elfcheck.h"
@@ -129,6 +131,99 @@ int main(void)
 			unlink(tcc_exe);
 			unlink(gcc_exe);
 		}
+	}
+
+	/*
+	 * Issue #653: thread-local data a shared library cannot reach.
+	 *
+	 * The same `__thread` source built both ways. tcc's -shared build
+	 * is the defect (#650, libuuid 2.42.2-7) and must be refused; gcc's
+	 * -fPIC build reaches its TLS through __tls_get_addr and must not
+	 * be. Both compilers are declared tools of every recipe that runs
+	 * this suite, so neither half is allowed to skip: a gate whose
+	 * positive case quietly did not run proves nothing.
+	 */
+	{
+		char tls_src[256], tls_tcc[256], tls_gcc[256], tls_exe[256];
+
+		snprintf(tls_src, sizeof(tls_src), "%s/t.c", dir);
+		snprintf(tls_tcc, sizeof(tls_tcc), "%s/libtls_tcc.so", dir);
+		snprintf(tls_gcc, sizeof(tls_gcc), "%s/libtls_gcc.so", dir);
+		snprintf(tls_exe, sizeof(tls_exe), "%s/tls_e", dir);
+		f = fopen(tls_src, "w");
+		check(f != NULL, "could write the thread-local fixture source");
+		if (f != NULL) {
+			fprintf(f, "__thread int counter;\n"
+			           "int bump(void) { return ++counter; }\n"
+			           "int main(void) { return bump() - 1; }\n");
+			fclose(f);
+
+			snprintf(cmd, sizeof(cmd), "tcc -shared -o %s %s", tls_tcc, tls_src);
+			check(system(cmd) == 0 && access(tls_tcc, R_OK) == 0,
+			      "tcc builds the thread-local shared fixture");
+			check(elfcheck_unreachable_tls(tls_tcc) == 1,
+			      "a tcc -shared object with __thread data is refused");
+
+			/* By absolute path: a bare gcc computes a relative
+			 * installation prefix here and cannot find cc1. */
+			snprintf(cmd, sizeof(cmd), "/usr/bin/gcc -shared -fPIC -o %s %s", tls_gcc, tls_src);
+			check(system(cmd) == 0 && access(tls_gcc, R_OK) == 0,
+			      "gcc builds the thread-local shared fixture");
+			check(elfcheck_unreachable_tls(tls_gcc) == 0,
+			      "a gcc -fPIC object with __thread data is not refused");
+
+			/* Local-exec is correct in an executable, which is
+			 * what the same source is when tcc links it as one. */
+			snprintf(cmd, sizeof(cmd), "tcc -o %s %s", tls_exe, tls_src);
+			check(system(cmd) == 0 && access(tls_exe, R_OK) == 0,
+			      "tcc builds the thread-local executable fixture");
+			check(elfcheck_unreachable_tls(tls_exe) == 0,
+			      "an executable with local-exec TLS is not refused");
+			check(elfcheck_unreachable_tls("/no/such/path") == -1,
+			      "an unreadable file is an error, distinct from clean");
+			unlink(tls_src);
+			unlink(tls_tcc);
+			unlink(tls_gcc);
+			unlink(tls_exe);
+		}
+	}
+
+	/*
+	 * And no shared object this suite's own build container carries is
+	 * refused: glibc's, gcc's runtime and every declared tool's
+	 * libraries are what a false positive would refuse first.
+	 */
+	{
+		static const char *const libdirs[] = { "/usr/lib", "/lib", "/usr/lib64", "/lib64",
+		                                       "/lib/x86_64-linux-gnu" };
+		size_t k;
+		int scanned = 0;
+
+		for (k = 0; k < sizeof(libdirs) / sizeof(libdirs[0]); k++) {
+			DIR *ld = opendir(libdirs[k]);
+			struct dirent *de;
+
+			if (ld == NULL)
+				continue;
+			while ((de = readdir(ld)) != NULL) {
+				char path[1024];
+				struct stat lst;
+
+				if (strstr(de->d_name, ".so") == NULL)
+					continue;
+				snprintf(path, sizeof(path), "%s/%s", libdirs[k], de->d_name);
+				if (lstat(path, &lst) != 0 || !S_ISREG(lst.st_mode))
+					continue;
+				scanned++;
+				if (elfcheck_unreachable_tls(path) == 1) {
+					fprintf(stderr, "FAIL: %s is refused as unreachable TLS\n", path);
+					g_fail++;
+				}
+			}
+			closedir(ld);
+		}
+		printf("  (unreachable-TLS check ran over %d shared objects in this container)\n", scanned);
+		check(scanned > 0, "the container's own shared objects were found to scan");
 	}
 
 	unlink(src);

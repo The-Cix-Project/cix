@@ -675,3 +675,204 @@ int elfcheck_undeclared_links(const char *root, const char provided[][ELFCHECK_S
 	soname_set_free(&known);
 	return rc;
 }
+
+/*
+ * Issue #653: thread-local data a shared library cannot reach.
+ *
+ * See elfcheck.h for the defect. The question is answered from the
+ * program headers first, because they settle it for nearly every file
+ * at the cost of one read: no PT_TLS means no thread-local data, and a
+ * PT_INTERP means an executable, where local-exec is correct. Only a
+ * library that does carry TLS has its relocations and dynamic symbols
+ * read.
+ */
+#define PT_INTERP_LOCAL 3
+#define PT_TLS_LOCAL 7
+#define SHT_RELA_LOCAL 4
+#define DT_FLAGS_1_LOCAL 0x6ffffffbULL
+#define DF_1_PIE_LOCAL 0x08000000ULL
+/* The relocations a dynamic linker resolves to reach thread-local
+ * data: the module id, an offset within the module's block, an offset
+ * from the thread pointer, and a TLS descriptor. */
+#define R_X86_64_DTPMOD64_LOCAL 16
+#define R_X86_64_DTPOFF64_LOCAL 17
+#define R_X86_64_TPOFF64_LOCAL 18
+#define R_X86_64_TLSDESC_LOCAL 36
+/* Bounds a relocation table read in one piece; glibc's own is a few
+ * tens of kilobytes. */
+#define ELFCHECK_MAX_RELA (64u * 1024u * 1024u)
+
+static int section_reaches_tls(int fd, const unsigned char *sh, unsigned long long e_shoff,
+                               unsigned int e_shentsize, unsigned int e_shnum)
+{
+	unsigned int sh_type = (unsigned int)rd(sh + 0x04, 4);
+	unsigned long long sh_off = rd(sh + 0x18, 8);
+	unsigned long long sh_size = rd(sh + 0x20, 8);
+	unsigned int sh_link = (unsigned int)rd(sh + 0x28, 4);
+	unsigned long long sh_entsize = rd(sh + 0x38, 8);
+	unsigned char *body;
+	unsigned long long n, k;
+	int found = 0;
+
+	if (sh_type == SHT_RELA_LOCAL) {
+		if (sh_entsize < 24 || sh_size == 0 || sh_size > ELFCHECK_MAX_RELA)
+			return 0;
+		body = malloc((size_t)sh_size);
+		if (body == NULL)
+			return -1;
+		if (read_at(fd, body, (size_t)sh_size, (off_t)sh_off) != 0) {
+			free(body);
+			return -1;
+		}
+		n = sh_size / sh_entsize;
+		for (k = 0; k < n && !found; k++) {
+			unsigned int type = (unsigned int)rd(body + k * sh_entsize + 8, 4);
+
+			if (type == R_X86_64_DTPMOD64_LOCAL || type == R_X86_64_DTPOFF64_LOCAL ||
+			    type == R_X86_64_TPOFF64_LOCAL || type == R_X86_64_TLSDESC_LOCAL)
+				found = 1;
+		}
+		free(body);
+		return found;
+	}
+
+	if (sh_type == SHT_DYNSYM_LOCAL) {
+		unsigned char strsh[64];
+		unsigned long long str_off, str_size;
+		char *strtab;
+
+		if (sh_entsize < 24 || sh_size == 0 || sh_link >= e_shnum)
+			return 0;
+		if (read_at(fd, strsh, sizeof(strsh),
+		            (off_t)(e_shoff + (unsigned long long)sh_link * e_shentsize)) != 0)
+			return -1;
+		str_off = rd(strsh + 0x18, 8);
+		str_size = rd(strsh + 0x20, 8);
+		if (str_size == 0 || str_size > ELFCHECK_MAX_STRTAB)
+			return 0;
+		strtab = malloc((size_t)str_size + 1);
+		if (strtab == NULL)
+			return -1;
+		if (read_at(fd, strtab, (size_t)str_size, (off_t)str_off) != 0) {
+			free(strtab);
+			return -1;
+		}
+		strtab[str_size] = '\0';
+		n = sh_size / sh_entsize;
+		for (k = 0; k < n && !found; k++) {
+			unsigned char sym[24];
+			unsigned int st_name;
+
+			if (read_at(fd, sym, sizeof(sym), (off_t)(sh_off + k * sh_entsize)) != 0)
+				break;
+			st_name = (unsigned int)rd(sym + 0x00, 4);
+			if ((unsigned int)rd(sym + 0x06, 2) != SHN_UNDEF_LOCAL || st_name == 0 ||
+			    (unsigned long long)st_name >= str_size)
+				continue;
+			if (strcmp(strtab + st_name, "__tls_get_addr") == 0)
+				found = 1;
+		}
+		free(strtab);
+		return found;
+	}
+
+	if (sh_type == SHT_DYNAMIC_LOCAL) {
+		/* A static PIE has no PT_INTERP; DF_1_PIE says what it is.
+		 * It answers as reached, since local-exec is correct in an
+		 * executable. */
+		for (k = 0; k + 16 <= sh_size; k += 16) {
+			unsigned char ent[16];
+			unsigned long long tag;
+
+			if (read_at(fd, ent, sizeof(ent), (off_t)(sh_off + k)) != 0)
+				return -1;
+			tag = rd(ent, 8);
+			if (tag == DT_NULL_LOCAL)
+				break;
+			if (tag == DT_FLAGS_1_LOCAL && (rd(ent + 8, 8) & DF_1_PIE_LOCAL) != 0)
+				return 1;
+		}
+		return 0;
+	}
+	return 0;
+}
+
+int elfcheck_unreachable_tls(const char *path)
+{
+	int fd;
+	unsigned char ehdr[64];
+	unsigned long long e_phoff, e_shoff;
+	unsigned int e_phentsize, e_phnum, e_shentsize, e_shnum, p, i;
+	struct stat st;
+	int has_tls = 0;
+	int reached = 0;
+
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+		close(fd);
+		return -1;
+	}
+	if (read_at(fd, ehdr, sizeof(ehdr), 0) != 0 || memcmp(ehdr, "\177ELF", 4) != 0 ||
+	    ehdr[4] != ELFCLASS64_LOCAL || rd(ehdr + 0x10, 2) != 3 /* ET_DYN */) {
+		close(fd);
+		return 0;
+	}
+
+	e_phoff = rd(ehdr + 0x20, 8);
+	e_phentsize = (unsigned int)rd(ehdr + 0x36, 2);
+	e_phnum = (unsigned int)rd(ehdr + 0x38, 2);
+	if (e_phoff == 0 || e_phentsize < 56 || e_phnum == 0 || e_phnum >= 256) {
+		close(fd);
+		return 0;
+	}
+	for (p = 0; p < e_phnum; p++) {
+		unsigned char ph[56];
+		unsigned long long p_type;
+
+		if (read_at(fd, ph, sizeof(ph), (off_t)(e_phoff + (unsigned long long)p * e_phentsize)) != 0) {
+			close(fd);
+			return -1;
+		}
+		p_type = rd(ph + 0x00, 4);
+		if (p_type == PT_INTERP_LOCAL) {
+			close(fd);
+			return 0;
+		}
+		if (p_type == PT_TLS_LOCAL)
+			has_tls = 1;
+	}
+	if (!has_tls) {
+		close(fd);
+		return 0;
+	}
+
+	e_shoff = rd(ehdr + 0x28, 8);
+	e_shentsize = (unsigned int)rd(ehdr + 0x3a, 2);
+	e_shnum = (unsigned int)rd(ehdr + 0x3c, 2);
+	if (e_shoff == 0 || e_shentsize < 64 || e_shnum == 0 || e_shnum > ELFCHECK_MAX_SECTIONS) {
+		/* A library with TLS and no section table cannot be judged
+		 * from what this reads, and the check refuses only on
+		 * evidence. */
+		close(fd);
+		return -1;
+	}
+	for (i = 0; i < e_shnum && !reached; i++) {
+		unsigned char sh[64];
+		int r;
+
+		if (read_at(fd, sh, sizeof(sh), (off_t)(e_shoff + (unsigned long long)i * e_shentsize)) != 0) {
+			close(fd);
+			return -1;
+		}
+		r = section_reaches_tls(fd, sh, e_shoff, e_shentsize, e_shnum);
+		if (r < 0) {
+			close(fd);
+			return -1;
+		}
+		reached = r;
+	}
+	close(fd);
+	return reached ? 0 : 1;
+}

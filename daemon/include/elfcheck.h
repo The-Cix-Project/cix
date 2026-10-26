@@ -153,4 +153,30 @@ int elfcheck_undefined_builtin(const char *path, char *out_sym, size_t sym_size)
 #define ELFCHECK_GCC_INCONCLUSIVE 2
 int elfcheck_built_by_gcc(const char *path, char *out_version, size_t version_size);
 
+/*
+ * Issue #653: a shared library whose thread-local data is addressed as
+ * if it were an executable's.
+ *
+ * TCC compiles `__thread` in a `-shared` object with the local-exec
+ * model: fixed offsets from %fs, which are valid only for the
+ * executable's own TLS block. In a library they read and write the
+ * loading program's thread-local variables instead. libuuid 2.42.2-7
+ * shipped that way and broke every btrfs format on 192.168.15.95
+ * (#650); it fails only in a program whose TLS sits where the
+ * library's offsets point, so the same file works in one program and
+ * corrupts another.
+ *
+ * A library that reaches its TLS correctly has a dynamic means of
+ * doing so: a DTPMOD64, DTPOFF64, TPOFF64 or TLSDESC relocation, or an
+ * import of __tls_get_addr. Measured on .95, 2026-10-26
+ * (probe-tlssig@1-1): gcc's libuuid 2.42.2-8 has a DTPMOD64 and
+ * imports __tls_get_addr, and tcc's 2.42.2-7 has neither.
+ *
+ * Returns 1 for a shared object (ET_DYN, no PT_INTERP, not DF_1_PIE)
+ * that has a PT_TLS segment and no such means; 0 for anything else,
+ * including a non-ELF file and an executable; -1 when the file could
+ * not be read, or carries TLS with no section table to judge it by.
+ */
+int elfcheck_unreachable_tls(const char *path);
+
 #endif /* ELFCHECK_H */
