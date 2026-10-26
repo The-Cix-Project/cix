@@ -381,6 +381,39 @@ static void pkg_job_set_state(struct pkg_entry *e, enum pkg_state s)
 	pkg_announce_jobs();
 }
 
+/*
+ * How many packages a composed environment may hold, counted over the
+ * declared tools, their runtime dependencies, and the implicit glibc
+ * and cbs.
+ *
+ * 64 since 2026-09-25, from 32, because 32 had become a real ceiling
+ * rather than a generous one: the full cix-tests suite needs a set of
+ * exactly 32 and so cannot declare one more, which is why
+ * `test_installer` and `test_targz` (since removed) failed for want of `bzip2` -- a
+ * package that exists, is built, and simply cannot be added (#485).
+ * The recipe carrying that set has a comment apologising for dropping
+ * `minisign` to make room, which is the shape of a limit that has
+ * stopped being generous.
+ *
+ * The cost is bounded and small: struct buildenv_tool is 136 bytes, so
+ * the array in buildenv_image_for() grows from 4.3 KB of stack to 8.7
+ * KB, and the canonical-name buffer beside it from 4.2 KB to 8.4 KB.
+ * Composing a larger environment copies more files, which is
+ * proportional work rather than a cliff -- and a set nobody declares
+ * costs nothing, since the hash of the declared set is what names the
+ * image.
+ */
+#define PKG_BUILDENV_MAX_TOOLS 64
+/*
+ * A recipe's declared build tools and compilers, space-separated, each
+ * a name or a "name@version" pin. Sized from PKG_BUILDENV_MAX_TOOLS so
+ * that every declaration the composer accepts can be held. It was
+ * PKG_DEPENDS_MAX, 256 bytes, which refused probe-cix-instest@1-1's 39
+ * tools (#649) as "the build/tool list does not fit the build
+ * declaration" while 64 packages were allowed.
+ */
+#define PKG_BUILD_DEPENDS_MAX (PKG_BUILDENV_MAX_TOOLS * (PKG_NAME_MAX + PKG_VERSION_MAX + 1))
+
 struct pkg_recipe {
 	char name[PKG_NAME_MAX];
 	char version[PKG_VERSION_MAX];
@@ -459,7 +492,7 @@ struct pkg_recipe {
 	 * shared-sandbox behaviour, which is fungible by construction and
 	 * on the way out -- see ADR-0199.
 	 */
-	char build_depends[PKG_DEPENDS_MAX];
+	char build_depends[PKG_BUILD_DEPENDS_MAX];
 	/*
 	 * ADR-0255: how this package discovers what upstream published.
 	 *
@@ -3055,7 +3088,7 @@ static int parse_cbs_recipe(const char *path, struct pkg_recipe *out)
 
 		for (ri = 0; ri < sizeof(roles) / sizeof(roles[0]); ri++) {
 			for (ki = 0; ki < sizeof(kinds) / sizeof(kinds[0]); ki++) {
-				char one[PKG_DEPENDS_MAX];
+				char one[PKG_BUILD_DEPENDS_MAX];
 
 				if (cbs_explain_requires(ex, roles[ri], kinds[ki], one, sizeof(one)) != 0 ||
 				    append_words(out->build_depends, sizeof(out->build_depends), one) != 0) {
@@ -7557,29 +7590,6 @@ static void pkg_migrate_flat_sandbox(const char *images_dir)
  */
 #define PKG_BUILDENV_IMAGE_PREFIX "__buildenv-"
 /*
- * How many packages a composed environment may hold, counted over the
- * declared tools, their runtime dependencies, and the implicit glibc
- * and cbs.
- *
- * 64 since 2026-09-25, from 32, because 32 had become a real ceiling
- * rather than a generous one: the full cix-tests suite needs a set of
- * exactly 32 and so cannot declare one more, which is why
- * `test_installer` and `test_targz` (since removed) failed for want of `bzip2` -- a
- * package that exists, is built, and simply cannot be added (#485).
- * The recipe carrying that set has a comment apologising for dropping
- * `minisign` to make room, which is the shape of a limit that has
- * stopped being generous.
- *
- * The cost is bounded and small: struct buildenv_tool is 136 bytes, so
- * the array in buildenv_image_for() grows from 4.3 KB of stack to 8.7
- * KB, and the canonical-name buffer beside it from 4.2 KB to 8.4 KB.
- * Composing a larger environment copies more files, which is
- * proportional work rather than a cliff -- and a set nobody declares
- * costs nothing, since the hash of the declared set is what names the
- * image.
- */
-#define PKG_BUILDENV_MAX_TOOLS 64
-/*
  * How deep a dependency chain under one declared tool may go before
  * it is refused as a cycle or a mistake. A SEPARATE limit, which
  * shared PKG_BUILDENV_MAX_TOOLS until 2026-09-25 -- so raising the
@@ -7832,12 +7842,16 @@ static int buildenv_add_tool(const char *name, const char *via, struct buildenv_
 static int buildenv_resolve_tools(const char *declared, struct buildenv_tool *out, int max,
                                    char *err, size_t err_size)
 {
-	char buf[PKG_DEPENDS_MAX];
+	char buf[PKG_BUILD_DEPENDS_MAX + sizeof(" cbs")];
 	char *tok;
 	char *save = NULL;
 	int n = 0;
 
-	snprintf(buf, sizeof(buf), "%s", declared);
+	/* A cut-off copy would drop tools from the environment unseen. */
+	if ((size_t)snprintf(buf, sizeof(buf), "%s", declared) >= sizeof(buf)) {
+		snprintf(err, err_size, "the recipe's build requirements do not fit the composer");
+		return -1;
+	}
 	for (tok = strtok_r(buf, " \t", &save); tok != NULL; tok = strtok_r(NULL, " \t", &save)) {
 		if (buildenv_add_tool(tok, NULL, out, max, &n, err, err_size, 0) != 0)
 			return -1;
@@ -11610,7 +11624,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		 */
 		char env_image[PKG_IMAGE_NAME_MAX];
 		char env_err[256];
-		char declared[PKG_DEPENDS_MAX];
+		char declared[PKG_BUILD_DEPENDS_MAX + sizeof(" cbs")];
 		char report_path[PATH_MAX];
 		int envr;
 
