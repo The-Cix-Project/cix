@@ -287,12 +287,24 @@ FLOOR_SELFTESTS = \
 # lost its output to a pager that could not start, and nothing gated
 # the console, so that shipped in every release.
 #
+#
+# test_installer joined on 2026-10-26, the owner's decision, after
+# probe-cix-instest@1-6 passed it on 192.168.15.95 (348 s): it builds an
+# ISO, installs it twice under qemu and OVMF, and boots the installed
+# disk twice. Nothing gated the installer before, and on the way it had
+# found that no ISO built with grub 2.14-13 could boot and no
+# mkfs.btrfs could run (cix#649, cix#650). It needs the ISO toolchain as
+# declared tools, since its tools root is "/" (ADR-0358), and a TMPDIR
+# on disk: it writes gigabytes, and a build container's /tmp is a tmpfs
+# counted against the build memory budget.
+#
 BOOT_SELFTESTS = \
 	$(BUILD)/test_boot \
 	$(BUILD)/test_boot_ab \
 	$(BUILD)/test_boot_update \
 	$(BUILD)/test_console_shell \
-	$(BUILD)/test_console_pki_bootstrap
+	$(BUILD)/test_console_pki_bootstrap \
+	$(BUILD)/test_installer
 #
 # Three tests were in this list and are deliberately NOT, because they
 # fail in a composed build container for reasons that are not defects.
@@ -368,6 +380,9 @@ BOOT_SELFTESTS = \
 SELFTEST_HELPERS = \
 	$(BUILD)/cix-init \
 	$(BUILD)/cix-boot.efi \
+	$(BUILD)/cix-install \
+	$(BUILD)/cix-recover \
+	$(BUILD)/cix-xorriso \
 	$(BUILD)/mkbootroot \
 	$(BUILD)/console_input_child \
 	$(BUILD)/console_term_child \
