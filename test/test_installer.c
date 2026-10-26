@@ -413,7 +413,19 @@ int main(void)
 	if (test_disk_image_require_kernel() != 0)
 		return 1;
 
-	char workdir[] = "/tmp/cix_test_installer_XXXXXX";
+	/*
+	 * Under $TMPDIR when it is set. This test writes three disk images
+	 * and extracts partitions of gigabytes, and a build container's /tmp
+	 * is a tmpfs that counts against the shared build memory budget:
+	 * on 192.168.15.95, 2026-10-26, the memory cgroup cix-pkgbuild
+	 * OOM-killed `btrfs restore` as it extracted the containers
+	 * partition (probe-cix-instest@1-3).
+	 */
+	char workdir[PATH_MAX];
+	const char *tmpdir = getenv("TMPDIR");
+
+	snprintf(workdir, sizeof(workdir), "%s/cix_test_installer_XXXXXX",
+	         tmpdir != NULL && tmpdir[0] != '\0' ? tmpdir : "/tmp");
 	char signing_key[PATH_MAX], signing_crt[PATH_MAX], signing_cer[PATH_MAX];
 	char stage_dir[600], control_plane_squashfs[600], installer_stage[600], installer_iso[600];
 	char target_disk_img[600];
