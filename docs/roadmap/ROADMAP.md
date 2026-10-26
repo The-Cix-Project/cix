@@ -2445,6 +2445,28 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 337: the ELF gate refuses a shared library whose TLS it cannot reach (#652, #653, 0.2.57-607)
+
+TCC compiles `__thread` in a shared library with the local-exec TLS model, which is valid only in an executable (Part 335). #652 swept every installed tcc-built shared object for thread-local data. #653 makes the install-time ELF gate refuse the defect whichever compiler produces it. `elfcheck_unreachable_tls()` answers 1 for a shared object (no `PT_INTERP`, not `DF_1_PIE`) that has a `PT_TLS` segment but neither a TLS dynamic relocation (DTPMOD64, DTPOFF64, TPOFF64, TLSDESC) nor an import of `__tls_get_addr`. The install merge refuses such a file, next to the undefined-builtin check. On its first run in a release gate, the gate found a library the sweep had missed.
+
+**Measured on 192.168.15.95, 2026-10-26:**
+
+- **The signature:** `probe-tlssig@1-1` read both cached libuuid artifacts. tcc's 2.42.2-7 has no TLS relocation and no `__tls_get_addr`; gcc's 2.42.2-8 has a DTPMOD64 at 0x8fb0 and imports `__tls_get_addr`.
+- **The sweep missed packages outside `base`:** `probe-tlsscan@1-1` read file lists with `GET /v1/pkg/NAME`, which answers only for the `base` image, so it saw 12 tcc packages with shared objects. Compile probe 0.2.57-629 then failed `test_elfcheck_gcc` on `/usr/lib/libsodium.so.26.2.0` in its own build container. Read with `GET /v1/pkg/NAME@IMAGE`, the count is 32. `probe-tlsscan@2-1` printed the program headers of all 478 of their shared objects. Besides gcc's `libgcc_s.so.1` and libuuid, two have TLS:
+  - libsodium 1.0.20-4, in cix-builder;
+  - libnss_ldap 0.9.13-8, in jumpbox, whose code reads and writes `%fs:-0x58` (`probe-tlssig@2-1`).
+- **The fixes:** each package is rebuilt with gcc.
+  - **libsodium 1.0.20-5** is in cix-builder 6.2.2.
+  - **nss-pam-ldapd** took four more revisions:
+    - 0.9.13-9 could not link openldap-client's static `liblber.a`, because tcc-built objects call tcc's `__va_arg` helper and gcc cannot resolve it (0.9.13-11 printed `config.log` to show this).
+    - openldap-client 2.6.14-7 is therefore gcc too.
+    - 0.9.13-13 builds as `gnu17`, because gcc 16 defaults to C23, where `cfg.c`'s parameter named `bool` is a keyword.
+  - **jumpbox 2.9.9** carries nss-pam-ldapd 0.9.13-13, openldap-client 2.6.14-7 and libuuid 2.42.2-8. jumpbox had still held the defective 2.42.2-7.
+  - `probe-tlssig@3-1`: both gcc libraries now carry a DTPMOD64 and import `__tls_get_addr`.
+  - jump rolled to image version 87e1ec112a0f and stayed up past its 300 s probation, with nslcd and sshd running. An LDAP login was not tried, because jump is not a test target.
+- **The release:** compile probe 0.2.57-630 and the 0.2.57-607 release printed `test_elfcheck_gcc PASS`, `test_installer PASS` and `SELFTEST: PASS`. The test builds the same `__thread` source three ways: tcc `-shared` is refused, while gcc `-fPIC` and a tcc executable are accepted. It also runs the check over every shared object in its build container. 607 booted (slot b, 12 containers running).
+- **The gate on the live box:** installing libsodium 1.0.20-4 into the scratch image `probe-cu` failed. cixd logged `usr/lib/libsodium.so.26.2.0 is a shared library with thread-local data addressed at fixed offsets ... build this package with compiler "gcc" (#653)`. The `pkg ls` row says only that the image's mutate step failed, which is a separate gap.
+
 ## Part 336: test_installer gates every release (#649, 0.2.57-606)
 
 On the owner's decision of 2026-10-26, `test_installer` joins `BOOT_SELFTESTS`. Every release now builds an installer ISO, installs it twice under qemu and OVMF and boots the installed disk twice before it can ship. Nothing gated the installer before, and in one day the test found a grub that could not boot and a mkfs.btrfs that could not run (Parts 334 and 335). The cix release recipe and the compile probe declare the ISO toolchain and libuuid 2.42.2-8 as tools and run the selftest with `TMPDIR` on disk. The isotools recipes, which no current cbs can build, are removed from cix-recipes and from .95's store, also on the owner's decision.

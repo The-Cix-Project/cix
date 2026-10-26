@@ -6,6 +6,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The ELF gate refuses a shared library whose TLS it cannot reach (#653, #652)
+
+- **What changed:** the install merge refuses a shared object that carries thread-local data (`PT_TLS`) but has no TLS dynamic relocation and does not import `__tls_get_addr` (`elfcheck_unreachable_tls()` in `daemon/src/elfcheck.c`). It names the file and says to build the package with gcc. `test_elfcheck_gcc` checks a tcc `-shared` fixture (refused), a gcc `-fPIC` fixture and a tcc executable (both accepted), and every shared object in its build container.
+- **Why:** TCC compiles `__thread` in a shared library with the local-exec TLS model, whose fixed `%fs` offsets land on the loading program's own TLS. libuuid 2.42.2-7 broke every btrfs format that way (#650), while installing and booting cleanly.
+- **Found by it:** libsodium 1.0.20-4 and nss-pam-ldapd 0.9.13-8's libnss_ldap had the same defect. Both are now gcc builds (1.0.20-5 and 0.9.13-13), and so is openldap-client 2.6.14-7, whose static archives libnss_ldap links in. cix-builder 6.2.2 and jumpbox 2.9.9 carry them, and jumpbox also moves to libuuid 2.42.2-8. The cix release recipe pins libsodium 1.0.20-5 as a tool.
+- **Verified:** on 192.168.15.95, compile probe 0.2.57-630 and the 0.2.57-607 release passed with `test_elfcheck_gcc PASS` and `SELFTEST: PASS`. 607 is live (slot b, 12 containers running). Installing libsodium 1.0.20-4 into a scratch image was refused with the new message. ROADMAP Part 337 has the measurements.
+
 ### test_installer gates every release, and the isotools recipes are gone (#649)
 
 - **What changed:** `test_installer` is in `BOOT_SELFTESTS`, so every release builds an installer ISO, installs it twice under qemu and OVMF, and boots the installed disk twice before it ships. `selftest` builds the binaries the test runs (cix-install, cix-recover, cix-xorriso). The cix release recipe and the compile probe declare the ISO toolchain (grub, sbsigntools, xorriso, mokutil, shim, efivar, keyutils, libxcrypt) and libuuid 2.42.2-8 as tools, and give the selftest a `TMPDIR` on disk. Both were the owner's decisions of 2026-10-26. The isotools recipes are removed from cix-recipes (a9611ef) and from .95's store.
