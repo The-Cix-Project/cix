@@ -411,9 +411,10 @@ enum pkg_error {
 	PKG_ERR_HOSTBUILD_RUNNING,
 	/*
 	 * ADR-0356: a helper child is producing a new version of this image
-	 * for another install, and one image has one producer at a time. A
-	 * delete or a toolchain bootstrap would produce one beside it.
-	 * Nothing was changed; it can be asked again once that finishes.
+	 * for an install or an uninstall, and one image has one producer at a
+	 * time. A toolchain bootstrap would produce one beside it; an install
+	 * and an uninstall wait instead (ADR-0357). Nothing was changed; it
+	 * can be asked again once that finishes.
 	 */
 	PKG_ERR_IMAGE_PRODUCING
 };
@@ -1287,9 +1288,16 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
  * would have, with the same returns: 0, 1 for the chain's next fetch,
  * or 2 for another producer -- when this one was a waiter on another
  * chain's producer for the same image, which has now finished.
+ *
+ * ADR-0357 (#642): an uninstall's producer (pkg_delete_start()) comes
+ * here too. When the uninstall is over, *out_deleted_chain is its chain
+ * and *out_delete_result its outcome, for the request waiting on it;
+ * otherwise *out_deleted_chain is -1. The return is then 0, or 2 when a
+ * waiter's exit let its producer start.
  */
 int pkg_produce_completed(int chain_idx, int exit_status, pid_t *out_pid, int *out_pidfd,
-                          int *out_chain_idx, char *out_hostbuild_done_name);
+                          int *out_chain_idx, char *out_hostbuild_done_name,
+                          int *out_deleted_chain, enum pkg_error *out_delete_result);
 
 /*
  * ADR-0157 Phase 2: computes this chain's own real, distinct build
@@ -1373,6 +1381,10 @@ int pkg_active_chain_indices(int *out_indices);
  * real job AND drain any number of already-satisfied entries ahead of
  * it. Returns 0 if a job is already in flight or the queue is (now)
  * empty.
+ *
+ * ADR-0357 (#642): returns 2 instead when the job it started is an
+ * uninstall of a stray (ADR-0330), whose child is an image producer:
+ * the caller registers it as it registers pkg_build_completed()'s 2.
  *
  * out_chain_idx (ADR-0157 Phase 2): same contract as pkg_install_
  * start()'s own out_chain_idx -- only meaningful when this function
@@ -1560,16 +1572,21 @@ enum pkg_error pkg_hostbuild_artifact_info(const char *name, char *out_version,
                                            size_t out_version_size, char *out_dir,
                                            size_t out_dir_size);
 
-/* Forgets a package entry in either of the two terminal states:
- * PKG_STATE_INSTALLED (unlinks every manifested file from that
- * specific (name, image) entry's own image first, producing a new
- * immutable image version -- ADR-0107/0108) or PKG_STATE_FAILED (a
- * permanently-failed fetch/build attempt that never actually merged
- * anything into any image -- cleared directly, no image version
- * produced). PKG_ERR_NOT_FOUND if unknown or still FETCHING/BUILDING;
- * PKG_ERR_BUSY if this exact (name, image) is the one currently
- * mid-build. image NULL or "" means PKG_DEFAULT_IMAGE. */
-enum pkg_error pkg_delete(const char *name, const char *image);
+/* Forgets a package entry in either of the two terminal states.
+ * PKG_STATE_FAILED (a permanently-failed fetch/build attempt that never
+ * merged anything into any image) is cleared at once, and
+ * *out_chain_idx is -1. PKG_STATE_INSTALLED is uninstalled by a chain
+ * job (ADR-0357, #642): every manifested file is unlinked from a new
+ * immutable version of its image (ADR-0107/0108), produced in a helper
+ * child, which this starts in *out_pid/*out_pidfd under *out_chain_idx.
+ * The caller registers it as it registers an install's producer, and
+ * pkg_produce_completed() reports the outcome; the entry is cleared
+ * when its version is recorded. PKG_ERR_NOT_FOUND if unknown or still
+ * FETCHING/BUILDING; PKG_ERR_BUSY if a job for this exact (name, image)
+ * is in flight, or every job slot is taken; PKG_ERR_SPAWN_FAILED if no
+ * child could be started. image NULL or "" means PKG_DEFAULT_IMAGE. */
+enum pkg_error pkg_delete_start(const char *name, const char *image, pid_t *out_pid,
+                                int *out_pidfd, int *out_chain_idx);
 
 /*
  * True if any package (installed or in-flight) is currently tracked

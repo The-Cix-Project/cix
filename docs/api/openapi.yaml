@@ -13802,10 +13802,16 @@ paths:
         Removes a package entry, either installed or permanently failed.
         For an installed package, unlinks its manifested files from its
         target image, producing a new immutable image version
-        (ADR-0107/0108). For one stuck in a permanently-failed
-        fetch/build state, clears the tracking entry directly -- nothing
-        was ever actually merged into any image, so there is nothing to
-        unlink and no new image version is produced.
+        (ADR-0107/0108). That version is produced in a helper child, as
+        a package job, and the request is answered when the daemon has
+        recorded it (ADR-0357): the package is listed as installed until
+        then, and a 204 means the image's current version no longer
+        holds it. If the image is producing a version for another
+        install or uninstall, this one waits for it. For an entry stuck
+        in a permanently-failed fetch/build state, clears the tracking
+        entry directly -- nothing was ever actually merged into any
+        image, so there is nothing to unlink and no new image version is
+        produced.
       operationId: deletePkg
       x-cix-invalidates: [listBuildEnvironments, getPkgBootstrapStatus, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg, listImages, getImage, listSoftware]
       x-cix-permission: packages:write
@@ -13823,15 +13829,32 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: >
-            This package is currently mid-install, or its image is producing a
-            new version for another install, one image producing one version at
-            a time (ADR-0356); nothing was changed
+            A job for this package in this image is in flight -- an install,
+            or another uninstall -- or every package job slot is held;
+            nothing was changed
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "500":
-          description: Tracked but unlinking its manifested files from the target image failed
+          description: >
+            Tracked, but the image could not produce the version without it,
+            or that version could not be recorded; the package is still
+            installed. The reason is in the daemon's log
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            The request could not be made to wait for the uninstall (#642);
+            nothing was started. Retry after the header's interval.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                enum: [5]
+              description: Seconds to wait before retrying.
           content:
             application/json:
               schema:
@@ -23894,9 +23917,11 @@ components:
         active_jobs:
           type: integer
           description: >
-            How many job slots are currently held, out of
-            max_concurrent_jobs (#246). Read-only, and present on GET
-            only. A limit with no way to see its current usage cannot
+            How many job slots are currently held (#246). Builds are
+            bounded by max_concurrent_jobs; an uninstall holds a slot
+            too while its image version is produced (ADR-0357), taking
+            the highest free one, so for that moment this can exceed
+            max_concurrent_jobs. Read-only, and present on GET only. A limit with no way to see its current usage cannot
             be reasoned about: before this, the only way to tell a busy
             host from one whose slots had leaked was an unrelated
             endpoint's error text.

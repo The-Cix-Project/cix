@@ -1417,6 +1417,9 @@ static enum park_body_answer park_body_take(int *result_fd);
 static enum park_body_answer backup_ask(const char *target, int *result_fd);
 /* #643: and so does a package verification (verify_ask()). */
 static enum park_body_answer verify_ask(int *result_fd);
+/* #642: and an uninstall waits for its package job (pkg_delete_ask()). */
+static enum park_body_answer pkg_delete_ask(const char *name, const char *image,
+                                            enum pkg_error *out_result);
 static int backup_submit_daemon_job(const char *target);
 
 /* #631: a system update writes the inactive slot in a helper child
@@ -1577,11 +1580,13 @@ struct conn {
 	 * from the helper's result to the resumed pass that stores it, and
 	 * wiped at teardown. kmod_state and kmod_report (ADR-0348) are what
 	 * an explicit module load or unload left, the job's report, held
-	 * until the resumed pass takes it.
+	 * until the resumed pass takes it. pkg_delete_result (#642) is an
+	 * uninstall's outcome, valid in PARK_BODY_DONE with body_fd -1.
 	 */
 	struct park *park;
 	enum park_body_state body_state;
 	int body_fd;
+	enum pkg_error pkg_delete_result;
 	enum kmodjob_state kmod_state;
 	struct kmodscan_report *kmod_report;
 	enum cred_state cred_state;
@@ -9216,10 +9221,10 @@ static void register_pkg_unpack_pidfd(pid_t pid, int pidfd, int chain_idx)
 
 /*
  * ADR-0356 (#617): the forked producer of an install's image version,
- * or a waiter on another chain's producer for the same image. Its own
- * kind because it resumes differently again: its exit finishes an
- * install (pkg_produce_completed()), where the two above go on to a
- * build.
+ * or an uninstall's (ADR-0357), or a waiter on another chain's producer
+ * for the same image. Its own kind because it resumes differently
+ * again: its exit finishes the job (pkg_produce_completed()), where the
+ * two above go on to a build.
  */
 static void register_pkg_produce_pidfd(pid_t pid, int pidfd, int chain_idx)
 {
@@ -9300,9 +9305,14 @@ static void try_start_queued_pkg_rebuild(void)
 	pid_t pkg_pid;
 	int pkg_pidfd;
 	int pkg_chain_idx;
+	/* 1 for a fetch; 2 for an image producer, a stray's uninstall
+	 * (ADR-0357). */
+	int started = pkg_try_start_queued_rebuild(&pkg_pid, &pkg_pidfd, &pkg_chain_idx);
 
-	if (pkg_try_start_queued_rebuild(&pkg_pid, &pkg_pidfd, &pkg_chain_idx))
+	if (started == 1)
 		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
+	else if (started == 2)
+		register_pkg_produce_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
 	report_default_image_seed_result(); /* #189 -- says once when the default image became runnable */
 	apply_rolling_container_restarts();
 	apply_pending_deployments(); /* ADR-0270 -- same moment, same reason */
@@ -27812,7 +27822,22 @@ static void handle_pkg_delete(int fd, const char *raw_name)
 		return;
 	}
 
-	perr = pkg_delete(name, image[0] != '\0' ? image : NULL);
+	/* ADR-0357 (#642): answered when the image version it leaves is
+	 * recorded, which a helper child produces. */
+	switch (pkg_delete_ask(name, image[0] != '\0' ? image : NULL, &perr)) {
+	case PARK_ANSWER_ASK:
+		return; /* parked */
+	case PARK_ANSWER_BUSY:
+		respond_error_hdrs(fd, 503, "Service Unavailable", "Retry-After: 5\r\n",
+		                   "the uninstall could not wait for its job -- try again shortly", 0);
+		return;
+	case PARK_ANSWER_FAILED:
+		respond_error(fd, 500, "Internal Server Error", "the uninstall ended without a result");
+		return;
+	case PARK_ANSWER_READY:
+	default:
+		break;
+	}
 	if (perr != PKG_OK) {
 		respond_pkg_error(fd, perr);
 		return;
@@ -33100,7 +33125,7 @@ static void conn_out_unlink(struct conn *cc)
 
 /* ---------- ADR-0340 (#609), ADR-0342 (#612): a request waits for work run off the loop ----------
  *
- * Six kinds of work make a request wait, and they share one mechanism:
+ * Eight kinds of work make a request wait, and they share one mechanism:
  *
  *   - a credential check (ADR-0340): credcheck_ask() reaches
  *     cred_broker() below for the request being served;
@@ -33112,7 +33137,12 @@ static void conn_out_unlink(struct conn *cc)
  *   - a system update (#631): handle_system_update() through
  *     update_submit();
  *   - a boot manager install (#633): handle_boot_manager_post() through
- *     bootmgr_submit().
+ *     bootmgr_submit();
+ *   - a package verification (#643): verify_ask();
+ *   - an uninstall (ADR-0357, #642): pkg_delete_ask(). Its work is not
+ *     a helper of this file's: it is the package job pkg_delete_start()
+ *     starts, whose image producer is watched as an install's is, and
+ *     pkg_delete_answer() serves the request when that job is over.
  *
  * The module, backup and update queues also carry the daemon's own
  * work, which no request waits for: a plugged device's alias and a
@@ -33144,6 +33174,7 @@ enum park_kind {
 	PARK_UPDATE,
 	PARK_BOOTMGR,
 	PARK_VERIFY,
+	PARK_PKGDELETE,
 	PARK_KINDS
 };
 
@@ -33198,6 +33229,9 @@ struct park {
  * two would race on BOOTX64.EFI.new. Package verifications: one at a
  * time and 4 waiting (#643), like a backup -- each stats every file of
  * every installed package, and two at once would only share the disk.
+ * Uninstalls (#642): one per package job slot and none waiting, because
+ * pkg.c bounds them -- a job per slot, one producer per image -- and the
+ * record only counts what is waiting on them; it is never queued here.
  */
 struct park_queue {
 	int running_max;
@@ -33222,6 +33256,7 @@ static struct park_queue g_park_q[PARK_KINDS] = {
 	[PARK_UPDATE] = { .running_max = 1, .wait_max = 0 },
 	[PARK_BOOTMGR] = { .running_max = 1, .wait_max = 0 },
 	[PARK_VERIFY] = { .running_max = 1, .wait_max = VERIFY_WAIT_MAX },
+	[PARK_PKGDELETE] = { .running_max = PKG_MAX_CONCURRENT_JOBS, .wait_max = 0 },
 };
 
 static void serve_request(struct conn *cc);
@@ -33301,7 +33336,8 @@ static void park_abandon(struct park *p)
 {
 	if (p->running) {
 		p->cc = NULL;
-		/* A verification (#643) only reads, like a log read. */
+		/* A verification (#643) only reads, like a log read. An uninstall
+		 * (#642) is not killed: one that finishes is what was asked for. */
 		if ((p->kind == PARK_LOGREAD || p->kind == PARK_VERIFY ||
 		     (p->kind == PARK_BACKUP && p->backup_target[0] == '\0')) &&
 		    p->pid > 0)
@@ -33620,6 +33656,10 @@ static int park_start(struct park *p)
 	case PARK_VERIFY:
 		rc = verify_start(p);
 		break;
+	case PARK_PKGDELETE:
+		/* Never queued: pkg_delete_ask() starts the job itself. */
+		rc = -1;
+		break;
 	case PARK_KMOD:
 	default:
 		rc = kmod_job_start(p);
@@ -33671,7 +33711,7 @@ static void park_unavailable(struct conn *cc, enum park_kind kind)
 	if (kind == PARK_CRED)
 		cc->cred_state = CRED_UNAVAILABLE;
 	else if (kind == PARK_LOGREAD || kind == PARK_BACKUP || kind == PARK_UPDATE ||
-	         kind == PARK_BOOTMGR || kind == PARK_VERIFY)
+	         kind == PARK_BOOTMGR || kind == PARK_VERIFY || kind == PARK_PKGDELETE)
 		cc->body_state = PARK_BODY_UNAVAILABLE;
 	else
 		cc->kmod_state = KMODJOB_STATE_UNAVAILABLE;
@@ -34037,6 +34077,81 @@ static enum park_body_answer verify_ask(int *result_fd)
 static void verify_done(int exit_status, void *ctx)
 {
 	park_body_done(ctx, exit_status, "a package verification");
+}
+
+/* ADR-0357 (#642): the record waiting on each package job slot's
+ * uninstall, NULL for a slot with none -- the rolling drain's uninstalls
+ * have no request. */
+static struct park *g_pkg_delete_park[PKG_MAX_CONCURRENT_JOBS];
+
+/*
+ * #642: an uninstall for the request being served. Producing the version
+ * it leaves unlinks every file of the package, and on 192.168.15.95 at
+ * 0.2.57-601 deleting node from a scratch image held the loop 825 ms
+ * (GET /v1/system/stalls, 2026-10-25). So it is a package job whose
+ * producer is a helper child (pkg_delete_start()), and the request waits
+ * for that job; *out_result is its outcome on READY. A failed entry is
+ * cleared at once and answered on the same pass.
+ */
+static enum park_body_answer pkg_delete_ask(const char *name, const char *image,
+                                            enum pkg_error *out_result)
+{
+	struct conn *cc = g_response_conn;
+	int rfd = -1;
+	enum park_body_answer a = park_body_take(&rfd);
+	struct park *p;
+	pid_t pid = -1;
+	int pidfd = -1, chain_idx = -1;
+
+	if (a == PARK_ANSWER_READY) {
+		*out_result = cc->pkg_delete_result;
+		return PARK_ANSWER_READY;
+	}
+	if (a != PARK_ANSWER_ASK)
+		return a;
+	/* Before the job starts, so that there is never a job with no
+	 * record for a request that is still here. */
+	p = park_new(PARK_PKGDELETE, cc);
+	if (p == NULL)
+		return PARK_ANSWER_BUSY;
+	*out_result = pkg_delete_start(name, image, &pid, &pidfd, &chain_idx);
+	if (*out_result != PKG_OK || chain_idx < 0) {
+		park_free(p);
+		return PARK_ANSWER_READY;
+	}
+	register_pkg_produce_pidfd(pid, pidfd, chain_idx);
+	p->running = 1;
+	g_park_q[PARK_PKGDELETE].running++;
+	g_pkg_delete_park[chain_idx] = p;
+	cc->park = p;
+	return PARK_ANSWER_ASK;
+}
+
+/* The uninstall in chain_idx's slot is over: the request waiting on it,
+ * if one still is, is served again with its outcome. */
+static void pkg_delete_answer(int chain_idx, enum pkg_error result)
+{
+	struct park *p;
+
+	if (chain_idx < 0 || chain_idx >= PKG_MAX_CONCURRENT_JOBS)
+		return;
+	p = g_pkg_delete_park[chain_idx];
+	if (p == NULL)
+		return;
+	g_pkg_delete_park[chain_idx] = NULL;
+	park_finished(p);
+	if (p->cc != NULL) {
+		struct conn *cc = p->cc;
+
+		cc->park = NULL;
+		cc->pkg_delete_result = result;
+		cc->body_fd = -1;
+		cc->body_state = PARK_BODY_DONE;
+		park_free(p);
+		serve_request(cc);
+		return;
+	}
+	park_free(p);
 }
 
 /* #631: whether a slot is being written now, by a request or the roll. */
@@ -37443,10 +37558,11 @@ static void handle_pkg_unpack_event(struct conn *cc)
 }
 
 /*
- * Reaps an install's image producer, or a waiter for one, and finishes
- * or resumes the install it belongs to (ADR-0356). What follows is the
- * same as after a build container's exit: the chain's next job, or the
- * queued work, publishing and the retention pass.
+ * Reaps an install's or an uninstall's image producer (ADR-0357), or a
+ * waiter for one, and finishes or resumes the job it belongs to
+ * (ADR-0356). What follows is the same as after a build container's
+ * exit: the chain's next job, or the queued work, publishing and the
+ * retention pass.
  */
 static void handle_pkg_produce_event(struct conn *cc)
 {
@@ -37458,6 +37574,8 @@ static void handle_pkg_produce_event(struct conn *cc)
 	int pkg_chain_idx;
 	char hostbuild_done_name[PKG_NAME_MAX];
 	int next;
+	int deleted_chain;
+	enum pkg_error delete_result;
 
 	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status))
@@ -37467,9 +37585,13 @@ static void handle_pkg_produce_event(struct conn *cc)
 	close(cc->fd);
 	free(cc);
 
-	stallwatch_step("pkg produce: finish the install"); /* #619 */
+	stallwatch_step("pkg produce: finish the install or uninstall"); /* #619 */
 	next = pkg_produce_completed(chain_idx, exit_status, &pkg_pid, &pkg_pidfd, &pkg_chain_idx,
-	                             hostbuild_done_name);
+	                             hostbuild_done_name, &deleted_chain, &delete_result);
+	/* ADR-0357: an uninstall that is over answers the request waiting
+	 * on it, before what follows starts the next job. */
+	if (deleted_chain >= 0)
+		pkg_delete_answer(deleted_chain, delete_result);
 	pkg_completion_followup(next, pkg_pid, pkg_pidfd, pkg_chain_idx, hostbuild_done_name);
 }
 

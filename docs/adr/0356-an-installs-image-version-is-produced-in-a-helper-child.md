@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, 2026-10-25, for #617. The owner priced it at three to four release cycles in the issue and said "go ahead with #617". The mechanism below was not put to them separately.
+Accepted, 2026-10-25, for #617, with two parts superseded by [ADR-0357](0357-an-uninstall-is-a-package-job-produced-in-a-helper-child.md): decision 1's package snapshot, now written with the tree in the child, and decision 4's 409 for a delete, which now waits. The owner priced it at three to four release cycles in the issue and said "go ahead with #617". The mechanism below was not put to them separately.
 
 ## Context
 

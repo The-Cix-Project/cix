@@ -328,6 +328,15 @@ struct pkg_entry {
 	 */
 	struct cbs_build_progress progress;
 	int progress_known;
+	/*
+	 * ADR-0357 (#642): the rolling drain tried to uninstall this entry,
+	 * outside the recipe its image follows, and could not. The drain
+	 * skips it for the rest of that convergence, so a failure is said
+	 * once and not retried in a loop, and clears it when the image
+	 * leaves the queue, so the next convergence tries again. In memory
+	 * only.
+	 */
+	int stray_refused;
 };
 
 /*
@@ -754,6 +763,12 @@ static int memory_budget_at_least(long long a, long long b);
 static int build_memory_admit(long long need, char *msg, size_t msg_size);
 static void pkg_build_memory_note_start(int chain_idx, long long need);
 static void pkg_build_memory_note_end(int chain_idx);
+/* ADR-0357 (#642): an uninstall, a chain job; defined with the delete. */
+static enum pkg_error delete_start(const char *name, const char *image, int is_stray,
+                                   pid_t *out_pid, int *out_pidfd, int *out_chain_idx);
+static int delete_produce_completed(int chain_idx, struct pkg_entry *e, int waited,
+                                    int exit_status, pid_t *out_pid, int *out_pidfd,
+                                    int *out_chain_idx, enum pkg_error *out_result);
 
 /* Where a hostbuild job's own harvested output lands (ADR-0056) --
  * <g_artifacts_dir>/<name>/..., a plain host directory, never
@@ -860,6 +875,15 @@ struct pkg_chain {
 	struct pkg_entry *produce_e;
 	char produce_prev_version[PKG_VERSION_MAX];
 	char produce_prev_depends[PKG_DEPENDS_MAX];
+	/*
+	 * ADR-0357 (#642): this chain's job is uninstalling produce_e, not
+	 * installing it. Such a chain fetches and builds nothing: from its
+	 * claim to its release it has a producer or a waiter running.
+	 * is_stray says the rolling drain started it, for an entry outside
+	 * the runtime closure of the recipe its image follows (ADR-0330).
+	 */
+	int is_delete;
+	int is_stray;
 	/*
 	 * ADR-0307 clause 3: a cached .cixpkg has already been unpacked
 	 * for this job, so pkg_prepare_build_and_start() takes the fast
@@ -1092,6 +1116,8 @@ static void chain_release(int chain_idx)
 	g_chains[chain_idx].producer = 0;
 	g_chains[chain_idx].produce_waiting = 0;
 	g_chains[chain_idx].produce_e = NULL;
+	g_chains[chain_idx].is_delete = 0;
+	g_chains[chain_idx].is_stray = 0;
 	events_announce(EV_getSystemPkgBuildConfig);
 	events_announce(EV_listBuildEnvironments);
 }
@@ -1223,6 +1249,62 @@ static void chain_release_if_job_over(int chain_idx, const struct pkg_entry *e)
 	chain_release(chain_idx);
 }
 
+/* What a free slot must not carry from the job before it, cleared as it
+ * is handed out. */
+static void chain_handout(int i)
+{
+	/*
+	 * fetch_pid belongs to the job that just ended, and slots
+	 * are reused constantly. Clearing it here is what makes
+	 * "a stale pid must never be signalled" true of a REUSED
+	 * slot and not only of a completed one: a cancel matches
+	 * on name and image, so a slot that came back round to the
+	 * same target could otherwise have signalled a pid
+	 * belonging to a job that finished long ago.
+	 */
+	g_chains[i].fetch_pid = 0;
+	/*
+	 * ADR-0307 clause 3, same reasoning as fetch_pid: a
+	 * slot that came back round would otherwise report the
+	 * previous job's unpack as this one's, and skip the
+	 * extraction this job needs.
+	 *
+	 * NOT THE ONLY CLEAR, and reading it as one cost #531:
+	 * unpacked is per-PACKAGE, and a chain installs several
+	 * in the same slot, so pkg_build_completed() clears it
+	 * again on every chain advance. The sentence above is
+	 * true of a reused slot and was quietly assumed to be
+	 * the whole lifecycle; it is half of it.
+	 *
+	 * The other three fields here do not need that, and the
+	 * distinction is the thing to carry away: fetch_pid and
+	 * fetch_resolved_version/_depends are all set by
+	 * start_fetch_for(), which every chain advance calls, so
+	 * they refresh per package on their own. Only a field
+	 * set by a COMPLETION and cleared on handout has this
+	 * shape. If a future field does, clear it in both places.
+	 */
+	g_chains[i].unpacked = 0;
+	/*
+	 * #326: and for the same reason -- the captured version
+	 * belongs to the job that just ended. Cleared on handout
+	 * so a path that forgets to set it produces a MISSING
+	 * version (the old, visible failure) rather than another
+	 * package's version written confidently onto this entry.
+	 * Both real start paths set it; this is what keeps a
+	 * future third one from being silently wrong.
+	 */
+	g_chains[i].fetch_resolved_version[0] = '\0';
+	g_chains[i].fetch_resolved_depends[0] = '\0';
+	g_chains[i].fetch_resolved_replaces[0] = '\0';
+	g_chains[i].fetch_resolved_build_memory = 0;
+	/* ADR-0272: requested unless a caller says otherwise, so
+	 * a hostbuild and every other direct entry point are
+	 * right without having to remember to say so. */
+	snprintf(g_chains[i].run_trigger, sizeof(g_chains[i].run_trigger), "%s",
+	         PKG_RUN_TRIGGER_REQUEST);
+}
+
 /* Finds a free chain slot (name[0] == '\0'). Returns its index, or -1
  * if every slot is already in use. */
 static int chain_alloc(void)
@@ -1233,56 +1315,27 @@ static int chain_alloc(void)
 	chain_reap_stale();
 	for (i = 0; i < max_jobs; i++) {
 		if (g_chains[i].name[0] == '\0') {
-			/*
-			 * fetch_pid belongs to the job that just ended, and slots
-			 * are reused constantly. Clearing it here is what makes
-			 * "a stale pid must never be signalled" true of a REUSED
-			 * slot and not only of a completed one: a cancel matches
-			 * on name and image, so a slot that came back round to the
-			 * same target could otherwise have signalled a pid
-			 * belonging to a job that finished long ago.
-			 */
-			g_chains[i].fetch_pid = 0;
-			/*
-			 * ADR-0307 clause 3, same reasoning as fetch_pid: a
-			 * slot that came back round would otherwise report the
-			 * previous job's unpack as this one's, and skip the
-			 * extraction this job needs.
-			 *
-			 * NOT THE ONLY CLEAR, and reading it as one cost #531:
-			 * unpacked is per-PACKAGE, and a chain installs several
-			 * in the same slot, so pkg_build_completed() clears it
-			 * again on every chain advance. The sentence above is
-			 * true of a reused slot and was quietly assumed to be
-			 * the whole lifecycle; it is half of it.
-			 *
-			 * The other three fields here do not need that, and the
-			 * distinction is the thing to carry away: fetch_pid and
-			 * fetch_resolved_version/_depends are all set by
-			 * start_fetch_for(), which every chain advance calls, so
-			 * they refresh per package on their own. Only a field
-			 * set by a COMPLETION and cleared on handout has this
-			 * shape. If a future field does, clear it in both places.
-			 */
-			g_chains[i].unpacked = 0;
-			/*
-			 * #326: and for the same reason -- the captured version
-			 * belongs to the job that just ended. Cleared on handout
-			 * so a path that forgets to set it produces a MISSING
-			 * version (the old, visible failure) rather than another
-			 * package's version written confidently onto this entry.
-			 * Both real start paths set it; this is what keeps a
-			 * future third one from being silently wrong.
-			 */
-			g_chains[i].fetch_resolved_version[0] = '\0';
-			g_chains[i].fetch_resolved_depends[0] = '\0';
-			g_chains[i].fetch_resolved_replaces[0] = '\0';
-			g_chains[i].fetch_resolved_build_memory = 0;
-			/* ADR-0272: requested unless a caller says otherwise, so
-			 * a hostbuild and every other direct entry point are
-			 * right without having to remember to say so. */
-			snprintf(g_chains[i].run_trigger, sizeof(g_chains[i].run_trigger), "%s",
-			         PKG_RUN_TRIGGER_REQUEST);
+			chain_handout(i);
+			return i;
+		}
+	}
+	return -1;
+}
+
+/*
+ * ADR-0357 (#642): a slot for an uninstall, which builds nothing, so the
+ * operator's ceiling on concurrent builds does not bound it. It takes the
+ * highest free slot, so it stands in the place of a build below that
+ * ceiling only when every slot above it is taken. -1 when all are.
+ */
+static int chain_alloc_delete(void)
+{
+	int i;
+
+	chain_reap_stale();
+	for (i = PKG_MAX_CONCURRENT_JOBS - 1; i >= 0; i--) {
+		if (g_chains[i].name[0] == '\0') {
+			chain_handout(i);
 			return i;
 		}
 	}
@@ -2285,8 +2338,8 @@ static int path_owner_gate(const struct pkg_entry *self, const char *image, cons
  *
  * It does not touch e->files: the caller decides when to forget the
  * list, e.g. only once a replacement build has succeeded for an
- * in-place upgrade. Shared by pkg_delete() and the upgrade path, both
- * through image_produce_new_version()'s mutate() callback, so rootfs is
+ * in-place upgrade. Shared by an uninstall and the upgrade path, both
+ * through image_version_build()'s mutate() callback, so rootfs is
  * always a scratch copy-forward staging directory (ADR-0107/0108),
  * never a version's own immutable rootfs.
  */
@@ -5115,7 +5168,7 @@ static int pkg_version_snapshot_write(const char *image, const char *version)
 /*
  * The one shared copy-forward mechanism (ADR-0107/0108) behind every
  * mutation of an image's own package set -- pkg_build_completed()'s
- * install/upgrade merge and pkg_delete()'s uninstall both go through
+ * install/upgrade merge and an uninstall (delete_mutate()) both go through
  * this rather than each hand-rolling their own stage/hash/finalize
  * sequence (No Parallel Implementations). Ensures image exists
  * (implicit creation -- the same convention pkg install has always had
@@ -5532,7 +5585,7 @@ static int image_version_build(const char *image,
 	/*
 	 * One name per image, because one image has one producer at a time
 	 * (ADR-0356): an install's producer waits for another into the same
-	 * image, and a delete is refused while one runs. The name used to
+	 * image, as an uninstall does (ADR-0357). The name used to
 	 * carry the daemon's pid, which a producer child does not share, so
 	 * a leftover would never have been found again.
 	 */
@@ -5669,26 +5722,20 @@ static int image_version_build(const char *image,
 		if (rename(staging, new_rootfs) != 0)
 			return produce_fail(image, staging, "renaming staging into place", 1);
 	}
-	snprintf(out_version, out_version_size, "%s", new_version);
-	return 0;
-}
 
-/* The daemon's half of producing a version (ADR-0356): record it as the
- * image's current one, then keep the package set it was named from. */
-static int image_version_commit(const char *image, const char *new_version)
-{
-	stallwatch_step("image version: record it");
-	if (image_record_version(image, new_version) != IMAGE_OK)
-		return produce_fail(image, NULL, "recording the new version", 0);
 	/*
-	 * #398: keep the manifest this version was hashed from, beside the
-	 * version itself. Written AFTER image_record_version() so it can
-	 * never describe a version that failed to become real, and after
-	 * the dedup branch above as well -- a version reached that way
-	 * already has its own snapshot from when it was first produced,
-	 * and the manifest is identical by construction (it is what the
-	 * hash is OF), so rewriting it would be a second write of the same
-	 * bytes.
+	 * #398: keep the package set this version was named from, beside the
+	 * tree. It is the set build_image_manifest_string() hashed above, so
+	 * it is the version's own identity, and on the dedup branch the same
+	 * bytes again.
+	 *
+	 * Here, in the half a helper child runs, since ADR-0357: the write
+	 * fsyncs, and on 192.168.15.95 at 0.2.57-601 a delete of node from a
+	 * scratch image spent 555 ms of its 825 ms on the loop in it
+	 * (GET /v1/system/stalls, 2026-10-25). Why that fsync took 555 ms
+	 * was not measured. The tree is in place by now, so the snapshot
+	 * describes a tree that exists even if the daemon then fails to
+	 * record it.
 	 *
 	 * Non-fatal. The version exists and the image is usable without
 	 * it; losing the ability to answer "what was in this version" is
@@ -5701,13 +5748,25 @@ static int image_version_commit(const char *image, const char *new_version)
 		               "version is fine, but what it holds will not be answerable once the "
 		               "installed set moves on (#398)",
 		               image, new_version);
+	snprintf(out_version, out_version_size, "%s", new_version);
+	return 0;
+}
+
+/* The daemon's half of producing a version (ADR-0356): record it as the
+ * image's current one. Its package snapshot was written with the tree
+ * (ADR-0357). */
+static int image_version_commit(const char *image, const char *new_version)
+{
+	stallwatch_step("image version: record it");
+	if (image_record_version(image, new_version) != IMAGE_OK)
+		return produce_fail(image, NULL, "recording the new version", 0);
 	return 0;
 }
 
 /* Both halves at once, for the callers that still produce in the daemon
- * itself: a delete, the toolchain bootstrap, and the build sandbox's
- * one-time migration at start. The first two refuse while a child is
- * producing the same image (ADR-0356). */
+ * itself: the toolchain bootstrap, and the build sandbox's one-time
+ * migration at start. The bootstrap refuses while a child is producing
+ * the same image (ADR-0356). */
 static int image_produce_new_version(const char *image,
                                       int (*mutate)(const char *staging_rootfs, void *ctx),
                                       void *ctx, const char *extra_identity)
@@ -7326,7 +7385,7 @@ enum pkg_error pkg_bootstrap_from_toolchain(const char *toolchain_path)
 	 */
 	if (squashfs_image_check(toolchain_path) != 1)
 		return PKG_ERR_INVALID_TOOLCHAIN;
-	/* ADR-0356: the same rule as pkg_delete(), for the same reason. */
+	/* ADR-0356: the same rule an install and an uninstall keep, for the same reason. */
 	if (image_has_producer(PKG_BUILD_SANDBOX_IMAGE))
 		return PKG_ERR_IMAGE_PRODUCING;
 
@@ -8650,15 +8709,25 @@ int pkg_rebuild_queue_depth(void)
  * installed entry recorded at fetch time (ADR-0302) -- what that build
  * actually needed to run -- rather than re-read from whichever recipe
  * revision is highest now. Everything in the image outside it is
- * uninstalled, one pkg_delete() at a time, each logged by name.
+ * uninstalled, one at a time, each logged by name.
+ *
+ * One at a time because an uninstall is a chain job whose image version
+ * is produced in a helper child (ADR-0357): this starts the first stray
+ * it can and returns 1, with the producer in *out_pid/*out_pidfd/
+ * *out_chain_idx, and the image stays queued. The drain comes back to
+ * it once that job is over, and this starts the next. 0 when none is
+ * left to start. A stray whose uninstall failed in this convergence is
+ * skipped (stray_refused), so a failure is tried once, as it was when
+ * this looped over every stray in one pass.
  *
  * Measured before this existed, 192.168.15.95 on 2026-10-05: four
  * followed images held 46 packages their recipes did not declare,
  * cix-hosttools alone 21 -- the ISO toolchain among them, installed by
  * hand into an image whose recipe never mentioned it.
  */
-static void converge_uninstall_strays(const char *image_arg,
-                                      const struct image_manifest_entry *entries, int entry_count)
+static int converge_uninstall_strays(const char *image_arg,
+                                     const struct image_manifest_entry *entries, int entry_count,
+                                     pid_t *out_pid, int *out_pidfd, int *out_chain_idx)
 {
 	static unsigned char keep[PKG_MAX_PACKAGES];
 	char image[PKG_IMAGE_NAME_MAX];
@@ -8673,9 +8742,9 @@ static void converge_uninstall_strays(const char *image_arg,
 	 * empty the image. No followed image has one; this keeps it that way.
 	 */
 	if (entry_count == 0)
-		return;
+		return 0;
 	if (policy.recipe != IMAGE_POLICY_RECIPE_FOLLOW || policy.apply != IMAGE_POLICY_APPLY_CONVERGE)
-		return;
+		return 0;
 
 	memset(keep, 0, sizeof(keep));
 	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
@@ -8715,13 +8784,16 @@ static void converge_uninstall_strays(const char *image_arg,
 		char name[PKG_NAME_MAX];
 		enum pkg_error perr;
 
-		if (keep[i] || !g_packages[i].in_use ||
+		if (keep[i] || !g_packages[i].in_use || g_packages[i].stray_refused ||
 		    strcmp(normalize_image(g_packages[i].image), image) != 0 ||
 		    (g_packages[i].state != PKG_STATE_INSTALLED && g_packages[i].state != PKG_STATE_FAILED))
 			continue;
 		snprintf(name, sizeof(name), "%s", g_packages[i].name);
-		perr = pkg_delete(name, image);
+		perr = delete_start(name, image, 1, out_pid, out_pidfd, out_chain_idx);
+		if (perr == PKG_OK && *out_chain_idx >= 0)
+			return 1; /* its completion says how it went */
 		if (perr == PKG_OK) {
+			/* A failed entry, cleared at once. */
 			logstore_write("cixd", "info",
 			               "image %s: uninstalled %s -- outside the runtime closure of the "
 			               "recipe it follows (ADR-0330)",
@@ -8730,12 +8802,26 @@ static void converge_uninstall_strays(const char *image_arg,
 			const char *phrase;
 			char msg[512];
 
+			g_packages[i].stray_refused = 1;
 			pkg_error_describe(perr, &phrase, msg, sizeof(msg));
 			logstore_write("cixd", "warn",
 			               "image %s: could not uninstall %s, which its recipe does not cover: %s "
 			               "(ADR-0330)",
 			               image, name, msg);
 		}
+	}
+	return 0;
+}
+
+/* ADR-0357: an image left the drain's queue, so its next convergence
+ * tries again every stray this one could not uninstall. */
+static void converge_strays_forget_refusals(const char *image)
+{
+	int i;
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		if (g_packages[i].in_use && strcmp(normalize_image(g_packages[i].image), image) == 0)
+			g_packages[i].stray_refused = 0;
 	}
 }
 
@@ -8969,14 +9055,20 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 		 * that never reached its manifest may still need what a refused
 		 * entry would have brought.
 		 */
-		if (refused == 0)
-			converge_uninstall_strays(image, entries, entry_count);
-		else
+		if (refused == 0) {
+			/* ADR-0357: an uninstall is a job, and the image stays
+			 * queued while it runs, as it does for an install. */
+			if (converge_uninstall_strays(image, entries, entry_count, out_pid, out_pidfd,
+			                              out_chain_idx))
+				return 2;
+		} else {
 			logstore_write("cixd", "warn",
 			               "image %s: converge ended with %d entr%s not installed -- each is "
 			               "named above (ADR-0330)",
 			               image, refused, refused == 1 ? "y" : "ies");
+		}
 		approval_consume(PKG_GATE_ROLL, image);
+		converge_strays_forget_refusals(image);
 		rebuild_queue_remove_at(qi);
 	}
 	return 0;
@@ -15079,23 +15171,18 @@ static int chain_job_is_final(int chain_idx)
 }
 
 /*
- * ADR-0356 (#617): starts producing the image version an install goes
- * into, in a helper child (image_version_fork()), for the entry the
- * chain has recorded in produce_e. If another chain is producing the
- * same image, starts a waiter on that producer instead, and this is
- * called again when the waiter exits. Either way the child is in
- * *out_pid and *out_pidfd and the chain's producer, and its exit reaches
- * pkg_produce_completed(). 0; -1 with a reason in err when production
- * could not start; -2 with the refusal in err when a gate refused the
- * package.
+ * ADR-0356: one image has one producer at a time, an install's or an
+ * uninstall's (ADR-0357). When another chain is producing chain_idx's
+ * image, starts a waiter on it -- in *out_pid/*out_pidfd and the chain's
+ * producer -- and returns 1; the waiter's exit reaches
+ * pkg_produce_completed(), which asks again. 0 when no other chain is
+ * producing it; -1 with a reason in err when the waiter could not start.
  */
-static int install_produce_start(int chain_idx, pid_t *out_pid, int *out_pidfd, char *err,
-                                 size_t err_size)
+static int image_producer_wait(int chain_idx, pid_t *out_pid, int *out_pidfd, char *err,
+                               size_t err_size)
 {
-	struct pkg_entry *e = g_chains[chain_idx].produce_e;
+	const struct pkg_entry *e = g_chains[chain_idx].produce_e;
 	const char *image = g_chains[chain_idx].image;
-	struct install_mutate_ctx ctx;
-	char container_base[PATH_MAX], dest_dir[PATH_MAX], report_path[PATH_MAX];
 	int i;
 
 	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
@@ -15122,8 +15209,33 @@ static int install_produce_start(int chain_idx, pid_t *out_pid, int *out_pidfd, 
 		               e->name, image, image,
 		               g_chains[i].produce_e != NULL ? g_chains[i].produce_e->name
 		                                             : g_chains[i].name);
-		return 0;
+		return 1;
 	}
+	return 0;
+}
+
+/*
+ * ADR-0356 (#617): starts producing the image version an install goes
+ * into, in a helper child (image_version_fork()), for the entry the
+ * chain has recorded in produce_e. If another chain is producing the
+ * same image, starts a waiter on that producer instead, and this is
+ * called again when the waiter exits. Either way the child is in
+ * *out_pid and *out_pidfd and the chain's producer, and its exit reaches
+ * pkg_produce_completed(). 0; -1 with a reason in err when production
+ * could not start; -2 with the refusal in err when a gate refused the
+ * package.
+ */
+static int install_produce_start(int chain_idx, pid_t *out_pid, int *out_pidfd, char *err,
+                                 size_t err_size)
+{
+	struct pkg_entry *e = g_chains[chain_idx].produce_e;
+	const char *image = g_chains[chain_idx].image;
+	struct install_mutate_ctx ctx;
+	char container_base[PATH_MAX], dest_dir[PATH_MAX], report_path[PATH_MAX];
+	int r = image_producer_wait(chain_idx, out_pid, out_pidfd, err, err_size);
+
+	if (r != 0)
+		return r < 0 ? -1 : 0;
 
 	install_staged_paths(e, container_base, sizeof(container_base), dest_dir, sizeof(dest_dir));
 
@@ -15496,7 +15608,8 @@ static int install_finish(int chain_idx, struct pkg_entry *e, int is_final, pid_
 }
 
 int pkg_produce_completed(int chain_idx, int exit_status, pid_t *out_pid, int *out_pidfd,
-                          int *out_chain_idx, char *out_hostbuild_done_name)
+                          int *out_chain_idx, char *out_hostbuild_done_name,
+                          int *out_deleted_chain, enum pkg_error *out_delete_result)
 {
 	struct pkg_entry *e;
 	char reason[256], version[IMAGE_VERSION_MAX], report_path[PATH_MAX];
@@ -15510,6 +15623,8 @@ int pkg_produce_completed(int chain_idx, int exit_status, pid_t *out_pid, int *o
 	*out_pidfd = -1;
 	*out_chain_idx = -1;
 	out_hostbuild_done_name[0] = '\0';
+	*out_deleted_chain = -1;
+	*out_delete_result = PKG_OK;
 	if (chain_idx < 0 || chain_idx >= PKG_MAX_CONCURRENT_JOBS)
 		return 0;
 	e = g_chains[chain_idx].produce_e;
@@ -15533,7 +15648,22 @@ int pkg_produce_completed(int chain_idx, int exit_status, pid_t *out_pid, int *o
 		               "pkg: the image producer of job slot %d exited (%d) after its job had "
 		               "been released, so nothing it built was recorded (ADR-0356)",
 		               chain_idx, exit_status);
+		/* A request waiting on an uninstall is still answered. */
+		if (g_chains[chain_idx].is_delete) {
+			*out_deleted_chain = chain_idx;
+			*out_delete_result = PKG_ERR_PERSIST_FAILED;
+			if (g_chains[chain_idx].name[0] != '\0')
+				chain_release(chain_idx);
+		}
 		return 0;
+	}
+	if (g_chains[chain_idx].is_delete) {
+		int next = delete_produce_completed(chain_idx, e, waited, exit_status, out_pid,
+		                                    out_pidfd, out_chain_idx, out_delete_result);
+
+		if (next != 2)
+			*out_deleted_chain = chain_idx;
+		return next;
 	}
 	is_upgrade = chain_job_is_final(chain_idx) && g_chains[chain_idx].dep_queue_is_upgrade;
 
@@ -15558,9 +15688,8 @@ int pkg_produce_completed(int chain_idx, int exit_status, pid_t *out_pid, int *o
 	stallwatch_step("pkg install: record the image version");
 	/*
 	 * INSTALLED now and not before (see pkg_build_completed()): the
-	 * record makes the image hold it, and the package set the record
-	 * keeps beside the version (#398) is read from this table, so the
-	 * entry has to be in it. A failure to record puts it back below.
+	 * record makes the image hold it. A failure to record puts it back
+	 * below.
 	 */
 	pkg_job_set_state(e, PKG_STATE_INSTALLED);
 	if (image_version_commit(g_chains[chain_idx].image, version) != 0) {
@@ -16476,18 +16605,44 @@ enum pkg_error pkg_hostbuild_artifact_info(const char *name, char *out_version,
 	return PKG_OK;
 }
 
-/* image_produce_new_version()'s own mutate() callback for pkg_delete()
- * -- unlinks ctx's own saved file list from the copy-forwarded staging
- * rootfs. */
+/* Removes a hostbuild's artifact directory; defined below. */
+static int remove_hostbuild_artifacts(const char *name, char *out_err, size_t err_size);
+
+/*
+ * ADR-0357 (#642): an uninstall's mutate step, run in the producer child
+ * (image_version_fork()) against the daemon's memory as it was at the
+ * fork. It unlinks the entry's recorded files from the staging copy
+ * and then clears the child's copy of the entry, because the version is
+ * named from the installed set without it; the daemon clears its own
+ * when it records that version. reason is the child's to fill when the
+ * step fails.
+ *
+ * A hostbuild's artifact directory goes first, as it did in the daemon
+ * (#165): if it cannot be removed, nothing else is, and the package
+ * stays installed with its record still describing the bytes on disk.
+ */
 struct delete_mutate_ctx {
-	const struct pkg_entry *e;
+	struct pkg_entry *e;
+	char reason[256];
 };
 
 static int delete_mutate(const char *staging_rootfs, void *ctx_v)
 {
 	struct delete_mutate_ctx *ctx = ctx_v;
 
+	if (strcmp(normalize_image(ctx->e->image), PKG_HOSTBUILD_IMAGE) == 0) {
+		char rmerr[128];
+
+		if (remove_hostbuild_artifacts(ctx->e->name, rmerr, sizeof(rmerr)) != 0) {
+			snprintf(ctx->reason, sizeof(ctx->reason),
+			         "could not remove the artifact directory of %s: %s -- the package was "
+			         "left installed so its record still describes the bytes on disk",
+			         ctx->e->name, rmerr);
+			return -1;
+		}
+	}
 	unlink_manifest_files(ctx->e, staging_rootfs);
+	memset(ctx->e, 0, sizeof(*ctx->e));
 	return 0;
 }
 
@@ -16534,23 +16689,163 @@ static int remove_hostbuild_artifacts(const char *name, char *out_err, size_t er
 	return 0;
 }
 
-enum pkg_error pkg_delete(const char *name, const char *image)
+/*
+ * ADR-0357 (#642): starts producing the image version an uninstall
+ * leaves, for the entry in the chain's produce_e, in a helper child
+ * (image_version_fork() with delete_mutate()). If another chain is
+ * producing the same image, starts a waiter on that producer instead,
+ * and this is called again when the waiter exits. Either way the child
+ * is in *out_pid and *out_pidfd and the chain's producer, and its exit
+ * reaches pkg_produce_completed(). 0, or -1 with a reason in err.
+ */
+static int delete_produce_start(int chain_idx, pid_t *out_pid, int *out_pidfd, char *err,
+                                size_t err_size)
 {
-	struct pkg_entry *e = pkg_find(name, image);
-	struct pkg_entry saved;
 	struct delete_mutate_ctx ctx;
+	char report_path[PATH_MAX];
+	int r = image_producer_wait(chain_idx, out_pid, out_pidfd, err, err_size);
 
-	if (e == NULL || (e->state != PKG_STATE_INSTALLED && e->state != PKG_STATE_FAILED))
-		return PKG_ERR_NOT_FOUND;
-	{
-		int i;
+	if (r != 0)
+		return r < 0 ? -1 : 0;
+	ctx.e = g_chains[chain_idx].produce_e;
+	ctx.reason[0] = '\0';
+	produce_report_path(chain_idx, report_path, sizeof(report_path));
+	if (image_version_fork(g_chains[chain_idx].image, delete_mutate, &ctx, NULL, ctx.reason, NULL,
+	                       report_path, out_pid, out_pidfd, err, err_size) != 0)
+		return -1;
+	g_chains[chain_idx].producer = *out_pid;
+	g_chains[chain_idx].produce_waiting = 0;
+	return 0;
+}
 
-		for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
-			if (strcmp(g_chains[i].name, name) == 0 &&
-			    strcmp(g_chains[i].image, normalize_image(image)) == 0)
-				return PKG_ERR_BUSY;
+/*
+ * ADR-0357: an uninstall is over. Says why when it failed -- in the
+ * rolling drain's words for a stray, which is then skipped for the rest
+ * of its image's convergence -- releases the chain and hands back the
+ * outcome. e is the entry that stays installed, NULL when it is gone.
+ */
+static void delete_finish(int chain_idx, struct pkg_entry *e, enum pkg_error result,
+                          const char *why, enum pkg_error *out_result)
+{
+	if (why != NULL && e != NULL) {
+		if (g_chains[chain_idx].is_stray) {
+			e->stray_refused = 1;
+			logstore_write("cixd", "warn",
+			               "image %s: could not uninstall %s, which its recipe does not cover: "
+			               "image \"%s\" could not produce a new version: %s (ADR-0330)",
+			               g_chains[chain_idx].image, e->name, g_chains[chain_idx].image, why);
+		} else {
+			logstore_write("cixd", "error",
+			               "pkg %s@%s: not uninstalled -- image \"%s\" could not produce a new "
+			               "version: %s",
+			               e->name, g_chains[chain_idx].image, g_chains[chain_idx].image, why);
 		}
 	}
+	chain_release(chain_idx);
+	*out_result = result;
+}
+
+/*
+ * ADR-0357: an uninstall's producer, or its waiter, has exited. 2 with
+ * the producer in *out_pid/*out_pidfd/*out_chain_idx when a waiter's
+ * exit lets it start; 0 when the uninstall is over, with its outcome in
+ * *out_result.
+ *
+ * The daemon's entry stayed INSTALLED while the child produced, because
+ * until the version is recorded the image still holds the package. It
+ * is cleared here, just before the record, and put back if the record
+ * fails, so the copy that restores it never outlives this call.
+ */
+static int delete_produce_completed(int chain_idx, struct pkg_entry *e, int waited,
+                                    int exit_status, pid_t *out_pid, int *out_pidfd,
+                                    int *out_chain_idx, enum pkg_error *out_result)
+{
+	char reason[256], version[IMAGE_VERSION_MAX], report_path[PATH_MAX], err[512];
+	char *files = NULL;
+	size_t files_len = 0;
+	long long took_ms = -1;
+	int file_count = 0, reported;
+	struct pkg_entry saved;
+	const char *image = g_chains[chain_idx].image;
+
+	if (waited) {
+		stallwatch_step("pkg delete: the image's other producer finished");
+		if (delete_produce_start(chain_idx, out_pid, out_pidfd, err, sizeof(err)) == 0) {
+			*out_chain_idx = chain_idx;
+			return 2;
+		}
+		delete_finish(chain_idx, e, PKG_ERR_SPAWN_FAILED, err, out_result);
+		return 0;
+	}
+
+	stallwatch_step("pkg delete: read the producer's report");
+	produce_report_path(chain_idx, report_path, sizeof(report_path));
+	reported = produce_report_take(report_path, reason, sizeof(reason), version, sizeof(version),
+	                               &took_ms, &files, &files_len, &file_count);
+	free(files); /* an uninstall's producer reports no files */
+	if (exit_status != 0 || !reported || version[0] == '\0') {
+		if (reason[0] == '\0')
+			snprintf(reason, sizeof(reason), "the producer exited %d and %s", exit_status,
+			         reported ? "gave no reason" : "left no report");
+		delete_finish(chain_idx, e, PKG_ERR_PERSIST_FAILED, reason, out_result);
+		return 0;
+	}
+
+	stallwatch_step("pkg delete: record the image version");
+	saved = *e;
+	memset(e, 0, sizeof(*e));
+	pkg_announce_jobs();
+	if (image_version_commit(image, version) != 0) {
+		const char *why = pkg_last_image_produce_failure();
+
+		*e = saved;
+		pkg_announce_jobs();
+		delete_finish(chain_idx, e, PKG_ERR_PERSIST_FAILED,
+		              why != NULL ? why : "recording it failed", out_result);
+		return 0;
+	}
+	if (g_chains[chain_idx].is_stray)
+		logstore_write("cixd", "info",
+		               "image %s: uninstalled %s -- outside the runtime closure of the recipe it "
+		               "follows (ADR-0330); version %s produced in %lld ms, in a helper child "
+		               "(ADR-0357)",
+		               image, saved.name, version, took_ms);
+	else
+		logstore_write("cixd", "info",
+		               "pkg %s@%s: uninstalled -- image version %s produced in %lld ms, in a "
+		               "helper child (ADR-0357)",
+		               saved.name, image, version, took_ms);
+	pkg_entry_free_files(&saved);
+	delete_finish(chain_idx, NULL, save_state() == 0 ? PKG_OK : PKG_ERR_PERSIST_FAILED, NULL,
+	              out_result);
+	return 0;
+}
+
+/*
+ * Removes a package entry (DELETE /v1/pkg/{name}, and the rolling
+ * drain's strays). is_stray says which.
+ *
+ * A failed entry is cleared here and now, *out_chain_idx -1. An
+ * installed one is uninstalled by a chain job (ADR-0357): its image
+ * version is produced in a helper child, and the entry is cleared when
+ * the daemon records that version, in pkg_produce_completed(). Then
+ * *out_chain_idx is the chain and the child is in *out_pid/*out_pidfd,
+ * for the caller to watch as an install's producer is watched.
+ */
+static enum pkg_error delete_start(const char *name, const char *image, int is_stray,
+                                   pid_t *out_pid, int *out_pidfd, int *out_chain_idx)
+{
+	struct pkg_entry *e = pkg_find(name, image);
+	char err[512];
+	int chain_idx;
+
+	*out_chain_idx = -1;
+	if (e == NULL || (e->state != PKG_STATE_INSTALLED && e->state != PKG_STATE_FAILED))
+		return PKG_ERR_NOT_FOUND;
+	/* A job for this package in this image -- an install, or an
+	 * uninstall already under way -- has it first. */
+	if (pkg_job_in_flight_for(name, image, 0))
+		return PKG_ERR_BUSY;
 
 	/*
 	 * A PKG_STATE_FAILED entry almost never had its files committed
@@ -16565,12 +16860,10 @@ enum pkg_error pkg_delete(const char *name, const char *image)
 	 * and a file list that did not arrive whole): that version holds
 	 * them, and clearing the entry leaves them in it and in every
 	 * version produced from it. For this removal there is nothing to
-	 * unlink and no new image version to produce --
-	 * image_produce_new_version()/delete_mutate() below is for the
-	 * PKG_STATE_INSTALLED case only; a failed entry is cleared
-	 * directly. save_state() is harmless-but-not-load-bearing here
-	 * (only PKG_STATE_INSTALLED entries are ever persisted), kept for
-	 * consistency with the branch below.
+	 * unlink and no new image version to produce, so a failed entry is
+	 * cleared directly. save_state() is harmless-but-not-load-bearing
+	 * here (only PKG_STATE_INSTALLED entries are ever persisted), kept
+	 * for consistency with the uninstall's.
 	 */
 	if (e->state == PKG_STATE_FAILED) {
 		char rmerr[128];
@@ -16598,62 +16891,41 @@ enum pkg_error pkg_delete(const char *name, const char *image)
 	}
 
 	/*
-	 * ADR-0356: an uninstall produces a version of the image too, here
-	 * in the daemon until #642 moves it, and a helper child producing one for another
-	 * install would snapshot the same version. Whichever was recorded
-	 * second would undo the other. A failed entry, cleared above, writes
-	 * no version and is not refused.
-	 */
-	if (image_has_producer(normalize_image(image)))
-		return PKG_ERR_IMAGE_PRODUCING;
-
-	/*
 	 * Uninstalling a package must, like an install/upgrade, produce a
 	 * new immutable image version (ADR-0107/0108) rather than mutating
 	 * a version's rootfs that an already-running container might have
-	 * open as its own overlay lowerdir right now. e's own registry
-	 * slot is cleared BEFORE image_produce_new_version() runs (a
-	 * struct copy captures e->files' pointer into saved first, so
-	 * nothing is freed yet) so build_image_manifest_string()'s own
-	 * fresh g_packages scan -- which only runs after delete_mutate()
-	 * has unlinked the files -- correctly excludes this package from
-	 * the new version's manifest.
+	 * open as its own overlay lowerdir right now. A chain job, so every
+	 * question about what is in flight sees it: one producer per image
+	 * (an install into the image waits for this one, and this one for
+	 * it), the drain and the retention pass leave the image alone, and a
+	 * second job for the same package is refused above.
 	 */
-	/*
-	 * Removed BEFORE the record is cleared, deliberately. If this
-	 * fails, the package stays installed and still describes the bytes
-	 * that are still there -- the two agree. Clearing the record first
-	 * and failing here would leave exactly the state this issue is
-	 * about: no package, and a fully deployable artifact.
-	 */
-	if (strcmp(normalize_image(image), PKG_HOSTBUILD_IMAGE) == 0) {
-		char rmerr[128];
-
-		if (remove_hostbuild_artifacts(name, rmerr, sizeof(rmerr)) != 0) {
-			logstore_write("cixd", "error",
-			               "pkg delete: %s: could not remove the artifact directory: %s -- the "
-			               "package was left installed so its record still describes the bytes "
-			               "on disk",
-			               name, rmerr);
-			return PKG_ERR_PERSIST_FAILED;
-		}
+	chain_idx = chain_alloc_delete();
+	if (chain_idx < 0)
+		return PKG_ERR_BUSY;
+	snprintf(g_chains[chain_idx].image, sizeof(g_chains[chain_idx].image), "%s",
+	         normalize_image(image));
+	g_chains[chain_idx].is_hostbuild = 0;
+	g_chains[chain_idx].dep_queue_count = 0;
+	g_chains[chain_idx].produce_e = e;
+	g_chains[chain_idx].is_delete = 1;
+	g_chains[chain_idx].is_stray = is_stray;
+	chain_set_buildenv(chain_idx, "");
+	chain_claim(chain_idx, e->name);
+	if (delete_produce_start(chain_idx, out_pid, out_pidfd, err, sizeof(err)) != 0) {
+		logstore_write("cixd", "error", "pkg %s@%s: not uninstalled -- %s", e->name,
+		               g_chains[chain_idx].image, err);
+		chain_release(chain_idx);
+		return PKG_ERR_SPAWN_FAILED;
 	}
-
-	saved = *e;
-	memset(e, 0, sizeof(*e));
-	pkg_announce_jobs();
-	ctx.e = &saved;
-
-	if (image_produce_new_version(normalize_image(image), delete_mutate, &ctx, NULL) != 0) {
-		*e = saved; /* the uninstall never actually happened -- restore e exactly */
-		return PKG_ERR_PERSIST_FAILED;
-	}
-
-	pkg_entry_free_files(&saved);
-
-	if (save_state() != 0)
-		return PKG_ERR_PERSIST_FAILED;
+	*out_chain_idx = chain_idx;
 	return PKG_OK;
+}
+
+enum pkg_error pkg_delete_start(const char *name, const char *image, pid_t *out_pid,
+                                int *out_pidfd, int *out_chain_idx)
+{
+	return delete_start(name, image, 0, out_pid, out_pidfd, out_chain_idx);
 }
 
 /* ---- pkg sync (ADR-0121), over every recipe source (ADR-0324, pkgsource.c) ---- */
@@ -23048,9 +23320,9 @@ int pkg_error_describe(enum pkg_error err, const char **phrase, char *msg, size_
 	case PKG_ERR_IMAGE_PRODUCING:
 		*phrase = "Conflict";
 		snprintf(msg, msg_size,
-		         "this image is producing a new version for another install, and one image "
-		         "produces one version at a time (ADR-0356); nothing was changed -- ask again "
-		         "once that install has finished");
+		         "this image is producing a new version for an install or an uninstall, and "
+		         "one image produces one version at a time (ADR-0356); nothing was changed -- "
+		         "ask again once that job has finished");
 		return 409;
 	case PKG_ERR_SPAWN_FAILED:
 	case PKG_ERR_PERSIST_FAILED:

@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An uninstall is a package job, produced in a helper child (#642)
+
+- **What changed:** uninstalling a package claims a package job slot and produces its image version in a helper child through `image_version_fork()`, as an install does ([ADR-0357](docs/adr/0357-an-uninstall-is-a-package-job-produced-in-a-helper-child.md)). `DELETE /v1/pkg/{name}` waits for that job (`PARK_PKGDELETE`, ADR-0342's one park) and answers 204 once the version is recorded; the package reads `installed` until then. A delete into an image another job is producing now waits for it instead of answering 409. The rolling drain uninstalls one stray at a time, each after the previous one's exit, and a stray that fails is skipped for the rest of that convergence. A version's package snapshot (#398) is now written with the tree, in the child, for installs as well. An uninstall takes the highest free slot and is not bounded by `max_concurrent_jobs`, so `active_jobs` can briefly exceed it. `test_blocking_waits` counts four calls to `image_version_fork()` and three to `image_produce_new_version()`.
+- **Why:** on 192.168.15.95 at 0.2.57-601, deleting `node` from a scratch image held the event loop 825 ms, 555 of them writing the version's package snapshot and 59 in 1932 unlinks (2026-10-25).
+- **Not changed:** clearing a failed hostbuild's partial artifact directory still runs on the loop.
+
 ### GET /v1/pkg/verify is answered from a helper child (#643)
 
 - **What changed:** the verification report is made in a helper child while the request waits, a new park kind (`PARK_VERIFY`, ADR-0342's one park), one at a time with up to four waiting. Beyond that the answer is 503 with `Retry-After: 5`, and a report that never arrives is a 500. A client that leaves has its verification killed, as a log read's is. `test_blocking_waits` counts the calls to `pkg_write_verify_json()`.
