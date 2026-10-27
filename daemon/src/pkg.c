@@ -11835,7 +11835,17 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		e->build_direct = 0;
 		if (!reset_failed && e->build_lowerdir[0] != '\0' &&
 		    cix_btrfs_is_backing(CONTAINER_ROOTFS_DIR) &&
-		    cix_btrfs_is_subvolume(e->build_lowerdir)) {
+		    !cix_btrfs_is_subvolume(e->build_lowerdir)) {
+			/* An image version is a snapshot, so on a btrfs host this
+			 * is a defect (#180's shape), and it is said rather than
+			 * left to look like a working snapshot path. */
+			logstore_write("cixd", "warn",
+			               "pkg %s@%s: the build environment %s is not a btrfs subvolume -- "
+			               "building on the overlay path instead",
+			               e->name, e->image, e->build_lowerdir);
+		} else if (!reset_failed && e->build_lowerdir[0] != '\0' &&
+		           cix_btrfs_is_backing(CONTAINER_ROOTFS_DIR)) {
+			stallwatch_step("build prep: snapshot the build environment");
 			if (cix_btrfs_snapshot_or_copy(e->build_lowerdir, snap) == 0)
 				e->build_direct = 1;
 			else

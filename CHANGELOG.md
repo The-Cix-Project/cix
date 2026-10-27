@@ -6,7 +6,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
-### A build container's rootfs is a snapshot of its build environment (#615, ADR-0360 release A)
+### A build container's rootfs is a snapshot of its build environment (#657, ADR-0360 release A)
 
 - **What changed:** each build slot's tree is now a btrfs snapshot of its build environment's image version, at `CONTAINER_ROOTFS_DIR/__pkgbuild-<slot>`, and the container pivots onto it directly (`direct_rootfs`), as an ordinary container has done since ADR-0341. The recipe, the sources, the cbs workspace and the finalize policy are staged into that snapshot. A slot's previous snapshot leaves through `rootfs_discard()` with its base. When the source is not a btrfs subvolume the slot uses the overlay as before; when a snapshot is attempted and fails, cixd logs `could not snapshot the build environment` and uses the overlay. `pkg_entry.build_upperdir` is now `build_tree`, because it is no longer always an upper layer.
 - **Why:** measured at 0.2.57-611 (`probe-buildfs@1-1`): every build container was OverlayFS, with its lower layer on sda and its upper on vdb5. That is the last OverlayFS user in production. It is also why the release gate cannot run on btrfs yet: the gate runs inside a build container. Release B moves the gate and removes the fallback.
