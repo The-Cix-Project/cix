@@ -176,7 +176,7 @@ static int build_container_spec(struct container_spec *spec, const char *cg_name
 	int i;
 
 	snprintf(rootfs, sizeof(rootfs_ring[0]), "%s/rootfs", scratch_dir);
-	if (mkdir_p1(scratch_dir) != 0 ||
+	if (test_mkdir_p(scratch_dir) != 0 ||
 	    test_image_fixture_build(rootfs, "build/dev_child", "dev_child") != 0 ||
 	    stage_test_nodes(rootfs) != 0)
 		return -1;

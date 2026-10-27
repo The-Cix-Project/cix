@@ -50,15 +50,6 @@
 #define BRIDGE_NAME2 "cix-ctnet1"
 #define NET_CHILD_PORT 17700
 
-static int mkdir_p1(const char *path)
-{
-	if (mkdir(path, 0755) != 0 && errno != EEXIST) {
-		perror(path);
-		return -1;
-	}
-	return 0;
-}
-
 static int iface_exists(const char *name)
 {
 	char path[128];
@@ -205,7 +196,7 @@ static int build_container_spec(struct container_spec *spec, const char *cg_name
 	int i;
 
 	snprintf(rootfs, sizeof(rootfs_ring[0]), "%s/rootfs", scratch_dir);
-	if (mkdir_p1(scratch_dir) != 0 ||
+	if (test_mkdir_p(scratch_dir) != 0 ||
 	    test_image_fixture_build(rootfs, "build/net_child", "net_child") != 0 ||
 	    test_image_fixture_build(rootfs, "build/daemon_child", "daemon_child") != 0 ||
 	    test_image_fixture_build(rootfs, "build/net_connect", "net_connect") != 0)
