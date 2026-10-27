@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An export never puts a half-written artifact in the package cache (#658)
+
+- **What changed:** `cbs package` now writes to `.<artifact>.partial` beside the final path, and cixd renames it into place only when the child succeeds. A failed export removes only the partial, so an artifact already cached from an earlier export stays.
+- **Why:** cbs writes `--output` in place (`fopen "wb"`), and since #648 a hostbuild's export targets the package cache itself. So while one ran, `GET /v1/pkg/cache` listed a growing artifact and a fetch could be handed half of one, with no announcement until the export ended. The start of an export also unlinked the cached artifact it was replacing. Compile probe 0.2.57-643's drift check found it in `test_kmod_build`: `getPkgCache changed without an announcement`.
+- **Verified:** pending.
+
 ### A build container's rootfs is a snapshot of its build environment (#657, ADR-0360 release A)
 
 - **What changed:** each build slot's tree is now a btrfs snapshot of its build environment's image version, at `CONTAINER_ROOTFS_DIR/__pkgbuild-<slot>`, and the container pivots onto it directly (`direct_rootfs`), as an ordinary container has done since ADR-0341. The recipe, the sources, the cbs workspace and the finalize policy are staged into that snapshot. A slot's previous snapshot leaves through `rootfs_discard()` with its base. When the source is not a btrfs subvolume the slot uses the overlay as before; when a snapshot is attempted and fails, cixd logs `could not snapshot the build environment` and uses the overlay. `pkg_entry.build_upperdir` is now `build_tree`, because it is no longer always an upper layer.

@@ -10894,6 +10894,19 @@ static enum artifact_export_state g_artifact_export_state;
 static char g_artifact_export_name[PKG_IMAGE_NAME_MAX];
 static char g_artifact_export_version[IMAGE_VERSION_MAX];
 static char g_artifact_export_path[PATH_MAX];
+/*
+ * Where `cbs package` writes while it runs: ".<name>.partial" beside
+ * g_artifact_export_path, renamed onto it only when the child succeeds.
+ * cbs writes --output in place (fopen "wb", cbs src/cixpkg.c:246), and
+ * the path is the package cache's own, so writing there directly put a
+ * growing, half-written artifact into GET /v1/pkg/cache and into reach
+ * of anything fetching it, with no announcement until the export ended.
+ * Compile probe 0.2.57-643's drift check caught it in test_kmod_build.
+ * The cache scan skips dot-files, so the partial is invisible to it.
+ * One left by a daemon that died mid-export is removed by the next
+ * export of the same artifact, which unlinks it before starting.
+ */
+static char g_artifact_export_partial[PATH_MAX];
 static char g_artifact_export_error[256];
 /*
  * #648: this export makes a hostbuild's artifact for a push waiting in
@@ -11098,9 +11111,17 @@ static void handle_artifact_export_event(struct conn *cc)
 	char errbuf[192];
 	ssize_t errn = 0;
 
+	int packaged, rename_errno = 0;
+
 	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
-	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status) &&
-	    WEXITSTATUS(status) == 0) {
+	packaged = waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid &&
+	           WIFEXITED(status) && WEXITSTATUS(status) == 0;
+	/* The whole artifact, under its real name, in one step. */
+	if (packaged && rename(g_artifact_export_partial, g_artifact_export_path) != 0) {
+		rename_errno = errno;
+		packaged = 0;
+	}
+	if (packaged) {
 		g_artifact_export_state = ARTIFACT_EXPORT_READY;
 		logstore_write("cixd", "info", "artifact export: %s@%s ready at %s", g_artifact_export_name,
 		               g_artifact_export_version, g_artifact_export_path);
@@ -11118,10 +11139,17 @@ static void handle_artifact_export_event(struct conn *cc)
 		while (errn > 0 && (errbuf[errn - 1] == '\n' || errbuf[errn - 1] == '\r'))
 			errbuf[--errn] = '\0';
 		g_artifact_export_state = ARTIFACT_EXPORT_FAILED;
-		snprintf(g_artifact_export_error, sizeof(g_artifact_export_error),
-		         "cbs package failed (status 0x%x)%s%s", (unsigned)status, errn > 0 ? ": " : "",
-		         errbuf);
-		unlink(g_artifact_export_path);
+		if (rename_errno != 0)
+			snprintf(g_artifact_export_error, sizeof(g_artifact_export_error),
+			         "cbs package succeeded, but its artifact could not be moved into place: %s",
+			         strerror(rename_errno));
+		else
+			snprintf(g_artifact_export_error, sizeof(g_artifact_export_error),
+			         "cbs package failed (status 0x%x)%s%s", (unsigned)status,
+			         errn > 0 ? ": " : "", errbuf);
+		/* Only the partial: an artifact already at the final path is a
+		 * good one from an earlier export, and stays. */
+		unlink(g_artifact_export_partial);
 		logstore_write("cixd", "error", "artifact export: %s failed -- %s", g_artifact_export_name,
 		               g_artifact_export_error);
 		if (g_artifact_export_for_push) {
@@ -11233,7 +11261,21 @@ static int artifact_export_start(const char *name, const char *dest_override, ch
 		snprintf(g_artifact_export_path, sizeof(g_artifact_export_path), "%s/%s-%s%s", out_dir,
 		         name, version, pkg_artifact_suffix(PKG_ARTIFACT_FORMAT_CIXPKG));
 	}
-	unlink(g_artifact_export_path);
+	{
+		const char *slash = strrchr(g_artifact_export_path, '/');
+		int dir_len = slash != NULL ? (int)(slash - g_artifact_export_path) : 0;
+		const char *leaf = slash != NULL ? slash + 1 : g_artifact_export_path;
+
+		if (snprintf(g_artifact_export_partial, sizeof(g_artifact_export_partial),
+		             "%.*s%s.%s.partial", dir_len, g_artifact_export_path,
+		             slash != NULL ? "/" : "", leaf) >= (int)sizeof(g_artifact_export_partial)) {
+			snprintf(err_msg, err_msg_size, "the export path is too long");
+			return -1;
+		}
+	}
+	/* The final path is left alone until the rename replaces it: an
+	 * artifact already in the cache stays served while this one is made. */
+	unlink(g_artifact_export_partial);
 
 	{
 		int errpipe[2];
@@ -11279,7 +11321,7 @@ static int artifact_export_start(const char *name, const char *dest_override, ch
 			snprintf(release_str, sizeof(release_str), "%lld", release);
 			execl(PKG_CBS_BIN, "cbs", "package", src, "--name", name, "--version",
 			      bare_version, "--release", release_str, "--arch", pkg_artifact_arch(),
-			      "--output", g_artifact_export_path, (char *)NULL);
+			      "--output", g_artifact_export_partial, (char *)NULL);
 			fprintf(stderr, "execve %s: %s\n", PKG_CBS_BIN, strerror(errno));
 			_exit(127);
 		}
