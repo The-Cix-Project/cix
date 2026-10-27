@@ -4784,16 +4784,30 @@ int pkg_run_capture_sha256(const char *path, char *out, size_t out_size)
  * The path is relative to the tree being merged, which is what a
  * reader can actually act on -- an absolute staging path names a
  * scratch directory that will not exist by the time anyone looks.
+ *
+ * #654: the sentence is kept in g_merge_fail_reason as well as logged,
+ * because the log was the only place it reached. An install's merge runs
+ * in the producer child (ADR-0356), which hands it to the daemon as the
+ * mutate reason, and the package's row then names the file and the step;
+ * before, the row said only "the caller's own mutate step failed"
+ * (libsodium 1.0.20-4 into probe-cu, 192.168.15.95, 0.2.57-607). Every
+ * failure exit of merge_tree() writes it, so a nonzero return always
+ * leaves it describing that failure.
  */
+static char g_merge_fail_reason[256];
+
 static int merge_fail(const char *relpath, const char *step, int use_errno)
 {
+	const char *where = relpath != NULL && relpath[0] != '\0' ? relpath : "(tree root)";
+	int err = errno;
+
 	if (use_errno)
-		logstore_write("cixd", "error", "merge: %s failed for \"%s\": %s", step,
-		               relpath != NULL && relpath[0] != '\0' ? relpath : "(tree root)",
-		               strerror(errno));
+		snprintf(g_merge_fail_reason, sizeof(g_merge_fail_reason), "%s failed for \"%s\": %s",
+		         step, where, strerror(err));
 	else
-		logstore_write("cixd", "error", "merge: %s failed for \"%s\"", step,
-		               relpath != NULL && relpath[0] != '\0' ? relpath : "(tree root)");
+		snprintf(g_merge_fail_reason, sizeof(g_merge_fail_reason), "%s failed for \"%s\"", step,
+		         where);
+	logstore_write("cixd", "error", "merge: %s", g_merge_fail_reason);
 	return -1;
 }
 
@@ -4936,7 +4950,7 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 					               "the compiler did not implement it and emitted it as an "
 					               "external symbol instead, so this binary is broken (#176)",
 					               child_rel, bad_sym);
-					return merge_fail(child_rel, "carrying an undefined compiler builtin", 0);
+					return merge_fail(child_rel, "the undefined compiler builtin gate (#176)", 0);
 				}
 			}
 			/*
@@ -4960,7 +4974,7 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 				               "-- tcc builds __thread in a shared library this way, so build "
 				               "this package with compiler \"gcc\" (#653)",
 				               child_rel);
-				return merge_fail(child_rel, "carrying thread-local data it cannot reach", 0);
+				return merge_fail(child_rel, "the thread-local data gate (#653)", 0);
 			}
 
 			t = stallwatch_tally_start();
@@ -15326,8 +15340,9 @@ static int install_produce_start(int chain_idx, pid_t *out_pid, int *out_pidfd, 
 	ctx.is_upgrade = chain_job_is_final(chain_idx) && g_chains[chain_idx].dep_queue_is_upgrade;
 	ctx.keep_privileged = 1;
 	produce_report_path(chain_idx, report_path, sizeof(report_path));
-	if (image_version_fork(image, install_mutate, &ctx, NULL, NULL, e, report_path, out_pid,
-	                       out_pidfd, err, err_size) != 0)
+	/* #654: the merge's own sentence, not "the caller's own mutate step". */
+	if (image_version_fork(image, install_mutate, &ctx, NULL, g_merge_fail_reason, e,
+	                       report_path, out_pid, out_pidfd, err, err_size) != 0)
 		return -1;
 	g_chains[chain_idx].producer = *out_pid;
 	g_chains[chain_idx].produce_waiting = 0;
@@ -16294,6 +16309,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * there is still no real manifest-delete behavior here, just
 		 * real reporting. */
 		char artifact_dir[PATH_MAX];
+		char harvest_why[PKG_ERROR_MAX];
 
 		snprintf(artifact_dir, sizeof(artifact_dir), "%s/%s", g_artifacts_dir, e->name);
 		/*
@@ -16321,9 +16337,16 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * output tree.
 		 */
 		stallwatch_step("pkg install: harvest the hostbuild");
-		if (persist_fresh_output_dir(artifact_dir) != 0 ||
-		    merge_tree(dest_dir, artifact_dir, "", e, 1) != 0) {
-			pkg_fail(e, is_upgrade, PIPELINE_INSTALL, "failed to harvest the built artifact");
+		harvest_why[0] = '\0';
+		if (persist_fresh_output_dir(artifact_dir) != 0)
+			snprintf(harvest_why, sizeof(harvest_why), "emptying %s failed: %s", artifact_dir,
+			         strerror(errno));
+		else if (merge_tree(dest_dir, artifact_dir, "", e, 1) != 0)
+			/* #654: merge_fail() has just written why. */
+			snprintf(harvest_why, sizeof(harvest_why), "%s", g_merge_fail_reason);
+		if (harvest_why[0] != '\0') {
+			pkg_fail(e, is_upgrade, PIPELINE_INSTALL, "failed to harvest the built artifact: %s",
+			         harvest_why);
 			install_keep_prev_version(e, is_upgrade, prev_version, prev_depends);
 			chain_release(chain_idx);
 			g_chains[chain_idx].is_hostbuild = 0;

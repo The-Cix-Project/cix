@@ -838,6 +838,35 @@ static int write_suid_recipe(const struct cix_client *c, const char *name, const
 }
 
 /*
+ * A recipe that installs a tcc -shared library with `__thread` data:
+ * the defect the install-time ELF gate refuses (#653), built the way
+ * libuuid 2.42.2-7 was. The fixture tarball is only the mandatory main
+ * source; the library is written from its own one line of C.
+ */
+static int write_tls_recipe(const struct cix_client *c, const char *name, const char *version,
+                            const char *tarball_path, const char *sha256)
+{
+	char build_body[768], install_body[512];
+	char content[4096];
+
+	snprintf(build_body, sizeof(build_body),
+	         "        write \"${build}/tls.c\" \"\"\"\n"
+	         "            __thread int counter; int bump(void) { return ++counter; }\n"
+	         "            \"\"\"\n"
+	         "        run \"tcc\" {\n"
+	         "            \"-shared\" \"-o\" \"${build}/lib%s.so\" \"${build}/tls.c\"\n"
+	         "        }\n",
+	         name);
+	snprintf(install_body, sizeof(install_body),
+	         "        mkdir \"${dest}/usr/lib\" parents chmod 0755\n"
+	         "        copy \"${build}/lib%s.so\" to \"${dest}/usr/lib/lib%s.so\"\n",
+	         name, name);
+	cpdl_recipe_text_decl(content, sizeof(content), name, version, test_http_src(tarball_path),
+	                      sha256, NULL, CPDL_STD_TOOLS, NULL, NULL, build_body, install_body);
+	return publish_cpdl_content(c, name, version, content);
+}
+
+/*
  * An ordinary hello recipe that declares how much memory its whole
  * build needs (CPDL `resources { memory }`, cbs v0.1.100, cix#558).
  * memory is the declared value as written in the recipe, e.g. "3GiB".
@@ -7304,6 +7333,64 @@ skip_resume:
 			} else if ((sst.st_mode & 07777) != 04711) {
 				fprintf(stderr, "FAIL: #552 a declared 04711 file installed as %04o\n",
 				        (unsigned)(sst.st_mode & 07777));
+				ok = 0;
+			}
+		}
+	}
+
+	/*
+	 * #653 and #654: a tcc -shared library with `__thread` data is
+	 * refused at install, and the package's own row says which file and
+	 * which gate. Before #654 the row said only "the caller's own mutate
+	 * step failed" and the reason reached the log store alone
+	 * (libsodium 1.0.20-4 into probe-cu, 192.168.15.95, 0.2.57-607).
+	 */
+	{
+		char sha[65];
+		char tarball[PATH_MAX];
+		char st_t[64];
+		int stage_ok;
+
+		stage_ok = stage_fixture_tarball(scratch_dir, "tls654", "1.0", tarball,
+		                                 sizeof(tarball), sha, sizeof(sha)) == 0 &&
+		           write_tls_recipe(&client, "tls654", "1.0", tarball, sha) == 0;
+		if (!stage_ok) {
+			fprintf(stderr, "FAIL: #654 could not publish the tls654 recipe\n");
+			ok = 0;
+		}
+		if (stage_ok) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"tls654\"}",
+			                       &r) != 0 ||
+			    (r.status != 202 && r.status != 200)) {
+				fprintf(stderr, "FAIL: #654 install tls654 status=%d\n", r.status);
+				ok = 0;
+				stage_ok = 0;
+			}
+			cix_response_free(&r);
+		}
+		if (stage_ok) {
+			const char *em;
+
+			if (poll_pkg_state(&client, "tls654", st_t, sizeof(st_t), 240) != 0 ||
+			    str_eq(st_t, "installed")) {
+				fprintf(stderr, "FAIL: #653 a tcc -shared library with __thread data "
+				                "installed (state=%s)\n", st_t);
+				ok = 0;
+			}
+			memset(&r, 0, sizeof(r));
+			em = (cix_client_request(&client, "GET", "/v1/pkg/tls654", NULL, &r) == 0 &&
+			      r.status == 200) ? json_str_field(r.json, "error") : NULL;
+			if (em == NULL ||
+			    strstr(em, "the thread-local data gate (#653) failed for "
+			               "\"usr/lib/libtls654.so\"") == NULL) {
+				fprintf(stderr, "FAIL: #654 the row must name the file and the gate, got: %s\n",
+				        em != NULL ? em : "(no error)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			if (access(base_path("/usr/lib/libtls654.so"), F_OK) == 0) {
+				fprintf(stderr, "FAIL: #653 a refused install left its library behind\n");
 				ok = 0;
 			}
 		}

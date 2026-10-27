@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A refused install's row says which file and which step (#654)
+
+- **What changed:** `merge_fail()` keeps the sentence it logs, and an install's producer child hands it back as the mutate reason. A package's `error` now reads, for example, `image "base" could not produce a new version: the thread-local data gate (#653) failed for "usr/lib/libtls654.so"`. A failed copy names the file and the errno the same way. A hostbuild harvest that fails says why too, where it said only "failed to harvest the built artifact". `test_pkg` installs a tcc `-shared` library with `__thread` data and checks that the install is refused, that the row names the file and the gate, and that nothing was left in the image.
+- **Why:** the row said only "the caller's own mutate step failed", and the reason reached the log store alone (libsodium 1.0.20-4 into probe-cu, 192.168.15.95, 0.2.57-607).
+
 ### The ELF gate refuses a shared library whose TLS it cannot reach (#653, #652)
 
 - **What changed:** the install merge refuses a shared object that carries thread-local data (`PT_TLS`) but has no TLS dynamic relocation and does not import `__tls_get_addr` (`elfcheck_unreachable_tls()` in `daemon/src/elfcheck.c`). It names the file and says to build the package with gcc. `test_elfcheck_gcc` checks a tcc `-shared` fixture (refused), a gcc `-fPIC` fixture and a tcc executable (both accepted), and every shared object in its build container.
