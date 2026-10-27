@@ -20379,8 +20379,14 @@ static int pkg_artifact_is_configured(void)
  *  concurrently: parallel builds (ADR-0157) can finish together, and
  * dropping the overflow would recreate exactly the forgotten-artifact
  * problem this exists to fix.
+ *
+ * 256, raised from 32 by #648: 32 was sized for a queue that drained in
+ * seconds. A retried entry now waits up to about seven hours over its
+ * twelve attempts, and a repository down through a rolling night queues
+ * one push per package built, so a full queue would refuse the next
+ * build's publish -- the loss this exists to prevent.
  */
-#define PKG_PUSH_QUEUE_MAX 32
+#define PKG_PUSH_QUEUE_MAX 256
 /* Distinct from any curl exit status, so the reaper can tell a failed
  * digest apart from a failed upload. */
 #define PKG_PUSH_EXIT_SHA_FAILED 90
@@ -20416,8 +20422,9 @@ static int g_push_queue_count;
 
 /*
  * Is this target actually held right now? Answered from the live queues
- * rather than from anything stored, which is what lets "what is
- * pending" have no persistent state at all.
+ * rather than from a separate record, so "what is pending" has no state
+ * of its own. The push queue is itself kept on disk since #648, so a
+ * publish that is pending stays pending across a restart.
  *
  * `deploy` is the exception and the asymmetry is deliberate (ADR-0273):
  * publish and roll hold items that sit in a queue, so being held is a
@@ -20480,6 +20487,10 @@ void pkg_approvals_write_json(struct json_writer *w)
 		for (i = 0; i < g_push_queue_count; i++) {
 			char t[PKG_APPROVAL_TARGET_MAX];
 
+			/* A signature never waits for a person, and a retry spent
+			 * its approval when it was first taken (#648). */
+			if (g_push_queue[i].kind == PKG_PUSH_SIGNATURE || g_push_queue[i].attempts > 0)
+				continue;
 			snprintf(t, sizeof(t), "%s@%s", g_push_queue[i].name, g_push_queue[i].version);
 			if (approval_index(PKG_GATE_PUBLISH, t) >= 0)
 				continue;
@@ -20757,8 +20768,7 @@ static int push_enqueue_one(const char *name, const char *version, enum pkg_push
 	snprintf(j->repo, PKG_SOURCE_NAME_MAX, "%s", repo);
 	j->kind = kind;
 	g_push_queue_count++;
-	push_queue_save();
-	return 0;
+	return 0; /* the caller saves the queue, once (#648, #646's fsync) */
 }
 
 /*
@@ -20766,7 +20776,7 @@ static int push_enqueue_one(const char *name, const char *version, enum pkg_push
  * repository did not answer, or answered 5xx. It goes to the back of
  * the queue to wait out its backoff (1 minute, doubling, at most an
  * hour), and after PUSH_RETRY_MAX_ATTEMPTS failures it is given up and
- * says how to publish it by hand.
+ * says how to publish it by hand. The caller saves the queue.
  */
 static void push_retry_later(const char *why)
 {
@@ -20780,7 +20790,6 @@ static void push_retry_later(const char *why)
 		               "artifact push: %s@%s to %s: %s -- given up after %d attempts; publish "
 		               "it with POST /v1/pkg/%s/artifact/publish",
 		               j.name, j.version, j.repo, why, j.attempts, j.name);
-		push_queue_save();
 		return;
 	}
 	for (k = 1; k < j.attempts && delay < PUSH_RETRY_MAX_SECS; k++)
@@ -20792,7 +20801,6 @@ static void push_retry_later(const char *why)
 		logstore_write("cixd", "error",
 		               "artifact push: %s@%s to %s: %s -- not retried, the queue is full",
 		               j.name, j.version, j.repo, why);
-		push_queue_save();
 		return;
 	}
 	g_push_queue[g_push_queue_count++] = j;
@@ -20800,7 +20808,6 @@ static void push_retry_later(const char *why)
 	               "artifact push: %s@%s to %s: %s -- retrying in %lld s (attempt %d of %d)",
 	               j.name, j.version, j.repo, why, delay, j.attempts + 1,
 	               PUSH_RETRY_MAX_ATTEMPTS);
-	push_queue_save();
 }
 
 /* #648: does a hostbuild entry hold exactly this version, so that its
@@ -20933,8 +20940,9 @@ static void pkg_artifact_push_enqueue_kind(const char *name, const char *version
 			continue;
 		}
 		if (push_enqueue_one(name, version, kind, r->name) != 0)
-			return;
+			break;
 	}
+	push_queue_save(); /* #648: once, for every repository */
 }
 
 static void pkg_artifact_push_enqueue(const char *name, const char *version)
@@ -21915,6 +21923,7 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 
 		snprintf(why, sizeof(why), "fork failed: %s", strerror(errno));
 		push_retry_later(why); /* #648 */
+		push_queue_save();
 		return 0;
 	}
 	if (pid == 0) {
@@ -21997,6 +22006,7 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 		kill(pid, SIGKILL);
 		waitpid(pid, NULL, 0);
 		push_retry_later(why); /* #648 */
+		push_queue_save();
 		return 0;
 	}
 	g_push_in_flight = 1;
