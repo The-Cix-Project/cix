@@ -78,6 +78,7 @@
 #include "volume.h"
 #include "zswap.h"
 #include "wireless.h"
+#include "quotamode.h"
 
 #include "generated/config_sections.h"
 
@@ -109,6 +110,7 @@ static void cfg_sysctl(struct json_writer *w) { sysctlconfig_write_json_list(w);
 static void cfg_kernel_modules(struct json_writer *w) { kmodconfig_write_json_list(w); }
 static void cfg_zswap(struct json_writer *w) { zswap_write_json(w); }
 static void cfg_wireless(struct json_writer *w) { wireless_write_json(w); }
+static void cfg_storage_quota(struct json_writer *w) { quotamode_write_json(w, g_containers_dir); }
 
 static void cfg_swap(struct json_writer *w)
 {

@@ -239,6 +239,34 @@ which implementation is used. Volumes have their own size limit
 (`cixctl volume quota NAME BYTES`, see
 [`containers-and-services.md`](containers-and-services.md#volumes)).
 
+### How btrfs counts it: simple or full
+
+A btrfs counts quota usage in one of two modes
+([ADR-0359](../adr/0359-a-filesystems-quota-mode-is-chosen-when-it-is-made.md)):
+
+- **simple**, the default, charges each block to the subvolume that wrote
+  it. A container is charged what it writes, and an image keeps being
+  charged for the blocks its containers share with it.
+- **full** charges a subvolume only the blocks no other subvolume
+  shares. It costs more on every snapshot delete, and on a large tree it
+  can mark the filesystem's accounting inconsistent until a rescan.
+
+A container's quota limits what the container writes in both modes, and
+its usage figure is the same in both.
+
+```
+cixctl storage quota                  # the setting, and each mounted btrfs's mode
+cixctl storage quota --mode=full      # what a btrfs formatted from now on gets
+```
+
+The mode is chosen when the filesystem is made, and a filesystem keeps it
+for life. cixd's format and the installer turn quotas on at `mkfs`,
+before anything is written, because simple accounting never counts what
+was written before it was switched on. So changing the setting changes
+no existing filesystem; formatting one again is the only way to change
+its mode. A filesystem that had quotas off gets full accounting when it is
+first given a limit, because it may already hold data.
+
 ---
 
 ## 8. Splitting one disk into several roles

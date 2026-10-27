@@ -454,9 +454,14 @@ struct cix_btrfs_ioctl_quota_ctl_args {
  * figure would be the "claims headroom it does not have" failure this
  * project already has scars from, so a caller is told instead.
  *
- * SIMPLE_MODE is squota, where extents are attributed on a different
- * rule and `excl` does not mean what it means here.
+ * SIMPLE_MODE is squota (ADR-0359). Shared extents stay charged to the
+ * subvolume that wrote them, so an image keeps its full size and a
+ * snapshot is charged only what it writes; a container's own `excl`
+ * means the same in both modes (measured on 192.168.15.95, #613). The
+ * four values are kernel 7.2.13's include/uapi/linux/btrfs_tree.h
+ * :1260-1279 (probe-squota@2-1).
  */
+#define CIX_BTRFS_QGROUP_STATUS_FLAG_ON (1ULL << 0)
 #define CIX_BTRFS_QGROUP_STATUS_FLAG_RESCAN (1ULL << 1)
 #define CIX_BTRFS_QGROUP_STATUS_FLAG_INCONSISTENT (1ULL << 2)
 #define CIX_BTRFS_QGROUP_STATUS_FLAG_SIMPLE_MODE (1ULL << 3)

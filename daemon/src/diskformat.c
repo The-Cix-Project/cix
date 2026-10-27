@@ -5,6 +5,7 @@
 #include "diskrole.h"
 #include "linux_compat.h"
 #include "namecheck.h"
+#include "quotamode.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -138,8 +139,16 @@ enum diskformat_error diskformat_start(const char *disk_name, const char *os_con
 		const char *mkfs_bin = fs_type == DISKFORMAT_FS_BTRFS ?
 		                        DISKFORMAT_MKFS_BTRFS_BIN : DISKFORMAT_MKFS_EXT4_BIN;
 		char *ext4_argv[] = { (char *)DISKFORMAT_MKFS_EXT4_BIN, "-F", (char *)d.dev_path, NULL };
-		char *btrfs_argv[] = { (char *)DISKFORMAT_MKFS_BTRFS_BIN, "-f", (char *)d.dev_path,
-		                        NULL };
+		/*
+		 * ADR-0359: quotas are on from the first byte, in the host's
+		 * quota mode, because simple accounting never counts what was
+		 * written before it was enabled (#613). This child is forked
+		 * after the mode was read, so it formats with the mode in force
+		 * when the request was made.
+		 */
+		char *btrfs_argv[] = { (char *)DISKFORMAT_MKFS_BTRFS_BIN, "-f", "-O",
+		                        (char *)quotamode_mkfs_feature(quotamode_get()),
+		                        (char *)d.dev_path, NULL };
 		char **argv = fs_type == DISKFORMAT_FS_BTRFS ? btrfs_argv : ext4_argv;
 		pid_t sub;
 		int status;

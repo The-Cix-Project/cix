@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-27, for #613. The owner's direction of the same day: *"we should have simple and non-simple quotas and that should be a setting with simple as the default"*. This document states what that setting governs and what it cannot.
+Accepted, 2026-10-27, for #613, by the owner. Their direction of the same day: *"we should have simple and non-simple quotas and that should be a setting with simple as the default"*. This document states what that setting governs and what it cannot.
 
 ## Context
 

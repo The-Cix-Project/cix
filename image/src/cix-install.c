@@ -556,11 +556,23 @@ static int mkfs_ext4(const char *device, const char *label, int with_quota)
  * Kept because the parameter is the honest way to express "this
  * filesystem may be tiny", and a future small partition would need it.
  */
-static int mkfs_btrfs(const char *device, const char *label, int with_mixed)
+/*
+ * squota: format with simple quota accounting on from the first byte
+ * (ADR-0359). An install has no saved quota mode, so it takes the
+ * default, simple; and simple accounting never counts extents written
+ * before it was enabled (#613), so it is turned on here or not at all.
+ */
+static int mkfs_btrfs(const char *device, const char *label, int with_mixed, int squota)
 {
 	if (with_mixed) {
 		char *argv[] = { (char *)MKFS_BTRFS_BIN, "-q", "-f", "-L", (char *)label,
 			          "--mixed", (char *)device, NULL };
+
+		return run_subprocess(MKFS_BTRFS_BIN, argv);
+	}
+	if (squota) {
+		char *argv[] = { (char *)MKFS_BTRFS_BIN, "-q", "-f", "-L", (char *)label,
+			          "-O", "squota", (char *)device, NULL };
 
 		return run_subprocess(MKFS_BTRFS_BIN, argv);
 	}
@@ -1556,7 +1568,7 @@ static int install_main(int argc, char **argv)
 		 * above btrfs's ~109 MiB minimum for separate data/metadata
 		 * profiles, so it gets the normal layout like every other
 		 * filesystem here. --mixed was never desirable, only necessary. */
-		if (mkfs_btrfs(config_dev, "cix-config", 0) != 0)
+		if (mkfs_btrfs(config_dev, "cix-config", 0, 0) != 0)
 			return 1;
 	}
 	/* Full "cix-containers" fits now -- the old mkfs_ext4() call here
@@ -1564,7 +1576,7 @@ static int install_main(int argc, char **argv)
 	 * btrfs labels carry 255. Cosmetic either way: partitions are
 	 * always identified by GPT name (find_partition_device()), never
 	 * this label. */
-	if (mkfs_btrfs(containers_dev, "cix-containers", 0) != 0)
+	if (mkfs_btrfs(containers_dev, "cix-containers", 0, 1) != 0)
 		return 1;
 
 	if (ensure_dir(ESP_MOUNT) != 0)

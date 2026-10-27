@@ -2526,6 +2526,7 @@ const CATEGORY_VIEWS = {
 	 * `recipes` above. */
 	"factory-reset": "view-configuration",
 	"storage-placement": "view-storage",
+	"storage-quota": "view-storage",
 	"backup": "view-storage",
 	"update": "view-deployment",
 	"reconcile": "view-deployment",
@@ -13684,6 +13685,45 @@ async function refreshWireless() {
 	}
 }
 
+/* ---------- storage quota mode (ADR-0359) ---------- */
+
+function renderStorageQuota(q) {
+	const grid = document.getElementById("storage-quota-filesystems");
+	const divergence = document.getElementById("storage-quota-divergence");
+	const differing = [];
+
+	syncForm(document.getElementById("storage-quota-form"), "setStorageQuota", {
+		values: { mode: q.mode }, submit: "Save", saved: "Quota mode saved.",
+		failed: "Failed to save the quota mode", after: refreshStorageQuota,
+	});
+
+	grid.textContent = "";
+	if (q.filesystems.length === 0)
+		grid.appendChild(fieldBlock("Mounted btrfs", "none"));
+	q.filesystems.forEach((f) => {
+		grid.appendChild(fieldBlock(f.name + " (" + f.mount_path + ")",
+		                            f.mode + (f.inconsistent ? ", inconsistent until a rescan" : "")));
+		if (f.mode !== "off" && f.mode !== q.mode)
+			differing.push(f.name);
+	});
+	/* Silence when they agree, as the wireless panel does. */
+	if (differing.length > 0) {
+		divergence.hidden = false;
+		divergence.textContent = differing.join(", ") + " counted differently from the setting. " +
+			"A filesystem keeps its mode for life; formatting it again gives it the setting's.";
+	} else {
+		divergence.hidden = true;
+	}
+}
+
+async function refreshStorageQuota() {
+	try {
+		renderStorageQuota(await apiRequest("GET", CIX_API.getStorageQuota()));
+	} catch (e) {
+		/* Best-effort, same as every other panel here. */
+	}
+}
+
 
 async function refreshSwap() {
 	try {
@@ -15203,6 +15243,7 @@ const VIEW_REFRESHERS = {
 	sysctl: [refreshSysctl],
 	"host-swap": [refreshSwap, refreshZswap],
 	wireless: [refreshWireless],
+	"storage-quota": [refreshStorageQuota],
 	"trust-anchors": [refreshTrustAnchors],
 	"rolling-restart": [refreshRollingConfig],
 	"tls-throttle": [refreshTlsThrottleConfig, refreshTlsThrottleStatus],

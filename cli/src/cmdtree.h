@@ -393,6 +393,11 @@ static const char *const n_storage_format_flags[] = {
 	NULL
 };
 
+static const char *const n_storage_quota_flags[] = {
+	"--mode=",
+	NULL
+};
+
 static const char *const n_storage_grow_partition_flags[] = {
 	"--size-mib=",
 	NULL
@@ -437,6 +442,7 @@ static const struct cli_node n_storage_subs[] = {
 	{ "grow-partition", n_storage_grow_partition_flags, NULL },
 	{ "ls", NULL, NULL },
 	{ "partition-table", NULL, NULL },
+	{ "quota", n_storage_quota_flags, NULL },
 	{ "rm-partition", NULL, NULL },
 	{ "logs", NULL, n_storage_logs_subs },
 	{ "rebuildable", NULL, n_storage_rebuildable_subs },

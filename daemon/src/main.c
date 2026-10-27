@@ -67,6 +67,7 @@
 #include "ksm.h"
 #include "zswap.h"
 #include "wireless.h"
+#include "quotamode.h"
 #include "dhcp.h"
 #include "procfuse.h"
 #include "proctitle.h"
@@ -306,6 +307,7 @@ char KERNEL_RELEASES_PATH[PATH_MAX];    /* issue #65 -- cached kernel.org releas
 char ZSWAP_STATE_PATH[PATH_MAX];        /* issue #51 -- compressed swap cache settings */
 char KSM_STATE_PATH[PATH_MAX];          /* issue #50 -- samepage merging settings */
 char WIRELESS_STATE_PATH[PATH_MAX];     /* ADR-0354 -- the host's wireless country */
+char QUOTAMODE_STATE_PATH[PATH_MAX];    /* ADR-0359 -- the quota mode a new btrfs gets */
 char DHCP_STATE_PATH[PATH_MAX];         /* DHCP ranges and static reservations */
 char STALLWATCH_RECORDS_PATH[PATH_MAX]; /* issue #100 -- control-plane stall records */
 char VOLUMES_STATE_PATH[PATH_MAX];      /* issue #88 */
@@ -509,6 +511,7 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(ZSWAP_STATE_PATH, sizeof(ZSWAP_STATE_PATH), "%s/zswap.json", STATE_DIR);
 	snprintf(KSM_STATE_PATH, sizeof(KSM_STATE_PATH), "%s/ksm.json", STATE_DIR);
 	snprintf(WIRELESS_STATE_PATH, sizeof(WIRELESS_STATE_PATH), "%s/wireless.json", STATE_DIR);
+	snprintf(QUOTAMODE_STATE_PATH, sizeof(QUOTAMODE_STATE_PATH), "%s/quota-mode.json", STATE_DIR);
 	snprintf(DHCP_STATE_PATH, sizeof(DHCP_STATE_PATH), "%s/dhcp.json", STATE_DIR);
 	snprintf(STALLWATCH_RECORDS_PATH, sizeof(STALLWATCH_RECORDS_PATH),
 	         "%s/control_plane_stalls.jsonl", STATE_DIR);
@@ -26304,6 +26307,49 @@ static void handle_wireless_put(int fd, const char *body, size_t body_len)
 	jw_free(&w);
 }
 
+/* ADR-0359: the quota mode a new btrfs gets, and each mounted btrfs's. */
+static void handle_storage_quota_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	quotamode_write_json(&w, CONTAINERS_DIR);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_storage_quota_put(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	enum quotamode mode;
+	int ok;
+	struct json_writer w;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	ok = quotamode_parse(json_as_string(json_object_get(root, "mode")), &mode) == 0;
+	json_free(root);
+	if (!ok) {
+		respond_error(fd, 400, "Bad Request", "mode must be \"simple\" or \"full\"");
+		return;
+	}
+	if (quotamode_set(mode) != QUOTAMODE_OK) {
+		respond_error(fd, 500, "Internal Server Error",
+		               "the quota mode could not be persisted; nothing was changed");
+		return;
+	}
+	logstore_write("cixd", "info",
+	               "storage quota: a btrfs cixd formats from now on gets %s accounting; existing "
+	               "filesystems keep theirs (ADR-0359)",
+	               quotamode_name(mode));
+	jw_init(&w);
+	quotamode_write_json(&w, CONTAINERS_DIR);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 static void handle_kernel_policy_get(int fd)
 {
 	struct json_writer w;
@@ -28681,6 +28727,18 @@ static void op_getWireless(const struct api_ctx *ctx)
 static void op_setWireless(const struct api_ctx *ctx)
 {
 	handle_wireless_put(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
+/* GET /v1/storage/quota */
+static void op_getStorageQuota(const struct api_ctx *ctx)
+{
+	handle_storage_quota_get(ctx->fd);
+}
+
+/* PUT /v1/storage/quota */
+static void op_setStorageQuota(const struct api_ctx *ctx)
+{
+	handle_storage_quota_put(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
 /* GET /v1/system/swap */
@@ -38596,6 +38654,7 @@ static int cixd_main(int argc, char **argv)
 	 * radio registered later inherits the domain and an access point
 	 * computes its channels under it. */
 	wireless_init(WIRELESS_STATE_PATH);
+	quotamode_init(QUOTAMODE_STATE_PATH); /* ADR-0359 */
 	ksm_init(KSM_STATE_PATH);
 	dhcp_init(DHCP_STATE_PATH);
 	/* A cached answer from a previous run, if there is one. Its own

@@ -6785,6 +6785,74 @@ paths:
                     items:
                       $ref: "#/components/schemas/StorageDevice"
 
+  /storage/quota:
+    get:
+      summary: The quota mode a new btrfs gets, and the mode each mounted btrfs has (ADR-0359)
+      description: >
+        `mode` is the host setting, `simple` on a host that never saved
+        one. It is applied when cixd formats a btrfs (POST
+        /storage/{name}/format runs `mkfs.btrfs -O squota` or `-O quota`),
+        and the installer formats the containers partition with simple
+        accounting.
+
+
+        `filesystems` lists every mounted btrfs on the host with the
+        mode it really has, read from its qgroup status item: `simple`,
+        `full` or `off`. A filesystem keeps its mode for its life, so
+        one whose mode differs from the setting changes only when it is
+        formatted again. There is no live switch: simple accounting never
+        counts extents written before it was enabled (measured on
+        192.168.15.95, #613). A filesystem with quotas off gets full
+        accounting when its first limit is set, because it may already
+        hold data.
+      operationId: getStorageQuota
+      x-cix-read: sample
+      x-cix-sample-period: 30
+      x-cix-permission: storage:read
+      x-cix-expose: [cli, web]
+      responses:
+        "200":
+          description: The setting and each mounted btrfs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageQuota"
+    put:
+      summary: Set the quota mode a new btrfs gets (ADR-0359)
+      description: >
+        Persisted. It changes the mode of filesystems formatted from now
+        on, and of none that exist: see GET for why.
+      operationId: setStorageQuota
+      x-cix-invalidates: [getStorageQuota]
+      x-cix-permission: storage:write
+      x-cix-expose: [cli, web]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode:
+                  type: string
+                  enum: [simple, full]
+                  description: >
+                    simple charges each extent to the subvolume that wrote
+                    it; full charges a subvolume only its exclusive bytes.
+                    A container's quota bounds what it writes in both.
+      responses:
+        "200":
+          description: Persisted; reported the same way GET reports it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageQuota"
+        "400":
+          description: The mode is not simple or full
+        "500":
+          description: The setting could not be persisted; nothing was changed
+
   /storage/{name}/format:
     get:
       summary: Status of the most recent (or currently running) format+mount job for this disk
@@ -16489,6 +16557,11 @@ components:
           x-cix-config-kind: object
           x-cix-config-apply: replace
           x-cix-config-state: "apply_error,kernel,radios"
+        storage_quota:
+          description: The quota mode a btrfs cixd formats gets (ADR-0359). Applying it changes no existing filesystem, whose mode is reported in `filesystems` and kept for its life.
+          x-cix-config-kind: object
+          x-cix-config-apply: replace
+          x-cix-config-state: "filesystems"
         swap:
           description: Swap placement and size.
           x-cix-config-kind: object
@@ -19417,6 +19490,38 @@ components:
           description: Compression algorithms this kernel was built with, from /proc/crypto. Empty means no zswap at all.
           items:
             type: string
+    StorageQuota:
+      type: object
+      required: [mode, filesystems]
+      properties:
+        mode:
+          type: string
+          enum: [simple, full]
+          description: The quota mode cixd gives a btrfs it formats (ADR-0359); simple when never set.
+        filesystems:
+          type: array
+          description: Every mounted btrfs on the host, with the mode it has.
+          items:
+            $ref: "#/components/schemas/StorageQuotaFilesystem"
+    StorageQuotaFilesystem:
+      type: object
+      required: [name, mount_path, mode, inconsistent]
+      properties:
+        name:
+          type: string
+          description: The disk or partition, as GET /storage names it.
+        mount_path:
+          type: string
+        mode:
+          type: string
+          enum: [simple, full, "off"]
+          description: >
+            Read from the filesystem's qgroup status item. It differs from
+            the setting for a filesystem made before the setting changed,
+            and changes only when the filesystem is formatted again.
+        inconsistent:
+          type: boolean
+          description: Full accounting flagged inconsistent until a rescan; always false for simple and off.
     Wireless:
       type: object
       properties:

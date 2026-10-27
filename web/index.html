@@ -747,6 +747,7 @@
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="storage">Overview</button>
 				<button type="button" class="tab-button" data-tab="storage-placement">Placement</button>
+				<button type="button" class="tab-button" data-tab="storage-quota">Quota</button>
 				<button type="button" class="tab-button" data-tab="backup">System Backup</button>
 				<button type="button" class="tab-button" data-tab="volume-backup-config">Volume Backups</button>
 				<button type="button" class="tab-button" data-tab="volumes">Volumes</button>
@@ -806,6 +807,17 @@
 					written to; <a href="#host-swap">Host &gt; Configuration &gt; Swap</a> chooses the disk
 					the swap file lives on (ADR-0169).</p>
 			</div>
+		</div>
+
+<div class="tab-panel" data-tab="storage-quota" hidden>
+			<p class="hint">How disk quotas are counted on a btrfs this host formats (ADR-0359).
+				Simple, the default, charges each block to the subvolume that wrote it; full charges a
+				subvolume only the blocks no other one shares. A container's quota limits what it
+				writes either way. A filesystem keeps the mode it was formatted with for its whole
+				life, so a change here applies only to disks formatted from now on.</p>
+			<form id="storage-quota-form"></form>
+			<p class="hint" id="storage-quota-divergence" hidden></p>
+			<table class="detail-table"><tbody id="storage-quota-filesystems"></tbody></table>
 		</div>
 
 <div class="tab-panel" data-tab="backup" hidden>

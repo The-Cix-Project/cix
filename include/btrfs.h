@@ -97,8 +97,10 @@ int cix_btrfs_subvol_delete_or_rmtree(const char *path);
 
 /*
  * Apply a btrfs qgroup hard limit of `bytes` EXCLUSIVE bytes to the
- * subvolume at `path` (enabling quotas on the filesystem first,
- * idempotently). Exclusive -- not referenced -- because a container's
+ * subvolume at `path`. Quotas are enabled first only when the
+ * filesystem has them off, and then in FULL mode, since that filesystem
+ * may already hold data simple accounting would never count (ADR-0359);
+ * a filesystem cixd made got its mode at mkfs. Exclusive -- not referenced -- because a container's
  * rootfs snapshot shares every unchanged extent with its image: a
  * referenced-bytes limit would count the whole image against the
  * container from the first instant (a 100MB quota on a 1GB image could
@@ -112,6 +114,21 @@ int cix_btrfs_subvol_delete_or_rmtree(const char *path);
 int cix_btrfs_qgroup_limit_excl(const char *path, unsigned long long bytes);
 
 /*
+ * ADR-0359: the quota mode of the filesystem `path` is on, read from its
+ * qgroup status item. OFF when the filesystem has no quota tree.
+ * *inconsistent (may be NULL) is set only for FULL accounting, the one
+ * mode that can go inconsistent. 0, or -1 with errno set.
+ */
+enum cix_btrfs_quota_mode {
+	CIX_BTRFS_QUOTA_OFF = 0,
+	CIX_BTRFS_QUOTA_FULL,
+	CIX_BTRFS_QUOTA_SIMPLE
+};
+
+int cix_btrfs_quota_mode_of(const char *path, enum cix_btrfs_quota_mode *mode,
+                            int *inconsistent);
+
+/*
  * Quota accounting state reported alongside a qgroup read, because a
  * number that is merely stale reads exactly like a number that is
  * correct.
@@ -121,8 +138,10 @@ enum cix_btrfs_qgroup_state {
 	/* Accounting is mid-rescan or flagged inconsistent: `used` is a
 	 * real figure but may be low for data that predates the rescan. */
 	CIX_BTRFS_QGROUP_STALE = 1,
-	/* Simple quotas (squota). Extents are attributed on a different
-	 * rule, so `used` does not mean what it means here. */
+	/* Simple quotas (squota, ADR-0359). A shared extent stays charged
+	 * to the subvolume that wrote it, so a snapshot's `used` is what it
+	 * wrote and an image's is everything it wrote; a container's own
+	 * figure means the same as under full accounting (#613). */
 	CIX_BTRFS_QGROUP_SIMPLE = 2
 };
 

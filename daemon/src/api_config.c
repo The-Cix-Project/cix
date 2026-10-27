@@ -69,6 +69,7 @@
 #include "trustanchor.h"
 #include "zswap.h"
 #include "wireless.h"
+#include "quotamode.h"
 
 #include "generated/config_sections.h"
 
@@ -505,6 +506,35 @@ static int cfg_apply_wireless(const struct json_value *live, const struct json_v
 		return 0;
 	if (wireless_set(country) != WIRELESS_OK) {
 		snprintf(err, errsz, "the wireless country could not be persisted");
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * ADR-0359: the mode a btrfs cixd formats gets. Applying it changes no
+ * existing filesystem; `filesystems` is observed, and a filesystem keeps
+ * its mode for life.
+ */
+static int cfg_apply_storage_quota(const struct json_value *live, const struct json_value *sup,
+                                   const char *state_fields, int dry_run, char *err,
+                                   size_t errsz)
+{
+	const char *mode_s;
+	enum quotamode mode;
+
+	if (require_whole_section(live, sup, state_fields, err, errsz) != 0)
+		return -1;
+	if (need_string(sup, "mode", &mode_s, err, errsz) != 0)
+		return -1;
+	if (quotamode_parse(mode_s, &mode) != 0) {
+		snprintf(err, errsz, "\"mode\" must be \"simple\" or \"full\"");
+		return -1;
+	}
+	if (mode == quotamode_get() || dry_run)
+		return 0;
+	if (quotamode_set(mode) != QUOTAMODE_OK) {
+		snprintf(err, errsz, "the quota mode could not be persisted");
 		return -1;
 	}
 	return 0;

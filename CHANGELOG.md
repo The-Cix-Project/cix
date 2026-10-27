@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Quota accounting is a host setting, simple by default, chosen when a filesystem is made (#613, ADR-0359)
+
+- **What changed:** `GET/PUT /v1/storage/quota` (`cixctl storage quota [--mode=simple|full]`, the dashboard's Storage › Quota tab, and the `storage_quota` section of the configuration document) sets the quota mode a btrfs gets. It is simple by default. cixd's format runs `mkfs.btrfs -O squota` or `-O quota`, so quotas are on before the first byte, and the installer formats the containers partition with `-O squota`. The read also lists each mounted btrfs with the mode it really has, from its qgroup status item. A limit on a filesystem with quotas off now enables full accounting only when quotas are off. Before, it enabled full every time and took `EINVAL` as "already on".
+- **Why:** measured on vda first. Simple accounting bounds a container's own writes exactly as full does (a 100 MiB limit refused at 104841216 bytes in both modes), and 20 snapshot cycles took 508 ms against 750 ms. But it never counts extents written before it was enabled: a 40 MiB limit let 16 MiB through on a subvolume already holding 88 MiB. So a filesystem keeps its mode for life and there is no live switch. 192.168.15.95's image store stays on full until it is rebuilt.
+
 ### A package a gate refuses is reported as refused, not as the image's failure (#655)
 
 - **What changed:** when the undefined-builtin gate (#176) or the thread-local data gate (#653) refuses one of a package's files, the row reads `refused for image "X": the thread-local data gate (#653) failed for "usr/lib/…"`. Before, it read `image "X" could not produce a new version: …`, which blames the image for the package's fault. Every other failure of the merge keeps the image wording, because the image is what failed there. The gates' verdict travels from the producer child in its report (`package_fault`). The gates themselves stay in the child, so the install loop is not slowed (ADR-0356, #617). `test_pkg`'s #654 case checks the new wording.

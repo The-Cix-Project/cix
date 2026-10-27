@@ -528,6 +528,9 @@ static const char USAGE_TEXT[] =
 	        "               if the disk is the active storage placement\n"
 	        "  storage format-status NAME  -- state/mount_path/error of the most recent\n"
 	        "               format job for this disk\n"
+	        "  storage quota [--mode=simple|full]  -- the quota accounting a btrfs cixd\n"
+	        "               formats gets (simple by default), and the mode each mounted\n"
+	        "               btrfs has; a filesystem keeps its mode for life (ADR-0359)\n"
 	        "  storage unmount NAME  -- a real, synchronous umount2(2) of an already-mounted,\n"
 	        "               non-OS disk (issue #34); data on the disk is untouched, only its\n"
 	        "               attachment to the running system is removed; refused (409) if\n"
@@ -2394,6 +2397,70 @@ static int cmd_disks_rm_partition(const struct cix_client *c, int json_mode, int
 	return r.status == 204 ? 0 : 1;
 }
 
+/* ADR-0359: the setting, then each mounted btrfs and the mode it has. */
+static void fmt_storage_quota(const struct json_value *v)
+{
+	const char *mode = json_str_field(v, "mode");
+	const struct json_value *fss = json_object_get(v, "filesystems");
+	size_t i;
+	int differs = 0;
+
+	printf("new btrfs gets: %s accounting\n", mode != NULL ? mode : "?");
+	if (fss == NULL || fss->type != JSON_ARRAY || fss->u.array.count == 0) {
+		printf("no btrfs is mounted\n");
+		return;
+	}
+	for (i = 0; i < fss->u.array.count; i++) {
+		const struct json_value *f = fss->u.array.items[i];
+		const char *fm = json_str_field(f, "mode");
+		const struct json_value *inc = json_object_get(f, "inconsistent");
+
+		printf("%-12s %-28s %s%s\n", json_str_field(f, "name"), json_str_field(f, "mount_path"),
+		       fm != NULL ? fm : "?",
+		       inc != NULL && inc->type == JSON_BOOL && inc->u.boolean ? " (inconsistent)" : "");
+		if (fm != NULL && mode != NULL && strcmp(fm, "off") != 0 && strcmp(fm, mode) != 0)
+			differs = 1;
+	}
+	if (differs)
+		printf("  a filesystem keeps its mode for life; only formatting it again gives it "
+		       "the setting's (ADR-0359)\n");
+}
+
+static int cmd_storage_quota(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	struct json_writer w;
+
+	if (argc == 0) {
+		if (cix_client_request(c, CIX_API_getStorageQuota_METHOD, CIX_API_getStorageQuota, NULL,
+		                       &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_storage_quota);
+	}
+	if (argc != 1 || (strcmp(argv[0], "--mode=simple") != 0 && strcmp(argv[0], "--mode=full") != 0)) {
+		fprintf(stderr, "usage: cixctl storage quota [--mode=simple|full]\n"
+		                "  the quota mode a btrfs cixd formats gets; existing filesystems keep\n"
+		                "  theirs (ADR-0359)\n");
+		return 2;
+	}
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "mode");
+	jw_str(&w, argv[0] + 7);
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	if (cix_client_request(c, CIX_API_setStorageQuota_METHOD, CIX_API_setStorageQuota, w.buf,
+	                       &r) != 0) {
+		jw_free(&w);
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	jw_free(&w);
+	return emit(&r, json_mode, fmt_storage_quota);
+}
+
 static int cmd_disks(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
@@ -2408,6 +2475,8 @@ static int cmd_disks(const struct cix_client *c, int json_mode, int argc, char *
 		return cmd_disks_format(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "format-status") == 0)
 		return cmd_disks_format_status(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "quota") == 0)
+		return cmd_storage_quota(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "unmount") == 0)
 		return cmd_disks_unmount(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "free-space") == 0)
@@ -2424,6 +2493,7 @@ static int cmd_disks(const struct cix_client *c, int json_mode, int argc, char *
 	fprintf(stderr, "usage: cixctl storage [ls]\n"
 	                "       cixctl storage format NAME [--fs-type=ext4|btrfs]\n"
 	                "       cixctl storage format-status NAME\n"
+	                "       cixctl storage quota [--mode=simple|full]\n"
 	                "       cixctl storage unmount NAME\n"
 	                "       cixctl storage free-space NAME\n"
 	                "       cixctl storage partition-table NAME\n"

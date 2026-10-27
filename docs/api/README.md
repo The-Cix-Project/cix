@@ -175,6 +175,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/devicemaps` | Create a persistent device mapping (name -> selector) |
 | DELETE | `/devicemaps/{name}` | Remove a device mapping |
 | GET | `/storage` | List real host block devices, including their partitions, for multi-disk management |
+| GET | `/storage/quota` | The quota mode a new btrfs gets (`simple` by default, or `full`) and the mode each mounted btrfs really has, read from its qgroup status item (ADR-0359) |
+| PUT | `/storage/quota` | Set the quota mode a btrfs cixd formats from now on gets; existing filesystems keep theirs, because simple accounting never counts what was written before it was on (ADR-0359) |
 | GET | `/storage-roles` | List persisted disk role assignments |
 | POST | `/storage-roles` | Assign a role (container-storage/backup/rebuildable-storage/log-storage/swap) to a disk or partition |
 | DELETE | `/storage-roles/{name}` | Remove a disk's role assignment |

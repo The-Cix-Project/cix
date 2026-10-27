@@ -489,6 +489,73 @@ int main(void)
 			ok = 0;
 		}
 		cix_response_free(&r);
+		/*
+		 * ADR-0359: the quota mode a btrfs cixd formats gets. Simple on
+		 * a host that never saved one, persisted by a PUT, refused for
+		 * anything else, and carried by the configuration document.
+		 * Nothing here formats a disk, so the setting touches nothing.
+		 */
+		{
+			static const char *const qbad[] = { "{\"mode\":\"squota\"}", "{\"mode\":\"\"}",
+			                                    "{\"mode\":7}", "{}" };
+			size_t qi;
+			const char *m;
+
+			memset(&r, 0, sizeof(r));
+			m = (cix_client_request(&client, "GET", "/v1/storage/quota", NULL, &r) == 0 &&
+			     r.status == 200)
+			            ? json_as_string(json_object_get(r.json, "mode"))
+			            : NULL;
+			if (m == NULL || strcmp(m, "simple") != 0 ||
+			    json_object_get(r.json, "filesystems") == NULL ||
+			    json_object_get(r.json, "filesystems")->type != JSON_ARRAY) {
+				fprintf(stderr, "FAIL: ADR-0359 GET /v1/storage/quota should default to simple "
+				                "with a filesystems array, status=%d\n", r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			m = (cix_client_request(&client, "PUT", "/v1/storage/quota", "{\"mode\":\"full\"}",
+			                        &r) == 0 && r.status == 200)
+			            ? json_as_string(json_object_get(r.json, "mode"))
+			            : NULL;
+			if (m == NULL || strcmp(m, "full") != 0) {
+				fprintf(stderr, "FAIL: ADR-0359 PUT mode full should answer full, status=%d\n",
+				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/config", NULL, &r) != 0 ||
+			    r.status != 200 || json_object_get(r.json, "storage_quota") == NULL ||
+			    json_as_string(json_object_get(json_object_get(r.json, "storage_quota"), "mode")) ==
+			            NULL ||
+			    strcmp(json_as_string(json_object_get(json_object_get(r.json, "storage_quota"),
+			                                          "mode")),
+			           "full") != 0) {
+				fprintf(stderr, "FAIL: ADR-0359 GET /v1/config should carry storage_quota.mode "
+				                "full, status=%d\n", r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			for (qi = 0; qi < sizeof(qbad) / sizeof(qbad[0]); qi++) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "PUT", "/v1/storage/quota", qbad[qi], &r) != 0 ||
+				    r.status != 400) {
+					fprintf(stderr, "FAIL: ADR-0359 PUT storage quota %s should 400, got %d\n",
+					        qbad[qi], r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "PUT", "/v1/storage/quota", "{\"mode\":\"simple\"}",
+			                       &r) != 0 || r.status != 200) {
+				fprintf(stderr, "FAIL: ADR-0359 PUT mode simple, status=%d\n", r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
 		{
 			static const char *const bad[] = { "{\"country\":\"gb\"}", "{\"country\":\"GBR\"}",
 			                                   "{\"country\":\"G\"}", "{\"country\":7}", "{}" };

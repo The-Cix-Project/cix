@@ -388,26 +388,75 @@ int cix_btrfs_subvol_delete_or_rmtree(const char *path)
 	return 0;
 }
 
+static int quota_tree_lookup(int fd, uint32_t type, uint64_t offset, void *out, size_t cap,
+                             uint32_t *item_len);
+
+int cix_btrfs_quota_mode_of(const char *path, enum cix_btrfs_quota_mode *mode,
+                            int *inconsistent)
+{
+	struct cix_btrfs_qgroup_status_item status;
+	uint32_t len = 0;
+	int fd, found, saved;
+
+	*mode = CIX_BTRFS_QUOTA_OFF;
+	if (inconsistent != NULL)
+		*inconsistent = 0;
+	fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	found = quota_tree_lookup(fd, CIX_BTRFS_QGROUP_STATUS_KEY, 0, &status, sizeof(status), &len);
+	saved = errno;
+	close(fd);
+	if (found < 0) {
+		/* ENOENT: the filesystem has no quota tree, so quotas are off. */
+		if (saved == ENOENT)
+			return 0;
+		errno = saved;
+		return -1;
+	}
+	/* No status item, or one too short to carry flags: off. */
+	if (found == 0 || len < 24 || !(status.flags & CIX_BTRFS_QGROUP_STATUS_FLAG_ON))
+		return 0;
+	*mode = (status.flags & CIX_BTRFS_QGROUP_STATUS_FLAG_SIMPLE_MODE) ? CIX_BTRFS_QUOTA_SIMPLE
+	                                                                  : CIX_BTRFS_QUOTA_FULL;
+	if (inconsistent != NULL && *mode == CIX_BTRFS_QUOTA_FULL)
+		*inconsistent = (status.flags & CIX_BTRFS_QGROUP_STATUS_FLAG_INCONSISTENT) != 0;
+	return 0;
+}
+
 int cix_btrfs_qgroup_limit_excl(const char *path, unsigned long long bytes)
 {
 	int fd;
 	struct cix_btrfs_ioctl_quota_ctl_args qc;
 	struct cix_btrfs_ioctl_qgroup_limit_args ql;
+	enum cix_btrfs_quota_mode mode;
+
+	/*
+	 * ADR-0359 decision 4: quotas are enabled here only when they are
+	 * off, and only in FULL mode. A filesystem cixd made already has its
+	 * mode from mkfs; one with quotas off may hold data, and simple
+	 * accounting would never count it (measured on 192.168.15.95,
+	 * #613). This used to enable full mode every time and take EINVAL
+	 * as "already on", which is the wrong test once a filesystem can be
+	 * on in simple mode.
+	 */
+	if (cix_btrfs_quota_mode_of(path, &mode, NULL) != 0)
+		return -1;
 
 	fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 	if (fd < 0)
 		return -1;
 
-	/* Enable quotas filesystem-wide; EINVAL means already enabled --
-	 * the same idempotent convention ADR-0103's upperdir path uses. */
-	memset(&qc, 0, sizeof(qc));
-	qc.cmd = CIX_BTRFS_QUOTA_CTL_ENABLE;
-	if (ioctl(fd, CIX_BTRFS_IOC_QUOTA_CTL, &qc) != 0 && errno != EINVAL) {
-		int saved = errno;
+	if (mode == CIX_BTRFS_QUOTA_OFF) {
+		memset(&qc, 0, sizeof(qc));
+		qc.cmd = CIX_BTRFS_QUOTA_CTL_ENABLE;
+		if (ioctl(fd, CIX_BTRFS_IOC_QUOTA_CTL, &qc) != 0) {
+			int saved = errno;
 
-		close(fd);
-		errno = saved;
-		return -1;
+			close(fd);
+			errno = saved;
+			return -1;
+		}
 	}
 
 	/* qgroupid 0 addresses the subvolume owning this fd -- btrfs's own
