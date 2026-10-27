@@ -6,6 +6,7 @@
  */
 #include "container.h"
 #include "linux_compat.h"
+#include "test_image_fixture.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -17,23 +18,16 @@
 #include <unistd.h>
 
 /*
- * Phase 2 mounts an overlay onto spec.ov.merged before pivoting into
- * it, so writes the child makes copy up into upperdir rather than
- * mutating the live host directly -- the result file is read back
- * from there, not from the bare host path.
+ * The container's rootfs: a minimal tree test_image_fixture_build()
+ * makes (the child at /bin/harness_child, with the loader and libc),
+ * which the child self-binds and pivots onto (ADR-0360). It used to be
+ * an overlay over the host's own "/", which ADR-0360 removed (cix#658).
+ * The child writes "/harness_result.txt" at the root of it, so the file
+ * is readable from out here; not /tmp, which is a fresh tmpfs in every
+ * container (src/mountns.c) and so never reaches the rootfs.
  */
-/*
- * /run, not /tmp (#224): these are the overlay's own lower/upper/work
- * directories, and inside a build container /tmp sits on the container's
- * own overlay rootfs -- the kernel refuses to stack overlayfs on
- * overlayfs ("not supported as upperdir"). /run is a fresh tmpfs in
- * every container. The child writes "/harness_result.txt", at the root
- * of its overlay, so it lands in the upperdir and is readable from out
- * here; not /tmp, which is a fresh tmpfs in every container
- * (src/mountns.c) and so never reaches the upperdir.
- */
-#define UPPERDIR "/run/harness_overlay/upper"
-#define RESULT_PATH UPPERDIR "/harness_result.txt"
+#define ROOTFS "/run/harness_root"
+#define RESULT_PATH ROOTFS "/harness_result.txt"
 
 static int read_cgroup_procs_count(const char *cgroup_name, pid_t expect_pid)
 {
@@ -116,18 +110,7 @@ static int check_result_file(void)
 
 int main(void)
 {
-	/*
-	 * The container's lowerdir is the host's own "/", so the child is
-	 * named by its absolute host path, resolved from the repository
-	 * root the test runs in (`make selftest` and `make testreport` both
-	 * run ./build/test_*). This was a hard-coded dev-sandbox path, which
-	 * does not exist in a package build container: execve() failed with
-	 * ENOENT, cix-init's 140+errno encoding made that exit status 142,
-	 * and the test reported "expected exit status 7, got 142"
-	 * (cix-tests@v2.57.245-4 on 192.168.15.95, 2026-09-23).
-	 */
-	char child_path[PATH_MAX];
-	char *child_argv[] = { child_path, NULL };
+	char *child_argv[] = { "/bin/harness_child", NULL };
 	char *child_envp[] = { NULL };
 	struct container_spec spec;
 	struct container_handle handle;
@@ -136,20 +119,14 @@ int main(void)
 	int exit_status;
 	int ok = 1;
 
-	if (realpath("build/harness_child", child_path) == NULL) {
-		perror("realpath build/harness_child (run from the repository root)");
-		return 1;
-	}
-
 	if (gethostname(host_hostname_before, sizeof(host_hostname_before)) != 0) {
 		perror("gethostname (host, before)");
 		return 1;
 	}
 
-	if (mkdir("/run/harness_overlay", 0755) != 0 && errno != EEXIST) {
-		perror("mkdir /run/harness_overlay");
+	unlink(RESULT_PATH);
+	if (test_image_fixture_build(ROOTFS, "build/harness_child", "harness_child") != 0)
 		return 1;
-	}
 
 	memset(&spec, 0, sizeof(spec));
 	spec.ns.clone_flags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUTS |
@@ -159,10 +136,7 @@ int main(void)
 	spec.cg.memory_max = 67108864;
 	spec.cg.pids_max = 32;
 	spec.cg.cpu_max = NULL;
-	spec.ov.lowerdir = "/";
-	spec.ov.upperdir = UPPERDIR;
-	spec.ov.workdir = "/run/harness_overlay/work";
-	spec.ov.merged = "/run/harness_root";
+	spec.rootfs.path = ROOTFS;
 	spec.mnt.put_old_rel = ".old_root";
 	spec.argv = child_argv;
 	spec.envp = child_envp;

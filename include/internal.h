@@ -14,16 +14,16 @@ long ns_clone3(unsigned long flags, int cgroup_fd, int *pidfd_out);
 
 /*
  * Called from inside the child only, after ns_clone3 returns 0, as
- * the very first mount-related action -- before overlay_create() or
+ * the very first mount-related action -- before the rootfs bind or
  * any other mount, so that mount events in the child's own namespace
- * (including the overlay mount) never propagate back to the host.
+ * never propagate back to the host.
  */
 int mountns_make_private(void);
 
 /*
  * mountns_pivot()'s own distinct failure codes -- every current caller
  * only ever checks `!= 0`, so these are additive, not a behavior
- * change; matches container.h's own overlay_error precedent exactly
+ * change; matches the precedent of the named codes container.h documents
  * (same reasoning: a single flat -1 across ~15 real syscalls left a
  * genuine, previously-unverifiable-on-a-shell-less-box question of
  * which one actually failed -- confirmed the hard way chasing issue
@@ -58,7 +58,7 @@ enum mountns_pivot_error {
 
 /*
  * Called from inside the child, after mountns_make_private() and
- * overlay_create().
+ * the rootfs bind or attach.
  *
  * THE CALLER MUST ALREADY HAVE chdir()ed INTO THE NEW ROOT. That is the
  * whole contract, and it is a requirement rather than a convenience:
@@ -320,8 +320,8 @@ int container_dev_bpf_detach(int cgroup_fd, int prog_fd);
  *     permitted" -- measured on 192.168.15.95, 0.2.57-556 -- while the
  *     baseline nodes beside it had already moved to the parent.
  *   - a NON-USERNS container: the CHILD, after pivot_root, with
- *     rootfs_dir "" (its own root), because the parent must not
- *     pre-create the overlay upperdir (see container_dev_stage_baseline()).
+ *     rootfs_dir "" (its own root), since it is real root and holds
+ *     CAP_MKNOD (see container_dev_stage_baseline()).
  *
  * owner_offset follows the baseline's rule: the subordinate base for a
  * chowned userns copy, 0 for an id-mapped rootfs or no userns.
@@ -341,10 +341,8 @@ int container_dev_mknod(const char *rootfs_dir, uid_t owner_offset,
  * namespace, which no userns container holds (#321), and userns is the
  * default. The daemon's own process is real root there.
  *
- * rootfs_dir is a HOST path and which one depends on how the container
- * presents its rootfs -- the per-container copy for a userns container,
- * the overlay upperdir otherwise, the rootfs itself for a direct one.
- * container_create() picks it.
+ * rootfs_dir is a HOST path: the container's rootfs (spec->rootfs.path),
+ * the snapshot of its image. container_create() picks it.
  *
  * owner_offset is the container's subordinate uid base, or 0 when it is
  * not id-mapped: the same convention every other staged file uses.

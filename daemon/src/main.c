@@ -90,6 +90,7 @@
 #include "pkgsource.h"
 #include "curlfetch.h"
 #include "quotamap.h"
+#include "treesize.h"
 #include "registry.h"
 #include "containerpath.h"
 #include "osrelease.h"
@@ -8555,7 +8556,7 @@ static void handle_get_one(int fd, const char *name)
  * build/cixd finds build/cix-init. One rule, no flag, and a daemon can
  * only ever stage the cix-init it shipped with.
  */
-static int stage_container_bytes(const char *upperdir, const char *path, const void *content,
+static int stage_container_bytes(const char *tree, const char *path, const void *content,
                                   size_t content_len, mode_t mode, uid_t owner, gid_t group,
                                   uid_t id_offset);
 
@@ -8607,7 +8608,7 @@ static const char *cix_init_source_path(void)
  * ADR-0155's manifest-hash dedup would discard a reseed, and a
  * container must run the cix-init its own daemon shipped with.
  */
-static int stage_cix_init(const char *upperdir, uid_t id_offset, char *err, size_t err_size)
+static int stage_cix_init(const char *tree, uid_t id_offset, char *err, size_t err_size)
 {
 	const char *src = cix_init_source_path();
 	int fd;
@@ -8639,7 +8640,7 @@ static int stage_cix_init(const char *upperdir, uid_t id_offset, char *err, size
 		snprintf(err, err_size, "short read of %s", src);
 		return -1;
 	}
-	rc = stage_container_bytes(upperdir, CIX_INIT_CONTAINER_PATH, buf, (size_t)st.st_size, 0755,
+	rc = stage_container_bytes(tree, CIX_INIT_CONTAINER_PATH, buf, (size_t)st.st_size, 0755,
 	                            (uid_t)-1,
 	                            (gid_t)-1, id_offset);
 	free(buf);
@@ -11485,8 +11486,8 @@ static void handle_image_rename(int fd, const char *name, const char *body, size
 		return;
 	case IMAGE_ERR_IN_USE:
 		respond_error(fd, 409, "Conflict",
-		              "a container is using this image -- a running container's overlay "
-		              "lowerdir points at this directory by path");
+		              "a container is using this image, and it records the image by "
+		              "name, so a rename would leave it naming one that does not exist");
 		return;
 	case IMAGE_ERR_NOT_FOUND:
 		respond_error(fd, 404, "Not Found", "no such image");
@@ -14221,7 +14222,7 @@ static const char *container_body_unknown_key(const struct json_value *root)
 }
 
 /*
- * Issue #66: stage one file directly into a container's upperdir, the
+ * Issue #66: stage one file directly into a container's tree, the
  * same open(O_CREAT|O_TRUNC)/write/optional-fchown sequence
  * create_container_from_body()'s own files[] loop already uses --
  * factored out so the ldap_client synthetic files below share exactly
@@ -14230,34 +14231,6 @@ static const char *container_body_unknown_key(const struct json_value *root)
  * fixed literals). Returns 0, or -1 with errno set. Records nothing in
  * file_paths[] itself -- the caller owns that array's indexing.
  */
-/*
- * ADR-0179 phase 2c option (a): recursively chown a userns container's own
- * rootfs copy to its subordinate base id, so its mapped root (host <base>)
- * genuinely OWNS every file -- id-mapped mounts proved too subtle to make the
- * child a writable owner, whereas plain ownership is unambiguous: the
- * container's userns maps <base> straight back to uid 0. Done once at first
- * create (a copy the container then keeps). nftw + lchown, no external binary;
- * single-threaded event loop makes the static target ids safe.
- */
-static uid_t g_chown_uid;
-static gid_t g_chown_gid;
-
-static int chown_tree_cb(const char *path, const struct stat *sb, int typeflag, struct FTW *ftw)
-{
-	(void)sb;
-	(void)typeflag;
-	(void)ftw;
-	if (lchown(path, g_chown_uid, g_chown_gid) != 0)
-		return -1;
-	return 0;
-}
-
-static int chown_tree(const char *path, uid_t uid, gid_t gid)
-{
-	g_chown_uid = uid;
-	g_chown_gid = gid;
-	return nftw(path, chown_tree_cb, 20, FTW_PHYS);
-}
 
 /*
  * Give every directory leading to a staged file to the container's own
@@ -14268,17 +14241,17 @@ static int chown_tree(const char *path, uid_t uid, gid_t gid)
  * already came from the image are chowned to the id they already carry,
  * so this is idempotent rather than a second source of truth.
  */
-static void chown_staged_parents(const char *upperdir, const char *path, uid_t id_offset)
+static void chown_staged_parents(const char *tree, const char *path, uid_t id_offset)
 {
 	char walk[PATH_MAX];
-	size_t root_len = strlen(upperdir);
+	size_t root_len = strlen(tree);
 	char *slash;
 
 	if (id_offset == 0)
 		return;
-	if ((size_t)snprintf(walk, sizeof(walk), "%s%s", upperdir, path) >= sizeof(walk))
+	if ((size_t)snprintf(walk, sizeof(walk), "%s%s", tree, path) >= sizeof(walk))
 		return;
-	/* Walk from the deepest parent up to (but never past) upperdir. */
+	/* Walk from the deepest parent up to (but never past) tree. */
 	while ((slash = strrchr(walk, '/')) != NULL && (size_t)(slash - walk) > root_len) {
 		*slash = '\0';
 		if (chown(walk, id_offset, (gid_t)id_offset) != 0 && errno != ENOENT)
@@ -14298,19 +14271,13 @@ static void chown_staged_parents(const char *upperdir, const char *path, uid_t i
  *
  * id_offset is what makes the ownership correct. The caller reads it off
  * the rootfs being staged into -- a staged file is owned by whoever owns
- * the tree it lands in -- which covers all three presentations without
- * this function needing to know they exist:
- *
- *   - Non-userns upperdir: host-uid-0 owned, so 0. Unchanged.
- *   - userns, btrfs snapshot behind an id-mapped mount (ADR-0207 phase
- *     3): also host-uid-0 owned, so 0. On-disk 0 is ALREADY presented as
- *     the container's root there, and an offset would break it.
- *   - userns, copy+chown (ADR-0179 phase 2b): chown_tree() has given the
- *     whole rootfs to the container's subordinate base, which is what
- *     makes / and /etc read as 0 inside. A file staged afterwards as
- *     on-disk 0 falls outside the mapped range and reads as 65534,
- *     unreadable by the container's own root at mode 0600. That was the
- *     bug, and it is the presentation the live host runs.
+ * the tree it lands in. Every rootfs is host-uid-0 owned since ADR-0360,
+ * so that is 0: a userns container's snapshot is behind an id-mapped
+ * mount (ADR-0207 phase 3), where on-disk 0 is ALREADY presented as the
+ * container's root, and an offset would break it. It was the chowned
+ * copy (ADR-0179 phase 2b, removed) that needed one: a file staged into
+ * it as on-disk 0 fell outside the mapped range and read as 65534,
+ * unreadable by the container's own root at mode 0600 (#265).
  *
  * An unspecified owner means the container's root, not the host's, which
  * is why the offset applies even when the caller passes -1. An explicit
@@ -14319,7 +14286,7 @@ static void chown_staged_parents(const char *upperdir, const char *path, uid_t i
  * this, such a recipe got on-disk uid 75, unmapped inside, which is not
  * what any author would expect it to mean.
  */
-static int stage_container_bytes(const char *upperdir, const char *path, const void *content,
+static int stage_container_bytes(const char *tree, const char *path, const void *content,
                                   size_t content_len, mode_t mode, uid_t owner, gid_t group,
                                   uid_t id_offset)
 {
@@ -14332,11 +14299,11 @@ static int stage_container_bytes(const char *upperdir, const char *path, const v
 
 	/* A missing tree must never become a path relative to the daemon's
 	 * working directory: glibc prints a NULL %s as "(null)" (#657). */
-	if (upperdir == NULL || upperdir[0] == '\0') {
+	if (tree == NULL || tree[0] == '\0') {
 		errno = EINVAL;
 		return -1;
 	}
-	if (snprintf(target, sizeof(target), "%s%s", upperdir, path) >= (int)sizeof(target)) {
+	if (snprintf(target, sizeof(target), "%s%s", tree, path) >= (int)sizeof(target)) {
 		errno = ENAMETOOLONG;
 		return -1;
 	}
@@ -14346,7 +14313,7 @@ static int stage_container_bytes(const char *upperdir, const char *path, const v
 		*slash = '\0';
 	if (persist_mkdir_p(target_dir) != 0)
 		return -1;
-	chown_staged_parents(upperdir, path, id_offset);
+	chown_staged_parents(tree, path, id_offset);
 	fd = open(target, O_CREAT | O_TRUNC | O_WRONLY, mode);
 	if (fd < 0)
 		return -1;
@@ -14370,10 +14337,10 @@ static int stage_container_bytes(const char *upperdir, const char *path, const v
 	return 0;
 }
 
-static int stage_container_file(const char *upperdir, const char *path, const char *content,
+static int stage_container_file(const char *tree, const char *path, const char *content,
                                  mode_t mode, uid_t owner, gid_t group, uid_t id_offset)
 {
-	return stage_container_bytes(upperdir, path, content, strlen(content), mode, owner, group,
+	return stage_container_bytes(tree, path, content, strlen(content), mode, owner, group,
 	                             id_offset);
 }
 
@@ -15115,13 +15082,13 @@ static int rootfs_cutover_base(const char *name, const char *container_root,
  * which is correct, and which holds the loop for a whole-image copy --
  * the cost ADR-0341 exists to remove -- so it says so, once per seed.
  */
-static void rootfs_seed_warn_if_copy(const char *name, const char *lowerdir)
+static void rootfs_seed_warn_if_copy(const char *name, const char *image_rootfs)
 {
-	if (cix_btrfs_is_backing(lowerdir) && !cix_btrfs_is_subvolume(lowerdir))
+	if (cix_btrfs_is_backing(image_rootfs) && !cix_btrfs_is_subvolume(image_rootfs))
 		logstore_write("cixd", "warn",
 		                "container %s: image version %s is not a btrfs subvolume, so its "
 		                "rootfs is a copy made on the event loop rather than a snapshot",
-		                name, lowerdir);
+		                name, image_rootfs);
 }
 
 /*
@@ -15370,7 +15337,6 @@ static int create_container_from_body(const char *body, size_t body_len,
 	    *jnetworks, *jip_forward, *jksm, *jroutes;
 	const struct json_value *jdisk_quota;
 	long long disk_quota_bytes;
-	int quota_enforced_early = 0; /* #266: the userns snapshot applied it itself */
 	const struct json_value *jdevices;
 	const struct json_value *jinterfaces;
 	const struct json_value *jcap_add;
@@ -15381,21 +15347,19 @@ static int create_container_from_body(const char *body, size_t body_len,
 	long restart_delay, follow_rolling_jitter;
 	const char *name, *image;
 	char name_copy[REGISTRY_NAME_MAX];
-	char lowerdir[PATH_MAX];
+	char image_rootfs[PATH_MAX];
 	char resolved_image_version[IMAGE_VERSION_MAX];
 	char container_base[PATH_MAX];
-	char upperdir[PATH_MAX], workdir[PATH_MAX], merged[PATH_MAX];
+	char merged[PATH_MAX];        /* a userns container's pivot mountpoint */
 	char container_cgroup_path[PATH_MAX]; /* issue #86 -- under the workload parent */
-	char userns_rootfs[PATH_MAX]; /* ADR-0179 phase 2c option (a) */
-	const char *stage_dir;        /* where container files are staged: upper, or the userns rootfs */
+	char rootfs_dir[PATH_MAX];    /* container_rootfs_dir(): the snapshot (ADR-0360) */
+	const char *stage_dir;        /* where container files are staged: the rootfs */
 	/*
 	 * The id every staged file is owned by, in the container's own space
-	 * (#265). Non-zero only for the copy+chown userns presentation -- see
-	 * stage_container_file() for why the id-mapped one must stay 0.
+	 * (#265): the rootfs owner, 0 for every rootfs since ADR-0360 -- see
+	 * stage_container_file() for why an id-mapped one must stay 0.
 	 */
 	uid_t stage_id_offset = 0;
-	char direct_rootfs_dir[PATH_MAX]; /* ADR-0207 direct mode: container_rootfs_dir() */
-	int direct_mode = 0;          /* ADR-0207 phase 2: snapshot/copy rootfs, no overlay */
 	struct stat st;
 	struct container_spec spec;
 	struct registry_entry *entry;
@@ -16441,7 +16405,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * container start (src/mountns.c, deliberately -- a
 			 * daemon finding its own stale pidfile there is a real
 			 * failure this project has hit). files[] are written into
-			 * the container's upperdir at CREATION time, so anything
+			 * the container's rootfs at CREATION time, so anything
 			 * staged under /run is masked by that mount on every
 			 * single start and can never be read by anything.
 			 *
@@ -16543,7 +16507,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 
 	/*
 	 * ADR-0143: optional real /etc/resolv.conf staged into the
-	 * container's own upperdir, same shape files[] already uses.
+	 * container's own rootfs, same shape files[] already uses.
 	 * RESOLV_MAX_NAMESERVERS is resolv.c's own cap (matches glibc's
 	 * real resolv.conf MAXNS), reused here rather than a second
 	 * invented limit.
@@ -16647,8 +16611,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 	}
 	stallwatch_step("container create: resolve the image version");
-	image_version_rootfs_path(image, resolved_image_version, lowerdir, sizeof(lowerdir));
-	if (stat(lowerdir, &st) != 0) {
+	image_version_rootfs_path(image, resolved_image_version, image_rootfs, sizeof(image_rootfs));
+	if (stat(image_rootfs, &st) != 0) {
 		json_free(root);
 		snprintf(err_msg, err_msg_size, "image rootfs does not exist");
 		return 400;
@@ -16671,7 +16635,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	{
 		char loader[PATH_MAX];
 
-		snprintf(loader, sizeof(loader), "%s/%s", lowerdir, PKG_IMAGE_LOADER_REL);
+		snprintf(loader, sizeof(loader), "%s/%s", image_rootfs, PKG_IMAGE_LOADER_REL);
 		if (stat(loader, &st) != 0) {
 			/* Formatted BEFORE the tree is freed: `image` points into
 			 * that JSON, so reading it afterwards prints whatever the
@@ -16933,11 +16897,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		snprintf(err_msg, err_msg_size, "failed to create container directory");
 		return 500;
 	}
-	snprintf(upperdir, sizeof(upperdir), "%s/upper", container_base);
-	snprintf(workdir, sizeof(workdir), "%s/work", container_base);
 	snprintf(merged, sizeof(merged), "%s/merged", container_base);
-	userns_rootfs[0] = '\0';
-	stage_dir = upperdir;
 
 	/*
 	 * #266: spec is zeroed HERE, before the rootfs provisioning below
@@ -16953,7 +16913,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 * real container before the fix: /vol owned 65534:65534, `touch`
 	 * denied, with jump's own /home among the casualties.
 	 *
-	 * The same block also READ spec.ov.quota_bytes, which at that point
+	 * The same block also READ the overlay quota field, which at that point
 	 * was uninitialised stack memory -- the real value is parsed much
 	 * further down. So the btrfs qgroup call it guards fired, or did
 	 * not, on garbage. disk_quota_bytes is therefore parsed here too,
@@ -16990,256 +16950,122 @@ static int create_container_from_body(const char *body, size_t body_len,
 		return 500;
 	}
 
-	stallwatch_step("container create: id-map the rootfs");
+	stallwatch_step("container create: seed the rootfs");
 	/*
-	 * ADR-0179 phase 2c option (a): a userns container does not use an
-	 * overlay -- it gets its own per-container rootfs, which
-	 * container_create() id-maps and pivots into directly. Seed it here
-	 * (host-side), with the merged mountpoint the child pivots onto, and
-	 * stage the container's own files straight into the rootfs instead
-	 * of an overlay upperdir. It is seeded on first create and reused on
-	 * restart, so writes persist until the image pin moves.
+	 * ADR-0341, ADR-0360: a container's rootfs is a btrfs snapshot of its
+	 * image version at container_rootfs_dir(), beside the image store,
+	 * for every container, userns or not, and there is no other kind --
+	 * no overlay and no copy. A userns container's snapshot stays host-
+	 * uid-0 owned and is presented through an id-mapped mount (ADR-0207
+	 * phase 3); container_create() attaches it at `merged` and pivots
+	 * onto that. Seeded on first create and reused on restart, so writes
+	 * persist until the image pin moves.
 	 */
-	if (userns) {
+	container_rootfs_dir(name, rootfs_dir, sizeof(rootfs_dir));
+	if (!cix_btrfs_is_backing(CONTAINER_ROOTFS_DIR)) {
+		json_free(root);
+		snprintf(err_msg, err_msg_size,
+		         "%s is not btrfs, and a container's rootfs is a btrfs snapshot of its image "
+		         "(ADR-0360): place rebuildable storage on a btrfs disk",
+		         CONTAINER_ROOTFS_DIR);
+		return 500;
+	}
+	{
 		struct stat rst;
+		int have = stat(rootfs_dir, &rst) == 0 && S_ISDIR(rst.st_mode);
+		/*
+		 * A userns rootfs NOT owned by uid 0 is the ADR-0179 phase-2b
+		 * copy, chowned to the subordinate base, which ADR-0360 removed:
+		 * nothing presents it any more. It is derived from the image, so
+		 * it is set aside and seeded as a snapshot, said once.
+		 */
+		int chowned_copy = have && userns && rst.st_uid != 0;
 
-		container_rootfs_dir(name, userns_rootfs, sizeof(userns_rootfs));
 		/*
 		 * ADR-0277: an existing rootfs is kept only while it still
-		 * matches the image version this container is pinned to.
-		 * When the pin has moved the tree is set aside and seeded
-		 * again below -- that is what makes follow_rolling actually
-		 * apply. Safe here because a userns container can always be
-		 * re-seeded: the snapshot path and the copy+chown fallback
-		 * are both below.
+		 * matches the image version this container is pinned to. When
+		 * the pin has moved the tree is set aside and seeded again --
+		 * that is what makes follow_rolling actually apply -- so the
+		 * writes it carried are lost by design: anything that must
+		 * outlive an image version belongs on a volume.
 		 */
-		if (stat(userns_rootfs, &rst) == 0 &&
-		    rootfs_needs_reseed(name, userns_rootfs, resolved_image_version) &&
-		    rootfs_discard(name, userns_rootfs, CONTAINER_ROOTFS_DIR) != 0) {
-			int err = errno;
-
-			json_free(root);
-			snprintf(err_msg, err_msg_size,
-			         "could not set aside the rootfs seeded from the previous image "
-			         "version: %s",
-			         strerror(err));
-			return 500;
-		}
-		if (stat(userns_rootfs, &rst) != 0)
-			rootfs_seed_warn_if_copy(name, lowerdir);
-		if (stat(userns_rootfs, &rst) == 0) {
-			/*
-			 * Revival: the rootfs IS this container's state; which
-			 * PRESENTATION it needs is read off the filesystem itself,
-			 * the same one-source-of-truth marker the direct-rootfs
-			 * mode uses. A snapshot-provisioned rootfs is owned by
-			 * host uid 0 (never chowned -- the id-mapped mount does
-			 * the presenting); a phase-2b copy is owned by its
-			 * subordinate base. No side state to drift.
-			 */
-			spec.userns_idmap = (rst.st_uid == 0);
-		} else if (cix_btrfs_is_backing(CONTAINER_ROOTFS_DIR) &&
-		           cix_btrfs_snapshot_or_copy(lowerdir, userns_rootfs) == 0) {
-			/*
-			 * ADR-0207 phase 3: on btrfs a userns container's rootfs
-			 * is the SAME O(1) writable snapshot a non-userns one
-			 * gets -- host-uid-0 owned, extent-sharing fully
-			 * preserved -- presented to the container through an
-			 * id-mapped mount instead of a per-inode chown (which
-			 * would rewrite every inode's metadata and cost the
-			 * sharing). One storage model, two presentations.
-			 */
-			spec.userns_idmap = 1;
-			rootfs_seed_version_write(userns_rootfs, resolved_image_version);
-			if (disk_quota_bytes > 0) {
-				if (cix_btrfs_qgroup_limit_excl(userns_rootfs,
-				                                 (unsigned long long)disk_quota_bytes) !=
-				    0) {
-					json_free(root);
-					snprintf(err_msg, err_msg_size,
-					         "failed to set the btrfs qgroup quota on the userns rootfs");
-					return 500;
-				}
-				/* Enforced right here, on the snapshot itself. The
-				 * general quota block below must not also assign a
-				 * project id or hand a limit to overlay_create(),
-				 * which never runs for this container. */
-				quota_enforced_early = 1;
-			}
-		} else {
-			/*
-			 * Non-btrfs (unmigrated ext4 hosts): the ADR-0179
-			 * phase-2b copy+chown presentation, proven live on real
-			 * hardware. The copy is cix_tree_copy() in-process -- the
-			 * one the btrfs snapshot path already falls back to --
-			 * where it used to fork `cp --reflink=auto -a` (#464, the
-			 * shell-out the #352/#410/#411 audits missed). It keeps
-			 * what `cp -a` kept: owner, exact mode, timestamps,
-			 * symlinks and device nodes. What it drops is the reflink,
-			 * which ext4 -- the host this branch exists for -- cannot do.
-			 *
-			 * It runs on the loop, for the length of a whole-image
-			 * copy; moving it to a helper child is ADR-0341 phase 2
-			 * (#614). On btrfs this branch is a failed snapshot, which
-			 * ADR-0341 exists to make impossible -- so if it happens
-			 * anyway it says so, rather than copying in silence the
-			 * way every userns create on .95 did before (#608).
-			 */
-			long long base = 0;
-			int snap_err = errno;
-
-			if (cix_btrfs_is_backing(CONTAINER_ROOTFS_DIR))
+		if (have && (chowned_copy || rootfs_needs_reseed(name, rootfs_dir, resolved_image_version))) {
+			if (chowned_copy)
 				logstore_write("cixd", "warn",
-				                "container %s: could not snapshot the image rootfs (%s) -- "
-				                "copying it instead, which holds the event loop",
-				                name, strerror(snap_err));
-			if (cix_tree_copy(lowerdir, userns_rootfs) != 0) {
+				               "container %s: its rootfs is a chowned copy, which ADR-0360 "
+				               "removed -- seeding a snapshot of its image in its place",
+				               name);
+			if (rootfs_discard(name, rootfs_dir, CONTAINER_ROOTFS_DIR) != 0) {
 				int err = errno;
 
 				json_free(root);
 				snprintf(err_msg, err_msg_size,
-				         "failed to copy image rootfs for userns container: %s",
+				         "could not set aside the rootfs seeded from the previous image "
+				         "version: %s",
 				         strerror(err));
 				return 500;
 			}
-			rootfs_seed_version_write(userns_rootfs, resolved_image_version);
-			if (subid_lookup_or_assign(name, &base) != 0 ||
-			    chown_tree(userns_rootfs, (uid_t)base, (gid_t)base) != 0) {
-				/* chown the whole copy to the container's subordinate base
-				 * id so its mapped root owns it (subid_lookup_or_assign is
-				 * idempotent -- the spec block below re-derives the same
-				 * base). */
-				json_free(root);
-				snprintf(err_msg, err_msg_size,
-				         "failed to chown userns rootfs to its subordinate id");
-				return 500;
-			}
+			have = 0;
 		}
-		if (persist_mkdir_p(merged) != 0) {
-			json_free(root);
-			snprintf(err_msg, err_msg_size, "failed to create userns pivot mountpoint");
-			return 500;
-		}
-		stage_dir = userns_rootfs;
-	} else {
-		/*
-		 * ADR-0207 phase 2: the non-userns twin of the branch above --
-		 * decide the storage mode HERE, before file staging, because
-		 * files[] (and every synthetic file: nsswitch, nslcd, dhcp)
-		 * are staged into stage_dir next, and a direct-mode container
-		 * reads its files from its rootfs, not from an overlay
-		 * upperdir it will never mount. The on-disk presence of its
-		 * rootfs (container_rootfs_dir()) is the mode marker: a
-		 * revived container whose rootfs exists keeps it, PROVIDED it was seeded from the image
-		 * version this container is still pinned to -- ADR-0277, which
-		 * amended this rule after the unconditional form made
-		 * follow_rolling inert (see rootfs_needs_reseed()). When the
-		 * pin has moved the tree is discarded and seeded again, so the
-		 * writes it carried are lost by design: a container's rootfs
-		 * is derived from its image, and anything that must outlive an
-		 * image version belongs on a volume. A fresh create on btrfs
-		 * snapshots the image's subvolume (O(1), copy-on-write);
-		 * anything else stays on the classic overlay path until phase 4.
-		 * A failed snapshot falls back to overlay LOUDLY -- the
-		 * overlay-on-btrfs upperdir path (ADR-0103) is still fully
-		 * functional, so the fallback is honest, not hidden. Until
-		 * ADR-0341 it was the ordinary case on any host whose image
-		 * store and container storage were different filesystems,
-		 * which SNAP_CREATE_V2 cannot cross; the rootfs now lives
-		 * beside the image so that it never is.
-		 */
-		struct stat rst;
-		/*
-		 * ADR-0277: discard a rootfs whose image version has moved,
-		 * so the seeding below runs again against the new one. Guarded
-		 * by can_seed because, unlike the userns branch, this one has
-		 * no copy fallback: discarding a tree we could not then
-		 * replace would drop the container onto the overlay path with
-		 * an empty upperdir, which is worse than the staleness.
-		 */
-		int can_seed = cix_btrfs_is_backing(CONTAINER_ROOTFS_DIR);
-
-		container_rootfs_dir(name, direct_rootfs_dir, sizeof(direct_rootfs_dir));
-		if (can_seed && stat(direct_rootfs_dir, &rst) == 0 && S_ISDIR(rst.st_mode) &&
-		    rootfs_needs_reseed(name, direct_rootfs_dir, resolved_image_version) &&
-		    rootfs_discard(name, direct_rootfs_dir, CONTAINER_ROOTFS_DIR) != 0) {
-			int err = errno;
-
-			json_free(root);
-			snprintf(err_msg, err_msg_size,
-			         "could not set aside the rootfs seeded from the previous image version: %s",
-			         strerror(err));
-			return 500;
-		}
-		if (stat(direct_rootfs_dir, &rst) == 0 && S_ISDIR(rst.st_mode)) {
-			direct_mode = 1;
-		} else if (can_seed) {
-			rootfs_seed_warn_if_copy(name, lowerdir);
-			if (cix_btrfs_snapshot_or_copy(lowerdir, direct_rootfs_dir) == 0) {
-				direct_mode = 1;
-				rootfs_seed_version_write(direct_rootfs_dir, resolved_image_version);
-			} else {
-				logstore_write("cixd", "warn",
-				                "container %s: could not snapshot the image rootfs (%s) -- "
-				                "falling back to the overlay path",
-				                name, strerror(errno));
-			}
-		}
-		if (direct_mode) {
-			snprintf(merged, sizeof(merged), "%s", direct_rootfs_dir);
-			stage_dir = direct_rootfs_dir;
-			/*
-			 * ADR-0341's cut-over for a container that ran on the
-			 * overlay path because its snapshot could not cross a
-			 * filesystem (ntp-1 and ntp-2 on .95, #608): its upper
-			 * and work trees are no longer its storage.
-			 */
-			if (rootfs_discard(name, upperdir, container_root) != 0 ||
-			    rootfs_discard(name, workdir, container_root) != 0) {
+		if (!have) {
+			rootfs_seed_warn_if_copy(name, image_rootfs);
+			if (cix_btrfs_snapshot_or_copy(image_rootfs, rootfs_dir) != 0) {
 				int err = errno;
 
 				json_free(root);
-				snprintf(err_msg, err_msg_size,
-				         "could not set aside this container's overlay trees: %s",
+				snprintf(err_msg, err_msg_size, "could not snapshot the image rootfs: %s",
 				         strerror(err));
 				return 500;
 			}
+			rootfs_seed_version_write(rootfs_dir, resolved_image_version);
 		}
 	}
+	/*
+	 * ADR-0341's cut-over, for a container that ran on the overlay path
+	 * before ADR-0360 removed it (ntp-1 and ntp-2 on .95, #608): its
+	 * upper and work trees are no longer its storage.
+	 */
+	{
+		char old_upper[PATH_MAX], old_work[PATH_MAX];
+
+		snprintf(old_upper, sizeof(old_upper), "%s/upper", container_base);
+		snprintf(old_work, sizeof(old_work), "%s/work", container_base);
+		if (rootfs_discard(name, old_upper, container_root) != 0 ||
+		    rootfs_discard(name, old_work, container_root) != 0) {
+			int err = errno;
+
+			json_free(root);
+			snprintf(err_msg, err_msg_size,
+			         "could not set aside this container's overlay trees: %s", strerror(err));
+			return 500;
+		}
+	}
+	if (userns && persist_mkdir_p(merged) != 0) {
+		json_free(root);
+		snprintf(err_msg, err_msg_size, "failed to create userns pivot mountpoint");
+		return 500;
+	}
+	stage_dir = rootfs_dir;
 
 	/*
-	 * Written directly into the container's own upperdir, entirely on
+	 * Written directly into the container's own rootfs, entirely on
 	 * this (daemon/host) process, before registry_create()/clone3() is
-	 * ever called -- overlay_create() (child-side, post-clone3())
-	 * mkdir()s upperdir EEXIST-tolerant and mounts it unchanged, so
-	 * these files are simply already there the moment the container's
-	 * own process execve()s, unlike a post-hoc write into an already-
-	 * running container's filesystem (ADR-0013's /proc/<pid>/root/
-	 * pattern), which needs a live pid this early creation path doesn't
-	 * have yet. Already fully validated above (path safety, content/
-	 * mode bounds) -- this pass only does I/O.
+	 * ever called, so these files are simply already there the moment
+	 * the container's own process execve()s, unlike a post-hoc write
+	 * into an already-running container's filesystem (ADR-0013's
+	 * /proc/<pid>/root/ pattern), which needs a live pid this early
+	 * creation path doesn't have yet. Already fully validated above
+	 * (path safety, content/mode bounds) -- this pass only does I/O.
 	 */
 	/*
 	 * #265: a staged file is owned by whoever owns the rootfs it is
-	 * staged into.
-	 *
-	 * Read off the tree itself rather than reasoned about, because the
-	 * id depends on how this container's rootfs is PRESENTED and there
-	 * are three presentations that disagree: a non-userns upperdir and
-	 * a btrfs snapshot behind an id-mapped mount are both host-uid-0
-	 * owned, while the ADR-0179 phase-2b copy has been chown_tree()d to
-	 * the container's subordinate base -- which is exactly what makes /
-	 * and /etc read as 0 inside it. A file staged as on-disk 0 into that
-	 * last one falls outside the container's mapped range and reads as
-	 * 65534, unreadable by the container's own root at mode 0600.
-	 *
-	 * Deliberately NOT branched on spec.userns_idmap, which was the
-	 * first attempt and does not work: that field is assigned while the
-	 * rootfs is provisioned and then cleared by the memset(&spec) below,
-	 * so it is always 0 by the time anything reads it (#266). The rootfs
-	 * owner is the same fact without the ordering hazard -- it is the
-	 * one-source-of-truth marker the revival path above already reads
-	 * for precisely this reason.
+	 * staged into, read off the tree itself. Since ADR-0360 that is host
+	 * uid 0 for every container -- a userns one's snapshot is presented
+	 * through an id-mapped mount, and a chowned copy is reseeded above --
+	 * so this reads 0. The rule stays the tree's owner rather than a
+	 * constant: it was a chowned copy, owned by the subordinate base,
+	 * that a file staged as on-disk 0 fell outside of, reading as 65534
+	 * and unreadable by the container's own root at mode 0600.
 	 */
 	{
 		struct stat rootfs_st;
@@ -17897,75 +17723,29 @@ static int create_container_from_body(const char *body, size_t body_len,
 	spec.cg.cpu_max = json_as_string(jcpu);
 	jcpuset = json_object_get(root, "cpuset_cpus");
 	spec.cg.cpuset_cpus = json_as_string(jcpuset);
-	/* Parsed above, before the rootfs provisioning that needs it (#266). */
-	if (disk_quota_bytes > 0 && !quota_enforced_early) {
-		/*
-		 * btrfs has no quotactl(2) project-quota support at all
-		 * (ADR-0103) -- overlay_create() enforces the limit itself
-		 * there, via a qgroup set on the upperdir subvolume it
-		 * creates, so there is no project id to assign and no
-		 * quotactl(2) call to make up front here. ext4 (and any other
-		 * quotactl-capable filesystem) keeps the existing Part 4/
-		 * ADR-0062 flow completely unchanged.
-		 */
-		/*
-		 * ADR-0341: a direct-mode rootfs is not under container_base,
-		 * so it is ITS filesystem that decides -- the qgroup below is
-		 * set on the rootfs, and container_base may be ext4 while the
-		 * rootfs is btrfs.
-		 */
-		if (direct_mode ? cix_btrfs_is_backing(direct_rootfs_dir)
-		                : overlay_backing_is_btrfs(container_base)) {
-			spec.ov.quota_bytes = disk_quota_bytes;
-		} else {
-			uint32_t projid;
+	/*
+	 * A disk quota is a btrfs qgroup limit on the rootfs snapshot
+	 * (ADR-0207, ADR-0359): EXCLUSIVE bytes, not referenced, because a
+	 * snapshot references the whole image from the first instant and the
+	 * quota owed is the container's own divergence. See btrfs.h. Set
+	 * after the files above are staged, so a small limit bounds what the
+	 * container writes rather than refusing the create at a mkdir --
+	 * which a limit set before staging did (compile probe 0.2.57-642,
+	 * cix#658). The ext4 project-quota and upper-layer qgroup backends
+	 * went with the overlay path (ADR-0360).
+	 */
+	if (disk_quota_bytes > 0 &&
+	    cix_btrfs_qgroup_limit_excl(rootfs_dir, (unsigned long long)disk_quota_bytes) != 0) {
+		int err = errno;
 
-			if (quotamap_get_or_assign(name, &projid) != 0) {
-				json_free(root);
-				snprintf(err_msg, err_msg_size, "failed to assign a disk-quota project id");
-				return 500;
-			}
-			/*
-			 * Set before the container (and its overlay_create()'s own
-			 * FS_IOC_FSSETXATTR tagging) is created -- order-agnostic per
-			 * this call's own comment, but doing it first means the limit
-			 * is already in force by the moment any file could possibly
-			 * be tagged with this project id.
-			 */
-			if (quotamap_apply(container_base, projid, disk_quota_bytes) != 0) {
-				json_free(root);
-				snprintf(err_msg, err_msg_size,
-				         "failed to set disk quota (backing filesystem may not have "
-				         "project-quota support enabled)");
-				return 500;
-			}
-			spec.ov.project_id = projid;
-		}
+		json_free(root);
+		snprintf(err_msg, err_msg_size,
+		         "failed to set the btrfs qgroup quota on the container rootfs: %s",
+		         strerror(err));
+		return 500;
 	}
-	if (direct_mode) {
-		spec.ov.direct_rootfs = 1;
-		if (spec.ov.quota_bytes > 0) {
-			/*
-			 * EXCLUSIVE bytes, not referenced (ADR-0207): a snapshot
-			 * references the whole image from the first instant, and
-			 * the quota owed here is "your own divergence" -- exactly
-			 * what the overlay upperdir quota meant. See btrfs.h.
-			 */
-			if (cix_btrfs_qgroup_limit_excl(direct_rootfs_dir,
-			                                 (unsigned long long)spec.ov.quota_bytes) != 0) {
-				json_free(root);
-				snprintf(err_msg, err_msg_size,
-				         "failed to set the btrfs qgroup quota on the container rootfs");
-				return 500;
-			}
-			spec.ov.quota_bytes = 0; /* enforced here; overlay_create will not run */
-		}
-	}
-	spec.ov.lowerdir = lowerdir;
-	spec.ov.upperdir = upperdir;
-	spec.ov.workdir = workdir;
-	spec.ov.merged = merged;
-	spec.ov.userns_rootfs = userns ? userns_rootfs : NULL;
+	spec.rootfs.path = rootfs_dir;
+	spec.rootfs.userns_mountpoint = userns ? merged : NULL;
 	spec.mnt.put_old_rel = ".old_root";
 	/*
 	 * ADR-0262/#336. Default ON: a virtualised /proc a recipe has to
@@ -18956,14 +18736,9 @@ static void handle_delete(int fd, const char *name)
 	{
 		char container_root[PATH_MAX];
 		char container_base[PATH_MAX];
-		char merged[PATH_MAX];
 
 		container_root_for(disk_name, container_root, sizeof(container_root));
 		snprintf(container_base, sizeof(container_base), "%s/%s", container_root, name);
-		snprintf(merged, sizeof(merged), "%s/merged", container_base);
-		if (umount2(merged, MNT_DETACH) != 0 && errno != EINVAL && errno != ENOENT)
-			fprintf(stderr, "DELETE %s: umount2(%s) failed: %s\n", name, merged,
-			        strerror(errno));
 		container_storage_release(name, container_root, container_base);
 	}
 
@@ -20599,16 +20374,14 @@ static void handle_container_device_detach(int fd, const char *container_name, c
  * pids get reused -- so /proc/<pid>/root only applies while running==1):
  *   running   -> /proc/<pid>/root<path>  (kernel resolves through the
  *                container's own mount namespace/root, no setns()) --
- *                and, if that misses, the on-disk layers below too:
+ *                and, if that misses, the rootfs below too:
  *                running == 1 only means this daemon hasn't PROCESSED
  *                the exit yet, so /proc/<pid> can already be gone for a
  *                container that died the instant it started.
- *   !running  -> <CONTAINERS_DIR>/<name>/upper<path> first (the COW
- *                upper layer the container itself wrote to -- still a
- *                real host directory even after every process in the
- *                overlay's own mount namespace has exited), falling
- *                back to <IMAGES_DIR>/<image>/rootfs<path> (the shared,
- *                read-only lowerdir -- entry->image survives exit).
+ *   !running  -> its rootfs, container_rootfs_dir()<path> (the snapshot
+ *                the container wrote to, the whole of its tree since
+ *                ADR-0360). There is no fallback to the image: it would
+ *                answer for a file the container does not have (#394).
  *
  * Response is this daemon's first non-JSON body: raw bytes via
  * http_write_response(), same primitive/pattern staticfile.c's own
@@ -20622,69 +20395,40 @@ static void handle_container_device_detach(int fd, const char *container_name, c
  * include-fixed tree during the Part 201 investigation took several
  * probe recipes that one listing call would have replaced.
  *
- * A RUNNING container is listed through /proc/<pid>/root, which is the
- * kernel's own merged overlay view: correct by construction, whiteouts
- * and all.
- *
- * An EXITED one has no such view, so its two layers are merged here --
- * upper first, then lower for anything upper did not have. That needs
- * whiteouts handled properly rather than ignored: overlayfs marks a
- * deleted file with a character device of rdev 0 in the upper layer, so
- * listing naively would show a file the container had deleted, which is
- * a listing that lies. Those entries are skipped AND suppress the
- * lower-layer name behind them, which is what deletion means.
- *
- * Opaque directories (a directory replaced wholesale, marked with the
- * trusted.overlay.opaque xattr) are NOT handled -- reading xattrs adds
- * a dependency for a case this daemon never creates, and the failure
- * mode is showing a stale name rather than hiding a real one.
+ * A RUNNING container is listed through /proc/<pid>/root, the kernel's
+ * own view of it. An EXITED one is listed from its rootfs, which is the
+ * whole of its tree since ADR-0360: there are no layers to merge and no
+ * overlay whiteouts to hide, as there were when an exited container's
+ * upper and lower layers were merged here.
  */
-static int dirent_is_whiteout(const char *dir, const char *name)
-{
-	char path[PATH_MAX];
-	struct stat st;
-
-	snprintf(path, sizeof(path), "%s/%s", dir, name);
-	if (lstat(path, &st) != 0)
-		return 0;
-	return S_ISCHR(st.st_mode) && st.st_rdev == 0;
-}
-
 static void handle_container_dir_list(int fd, const char *name, const char *rel_path)
 {
 	struct registry_entry *e = registry_find(name);
-	char dirs[2][PATH_MAX];
-	int dir_count = 0;
-	char seen[512][256];
-	int seen_count = 0;
+	char dir[PATH_MAX];
+	int found = 0;
+	int count = 0;
 	struct json_writer w;
 	struct stat st;
-	int i;
-	int any = 0;
+	DIR *d;
+	struct dirent *de;
 
 	if (e == NULL) {
 		respond_error(fd, 404, "Not Found", "no such container");
 		return;
 	}
 	if (e->running) {
-		snprintf(dirs[0], sizeof(dirs[0]), "/proc/%d/root%s", (int)e->handle.pid, rel_path);
-		if (stat(dirs[0], &st) == 0 && S_ISDIR(st.st_mode))
-			dir_count = 1;
+		snprintf(dir, sizeof(dir), "/proc/%d/root%s", (int)e->handle.pid, rel_path);
+		found = stat(dir, &st) == 0 && S_ISDIR(st.st_mode);
 	}
-	if (dir_count == 0) {
+	if (!found) {
 		char container_root[PATH_MAX];
 
 		container_root_for(e->disk_name, container_root, sizeof(container_root));
-		container_writable_path(container_root, name, rel_path, dirs[0], sizeof(dirs[0]));
-		if (stat(dirs[0], &st) == 0 && S_ISDIR(st.st_mode))
-			dir_count = 1;
-		if (e->lowerdir[0] != '\0') {
-			snprintf(dirs[dir_count], sizeof(dirs[dir_count]), "%s%s", e->lowerdir, rel_path);
-			if (stat(dirs[dir_count], &st) == 0 && S_ISDIR(st.st_mode))
-				dir_count++;
-		}
+		container_writable_path(container_root, name, rel_path, dir, sizeof(dir));
+		found = stat(dir, &st) == 0 && S_ISDIR(st.st_mode);
 	}
-	if (dir_count == 0) {
+	d = found ? opendir(dir) : NULL;
+	if (d == NULL) {
 		respond_error(fd, 404, "Not Found", "no such directory");
 		return;
 	}
@@ -20695,68 +20439,38 @@ static void handle_container_dir_list(int fd, const char *name, const char *rel_
 	jw_str(&w, rel_path);
 	jw_key(&w, "entries");
 	jw_arr_open(&w);
-	for (i = 0; i < dir_count; i++) {
-		DIR *d = opendir(dirs[i]);
-		struct dirent *de;
+	while ((de = readdir(d)) != NULL && count < 512) {
+		char entry_path[PATH_MAX];
+		struct stat est;
 
-		if (d == NULL)
+		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
 			continue;
-		any = 1;
-		while ((de = readdir(d)) != NULL && seen_count < 512) {
-			char entry_path[PATH_MAX];
-			struct stat est;
-			int dup = 0;
-			int k;
-
-			if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
-				continue;
-			for (k = 0; k < seen_count; k++) {
-				if (strcmp(seen[k], de->d_name) == 0) {
-					dup = 1;
-					break;
-				}
-			}
-			if (dup)
-				continue;
-			/* Record the name before deciding whether to emit it: a
-			 * whiteout must also hide the lower layer's copy, which is
-			 * the whole point of it. */
-			snprintf(seen[seen_count], sizeof(seen[seen_count]), "%s", de->d_name);
-			seen_count++;
-			if (dirent_is_whiteout(dirs[i], de->d_name))
-				continue;
-
-			snprintf(entry_path, sizeof(entry_path), "%s/%s", dirs[i], de->d_name);
-			jw_obj_open(&w);
-			jw_key(&w, "name");
-			jw_str(&w, de->d_name);
-			jw_key(&w, "type");
-			if (lstat(entry_path, &est) == 0)
-				jw_str(&w, S_ISDIR(est.st_mode)    ? "dir"
-				           : S_ISLNK(est.st_mode)  ? "symlink"
-				           : S_ISREG(est.st_mode)  ? "file"
-				                                   : "other");
-			else
-				jw_str(&w, "unknown");
-			jw_key(&w, "size");
-			jw_int(&w, (lstat(entry_path, &est) == 0 && S_ISREG(est.st_mode))
-			               ? (long long)est.st_size
-			               : 0);
-			jw_obj_close(&w);
-		}
-		closedir(d);
+		count++;
+		snprintf(entry_path, sizeof(entry_path), "%s/%s", dir, de->d_name);
+		jw_obj_open(&w);
+		jw_key(&w, "name");
+		jw_str(&w, de->d_name);
+		jw_key(&w, "type");
+		if (lstat(entry_path, &est) == 0)
+			jw_str(&w, S_ISDIR(est.st_mode)    ? "dir"
+			           : S_ISLNK(est.st_mode)  ? "symlink"
+			           : S_ISREG(est.st_mode)  ? "file"
+			                                   : "other");
+		else
+			jw_str(&w, "unknown");
+		jw_key(&w, "size");
+		jw_int(&w, (lstat(entry_path, &est) == 0 && S_ISREG(est.st_mode))
+		               ? (long long)est.st_size
+		               : 0);
+		jw_obj_close(&w);
 	}
+	closedir(d);
 	jw_arr_close(&w);
 	jw_key(&w, "truncated");
 	/* Said rather than implied: a directory with more entries than the
 	 * cap would otherwise look complete and short. */
-	jw_bool(&w, seen_count >= 512);
+	jw_bool(&w, count >= 512);
 	jw_obj_close(&w);
-	if (!any) {
-		jw_free(&w);
-		respond_error(fd, 404, "Not Found", "no such directory");
-		return;
-	}
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
@@ -20812,7 +20526,7 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 			source = "container";
 	}
 	/*
-	 * Fall through to the on-disk layers whenever the /proc path didn't
+	 * Fall through to the rootfs on disk whenever the /proc path didn't
 	 * produce the file -- not only when running == 0. running == 1 means
 	 * "this daemon has not yet PROCESSED the exit", not "the process is
 	 * definitely alive": a container whose own exec fails (or which exits
@@ -20821,9 +20535,12 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 	 * then. Without this fallback such a read 404s purely on event timing
 	 * -- observed deterministically via a recipe-applied container running
 	 * a cmd its image doesn't actually contain, where the staged file was
-	 * sitting in the upper layer the whole time. Reading the layers is
-	 * always safe here: they are this container's OWN directories, keyed
-	 * by name, never a reused pid.
+	 * sitting on disk the whole time. Reading the rootfs is always safe
+	 * here: it is this container's OWN tree, keyed by name, never a
+	 * reused pid. There is no further fallback: the image's copy of a
+	 * file the container does not have used to be served here, marked
+	 * X-Cix-Source: image (#394), and with no overlay the rootfs is the
+	 * whole of the container's tree (ADR-0360).
 	 */
 	if (file_fd < 0) {
 		if (!stopped)
@@ -20832,46 +20549,6 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
 		file_fd = open(full_path, O_RDONLY);
 		if (file_fd >= 0)
 			source = "writable";
-		if (file_fd < 0 && !stopped) {
-			/*
-			 * Not in the upper layer -- fall back to the container's
-			 * own read-only lowerdir, i.e. the exact tree its overlay
-			 * was actually built on (entry->lowerdir, recorded verbatim
-			 * at creation time). Issue #61: this used to RECONSTRUCT
-			 * that path from image/image_version instead, which works
-			 * only for an ordinary container. A build container
-			 * ("__pkgbuild-N") is registered under the synthetic image
-			 * name "pkgbuild" with an empty version, so both branches of
-			 * that reconstruction missed and it fell through to an EMPTY
-			 * prefix -- turning the read into a bare open() of rel_path
-			 * on the HOST filesystem. That both failed to find real
-			 * lowerdir content (the reported bug: /usr/bin/gcc 404ing on
-			 * a preserved build container while /build/* worked) and, far
-			 * worse, could serve the daemon host's OWN file at that path
-			 * through a per-container endpoint. Using the recorded
-			 * lowerdir fixes both at once and keeps ADR-0107/0108's
-			 * guarantee intact -- for an ordinary container this IS the
-			 * pinned image-version rootfs, byte-for-byte the same path
-			 * the reconstruction produced, never the image's current
-			 * version.
-			 *
-			 * This comment used to end "an empty lowerdir (userns
-			 * containers, which have no overlay) correctly reads as no
-			 * fallback". That is FALSE and it is what made this
-			 * fallback invisible when reading the code: spec.ov.lowerdir
-			 * is assigned unconditionally at container creation and
-			 * recorded by registry.c, so a userns container has a
-			 * perfectly good lowerdir and DOES fall through to it. That
-			 * is the whole of #394 -- the endpoint answered 200 with the
-			 * image's copy of a file the container did not have.
-			 */
-			if (e->lowerdir[0] != '\0') {
-				snprintf(full_path, sizeof(full_path), "%s%s", e->lowerdir, rel_path);
-				file_fd = open(full_path, O_RDONLY);
-				if (file_fd >= 0)
-					source = "image";
-			}
-		}
 	}
 	if (file_fd < 0) {
 		respond_error(fd, 404, "Not Found", "no such file");
@@ -21422,9 +21099,9 @@ static void handle_container_file_write(int fd, const char *name, const char *re
 }
 
 /*
- * A container's upperdir size, measured OFF the reactor (#474).
+ * A container's tree size, measured OFF the reactor (#474).
  *
- * `overlay_upperdir_size()` is an nftw() walk: O(files) and unbounded.
+ * `treesize_bytes()` is an nftw() walk: O(files) and unbounded.
  * It used to run inline in handle_container_stats(), on EVERY request,
  * with no shortcut -- and the dashboard polls stats. On a container
  * holding a real dataset that is the control plane not answering for
@@ -21547,7 +21224,7 @@ static struct container_disk_entry *container_disk_entry(const char *name, int c
 
 struct container_disk_measure {
 	char name[REGISTRY_NAME_MAX];
-	char upperdir[PATH_MAX];
+	char tree[PATH_MAX];
 	int pipe_r;
 	int pipe_w;
 };
@@ -21564,7 +21241,7 @@ static int container_disk_measure_work(void *arg)
 	long long bytes = 0;
 
 	close(m->pipe_r);
-	if (overlay_upperdir_size(m->upperdir, &bytes) != 0)
+	if (treesize_bytes(m->tree, &bytes) != 0)
 		return -1;
 	if (write(m->pipe_w, &bytes, sizeof(bytes)) != (ssize_t)sizeof(bytes))
 		return -1;
@@ -21603,7 +21280,7 @@ static void container_disk_measure_done(int status, void *ctx)
 /* Best-effort by design: a measurement that cannot be started leaves
  * the previous figure in place and will be retried by the next
  * request. Nothing here may fail a request. */
-static void container_disk_measure_start(const char *name, const char *upperdir)
+static void container_disk_measure_start(const char *name, const char *tree)
 {
 	struct container_disk_entry *e = container_disk_entry(name, 1);
 	struct container_disk_measure *m;
@@ -21627,7 +21304,7 @@ static void container_disk_measure_start(const char *name, const char *upperdir)
 		return;
 	}
 	snprintf(m->name, sizeof(m->name), "%s", name);
-	snprintf(m->upperdir, sizeof(m->upperdir), "%s", upperdir);
+	snprintf(m->tree, sizeof(m->tree), "%s", tree);
 	m->pipe_r = fds[0];
 	m->pipe_w = fds[1];
 	e->in_flight = 1;
@@ -21748,14 +21425,14 @@ static void handle_container_stats(int fd, const char *name)
 
 	{
 		char container_root[PATH_MAX];
-		char upperdir[PATH_MAX];
+		char tree[PATH_MAX];
 		struct container_disk_entry *de;
 
 		unsigned long long qgroup_used = 0, qgroup_limit = 0;
 		enum cix_btrfs_qgroup_state qstate = CIX_BTRFS_QGROUP_OK;
 
 		container_root_for(e->disk_name, container_root, sizeof(container_root));
-		container_writable_path(container_root, name, "", upperdir, sizeof(upperdir));
+		container_writable_path(container_root, name, "", tree, sizeof(tree));
 
 		/*
 		 * The qgroup first, because it is the only one of the two that
@@ -21763,7 +21440,7 @@ static void handle_container_stats(int fd, const char *name)
 		 *
 		 * On the btrfs substrate (ADR-0207) a container's writable
 		 * tree is a SUBVOLUME SEEDED FROM THE IMAGE, not an overlay
-		 * upperdir with the image as a lower layer. So the walk below
+		 * tree with the image as a lower layer. So the walk below
 		 * -- which faithfully measures the tree it is pointed at --
 		 * sums the whole rootfs, image content included, while this
 		 * field documents itself as "not including the shared,
@@ -21806,7 +21483,7 @@ static void handle_container_stats(int fd, const char *name)
 		 * the same caveat GET /volumes/{name}/usage carries, and
 		 * usage.measured_at is when it was READ, as it is there.
 		 */
-		if (cix_btrfs_qgroup_query(upperdir, &qgroup_used, &qgroup_limit, &qstate) == 0) {
+		if (cix_btrfs_qgroup_query(tree, &qgroup_used, &qgroup_limit, &qstate) == 0) {
 			disk_bytes = (long long)qgroup_used;
 			disk_measured_at = time(NULL);
 			disk_known = 1;
@@ -21823,7 +21500,7 @@ static void handle_container_stats(int fd, const char *name)
 				disk_known = 1;
 				disk_source = "walk";
 			}
-			container_disk_measure_start(name, upperdir);
+			container_disk_measure_start(name, tree);
 		}
 	}
 
@@ -27336,15 +27013,14 @@ static enum registry_error spawn_pkgbuild_container(int chain_idx, const char *w
 		int out = stdio_write_fd;
 		int devnull = -1;
 		/*
-		 * The tree the container's root is made from, which is where
-		 * cix-init and the platform files go: the snapshot itself on
-		 * the direct path (ADR-0360 decision 2), the upper layer on the
-		 * overlay path. Staging into spec->ov.upperdir alone sent a
-		 * direct build's cix-init to "(null)/sbin/cix-init", relative
-		 * to the daemon's working directory -- EROFS on .95's root,
-		 * measured by probe-buildfs@2-1 on 0.2.57-612 (#657).
+		 * The build container's rootfs, its snapshot (ADR-0360), which
+		 * is where cix-init and the platform files go. On 0.2.57-612,
+		 * staging through a field that is NULL on that path sent
+		 * cix-init to "(null)/sbin/cix-init", relative to the daemon's
+		 * working directory -- EROFS on .95's root, measured by
+		 * probe-buildfs@2-1 (#657).
 		 */
-		const char *tree = spec->ov.direct_rootfs ? spec->ov.merged : spec->ov.upperdir;
+		const char *tree = spec->rootfs.path;
 
 		if (out < 0) {
 			devnull = open("/dev/null", O_WRONLY | O_CLOEXEC);
@@ -37201,38 +36877,6 @@ static void apply_rolling_container_restarts(void)
  * from the pidfd event that learns the exit, so the policy reads as one
  * thing rather than as a tail of the event handler.
  */
-/*
- * Drop this incarnation's overlay mount.
- *
- * overlay_create() mounts container_base/merged once per incarnation,
- * and until now only DELETE ever unmounted it. A stop, a crash, or a
- * restart left the mount live -- so the next incarnation's
- * overlay_create() on the SAME upperdir and workdir was a second live
- * mount on them, which the kernel reports as
- *
- *   overlayfs: upperdir is in-use as upperdir/workdir of another mount,
- *   accessing files from both mounts will result in undefined behavior
- *
- * and means exactly what it says. It is also a leak: a container that
- * crash-restarts N times leaves N overlay mounts behind, unbounded.
- *
- * MNT_DETACH because the process is already dead by every path that
- * reaches here; the mount goes as soon as its last reference does.
- * EINVAL/ENOENT are the ordinary "there was nothing mounted" answers
- * -- a container whose overlay_create() never got as far as the mount
- * still reaches this teardown.
- */
-static void unmount_container_overlay(const char *disk, const char *name)
-{
-	char container_root[PATH_MAX];
-	char merged[PATH_MAX];
-
-	container_root_for(disk, container_root, sizeof(container_root));
-	snprintf(merged, sizeof(merged), "%s/%s/merged", container_root, name);
-	if (umount2(merged, MNT_DETACH) != 0 && errno != EINVAL && errno != ENOENT)
-		fprintf(stderr, "%s: umount2(%s) failed: %s\n", name, merged, strerror(errno));
-}
-
 static void container_exit_finalize(struct registry_entry *entry)
 {
 	char name_copy[REGISTRY_NAME_MAX];
@@ -37338,15 +36982,6 @@ static void container_exit_finalize(struct registry_entry *entry)
 		    found->handle.pid == incarnation_pid)
 			registry_remove(name_copy);
 		/*
-		 * Both kinds: the incarnation is over either way, and a stop
-		 * that left its overlay mounted is what made the next start a
-		 * second mount on the same upperdir. A deliberately KEPT build
-		 * container (ADR-0175) is the one exception -- it is preserved
-		 * mounted so a failed build can actually be looked at.
-		 */
-		if (!kept_build_container)
-			unmount_container_overlay(disk_copy, name_copy);
-		/*
 		 * ADR-0285 (#448): the two kinds that are not the end of the
 		 * story. The container is now really dead, the slot is
 		 * released and the overlay is unmounted, which is exactly the
@@ -37404,23 +37039,6 @@ static void container_exit_finalize(struct registry_entry *entry)
 	 * from epoll themselves". Since ADR-0180 every teardown completes
 	 * from the pidfd event and ends here; those two return above.
 	 */
-	/*
-	 * An unprompted exit is a finished incarnation too, and this is
-	 * the path that actually accumulated mounts: a crash-restarting
-	 * container mounted its overlay again on the same upperdir and
-	 * workdir every time round, each remount emitting the kernel's
-	 * "in-use as upperdir/workdir of another mount" pair and leaving
-	 * the previous mount live. Unmounted here, before the restart
-	 * timer is ever armed, so the next overlay_create() is the only
-	 * mount on those directories.
-	 *
-	 * Not for a kept build container (ADR-0175): that one is preserved
-	 * mounted on purpose so a failed build can be inspected.
-	 */
-	stallwatch_step("container exit: unmount the overlay");
-	if (!kept_build_container)
-		unmount_container_overlay(disk_copy, name_copy);
-
 	stallwatch_step("container exit: restart policy");
 	def = containerdef_find(name_copy);
 	if (def != NULL) {

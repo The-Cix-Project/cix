@@ -181,18 +181,14 @@ struct pkg_entry {
 	/*
 	 * build_tree is the tree this build's staging writes into and its
 	 * output is read back from: the build container's own rootfs, a
-	 * btrfs snapshot of build_lowerdir at CONTAINER_ROOTFS_DIR/<name>,
-	 * when build_direct is set (ADR-0360 decision 2), and the overlay
-	 * upper layer <base>/upper otherwise. Release B of ADR-0360 removes
-	 * the overlay case.
+	 * btrfs snapshot of build_lowerdir (its build environment's image
+	 * version) at CONTAINER_ROOTFS_DIR/<name> (ADR-0360 decision 2).
 	 */
 	char build_lowerdir[PATH_MAX], build_tree[PATH_MAX];
-	int build_direct;
 	/* Issue #85: "<parent>/<container>" -- the cgroup path this build's
 	 * own leaf lives at, under the shared budget parent. Stored on the
 	 * entry because spec_out->cg.name must stay valid until clone3(). */
 	char build_cgroup_path[PATH_MAX];
-	char build_workdir[PATH_MAX], build_merged[PATH_MAX];
 	char build_argv_cmd[512];
 	char *build_argv[4];
 	/*
@@ -4017,14 +4013,14 @@ static int copy_file_simple(const char *src, const char *dst)
  * Same shape as the recipe.sh copy beside it, and called from the same
  * two places, so a build can never run with one and not the other.
  */
-static int write_finalize_script(const char *upperdir)
+static int write_finalize_script(const char *tree)
 {
 	char path[PATH_MAX];
 	size_t len = sizeof(PKG_FINALIZE_SH) - 1;
 	ssize_t n;
 	int fd;
 
-	if ((size_t)snprintf(path, sizeof(path), "%s/build/finalize.sh", upperdir) >= sizeof(path))
+	if ((size_t)snprintf(path, sizeof(path), "%s/build/finalize.sh", tree) >= sizeof(path))
 		return -1;
 
 	/*
@@ -4160,7 +4156,7 @@ static const char *pkg_host_arch(void);
 
 /*
  * Where a recipe's install lands, relative to both the container's root
- * and the build container's upperdir -- which are the same path with a
+ * and the build container's rootfs -- which are the same path with a
  * different prefix.
  *
  * ONE definition, because two once disagreed and the failure was
@@ -4700,7 +4696,7 @@ static int extract_tarball(const char *tarball_path, const char *dest_dir)
  * container path (ADR-0157 -- builds run in parallel, up to
  * max_concurrent_jobs) -- without wiping it first, a build's
  * /build/pkg-dest would silently inherit leftover files from whatever
- * ran in that same slot's upperdir before (a chained dependency, or an
+ * ran in that same slot's tree before (a chained dependency, or an
  * unrelated earlier install that used the same index). Called before
  * every build's prep, guaranteeing each one starts from a genuinely
  * clean container directory regardless of what ran there before.
@@ -10924,7 +10920,7 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
 	 * cause -- that `--image=jump` for `jumpbox` failed at "could not
 	 * unpack (extract cached artifact failed)" because the image was
 	 * absent. That cause is false: dest_dir is built under the BUILD
-	 * CONTAINER's own upperdir, not under the image, and on
+	 * CONTAINER's own rootfs, not under the image, and on
 	 * 192.168.15.95 on 2026-09-27 `pkg install --name=ncurses
 	 * --image=nosuchimage-probe` reached `installed` and `image ls`
 	 * then listed the new image. So an absent image was never a
@@ -11290,16 +11286,7 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
 		logstore_write("cixd", "info", "pkg %s@%s: build container requests capabilities: %s",
 		               e->name, e->image, build_caps);
 	}
-	if (e->build_direct) {
-		/* ADR-0360 decision 2: no overlay, the snapshot is the rootfs. */
-		spec_out->ov.direct_rootfs = 1;
-		spec_out->ov.merged = e->build_tree;
-	} else {
-		spec_out->ov.lowerdir = e->build_lowerdir;
-		spec_out->ov.upperdir = e->build_tree;
-		spec_out->ov.workdir = e->build_workdir;
-		spec_out->ov.merged = e->build_merged;
-	}
+	spec_out->rootfs.path = e->build_tree; /* ADR-0360: the snapshot is the rootfs */
 	spec_out->mnt.put_old_rel = ".old_root";
 	spec_out->argv = e->build_argv;
 	spec_out->envp = e->build_envp;
@@ -11654,7 +11641,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		 * Issue #144: a precompiled package needs NO build environment.
 		 *
 		 * The container spawned below is a deliberate no-op for a
-		 * cache/artifact hit -- its upperdir already IS the finished
+		 * cache/artifact hit -- its tree already IS the finished
 		 * package, and it exists only so the merge and
 		 * dependency-chaining logic downstream stays one code path.
 		 * That was harmless when a no-op container had no
@@ -11806,10 +11793,11 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	 * dest_dir, and pkg_unpack_completed() checked the result. Resetting
 	 * here would set aside the tree the child just extracted, leaving an
 	 * empty package that installs cleanly. The re-entry keeps the
-	 * build_tree and build_direct the first pass chose, for the same
+	 * build_tree the first pass chose, for the same
 	 * reason.
 	 */
 	int reset_failed = 0, reset_errno = 0;
+	const char *reset_step = "reset build container dir";
 
 	stallwatch_step("build prep: set the previous build aside");
 	if (!g_chains[chain_idx].unpacked) {
@@ -11825,41 +11813,19 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		 * ADR-0360 decision 2: the build container's rootfs is a
 		 * snapshot of its build environment's image version, as an
 		 * ordinary container's is of its image (ADR-0341), so a slot
-		 * costs one snapshot ioctl rather than an overlay whose upper
-		 * layer sits on a different filesystem from its lower one.
-		 * The source is checked to be a subvolume on btrfs first, so
-		 * cix_btrfs_snapshot_or_copy() can only snapshot here, never
-		 * copy. Anything else falls back to the overlay, loudly, until
-		 * ADR-0360's release B removes it.
+		 * costs one snapshot ioctl. There is no other kind: a build
+		 * environment that cannot be snapshotted fails the build,
+		 * naming the step and the cause, where until release B it fell
+		 * back to an overlay.
 		 */
-		e->build_direct = 0;
-		if (!reset_failed && e->build_lowerdir[0] != '\0' &&
-		    cix_btrfs_is_backing(CONTAINER_ROOTFS_DIR) &&
-		    !cix_btrfs_is_subvolume(e->build_lowerdir)) {
-			/* An image version is a snapshot, so on a btrfs host this
-			 * is a defect (#180's shape), and it is said rather than
-			 * left to look like a working snapshot path. */
-			logstore_write("cixd", "warn",
-			               "pkg %s@%s: the build environment %s is not a btrfs subvolume -- "
-			               "building on the overlay path instead",
-			               e->name, e->image, e->build_lowerdir);
-		} else if (!reset_failed && e->build_lowerdir[0] != '\0' &&
-		           cix_btrfs_is_backing(CONTAINER_ROOTFS_DIR)) {
-			stallwatch_step("build prep: snapshot the build environment");
-			if (cix_btrfs_snapshot_or_copy(e->build_lowerdir, snap) == 0)
-				e->build_direct = 1;
-			else
-				logstore_write("cixd", "warn",
-				               "pkg %s@%s: could not snapshot the build environment for %s "
-				               "(%s) -- building on the overlay path instead",
-				               e->name, e->image, e->build_container_name, strerror(errno));
+		stallwatch_step("build prep: snapshot the build environment");
+		if (!reset_failed && (e->build_lowerdir[0] == '\0' ||
+		                      cix_btrfs_snapshot_or_copy(e->build_lowerdir, snap) != 0)) {
+			reset_failed = 1;
+			reset_errno = e->build_lowerdir[0] == '\0' ? ENOENT : errno;
+			reset_step = "snapshot the build environment";
 		}
-		if (e->build_direct)
-			snprintf(e->build_tree, sizeof(e->build_tree), "%s", snap);
-		else
-			snprintf(e->build_tree, sizeof(e->build_tree), "%s/upper", container_base);
-		snprintf(e->build_workdir, sizeof(e->build_workdir), "%s/work", container_base);
-		snprintf(e->build_merged, sizeof(e->build_merged), "%s/merged", container_base);
+		snprintf(e->build_tree, sizeof(e->build_tree), "%s", snap);
 	}
 
 	snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_tree, PKG_DEST_REL_CBS);
@@ -11884,7 +11850,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		 * parallel-job FIFO, mkfifo("/tmp/GMfifoN"), confirmed
 		 * directly -- not derived from any env var this project
 		 * could instead set). A plain, always-present, empty
-		 * directory in the build container's own upperdir, exactly
+		 * directory in the build container's own rootfs, exactly
 		 * the same "just make sure it exists" posture the destination
 		 * directory already has -- benefits every future
 		 * recipe run against a minimal image, not just this one.
@@ -11925,7 +11891,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				 * reset above is skipped for the same reason.
 				 */
 			} else if (reset_failed) {
-				prep_step = "reset build container dir";
+				prep_step = reset_step;
 				/* A filesystem operation, so errno names the cause --
 				 * it was discarded here, and the message then pointed
 				 * at a subprocess this step never ran (#504). */
@@ -11940,7 +11906,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				/* ADR-0122: dest_dir is populated straight from the
 				 * local cache -- no source to verify, no recipe.sh to
 				 * source, no real compile needed. The build container
-				 * spawned below runs a pure no-op; its own upperdir
+				 * spawned below runs a pure no-op; its own tree
 				 * already IS the finished package by the time it
 				 * starts, purely to keep pkg_build_completed()'s own
 				 * merge/dependency-chaining logic completely unchanged
@@ -12756,13 +12722,12 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
  * paying for a full fetch+extract+build restart -- the real, repeated
  * cost this exists to eliminate (a multi-hour gcc.recipe bootstrap
  * attempt, restarted from zero after every single fixup, is what
- * motivated filing this). Reuses the kept container's own lowerdir/
- * upperdir/workdir/merged paths completely unchanged (still sitting in
- * e->build_lowerdir/build_tree/build_workdir/build_merged exactly
- * as pkg_fetch_completed() last computed them -- registry_remove()
+ * motivated filing this). Reuses the kept container's own rootfs
+ * snapshot completely unchanged (still sitting in e->build_tree exactly
+ * as pkg_fetch_completed() last computed it -- registry_remove()
  * never touches disk, confirmed directly in registry.c, so nothing
  * here was ever at risk of being wiped); only the recipe.sh staged
- * inside the existing upperdir is replaced with whatever recipe
+ * inside the existing tree is replaced with whatever recipe
  * version the caller requests now, and only the previous attempt's own
  * partial install destination (build/pkg-dest) is reset -- build/src
  * (the already-extracted, already-partially-built source tree) is

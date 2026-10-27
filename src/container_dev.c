@@ -297,18 +297,12 @@ int container_dev_mknod(const char *rootfs_dir, uid_t owner_offset,
  * calls this after pivot_root. Both callers exist and the split is a
  * kernel constraint, not a preference:
  *
- *   - a USERNS container is staged by the PARENT, into its own rootfs
- *     copy, because its child holds no CAP_MKNOD in the initial
- *     namespace (#321);
+ *   - a USERNS container is staged by the PARENT, into its rootfs,
+ *     because its child holds no CAP_MKNOD in the initial namespace
+ *     (#321);
  *   - a NON-USERNS container is staged by the CHILD, at "", because its
- *     child IS real root -- and because the parent must not pre-create
- *     an overlay upperdir it would otherwise get as a btrfs SUBVOLUME.
- *     overlay_create_btrfs_upperdir() tolerates EEXIST on the
- *     subvolume ioctl on the assumption that a previous run made a
- *     subvolume; a plain directory left there by this function would
- *     satisfy that tolerance and silently cost the container its disk
- *     quota (ADR-0062, #678). Measured by reading src/overlay.c:46-80
- *     before writing this, not after.
+ *     child IS real root. (It also kept the parent from pre-creating an
+ *     overlay upper layer, which ADR-0360 removed.)
  */
 int container_dev_stage_baseline(const char *rootfs_dir, uid_t owner_offset)
 {

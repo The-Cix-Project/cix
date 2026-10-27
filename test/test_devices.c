@@ -35,8 +35,7 @@
 #include <sys/sysmacros.h>
 #include <unistd.h>
 
-#define IMAGE_ROOT "/run/device_test/lower"
-#define SHARED_DEV_PATH IMAGE_ROOT "/dev/kxtest_shared"
+#define SHARED_DEV_PATH "/dev/kxtest_shared"
 /*
  * Real, universally-recognized device numbers (/dev/null, /dev/zero,
  * /dev/full's own major:minor), not synthetic ones: BPF_CGROUP_DEVICE
@@ -76,7 +75,7 @@
  * rather than our own program. The pair is the proof, the same
  * discipline a wrong-password control gives an LDAP bind.
  */
-#define UNGRANTED_DEV_PATH IMAGE_ROOT "/dev/kxtest_ungranted"
+#define UNGRANTED_DEV_PATH "/dev/kxtest_ungranted"
 #define UNGRANTED_MAJOR 5
 #define UNGRANTED_MINOR 1 /* /dev/console */
 static int mkdir_p1(const char *path)
@@ -124,23 +123,62 @@ static int bpf_encoding_sanity_check(void)
 	return 0;
 }
 
+/*
+ * Two devices in the container's rootfs itself (like test_dns.c's own
+ * ensure_dev_node() precedent), named in no container's own grant list.
+ * They are not equivalent any more, and that is the point of ADR-0331:
+ *
+ *   SHARED (1:3, /dev/null's pair) is in the IMAGE BASELINE, so a
+ *   container with a program attached opens it anyway. That used to
+ *   be the denial proof, and that assertion was #578 written down
+ *   as expected behaviour.
+ *
+ *   UNGRANTED (5:1, the console's pair) is in neither the baseline
+ *   nor any grant list, so it is what a denial is proved with now.
+ */
+static int stage_test_nodes(const char *rootfs)
+{
+	char dev[300], path[320];
+
+	snprintf(dev, sizeof(dev), "%s/dev", rootfs);
+	if (mkdir_p1(dev) != 0)
+		return -1;
+	snprintf(path, sizeof(path), "%s%s", rootfs, SHARED_DEV_PATH);
+	unlink(path);
+	if (mknod(path, S_IFCHR | 0666, makedev(SHARED_MAJOR, SHARED_MINOR)) != 0) {
+		perror("mknod shared test device");
+		return -1;
+	}
+	snprintf(path, sizeof(path), "%s%s", rootfs, UNGRANTED_DEV_PATH);
+	unlink(path);
+	if (mknod(path, S_IFCHR | 0666, makedev(UNGRANTED_MAJOR, UNGRANTED_MINOR)) != 0) {
+		perror("mknod ungranted test device");
+		return -1;
+	}
+	return 0;
+}
+
 static int build_container_spec(struct container_spec *spec, const char *cg_name,
                                  const char *scratch_dir, const struct device_spec *devices,
                                  int device_count, char **argv, char **envp)
 {
-	static char lowerdir[256];
-	static char upperdir[256];
-	static char workdir[256];
-	static char merged[256];
+	/*
+	 * This container's own rootfs, which it self-binds and pivots onto
+	 * (ADR-0360), carrying the two ungranted test nodes. The containers
+	 * here used to share one image root as an overlay lower layer; a
+	 * direct rootfs is writable, so each gets its own (cix#658). One
+	 * slot per call from a ring, so a spec built before an earlier one
+	 * is created cannot repoint it.
+	 */
+	static char rootfs_ring[4][256];
+	static int rootfs_next;
+	char *rootfs = rootfs_ring[rootfs_next++ % 4];
 	int i;
 
-	snprintf(lowerdir, sizeof(lowerdir), "%s", IMAGE_ROOT);
-	snprintf(upperdir, sizeof(upperdir), "%s/upper", scratch_dir);
-	snprintf(workdir, sizeof(workdir), "%s/work", scratch_dir);
-	snprintf(merged, sizeof(merged), "%s/merged", scratch_dir);
-
-	if (mkdir_p1(scratch_dir) != 0 || mkdir_p1(upperdir) != 0 || mkdir_p1(workdir) != 0 ||
-	    mkdir_p1(merged) != 0)
+	snprintf(rootfs, sizeof(rootfs_ring[0]), "%s/rootfs", scratch_dir);
+	if (mkdir_p1(scratch_dir) != 0 ||
+	    test_image_fixture_build(rootfs, "build/dev_child", "dev_child") != 0 ||
+	    stage_test_nodes(rootfs) != 0)
 		return -1;
 
 	memset(spec, 0, sizeof(*spec));
@@ -150,10 +188,7 @@ static int build_container_spec(struct container_spec *spec, const char *cg_name
 	spec->cg.name = cg_name;
 	spec->cg.memory_max = 67108864;
 	spec->cg.pids_max = 32;
-	spec->ov.lowerdir = lowerdir;
-	spec->ov.upperdir = upperdir;
-	spec->ov.workdir = workdir;
-	spec->ov.merged = merged;
+	spec->rootfs.path = rootfs;
 	spec->mnt.put_old_rel = ".old_root";
 
 	spec->device_count = device_count;
@@ -199,37 +234,6 @@ int main(void)
 		return 1;
 	}
 	printf("bpf encoding sanity check: PASS\n");
-
-	if (test_image_fixture_build(IMAGE_ROOT, "build/dev_child", "dev_child") != 0)
-		return 1;
-
-	/* Two devices baked into the shared base image itself (like
-	 * test_dns.c's own ensure_dev_node() precedent), visible to every
-	 * container via the shared OverlayFS lowerdir and named in no
-	 * container's own grant list. They are not equivalent any more,
-	 * and that is the point of ADR-0331:
-	 *
-	 *   SHARED (1:3, /dev/null's pair) is in the IMAGE BASELINE, so a
-	 *   container with a program attached opens it anyway. That used to
-	 *   be the denial proof, and that assertion was #578 written down
-	 *   as expected behaviour.
-	 *
-	 *   UNGRANTED (5:1, the console's pair) is in neither the baseline
-	 *   nor any grant list, so it is what a denial is proved with now.
-	 */
-	if (mkdir_p1(IMAGE_ROOT "/dev") != 0)
-		return 1;
-	unlink(SHARED_DEV_PATH);
-	if (mknod(SHARED_DEV_PATH, S_IFCHR | 0666, makedev(SHARED_MAJOR, SHARED_MINOR)) != 0) {
-		perror("mknod shared test device");
-		return 1;
-	}
-	unlink(UNGRANTED_DEV_PATH);
-	if (mknod(UNGRANTED_DEV_PATH, S_IFCHR | 0666,
-	           makedev(UNGRANTED_MAJOR, UNGRANTED_MINOR)) != 0) {
-		perror("mknod ungranted test device");
-		return 1;
-	}
 
 	/* 2. Container A: one real grant (/dev/zero's major:minor), own
 	 * node opens, rdev verified. */

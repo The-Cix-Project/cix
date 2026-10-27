@@ -48,7 +48,6 @@
 
 #define BRIDGE_NAME "cix-ctnet0"
 #define BRIDGE_NAME2 "cix-ctnet1"
-#define IMAGE_ROOT "/run/container_net_test/lower"
 #define NET_CHILD_PORT 17700
 
 static int mkdir_p1(const char *path)
@@ -189,19 +188,27 @@ static int build_container_spec(struct container_spec *spec, const char *cg_name
                                  int net_count, int ip_forward, const struct route_spec *routes,
                                  int route_count, char **argv, char **envp)
 {
-	static char lowerdir[256];
-	static char upperdir[256];
-	static char workdir[256];
-	static char merged[256];
+	/*
+	 * This container's own rootfs, which it self-binds and pivots onto
+	 * (ADR-0360). The containers here used to share one image root as an
+	 * overlay lower layer; a direct rootfs is writable, so each gets its
+	 * own tree with the same three binaries (cix#658).
+	 *
+	 * One slot per call from a ring, because a caller builds two specs
+	 * before creating either (case 1): a single static buffer gave both
+	 * containers the second one's path, which the old upper and merged
+	 * buffers here did too.
+	 */
+	static char rootfs_ring[8][256];
+	static int rootfs_next;
+	char *rootfs = rootfs_ring[rootfs_next++ % 8];
 	int i;
 
-	snprintf(lowerdir, sizeof(lowerdir), "%s", IMAGE_ROOT);
-	snprintf(upperdir, sizeof(upperdir), "%s/upper", scratch_dir);
-	snprintf(workdir, sizeof(workdir), "%s/work", scratch_dir);
-	snprintf(merged, sizeof(merged), "%s/merged", scratch_dir);
-
-	if (mkdir_p1(scratch_dir) != 0 || mkdir_p1(upperdir) != 0 || mkdir_p1(workdir) != 0 ||
-	    mkdir_p1(merged) != 0)
+	snprintf(rootfs, sizeof(rootfs_ring[0]), "%s/rootfs", scratch_dir);
+	if (mkdir_p1(scratch_dir) != 0 ||
+	    test_image_fixture_build(rootfs, "build/net_child", "net_child") != 0 ||
+	    test_image_fixture_build(rootfs, "build/daemon_child", "daemon_child") != 0 ||
+	    test_image_fixture_build(rootfs, "build/net_connect", "net_connect") != 0)
 		return -1;
 
 	memset(spec, 0, sizeof(*spec));
@@ -211,10 +218,7 @@ static int build_container_spec(struct container_spec *spec, const char *cg_name
 	spec->cg.name = cg_name;
 	spec->cg.memory_max = 67108864;
 	spec->cg.pids_max = 32;
-	spec->ov.lowerdir = lowerdir;
-	spec->ov.upperdir = upperdir;
-	spec->ov.workdir = workdir;
-	spec->ov.merged = merged;
+	spec->rootfs.path = rootfs;
 	spec->mnt.put_old_rel = ".old_root";
 
 	spec->net_count = net_count;
@@ -319,13 +323,6 @@ int main(void)
 		perror("bridge 2 setup");
 		return 1;
 	}
-
-	if (test_image_fixture_build(IMAGE_ROOT, "build/net_child", "net_child") != 0)
-		return 1;
-	if (test_image_fixture_build(IMAGE_ROOT, "build/daemon_child", "daemon_child") != 0)
-		return 1;
-	if (test_image_fixture_build(IMAGE_ROOT, "build/net_connect", "net_connect") != 0)
-		return 1;
 
 	/* 1. two containers concurrently on the same bridge */
 	{

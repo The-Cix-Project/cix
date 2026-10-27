@@ -5,6 +5,11 @@
 #include <sys/quota.h>
 #include "json.h"
 #include "persist.h"
+#include "linux_compat.h"
+
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 #include <limits.h>
 #include <stdio.h>
@@ -292,5 +297,38 @@ int quotamap_apply(const char *base_path, uint32_t projid, long long quota_bytes
 
 	if (quotactl(QCMD(Q_SETQUOTA, PRJQUOTA), device, (int)projid, (caddr_t)&dq) != 0)
 		return -1;
+	return 0;
+}
+
+int quotamap_tag_dir(const char *dir, uint32_t projid)
+{
+	int fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	struct cix_fsxattr fsx;
+	int saved;
+
+	if (fd < 0) {
+		saved = errno;
+		fprintf(stderr, "quotamap: open(%s) for project-quota tagging: %s\n", dir,
+		        strerror(saved));
+		errno = saved;
+		return -1;
+	}
+	if (ioctl(fd, CIX_FS_IOC_FSGETXATTR, &fsx) != 0) {
+		saved = errno;
+		fprintf(stderr, "quotamap: FS_IOC_FSGETXATTR(%s): %s\n", dir, strerror(saved));
+		close(fd);
+		errno = saved;
+		return -1;
+	}
+	fsx.fsx_projid = projid;
+	fsx.fsx_xflags |= CIX_FS_XFLAG_PROJINHERIT;
+	if (ioctl(fd, CIX_FS_IOC_FSSETXATTR, &fsx) != 0) {
+		saved = errno;
+		fprintf(stderr, "quotamap: FS_IOC_FSSETXATTR(%s): %s\n", dir, strerror(saved));
+		close(fd);
+		errno = saved;
+		return -1;
+	}
+	close(fd);
 	return 0;
 }

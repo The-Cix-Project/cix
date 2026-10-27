@@ -68,4 +68,18 @@ int quotamap_get_or_assign(const char *name, uint32_t *out_projid);
  */
 int quotamap_apply(const char *base_path, uint32_t projid, long long quota_bytes);
 
+/*
+ * Tags dir with projid and FS_XFLAG_PROJINHERIT (FS_IOC_FSSETXATTR), so
+ * every inode created beneath it counts against that project. The third
+ * of the trio: get_or_assign picks the id, apply sets its limit, this
+ * puts the tree under it. A tree that is not tagged is not limited, so
+ * a failure is returned, never swallowed. Returns 0, or -1 with errno
+ * set and a line on stderr naming dir.
+ *
+ * This was overlay_tag_project_id() in src/overlay.c, which tagged an
+ * overlay container's upper layer. ADR-0360 removed that; an ext4
+ * volume is the one tree still tagged (cix#658).
+ */
+int quotamap_tag_dir(const char *dir, uint32_t projid);
+
 #endif /* QUOTAMAP_H */

@@ -184,93 +184,26 @@ struct route_spec {
 	uint32_t gateway_be;
 };
 
-struct overlay_spec {
-	const char *lowerdir;
-	const char *upperdir;
-	const char *workdir;
-	/*
-	 * ADR-0179 phase 2c option (a): for a userns container this is its own
-	 * per-container rootfs -- a CoW copy of the image (`cp --reflink=auto`),
-	 * host-uid-0 on disk. container_create() id-maps it (idmap_bind) and the
-	 * child move_mounts + pivots straight into it: a plain ext4 mount, not an
-	 * overlay, so none of overlay's own whiteout/tmpfile ops (which need
-	 * privilege over the layer fs's init-owned s_user_ns -- unachievable from
-	 * inside the userns) ever run. NULL for non-userns (classic overlay path).
-	 */
-	const char *userns_rootfs;
-	/*
-	 * ADR-0207 phase 2: when set, `merged` IS this container's own
-	 * per-container rootfs (a btrfs snapshot of its image's subvolume,
-	 * or -- under the test-only copy mode -- a plain copied tree), and
-	 * there is no overlay at all: lowerdir/upperdir/workdir are unused,
-	 * the child self-binds `merged` (pivot_root needs a mount point, a
-	 * plain directory is not one -- the same lesson the userns path
-	 * learned in ADR-0179 phase 2b) and pivots straight in. 0 keeps
-	 * the classic overlay path, which non-btrfs hosts (including the
-	 * btrfs-incapable dev sandbox) run until ADR-0207 phase 4.
-	 */
-	int direct_rootfs;
-	const char *merged;
-	/*
-	 * Real ext4 project-quota id (Part 4, bare-metal-readiness plan,
-	 * ADR-0062) to tag upperdir with via FS_IOC_FSSETXATTR, so every
-	 * file this container's overlay ever writes counts against it.
-	 * 0 means "no quota requested" -- skip tagging entirely, the same
-	 * zero-means-off convention cgroup_limits' own optional fields
-	 * already use. See src/overlay.c's own comment for exactly what
-	 * the ioctl does and why FS_XFLAG_PROJINHERIT is required, not
-	 * optional. Only meaningful when upperdir's own backing filesystem
-	 * is NOT btrfs -- see quota_bytes below for that case.
-	 */
-	uint32_t project_id;
-	/*
-	 * Real btrfs qgroup hard limit in bytes for upperdir (task #678,
-	 * ADR-0103) -- 0 means "no quota requested," same convention
-	 * project_id above already uses. Only meaningful when upperdir's
-	 * own backing filesystem IS btrfs: overlay_create() detects this
-	 * itself (overlay_backing_is_btrfs()) and creates upperdir as a
-	 * real btrfs subvolume instead of a plain directory in that case,
-	 * since qgroups are subvolume-scoped, not arbitrary-directory-
-	 * scoped like ext4 project quotas. The caller populates this
-	 * unconditionally alongside project_id whenever a quota was
-	 * requested at all -- overlay_create() itself decides which of
-	 * the two mechanisms actually applies, based on what it finds.
-	 */
-	long long quota_bytes;
+/*
+ * Where a container's root comes from (ADR-0341, ADR-0360): its rootfs,
+ * a btrfs snapshot of its image version at container_rootfs_dir(),
+ * which the child pivots onto. There is no overlay and no copy.
+ *
+ * A container without a user namespace self-binds `path` (pivot_root
+ * needs a mount point, and a plain directory is not one) and pivots
+ * onto it. A userns container's `path` is host-uid-0 owned; the parent
+ * clones it with open_tree(OPEN_TREE_CLONE) and id-maps the clone with
+ * MOUNT_ATTR_IDMAP once the child's maps are written (ADR-0207 phase 3),
+ * and the child attaches it at `userns_mountpoint` and pivots onto that.
+ *
+ * This was struct overlay_spec, whose lowerdir/upperdir/workdir, ext4
+ * project id and upper-layer qgroup served the OverlayFS path ADR-0360
+ * removed (cix#658).
+ */
+struct rootfs_spec {
+	const char *path;
+	const char *userns_mountpoint; /* userns only; NULL otherwise */
 };
-
-/*
- * True if path's own backing filesystem is btrfs (a plain statfs(2)
- * check against CIX_BTRFS_SUPER_MAGIC), false for anything else
- * (including a statfs() failure -- a path that can't even be statfs'd
- * is conservatively never treated as btrfs). Exposed publicly (not
- * static to src/overlay.c) because daemon/src/main.c's own container-
- * create handler needs the same answer before overlay_create() ever
- * runs, to decide whether to take the existing ext4 quotactl(2) path
- * at all (btrfs has no quotactl(2) project-quota support -- calling
- * it against a btrfs-backed path would just fail) -- one real check,
- * not two independently-written statfs() calls that could drift.
- */
-int overlay_backing_is_btrfs(const char *path);
-
-/*
- * Tags a directory with an ext4 project id, with PROJINHERIT set so
- * everything created inside it inherits the tag -- without which only
- * the directory itself would count against the quota and every file in
- * it would be silently exempt from the limit the tag exists to enforce.
- *
- * Exported (issue #93) because a volume needs exactly this and nothing
- * else overlay_create() does. Duplicating the two ioctls daemon-side
- * would have been a second implementation of a thing that has to stay
- * identical, on a code path where getting it subtly wrong means a quota
- * that reports as applied and is not.
- *
- * `what` names the directory in the diagnostic. Returns 0, or
- * OVERLAY_ERR_QUOTA -- and deliberately fails loud: a quota requested
- * but silently not applied is a correctness bug wearing a false
- * promise, not a missing optional capability.
- */
-int overlay_tag_project_id(const char *dir, unsigned int project_id, const char *what);
 
 /*
  * A considered, generous fixed bound with no natural daemon-side
@@ -526,7 +459,7 @@ struct container_volume {
 struct container_spec {
 	struct ns_config ns;
 	struct cgroup_limits cg;
-	struct overlay_spec ov;
+	struct rootfs_spec rootfs;
 	struct mount_spec mnt;
 	/*
 	 * Issue #88: persistent storage bind-mounted in before pivot_root.
@@ -537,20 +470,8 @@ struct container_spec {
 	struct container_volume volumes[CONTAINER_MAX_VOLUMES];
 	int volume_count;
 	/*
-	 * ADR-0207 phase 3: when set, this userns container's rootfs is a
-	 * host-uid-0-owned btrfs snapshot presented through an id-mapped
-	 * mount, NOT a chowned copy -- container_create() applies
-	 * MOUNT_ATTR_IDMAP to the already-open detached rootfs (and
-	 * volume) fds after the child's uid/gid maps are written; a
-	 * fork-inherited fd references the same mount object, so the
-	 * child's move_mount sees the mapping with no fd-passing at all.
-	 * 0 keeps the ADR-0179 phase-2b copy+chown presentation, which is
-	 * the proven path on non-btrfs backing.
-	 */
-	int userns_idmap;
-	/*
 	 * Parent-opened detached trees (open_tree(OPEN_TREE_CLONE)) for
-	 * each volume of a userns_idmap container, id-mapped alongside the
+	 * each volume of a userns container, id-mapped alongside the
 	 * rootfs so a host-0-owned volume is writable by the mapped root
 	 * (the EOVERFLOW gap ADR-0179 flagged). -1 = no fd, the child does
 	 * its ordinary bind mount. Parallel to volumes[] by index.
@@ -563,8 +484,8 @@ struct container_spec {
 	 * +len). The maps are written by the PARENT into
 	 * /proc/<child>/{setgroups,gid_map,uid_map} (deny-then-gid-then-
 	 * uid, the documented kernel ordering) while the child blocks on
-	 * the userns sync pipe before touching anything -- and the merged
-	 * overlay is re-presented through a real id-mapped mount
+	 * the userns sync pipe before touching anything -- and the rootfs
+	 * snapshot is presented through a real id-mapped mount
 	 * (mount_setattr(MOUNT_ATTR_IDMAP)) created BEFORE clone3(), so
 	 * the child's own mount-namespace copy already carries the mapped
 	 * ownership view (shared, read-only lowerdirs are never chown'd --
@@ -866,70 +787,23 @@ struct cgroup_pressure {
 void cgroup_read_pressure(int cgroup_fd, const char *filename, struct cgroup_pressure *out);
 
 /*
- * overlay_create()'s own distinct failure codes -- every current caller
- * only ever checks `!= 0`, so these are additive, not a behavior
- * change. OVERLAY_ERR_MOUNT_ERRNO_BASE - errno (for errno in
- * [1, OVERLAY_ERR_MOUNT_ERRNO_MAX]) encodes the real mount(2) errno
- * directly for the one failure mode (the actual overlay mount syscall
- * itself) most likely to need it -- e.g. EINVAL is the classic symptom
- * of lowerdir's filesystem not returning real d_type from readdir(), a
- * well-known overlayfs mount precondition. OVERLAY_ERR_MOUNT_OVERLAY is
- * the fallback for an errno too large to encode this way.
+ * The child's final execve() reports its errno in the exit status, as
+ * 140 + errno for errno in [1, CONTAINER_EXEC_ERRNO_MAX], and 127 when
+ * the errno is too large to encode (container_decode_exit_status()).
+ * The cap is generous because a narrower one missed a real case:
+ * ELIBBAD (80, "corrupted shared library"), found investigating a
+ * hostbuild failure on 192.168.15.95.
  *
- * The cap here is deliberately generous (115, not just the handful of
- * errnos mount(2) itself realistically returns) because src/container.c
- * reuses this exact same numeric encoding for its own final execve()
- * failure too, in the same shared exit-status byte range (140-254) --
- * the two are mutually exclusive within a single run (execve() is only
- * ever reached once overlay_create() has already succeeded), so this
- * is unambiguous, not a collision. A narrower cap already missed a
- * real, confirmed-live case: ELIBBAD (80, "corrupted shared library"),
- * found investigating a real hostbuild failure on 192.168.15.95.
+ * This range was shared with overlay_create()'s mount(2) errno, and
+ * codes 130-136 named its steps. ADR-0360 removed the overlay, so the
+ * range now means execve() alone (cix#658).
  */
-enum overlay_error {
-	OVERLAY_ERR_STAT_LOWERDIR = -1,
-	OVERLAY_ERR_MKDIR_UPPERDIR = -2,
-	OVERLAY_ERR_QUOTA = -3,
-	OVERLAY_ERR_MKDIR_WORKDIR = -4,
-	OVERLAY_ERR_MKDIR_MERGED = -5,
-	OVERLAY_ERR_OPTS_TOO_LONG = -6,
-	OVERLAY_ERR_MOUNT_OVERLAY = -7,
-	OVERLAY_ERR_MOUNT_ERRNO_MAX = 115,
-	OVERLAY_ERR_MOUNT_ERRNO_BASE = -100,
-};
-
-/*
- * Mounts an overlayfs at ov->merged: lowerdir must already exist and
- * be populated (never auto-created -- a silently-empty lowerdir would
- * mean a silently-broken container); upperdir/workdir/merged are
- * created if missing. On success ov->merged is a mount point ready
- * for mountns_pivot(). On failure, returns a negative enum
- * overlay_error value identifying which step failed (see above) --
- * every current caller treats any nonzero return as failure, so this
- * refines rather than changes existing behavior.
- */
-int overlay_create(const struct overlay_spec *ov);
-
-/*
- * overlay_create() minus the final mount(2) (ADR-0179 phase 2c): creates and
- * quota-tags upperdir/workdir and the merged mountpoint. The userns path uses
- * this then builds an id-mapped overlay via the fd-based mount API instead.
- */
-int overlay_prepare_dirs(const struct overlay_spec *ov);
-
-/*
- * Real space consumed by a container's own overlay upperdir (its
- * content diff from the shared lowerdir image), for GET
- * .../stats' "disk.upper_bytes" (ADR-0054). See src/overlay.c's own
- * comment for exactly what counts (content only, not directory-tree
- * overhead).
- */
-int overlay_upperdir_size(const char *upperdir_path, long long *out_bytes);
+#define CONTAINER_EXEC_ERRNO_MAX 115
 
 /*
  * Creates and starts a container per spec: clone3 into new
  * PID/MNT/UTS/NET/CGROUP namespaces, places the child atomically
- * into the cgroup opened by cgroup_create, mounts spec->ov and
+ * into the cgroup opened by cgroup_create, binds spec->rootfs and
  * pivot_roots into it, and execve's argv[0] with argv/envp. On
  * success fills out with the child's pid, cgroup fd, pidfd and
  * diag_fd -- and only once the child has exec'd argv[0] (or died
@@ -940,7 +814,7 @@ int overlay_upperdir_size(const char *upperdir_path, long long *out_bytes);
  *
  * A real, previously-silent gap this diag_fd closes: every one of the
  * child's own pre-exec setup steps (mountns_make_private,
- * overlay_create's six named steps plus a real mount(2) errno,
+ * the rootfs bind and attach,
  * mountns_pivot, container_dev_mknod, sethostname, network
  * configuration, prctl) and the final execve() itself already had a
  * rich, disjoint numeric exit-code encoding (see the child branch's
@@ -1085,10 +959,10 @@ ssize_t container_read_diag(struct container_handle *h, char *buf, size_t bufsiz
 
 /*
  * Decodes a container's raw exit_status (container_wait()'s own
- * output, the same 0-119/127/130-136/141-255 numeric scheme
+ * output, the same 0-127/137-138/141-255 numeric scheme
  * container_create()'s own comment documents) into a short, fixed
  * category string ("clean exit", "mountns_make_private failed",
- * "overlay: lowerdir stat failed", "exec: file not found", etc.).
+ * "chdir into the new root failed", "exec: file not found", etc.).
  * term_signal is container_wait()'s companion output (issue #78): when
  * nonzero the child was killed by that signal, so exit_status is a
  * signal number, not an exit code, and the string reads "killed by

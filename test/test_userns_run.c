@@ -276,8 +276,8 @@ static int run_presentation(const char *label)
 		         "mount_container_tmpfs() in src/mountns.c is what sets this");
 	} else if (status == 46) {
 		check(0, "a userns container's own root cannot write to an attached VOLUME -- "
-		         "the volume is not id-mapped, because spec.userns_idmap was cleared "
-		         "before container_create() read it (#266)");
+		         "the volume is not id-mapped: container_create() applies MOUNT_ATTR_IDMAP "
+		         "to every userns container's volume fds (#266)");
 	} else if (status == 45) {
 		check(0, "a userns container's own root cannot read a file STAGED for it at "
 		         "mode 0600 -- the staged file's ownership landed outside the "

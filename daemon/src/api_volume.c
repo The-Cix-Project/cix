@@ -8,6 +8,7 @@
 #include "volume.h"
 #include "volumebackup.h"
 #include "btrfs.h"
+#include "treesize.h"
 #include "container.h"
 #include "quotamap.h"
 #include "registry.h"
@@ -300,7 +301,7 @@ static int volume_has_running_container(const char *volume_name)
  *
  * This used to refuse btrfs outright, which was right at the time --
  * accepting a limit and not enforcing it is the "false promise"
- * overlay.c's own comment warns about -- but it meant no volume on this
+ * the old overlay quota's comment warned about -- but it meant no volume on this
  * platform's DEFAULT substrate could be bounded at all. A plain
  * directory is still refused rather than silently unenforced, because
  * that failure has not stopped being a false promise.
@@ -312,7 +313,7 @@ static int volume_apply_quota(const char *volume_name, const char *dir, long lon
 {
 	uint32_t projid;
 
-	if (overlay_backing_is_btrfs(dir)) {
+	if (cix_btrfs_is_backing(dir)) {
 		if (!cix_btrfs_is_subvolume(dir)) {
 			snprintf(err, err_size,
 			         "this volume is a plain directory on btrfs, where a size limit needs a "
@@ -345,10 +346,10 @@ static int volume_apply_quota(const char *volume_name, const char *dir, long lon
 		         strerror(errno));
 		return -1;
 	}
-	/* Tagging after the limit is set, matching the container path's own
-	 * ordering: the limit is already in force by the moment any file
+	/* Tagging after the limit is set, the order the removed container path used:
+	 * the limit is already in force by the moment any file
 	 * can carry this project id. */
-	if (quota_bytes > 0 && overlay_tag_project_id(dir, projid, "volume") != 0) {
+	if (quota_bytes > 0 && quotamap_tag_dir(dir, projid) != 0) {
 		snprintf(err, err_size, "could not tag the volume directory with its quota project id");
 		return -1;
 	}
@@ -569,7 +570,7 @@ void handle_volume_owner_put(int fd, const char *name, const char *body, size_t 
  * enforced against -- a walk can report a volume comfortably under a
  * quota the kernel is about to refuse a write on.
  *
- * overlay_upperdir_size() rather than a second walker on the fallback
+ * treesize_bytes() rather than a second walker on the fallback
  * path: a container's own disk.usage.bytes falls back to it too, and two
  * implementations of "how big is this tree" would be two definitions of
  * what counts.
@@ -605,7 +606,7 @@ void handle_volume_usage(int fd, const char *name)
 	if (cix_btrfs_qgroup_query(path, &used, &kernel_limit, &qstate) == 0) {
 		source = "qgroup";
 		bytes = (long long)used;
-	} else if (overlay_upperdir_size(path, &bytes) != 0) {
+	} else if (treesize_bytes(path, &bytes) != 0) {
 		char err[256];
 
 		snprintf(err, sizeof(err), "could not measure %s: %s", path, strerror(errno));

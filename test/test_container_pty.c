@@ -5,12 +5,12 @@
  * inside a container's own mount namespace, and pkg_seed_image_
  * baseline() (daemon/src/pkg.c) never seeding a /dev/ptmx node the
  * way it already does for null/zero/full/random/urandom. Same
- * minimal-lowerdir pattern test_overlay.c already established: a real
+ * minimal-rootfs pattern the library tests share: a real
  * container is created and torn down, pty_child (this test's own exec
  * target) allocates a pty inside it exactly the way an interactive
  * SSH session does (posix_openpt/grantpt/unlockpt/ptsname_r/open the
  * slave/round-trip a byte), and the host reads its results back out
- * of the container's own upperdir.
+ * of the container's own rootfs.
  */
 #include "container.h"
 #include "linux_compat.h"
@@ -67,9 +67,8 @@ static void rm_tree(const char *path)
 /*
  * Same five static device nodes plus the /dev/ptmx symlink
  * the old image baseline seeded into every real
- * image -- reproduced by hand here since this test, like
- * test_overlay.c, builds a minimal lowerdir directly rather than
- * going through the daemon's own image-baseline machinery.
+ * image -- reproduced by hand here since this test builds a minimal
+ * rootfs directly rather than going through the daemon.
  */
 static int build_lowerdir(void)
 {
@@ -165,12 +164,6 @@ int main(void)
 	if (build_lowerdir() != 0)
 		return 1;
 
-	if (mkdir_p1("/run/container_pty_test/c1") != 0 ||
-	    mkdir_p1("/run/container_pty_test/c1/upper") != 0 ||
-	    mkdir_p1("/run/container_pty_test/c1/work") != 0 ||
-	    mkdir_p1("/run/container_pty_test/c1/merged") != 0)
-		return 1;
-
 	memset(&spec, 0, sizeof(spec));
 	spec.ns.clone_flags = CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET |
 	                       CLONE_NEWCGROUP | CLONE_INTO_CGROUP;
@@ -179,10 +172,8 @@ int main(void)
 	spec.cg.memory_max = 67108864;
 	spec.cg.pids_max = 32;
 	spec.cg.cpu_max = NULL;
-	spec.ov.lowerdir = LOWERDIR;
-	spec.ov.upperdir = "/run/container_pty_test/c1/upper";
-	spec.ov.workdir = "/run/container_pty_test/c1/work";
-	spec.ov.merged = "/run/container_pty_test/c1/merged";
+	/* The tree build_lowerdir() made is the rootfs itself (ADR-0360). */
+	spec.rootfs.path = LOWERDIR;
 	spec.mnt.put_old_rel = ".old_root";
 	spec.argv = child_argv;
 	spec.envp = child_envp;
@@ -204,7 +195,7 @@ int main(void)
 		return 1;
 	}
 
-	if (read_status("/run/container_pty_test/c1/upper", &ok) != 0)
+	if (read_status(LOWERDIR, &ok) != 0)
 		return 1;
 
 	printf(ok ? "CONTAINER PTY RESULT: PASS\n" : "CONTAINER PTY RESULT: FAIL\n");

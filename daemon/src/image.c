@@ -457,8 +457,10 @@ enum image_error image_rename(const char *old_name, const char *new_name)
 	if (stat(probe, &st) == 0)
 		return IMAGE_ERR_DUPLICATE;
 
-	/* A running container's overlay lowerdir points into this directory
-	 * by path; renaming it out from under one is not survivable. */
+	/* A running container records its image by name, so a rename would
+	 * leave it naming one that does not exist. (The reason used to be
+	 * an overlay lower layer pointing into this directory by path; the
+	 * rootfs is a snapshot since ADR-0360, and the refusal outlived it.) */
 	if (registry_image_in_use(old_name))
 		return IMAGE_ERR_IN_USE;
 

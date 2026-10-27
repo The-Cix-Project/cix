@@ -78,7 +78,7 @@ static void child_diag(int fd, const char *prefix)
 
 /*
  * mountns_pivot()'s own distinct step, for the exact same reason
- * overlay_step_names[] (container_decode_exit_status(), below) exists
+ * container_decode_exit_status()'s named codes (below) exist
  * -- ~15 real syscalls behind one function, a flat "child: mountns_pivot"
  * diag message left genuinely no way to tell which one actually failed
  * on a shell-less production box (issue #34's own investigation).
@@ -150,7 +150,7 @@ const char *container_create_last_error_step(void)
  * ADR-0179 (issue #29) phase 2: the PARENT writes a freshly-cloned
  * CLONE_NEWUSER child's uid/gid maps, then releases it. The child blocks
  * on userns_pipe before touching anything -- until these maps land it has
- * no valid mapped identity, so any privileged op (the overlay mount
+ * no valid mapped identity, so any privileged op (the rootfs attach
  * included) would run with the wrong credentials. gid_map is written
  * first, then uid_map -- see write_userns_maps() below for why
  * setgroups is no longer denied unconditionally. Each map is the
@@ -388,9 +388,19 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	int net_pipe[2] = { -1, -1 };
 	int diag_pipe[2] = { -1, -1 };
 	int userns_pipe[2] = { -1, -1 };
-	int overlay_lower_fd = -1; /* phase 2c: id-mapped per-container userns rootfs mount */
+	int rootfs_fd = -1; /* phase 2c: id-mapped per-container userns rootfs mount */
 	int want_net = (spec->net_count > 0);
 	int i;
+
+	/* Every container pivots onto a rootfs, and a userns one onto its
+	 * mountpoint (ADR-0360): without them there is nothing to enter. */
+	if (spec->rootfs.path == NULL || spec->rootfs.path[0] == '\0' ||
+	    (spec->userns_enabled &&
+	     (spec->rootfs.userns_mountpoint == NULL || spec->rootfs.userns_mountpoint[0] == '\0'))) {
+		container_set_last_error_step("container_create: no rootfs in the spec");
+		errno = EINVAL;
+		return -1;
+	}
 
 	if (cgroup_create(&spec->cg, &cgroup_fd) != 0)
 		return -1;
@@ -536,37 +546,20 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	 * fails EOVERFLOW. That is the #321 failure recorded below, arrived
 	 * at from the other direction.
 	 *
-	 * ONLY the userns case is staged here, and the reason is not
-	 * symmetry but btrfs. A non-userns container's rootfs is an overlay
-	 * whose upperdir the CHILD creates -- and on btrfs it creates it as
-	 * a SUBVOLUME, so the container can carry a disk quota (ADR-0062,
-	 * #678). overlay_create_btrfs_upperdir() tolerates EEXIST on that
-	 * ioctl, assuming a previous run left a subvolume; a plain directory
-	 * pre-created here would satisfy that tolerance and silently cost
-	 * every container its quota. So the non-userns case is staged by the
-	 * child instead, where it is real root anyway -- beside
-	 * container_dev_mknod(), which follows the same split for the granted
-	 * nodes (#621).
+	 * ONLY the userns case is staged here. A non-userns child is real
+	 * root and stages its own, beside container_dev_mknod(), which
+	 * follows the same split for the granted nodes (#621).
 	 */
-	if (spec->userns_enabled && spec->ov.userns_rootfs != NULL &&
-	    spec->ov.userns_rootfs[0] != '\0') {
+	if (spec->userns_enabled) {
 		/*
-		 * The OWNER depends on which userns presentation this is, and
-		 * getting it wrong fails as a permission denial two steps
-		 * later rather than here. ADR-0207 phase 3 (userns_idmap) is a
-		 * host-uid-0-owned snapshot presented through an id-mapped
-		 * mount: the MAP makes uid 0 the container's root, so these
-		 * nodes stay root-owned and a chown to the base would put them
-		 * OUTSIDE the map. ADR-0179 phase 2b (userns_idmap == 0) is a
-		 * chowned copy, where the base is the container's root and the
-		 * nodes must match the tree around them.
-		 *
-		 * Measured: chowning in both cases made the id-mapped arm fail
-		 * with `mountns_pivot: mkdir(/dev/pts): Permission denied`,
-		 * exit 112 -- the mapped root could not write a /dev it
-		 * appeared not to own (test_userns_run, probe 0.2.57-490).
+		 * Owned by host uid 0, the owner of the rootfs around them: the
+		 * id-mapped mount's MAP makes uid 0 the container's root, and a
+		 * chown to the subordinate base would put them OUTSIDE the map.
+		 * Measured: chowning them made the id-mapped container fail with
+		 * `mountns_pivot: mkdir(/dev/pts): Permission denied`, exit 112
+		 * (test_userns_run, probe 0.2.57-490).
 		 */
-		uid_t dev_offset = spec->userns_idmap ? 0 : (uid_t)spec->userns_uid_base;
+		const uid_t dev_offset = 0;
 		const char *dev_step = NULL;
 
 		/*
@@ -575,9 +568,9 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 * userns child holds no CAP_MKNOD, so every userns container
 		 * granted a device died at container_dev_mknod with EPERM.
 		 */
-		if (container_dev_stage_baseline(spec->ov.userns_rootfs, dev_offset) != 0)
+		if (container_dev_stage_baseline(spec->rootfs.path, dev_offset) != 0)
 			dev_step = "container_create: container_dev_stage_baseline";
-		else if (container_dev_mknod(spec->ov.userns_rootfs, dev_offset, spec->devices,
+		else if (container_dev_mknod(spec->rootfs.path, dev_offset, spec->devices,
 		                             spec->device_count) != 0)
 			dev_step = "container_create: container_dev_mknod";
 		if (dev_step != NULL) {
@@ -605,26 +598,23 @@ int container_create(const struct container_spec *spec, struct container_handle 
 	}
 
 	/*
-	 * ADR-0179 phase 2c option (a): a userns container uses its OWN
-	 * per-container rootfs (a copy of the image, prepared host-side by the
-	 * daemon and chown'd to the container's subordinate <base> id --
-	 * spec->ov.userns_rootfs), NOT an overlay. Kernel-native id-mapped
-	 * overlay proved unachievable from this architecture: overlay's own
-	 * whiteout/tmpfile ops need privilege over the layer fs's init-owned
-	 * s_user_ns, which the mapped-root child lacks (confirmed live via
-	 * /v1/system/kmsg). And id-mapped mounts made the child a non-writable
-	 * owner in practice; plain <base> ownership is unambiguous -- the
-	 * container's own userns maps <base> straight back to uid 0. So the
-	 * parent just open_tree()s the rootfs into a detached (unlocked) mount;
-	 * the child move_mounts + pivots straight into it, owning it directly.
+	 * ADR-0179 phase 2c option (a), ADR-0207 phase 3: a userns container
+	 * pivots onto its own rootfs (spec->rootfs.path, a host-uid-0-owned
+	 * snapshot), never an overlay. Kernel-native id-mapped overlay proved
+	 * unachievable from this architecture: overlay's own whiteout/tmpfile
+	 * ops need privilege over the layer fs's init-owned s_user_ns, which
+	 * the mapped-root child lacks (confirmed live via /v1/system/kmsg).
+	 * So the parent open_tree()s the rootfs into a detached (unlocked)
+	 * mount and id-maps it once the child's maps are written (below); the
+	 * child move_mounts it to spec->rootfs.userns_mountpoint and pivots.
 	 */
 	if (spec->userns_enabled) {
 		int saved_errno = 0;
 		const char *fail_step = NULL;
 		int prep_ret = 0;
 
-		overlay_lower_fd = (int)cix_open_tree(-1, spec->ov.userns_rootfs, OPEN_TREE_CLONE);
-		if (overlay_lower_fd < 0) {
+		rootfs_fd = (int)cix_open_tree(-1, spec->rootfs.path, OPEN_TREE_CLONE);
+		if (rootfs_fd < 0) {
 			saved_errno = errno;
 			fail_step = "container_create: open_tree(userns_rootfs)";
 			prep_ret = -1;
@@ -638,12 +628,10 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 * The effect was that a userns container could open NO device
 		 * node at all: not /dev/null, not /dev/zero, read or write,
 		 * with every node present at mode 0666 and correctly mapped to
-		 * container-root. A non-userns container on the OVERLAY path
-		 * never hits it -- OverlayFS is a fresh mount inheriting
-		 * nothing -- but one on ADR-0207 phase 2's direct-rootfs path
-		 * does, because that self-binds the containers partition and a
-		 * bind inherits its flags. That case is cleared beside its own
-		 * bind, in the child; see there.
+		 * container-root. A non-userns container hits it too, because
+		 * it self-binds its rootfs and a bind inherits the partition's
+		 * flags. That case is cleared beside its own bind, in the
+		 * child; see there.
 		 *
 		 * Done HERE, right after open_tree, rather than beside the
 		 * MOUNT_ATTR_IDMAP call below, because that call only runs for
@@ -664,7 +652,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 
 			memset(&devattr, 0, sizeof(devattr));
 			devattr.attr_clr = MOUNT_ATTR_NODEV;
-			if (cix_mount_setattr(overlay_lower_fd, "", CIX_AT_EMPTY_PATH, &devattr) != 0) {
+			if (cix_mount_setattr(rootfs_fd, "", CIX_AT_EMPTY_PATH, &devattr) != 0) {
 				saved_errno = errno;
 				fail_step = "container_create: mount_setattr(clear nodev)";
 				prep_ret = -1;
@@ -679,13 +667,13 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 * references the SAME mount object, so the parent's
 		 * mount_setattr is visible to the child with no fd passing.
 		 *
-		 * Gated on userns_enabled, NOT userns_idmap (#266). That flag
-		 * describes how this container's ROOTFS is presented -- a
-		 * btrfs snapshot left host-0-owned behind an id-mapped mount,
-		 * versus an ADR-0179 phase-2b copy chowned to the subordinate
-		 * base. A volume has nothing to do with either: it is a
-		 * host-root-owned directory outside the rootfs in both cases,
-		 * and needs the same id-mapping either way. Bundling the two
+		 * Gated on userns_enabled alone (#266). It used to be bundled
+		 * with a flag saying how the ROOTFS was presented -- a snapshot
+		 * behind an id-mapped mount, or an ADR-0179 phase-2b copy
+		 * chowned to the subordinate base, which ADR-0360 removed. A
+		 * volume has nothing to do with either: it is a host-root-owned
+		 * directory outside the rootfs, and needs the id-mapping
+		 * whatever the rootfs is. Bundling the two
 		 * under one flag meant every container on a non-btrfs host --
 		 * where the copy+chown branch is always taken -- got volumes
 		 * it could not write to. Measured on a real container: /vol
@@ -707,9 +695,9 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			}
 		}
 		if (prep_ret != 0) {
-			if (overlay_lower_fd >= 0) {
-				close(overlay_lower_fd);
-				overlay_lower_fd = -1;
+			if (rootfs_fd >= 0) {
+				close(rootfs_fd);
+				rootfs_fd = -1;
 			}
 			errno = saved_errno;
 			if (fail_step != NULL)
@@ -744,8 +732,8 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		if (spec->userns_enabled) {
 			close(userns_pipe[0]);
 			close(userns_pipe[1]);
-			if (overlay_lower_fd >= 0)
-				close(overlay_lower_fd); /* the detached rootfs mount is freed with its last fd */
+			if (rootfs_fd >= 0)
+				close(rootfs_fd); /* the detached rootfs mount is freed with its last fd */
 		}
 		if (bpf_prog_fd >= 0)
 			close(bpf_prog_fd);
@@ -764,7 +752,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 * ADR-0179 phase 2: with CLONE_NEWUSER in the clone flags,
 		 * block until the parent has written our uid/gid maps. Until
 		 * then this process holds no valid mapped identity, and every
-		 * privileged step below (the overlay mount included) would run
+		 * privileged step below (the rootfs attach included) would run
 		 * with the wrong credentials. Closing our own write end first
 		 * makes a parent that dies before writing surface as a clean
 		 * EOF here (read returns 0) rather than an indefinite hang.
@@ -827,23 +815,17 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			_exit(110);
 		}
 		/*
-		 * A userns container has no overlay -- it uses its own
-		 * per-container rootfs, which the parent open_tree'd and the child
-		 * move_mounts + pivots into just below. So the classic child-side
-		 * overlay_create runs for the non-userns case only.
+		 * The new root. Without a user namespace it is the rootfs itself
+		 * (ADR-0207 phase 2, ADR-0360): pivot_root demands a mount point
+		 * and a plain directory is not one, so self-bind it first -- the
+		 * same lesson the userns path learned in ADR-0179 phase 2b.
 		 */
-		if (!spec->userns_enabled && spec->ov.direct_rootfs) {
-			/*
-			 * ADR-0207 phase 2: no overlay. merged IS this
-			 * container's own rootfs (a btrfs snapshot of its
-			 * image, or the test-mode copy); pivot_root demands a
-			 * mount point and a plain directory is not one, so
-			 * self-bind it first -- the identical lesson the userns
-			 * path below learned in ADR-0179 phase 2b, applied to
-			 * the non-userns direct path.
-			 */
-			if (mount(spec->ov.merged, spec->ov.merged, NULL, MS_BIND, NULL) != 0) {
-				child_diag(diag_pipe[1], "child: bind direct rootfs");
+		const char *new_root =
+		    spec->userns_enabled ? spec->rootfs.userns_mountpoint : spec->rootfs.path;
+
+		if (!spec->userns_enabled) {
+			if (mount(spec->rootfs.path, spec->rootfs.path, NULL, MS_BIND, NULL) != 0) {
+				child_diag(diag_pipe[1], "child: bind rootfs");
 				_exit(123);
 			}
 			/*
@@ -851,27 +833,19 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			 * userns path clears it after open_tree (#173) and by
 			 * the same argument.
 			 *
-			 * That fix's own comment says non-userns containers
-			 * never need this "because OverlayFS is a fresh mount
-			 * inheriting nothing". True when non-userns meant
-			 * overlay; ADR-0207 phase 2 made it a BIND of the
-			 * containers partition, which boot_init() mounts
-			 * MS_NOSUID|MS_NODEV -- correct hardening for the host,
-			 * inherited by every bind of it. So a direct-rootfs
-			 * container could not open ANY device node: not
-			 * /dev/null, not /dev/urandom, read or write, with
-			 * every node present and mode 0666.
+			 * The rootfs is a BIND of the partition that holds it,
+			 * which boot_init() mounts MS_NOSUID|MS_NODEV -- correct
+			 * hardening for the host, inherited by every bind of it.
+			 * So a container could not open ANY device node: not
+			 * /dev/null, not /dev/urandom, read or write, with every
+			 * node present and mode 0666.
 			 *
-			 * chronyd found it -- ntp-1/ntp-2 are the platform's
-			 * only userns:false workloads, so they are the only
-			 * containers that take this path at all, and they
-			 * crash-looped on "Could not open /dev/urandom :
-			 * Permission denied" while the six userns containers
-			 * beside them ran.
+			 * chronyd found it -- ntp-1/ntp-2 are the platform's only
+			 * userns:false workloads, and they crash-looped on "Could
+			 * not open /dev/urandom : Permission denied" while the
+			 * userns containers beside them ran.
 			 *
-			 * Rootfs device nodes are deliberate content:
-			 * the image baseline staged (removed, ADR-0333) null, zero, full,
-			 * random, urandom and ptmx into every image. What a
+			 * Rootfs device nodes are deliberate content. What a
 			 * container may DO with a device stays enforced by the
 			 * BPF_CGROUP_DEVICE allow-list (ADR-0017), which is the
 			 * real control and is untouched by this.
@@ -881,59 +855,28 @@ int container_create(const struct container_spec *spec, struct container_handle 
 
 				memset(&devattr, 0, sizeof(devattr));
 				devattr.attr_clr = MOUNT_ATTR_NODEV;
-				if (cix_mount_setattr(AT_FDCWD, spec->ov.merged, 0,
-				                      &devattr) != 0) {
+				if (cix_mount_setattr(AT_FDCWD, spec->rootfs.path, 0, &devattr) != 0) {
 					child_diag(diag_pipe[1],
-					           "child: mount_setattr(clear nodev) on direct rootfs");
+					           "child: mount_setattr(clear nodev) on rootfs");
 					_exit(123);
 				}
 			}
-		}
-		if (!spec->userns_enabled && !spec->ov.direct_rootfs) {
-			int overlay_ret = overlay_create(&spec->ov);
-
+		} else {
 			/*
-			 * overlay_create() itself already distinguishes six
-			 * named steps plus (for the actual mount(2) call) the
-			 * real errno -- translated here into its own small,
-			 * disjoint exit-code range (130-136 for the six named
-			 * steps, 141-255 for a mount(2) errno in [1,115], the
-			 * same shared range the final execve() below also uses)
-			 * so a daemon-layer caller with log-store access (pkg.c)
-			 * doesn't just learn "overlay_create failed" but exactly
-			 * which of its own six steps, and for the mount itself,
-			 * the kernel's own real reason. The "overlay mount" vs
-			 * "exec" ambiguity that same shared 141-255 range would
-			 * otherwise leave in the bare exit code (both reachable
-			 * only in mutual exclusion, but genuinely indistinguishable
-			 * from the number alone) is exactly what the diag pipe's
-			 * own distinct message prefixes below resolve.
+			 * ADR-0179 phase 2c option (a): attach the parent's
+			 * detached, id-mapped rootfs into THIS child's own mount
+			 * namespace with move_mount() and pivot into it. A mount
+			 * the child attaches itself is not MNT_LOCKED (so
+			 * pivot_root accepts it), and it carries the parent's
+			 * id-mapping -- the container's mapped root owns and can
+			 * write its whole rootfs.
 			 */
-			if (overlay_ret != 0) {
-				child_diag(diag_pipe[1], "child: overlay_create");
-				if (overlay_ret <= OVERLAY_ERR_MOUNT_ERRNO_BASE)
-					_exit(140 + (OVERLAY_ERR_MOUNT_ERRNO_BASE - overlay_ret));
-				_exit(129 - overlay_ret);
-			}
-		}
-		/*
-		 * ADR-0179 phase 2c option (a): attach the parent's detached,
-		 * id-mapped per-container rootfs into THIS child's own mount
-		 * namespace with move_mount() and pivot into it. A mount the child
-		 * attaches itself is not MNT_LOCKED (so pivot_root accepts it), and
-		 * it's a plain ext4 mount carrying the parent's id-mapping -- the
-		 * container's mapped root owns and can write its whole rootfs, with
-		 * no overlay (and so none of overlay's userns-blocked setup ops).
-		 * Non-userns mounted merged in overlay_create above and needs none
-		 * of this.
-		 */
-		if (spec->userns_enabled) {
-			if (cix_move_mount(overlay_lower_fd, "", AT_FDCWD, spec->ov.merged,
+			if (cix_move_mount(rootfs_fd, "", AT_FDCWD, new_root,
 			                  MOVE_MOUNT_F_EMPTY_PATH) != 0) {
 				child_diag(diag_pipe[1], "child: move_mount userns rootfs");
 				_exit(122);
 			}
-			close(overlay_lower_fd);
+			close(rootfs_fd);
 		}
 
 		/*
@@ -951,7 +894,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 * the drop, and the volume mount points and put_old below are
 		 * created relative to this cwd rather than re-walked from /.
 		 */
-		if (chdir(spec->ov.merged) != 0) {
+		if (chdir(new_root) != 0) {
 			child_diag(diag_pipe[1], "child: chdir(new root)");
 			_exit(126);
 		}
@@ -984,11 +927,11 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 * all eight in mountns_pivot(), put_old first -- died with
 		 * "Value too large for defined data type" and the container
 		 * exited 112 before it ever ran. Only the id-mapped presentation
-		 * was affected; copy+chown (and every non-userns container) has
-		 * no map for a uid to fall outside of, which is exactly why the
-		 * test suite never saw it: it runs on /tmp, which is not btrfs,
-		 * so cix_btrfs_is_backing() is false and the snapshot branch
-		 * that sets userns_idmap is unreachable there.
+		 * was affected; the copy+chown one (since removed, ADR-0360) and
+		 * every non-userns container have no map for a uid to fall
+		 * outside of, which is exactly why the test suite never saw it:
+		 * it ran on /tmp, which is not btrfs, so the snapshot branch was
+		 * unreachable there. The gate's data dir is on btrfs now.
 		 *
 		 * Becoming userns uid/gid 0 -- i.e. host <base> -- is what puts
 		 * the caller inside the map, and is what the workload has to run
@@ -1016,7 +959,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 *
 		 * A failure is deliberately fatal rather than skipped: a
 		 * container that silently started WITHOUT its persistent
-		 * storage would write to the overlay upper layer instead, look
+		 * storage would write to its rootfs instead, look
 		 * completely healthy, and lose that data on its next recreate --
 		 * exactly the failure volumes exist to prevent, made harder to
 		 * notice.
@@ -1125,13 +1068,6 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 * container only -- this child is real root, so it holds the
 		 * CAP_MKNOD a userns child never does (#321), and a userns
 		 * container was already staged by the parent before clone3().
-		 *
-		 * Here rather than in the parent for this case because the
-		 * parent must not pre-create the overlay upperdir: on btrfs
-		 * overlay_create() makes it a SUBVOLUME so the container can
-		 * carry a disk quota (ADR-0062, #678), and it tolerates EEXIST
-		 * on that ioctl -- so a plain directory left by the parent
-		 * would be accepted and the quota silently lost.
 		 *
 		 * "" is this child's own root: pivot_root has happened, so /dev
 		 * is the container's private directory (mountns_pivot() mkdir's
@@ -1273,13 +1209,10 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		execve(spec->argv[0], spec->argv, spec->envp);
 		{
 			/*
-			 * The exact same encoding overlay_create()'s own mount(2)
-			 * errno already uses (140 + errno, 141-255) -- deliberately
-			 * the SAME shared range, not a second disjoint one: the
-			 * two are mutually exclusive within a single run (this
-			 * execve() is only ever reached once overlay_create() has
-			 * already succeeded), so reusing it is unambiguous, and it
-			 * gives this, the last and most likely to actually matter
+			 * 140 + errno, 141-255 (CONTAINER_EXEC_ERRNO_MAX). This
+			 * range was shared with the overlay mount's errno until
+			 * ADR-0360 removed the overlay; it means execve() alone
+			 * now. It gives this, the last and most likely to actually matter
 			 * spot where a bare "_exit(127)" hid real information
 			 * (ENOENT the interpreter/binary genuinely missing, EACCES
 			 * not executable -- lost +x bit or a noexec mount, ENOEXEC
@@ -1296,7 +1229,7 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			snprintf(prefix, sizeof(prefix), "child: execve(%s)", spec->argv[0]);
 			errno = exec_errno;
 			child_diag(diag_pipe[1], prefix);
-			if (exec_errno > 0 && exec_errno <= OVERLAY_ERR_MOUNT_ERRNO_MAX)
+			if (exec_errno > 0 && exec_errno <= CONTAINER_EXEC_ERRNO_MAX)
 				_exit(140 + exec_errno);
 			_exit(127);
 		}
@@ -1329,17 +1262,14 @@ int container_create(const struct container_spec *spec, struct container_handle 
 		 * extent sharing intact, and the kernel does the presenting.
 		 */
 		/*
-		 * #266: the rootfs id-map and the volume id-maps used to share
-		 * this one condition, and they answer different questions. The
-		 * ROOTFS is id-mapped only under the snapshot presentation
-		 * (userns_idmap); under copy+chown it is already owned by the
-		 * subordinate base and must not be re-mapped. VOLUMES are
-		 * host-root-owned in both cases and always need it. Entering
-		 * the block for either reason and applying each part on its
-		 * own condition is what separates them.
+		 * #266: the rootfs id-map and the volume id-maps are applied
+		 * here together, each on its own fd: the detached rootfs, and
+		 * each volume's. Every userns rootfs is a host-0-owned snapshot
+		 * presented through the map since ADR-0360 removed the chowned
+		 * copy, and every volume is host-root-owned.
 		 */
 		if (userns_ok && spec->userns_enabled &&
-		    (spec->userns_idmap || spec->volume_count > 0)) {
+		    (rootfs_fd >= 0 || spec->volume_count > 0)) {
 			char uns_path[64];
 			int uns_fd;
 
@@ -1363,9 +1293,9 @@ int container_create(const struct container_spec *spec, struct container_handle 
 				 * container could not open ANY device node: not
 				 * /dev/null, not /dev/zero, read or write, even though
 				 * every node was present with mode 0666 and mapped to
-				 * container-root (issue #173). Non-userns containers
-				 * never hit it because OverlayFS is a fresh mount that
-				 * inherits nothing.
+				 * container-root (issue #173). A non-userns container's
+				 * rootfs is a bind too, and the child clears nodev on
+				 * it the same way.
 				 *
 				 * A container's rootfs device nodes are deliberate
 				 * content, not something a workload smuggled in:
@@ -1380,9 +1310,9 @@ int container_create(const struct container_spec *spec, struct container_handle 
 				 * redirection and almost every configure script needs.
 				 */
 				mattr.userns_fd = (uint64_t)uns_fd;
-				/* Rootfs: only the snapshot presentation. */
-				if (spec->userns_idmap && overlay_lower_fd >= 0 &&
-				    cix_mount_setattr(overlay_lower_fd, "",
+				/* The rootfs. */
+				if (rootfs_fd >= 0 &&
+				    cix_mount_setattr(rootfs_fd, "",
 				                      CIX_AT_EMPTY_PATH, &mattr) != 0)
 					userns_ok = 0;
 				for (vi = 0; userns_ok && vi < spec->volume_count; vi++) {
@@ -1422,9 +1352,9 @@ int container_create(const struct container_spec *spec, struct container_handle 
 			for (vi = 0; vi < spec->volume_count; vi++)
 				if (spec->volume_idmap_fds[vi] >= 0)
 					close(spec->volume_idmap_fds[vi]);
-			if (overlay_lower_fd >= 0) {
-				close(overlay_lower_fd);
-				overlay_lower_fd = -1;
+			if (rootfs_fd >= 0) {
+				close(rootfs_fd);
+				rootfs_fd = -1;
 			}
 		}
 		if (!userns_ok) {
@@ -1663,13 +1593,6 @@ void container_decode_exit_status(int exit_status, int term_signal, char *buf, s
 		{ 138, "fcntl(keep_fds, F_SETFD) failed -- an fd named on cix-init's argv was not open" },
 		{ 137, "container_dev_stage_baseline failed -- the standard device nodes could not be "
 		        "created in this container's own /dev (ADR-0333)" },
-		{ 130, "overlay: lowerdir stat failed" },
-		{ 131, "overlay: upperdir mkdir failed" },
-		{ 132, "overlay: disk quota setup failed" },
-		{ 133, "overlay: workdir mkdir failed" },
-		{ 134, "overlay: merged mountpoint mkdir failed" },
-		{ 135, "overlay: mount options too long" },
-		{ 136, "overlay: mount(2) itself failed" },
 	};
 	size_t i;
 
@@ -1692,17 +1615,9 @@ void container_decode_exit_status(int exit_status, int term_signal, char *buf, s
 			return;
 		}
 	}
-	if (exit_status >= 141 && exit_status <= 140 + OVERLAY_ERR_MOUNT_ERRNO_MAX) {
-		/*
-		 * Genuinely ambiguous from the number alone (overlay mount(2)
-		 * vs. the final execve(), see container_create()'s own
-		 * comment on why they share this range) -- the real
-		 * disambiguation lives in container_read_diag()'s own text
-		 * ("child: overlay_create: ..." vs "child: execve(...): ..."),
-		 * not here.
-		 */
-		snprintf(buf, bufsize, "overlay mount or exec failed: %s",
-		         strerror(exit_status - 140));
+	if (exit_status >= 141 && exit_status <= 140 + CONTAINER_EXEC_ERRNO_MAX) {
+		/* The child's execve() errno (CONTAINER_EXEC_ERRNO_MAX). */
+		snprintf(buf, bufsize, "exec failed: %s", strerror(exit_status - 140));
 		return;
 	}
 	snprintf(buf, bufsize, "exited with status %d", exit_status);

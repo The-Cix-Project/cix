@@ -72,7 +72,7 @@ int cix_btrfs_subvol_create_or_dir(const char *path)
 	if (ioctl(parent_fd, CIX_BTRFS_IOC_SUBVOL_CREATE, &vol_args) != 0) {
 		/* EEXIST: a prior run already created it (recreate after a
 		 * crash before cleanup) -- the same tolerant convention the
-		 * mkdir path above and overlay's own upperdir create use. */
+		 * mkdir path above uses. */
 		int saved = errno;
 
 		close(parent_fd);

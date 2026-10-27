@@ -6,6 +6,7 @@
 #include "http.h"
 #include "json.h"
 #include "logstore.h"
+#include "treesize.h"
 #include "containerdef.h"
 #include "events.h"
 #include "image.h"
@@ -349,7 +350,7 @@ int image_gc_pass(char (*only)[PKG_IMAGE_NAME_MAX], int only_count, int dry_run,
 				char rootfs[PATH_MAX];
 
 				image_version_rootfs_path(only[i], version, rootfs, sizeof(rootfs));
-				if (overlay_upperdir_size(rootfs, &bytes) != 0)
+				if (treesize_bytes(rootfs, &bytes) != 0)
 					bytes = 0;
 			}
 			if (!dry_run) {

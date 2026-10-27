@@ -18,7 +18,7 @@ int mountns_make_private(void)
 {
 	/*
 	 * Must happen before any other mount in this namespace (including
-	 * overlay_create()'s overlay mount): without this, mount events
+	 * the rootfs bind): without this, mount events
 	 * propagate between this namespace and the host in both
 	 * directions even though we're already in a new mount namespace.
 	 */
@@ -312,7 +312,7 @@ int mountns_pivot(const struct mount_spec *mnt)
 
 	/*
 	 * /sys may not exist at all (a minimal lowerdir with no /sys entry),
-	 * or may already be populated (e.g. an overlay lowerdir that itself
+	 * or may already be populated (e.g. a rootfs that itself
 	 * contains host mounts), including sub-mounts stacked under it like
 	 * a separate writable sysfs instance at /sys/devices/virtual/net.
 	 * Any such sub-mount is pinned to whatever netns was active when it
@@ -383,8 +383,8 @@ int mountns_pivot(const struct mount_spec *mnt)
 	/*
 	 * /run must be a fresh tmpfs on every single container start, same
 	 * as /proc and /sys above -- without this it's just ordinary
-	 * overlay-persisted storage (upperdir survives a crash/restart by
-	 * design, see overlay.c's own EEXIST-tolerant upperdir reuse), which
+	 * storage in the rootfs, which survives a crash/restart by design,
+	 * which
 	 * silently breaks any daemon that assumes /run is cleared on start
 	 * (the near-universal Linux/systemd convention). Confirmed the hard
 	 * way: chronyd (-d mode) writes /run/chronyd.pid, and since every
@@ -424,7 +424,7 @@ int mountns_pivot(const struct mount_spec *mnt)
 	 * it this way for decades and software depends on the guarantee.
 	 *
 	 * Fresh on every start, like /run: a tmpfs rather than
-	 * overlay-persisted storage, so nothing survives a restart. That is
+	 * storage in the rootfs, so nothing survives a restart. That is
 	 * what /tmp promises, and a /tmp that quietly persisted would break
 	 * the same class of assumption in the opposite direction.
 	 */
@@ -446,7 +446,7 @@ int mountns_pivot(const struct mount_spec *mnt)
 	 * devpts filesystem is mounted at /dev/pts), one namespace layer
 	 * deeper: each container gets its own mount namespace here, so the
 	 * host's own /dev/pts mount is never inherited into it, and this
-	 * project's own containers use a plain overlay /dev (no devtmpfs,
+	 * project's own containers use a plain /dev in their rootfs (no devtmpfs,
 	 * unlike the host) with only the old image baseline's five
 	 * static device nodes -- no /dev/ptmx at all. A container-side
 	 * process needing a real pty (sshd's own interactive session
@@ -620,7 +620,7 @@ int mountns_pivot(const struct mount_spec *mnt)
 	/*
 	 * And remove the husk. mkdir(put_old) above runs AFTER the chdir
 	 * into the new root, so the directory is created inside the
-	 * container's own overlay -- it lands in the upperdir and persists
+	 * container's own rootfs -- it lands there and persists
 	 * for the life of the container, which is why an operator listing
 	 * the root of a long-running container saw a stray .old_root
 	 * sitting next to their own files.
@@ -653,7 +653,7 @@ int mountns_pivot(const struct mount_spec *mnt)
  * A forked helper is not a style choice: setns() is whole-process, so
  * the daemon entering a container's mount namespace itself would leave
  * every subsequent path it resolves -- its state directory, its log
- * store, every other container's overlay -- resolving inside that
+ * store, every other container's rootfs -- resolving inside that
  * container. The helper exists to be thrown away.
  *
  * The source directory is opened BEFORE setns(), for the same reason

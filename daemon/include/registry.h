@@ -269,7 +269,7 @@ struct registry_entry {
 	 * The specific image version (ADR-0107/0108, a sha256 manifest-
 	 * identity hash -- see IMAGE_VERSION_MAX in daemon/include/image.h,
 	 * not included here just for one array size) this container's own
-	 * overlay lowerdir was pinned to at creation time -- resolved once,
+	 * rootfs was seeded from at creation time -- resolved once,
 	 * via image_current_version(), and never re-resolved afterward,
 	 * even across a daemon-restart replay (main.c's own
 	 * create_container_from_body() persists it back into the stored
@@ -278,26 +278,12 @@ struct registry_entry {
 	 * This is the actual mechanism that fixes the bug the whole
 	 * package/image versioning epic exists for: a later `pkg install`
 	 * against the same image name can never change what an
-	 * already-running (or restarted) container's own lowerdir points
-	 * at. Empty for the one container that predates real image
+	 * already-running (or restarted) container's own rootfs was seeded
+	 * from. Empty for the one container that predates real image
 	 * versioning at all -- the ephemeral PKG_BUILD_CONTAINER_NAME
 	 * sandbox, rooted on g_pkgbuild_rootfs, not any named image.
 	 */
 	char image_version[65];
-	/*
-	 * The container's REAL overlay lowerdir, copied verbatim from the
-	 * container_spec at create time (issue #61). Ordinary containers get
-	 * their image-version rootfs here -- the same path the read-file
-	 * fallback used to reconstruct from image/image_version -- but a
-	 * build container ("__pkgbuild-N", registered under the synthetic
-	 * image name "pkgbuild" with no version) gets g_pkgbuild_rootfs or a
-	 * custom build image's rootfs, which that reconstruction could never
-	 * produce. Storing what was actually used removes the guesswork and
-	 * makes exited-container reads work for every container kind.
-	 * Empty for a userns container, which uses a per-container rootfs
-	 * rather than an overlay (ADR-0179 phase 2c).
-	 */
-	char lowerdir[PATH_MAX];
 	struct container_handle handle;
 	int running;       /* 1 while the container's process is alive */
 	int exit_status;   /* valid once running == 0; raw waitid() si_status */

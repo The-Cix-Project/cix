@@ -35,7 +35,7 @@
  * the text, not for syntax. There is no parse to get wrong.
  *
  * A SECOND COUNTED SET, same idea (#402/#474): a blocking wait is not
- * the only way to stop the reactor. `overlay_upperdir_size()` is an
+ * the only way to stop the reactor. `treesize_bytes()` is an
  * nftw() walk, O(files) and unbounded, and three request paths called
  * it inline -- one of them, container stats, on every request with no
  * shortcut, on a path the dashboard polls. That is a stalled control
@@ -324,7 +324,7 @@ static int count_blocking_waits(const char *path, int *found)
 }
 
 /*
- * Every place that walks a tree with overlay_upperdir_size(), and
+ * Every place that walks a tree with treesize_bytes(), and
  * whether it does so on the reactor. Measured 2026-09-15.
  *
  * Mentions in comments count too -- the scan is textual, and a number
@@ -354,7 +354,7 @@ static const struct walk_budget g_walk_budgets[] = {
 	  "version in one request. An operator-initiated, deliberately expensive call rather "
 	  "than something polled, and it is bounded by what gc found -- but it is still the "
 	  "reactor, and it is counted so that stays visible." },
-	{ "src/overlay.c", 2, "the definition and its own comment, not calls." },
+	{ "daemon/src/treesize.c", 1, "the definition, not a call (it was src/overlay.c's overlay_upperdir_size() until ADR-0360, cix#658)." },
 };
 
 #define WALK_BUDGET_COUNT ((int)(sizeof(g_walk_budgets) / sizeof(g_walk_budgets[0])))
@@ -368,7 +368,7 @@ static int count_walks(const char *path)
 	if (f == NULL)
 		return -1;
 	while (fgets(line, sizeof(line), f) != NULL) {
-		if (strstr(line, "overlay_upperdir_size(") != NULL)
+		if (strstr(line, "treesize_bytes(") != NULL)
 			n++;
 	}
 	fclose(f);
@@ -390,7 +390,7 @@ static int check_walk_budgets(void)
 		}
 		if (n != g_walk_budgets[i].allowed) {
 			fprintf(stderr,
-			        "FAIL: %s mentions overlay_upperdir_size() %d times, expected %d.\n"
+			        "FAIL: %s mentions treesize_bytes() %d times, expected %d.\n"
 			        "      That walk is O(files) and unbounded. What the expected count "
 			        "is made of: %s\n"
 			        "      A NEW CALL on the reactor stalls the control plane for as long "
@@ -475,11 +475,9 @@ static const char *const g_cred_calls[] = {
  * skipped, a file not named here budgeted at zero.
  */
 static const struct call_budget g_copy_budgets[] = {
-	{ "main.c", "cix_tree_copy(", 1,
-	  "seeding a userns rootfs where rebuildable storage is not btrfs (ADR-0179's copy) -- "
-	  "on the loop until ADR-0341 phase 2 moves it to a helper child (#614)" },
-	{ "main.c", "chown_tree(", 2,
-	  "the definition, and that same non-btrfs seed's chown to the subordinate base (#614)" },
+	/* main.c had one cix_tree_copy( and two chown_tree( for the userns
+	 * copy+chown seed where rebuildable storage was not btrfs. ADR-0360
+	 * removed that path, so main.c is budgeted at zero for both (#614). */
 	{ "volume.c", "chown_tree(", 3,
 	  "the definition, its recursion, and /volumes/{volume_name}/owner with recursive set: an "
 	  "operator-initiated walk of the volume, on the loop, counted so it stays visible" },
