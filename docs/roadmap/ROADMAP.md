@@ -2455,7 +2455,7 @@ The owner asked for simple and full quotas as a setting, simple by default. The 
 - **The read on the live box:** `cixctl storage quota` on 611 prints the setting `simple`. It lists `sda` (the image store) and `vdb5` (`/var/lib/cix`) as `full`, read from their qgroup status items, which confirms what the code said about the old lazy enable. `vdb4` (`/config`) and `vda` were `off`.
 - **The format path:** `cixctl storage format vda --fs-type=btrfs` under 611, after which vda reads `simple`.
 - **The release:** 611 booted (slot a, 12 containers running) and published itself to the LAN cache.
-- **What stays:** sda and vdb5 keep full accounting until they are formatted again, which the read and the dashboard say. Releases B and A of the owner's 2026-10-27 storage decisions remain: the btrfs-only store removal (#615, #614, #161, #157) has its own ADR to write.
+- **What stays:** sda and vdb5 keep full accounting until they are formatted again, which the read and the dashboard say. The other storage decision of 2026-10-27, the btrfs-only store removal (#615, #614, #161, #157), has its own ADR to write.
 
 ## Part 340: a refused package says it was refused, and no installed package lost its relocatable symbols (#655, #651, 0.2.57-610)
 
