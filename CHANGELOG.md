@@ -10,6 +10,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** `merge_fail()` keeps the sentence it logs, and an install's producer child hands it back as the mutate reason. A package's `error` now reads, for example, `image "base" could not produce a new version: the thread-local data gate (#653) failed for "usr/lib/libtls654.so"`. A failed copy names the file and the errno the same way. A hostbuild harvest that fails says why too, where it said only "failed to harvest the built artifact". `test_pkg` installs a tcc `-shared` library with `__thread` data and checks that the install is refused, that the row names the file and the gate, and that nothing was left in the image.
 - **Why:** the row said only "the caller's own mutate step failed", and the reason reached the log store alone (libsodium 1.0.20-4 into probe-cu, 192.168.15.95, 0.2.57-607).
+- **Verified:** on 192.168.15.95, compile probe 0.2.57-631 and the 0.2.57-608 release passed with `test_pkg PASS` and `SELFTEST: PASS`. 608 is live (slot a, 12 containers running). The same libsodium install's row now names `usr/lib/libsodium.so.26.2.0` and the thread-local data gate. ROADMAP Part 338.
 
 ### The ELF gate refuses a shared library whose TLS it cannot reach (#653, #652)
 

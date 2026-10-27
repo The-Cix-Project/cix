@@ -2445,6 +2445,16 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 338: a refused install's row says which file and which step (#654, 0.2.57-608)
+
+Part 337 left a refused install's row saying only that the image's mutate step had failed; the reason reached the log store alone. `merge_fail()` now keeps the sentence it logs, and an install's producer child (ADR-0356) hands it to the daemon as the mutate reason, through the channel #606 built for build environments. The same sentence now reaches a failed hostbuild harvest's row, which used to say only "failed to harvest the built artifact".
+
+**Measured on 192.168.15.95, 2026-10-27:**
+
+- **The gate:** compile probe 0.2.57-631 and the 0.2.57-608 release printed `test_pkg PASS` and `SELFTEST: PASS`. `test_pkg`'s new case builds a tcc `-shared` library with `__thread` data and installs it. It checks three things: the install is refused, the row contains `the thread-local data gate (#653) failed for "usr/lib/libtls654.so"`, and the library is absent from the image.
+- **The release:** 608 booted (slot a, 12 containers running, jump up).
+- **The issue's own measurement, repeated:** installing libsodium 1.0.20-4 into `probe-cu` was refused again. This time the row read `image "probe-cu" could not produce a new version: the thread-local data gate (#653) failed for "usr/lib/libsodium.so.26.2.0"`. The failed entry was then removed.
+
 ## Part 337: the ELF gate refuses a shared library whose TLS it cannot reach (#652, #653, 0.2.57-607)
 
 TCC compiles `__thread` in a shared library with the local-exec TLS model, which is valid only in an executable (Part 335). #652 swept every installed tcc-built shared object for thread-local data. #653 makes the install-time ELF gate refuse the defect whichever compiler produces it. `elfcheck_unreachable_tls()` answers 1 for a shared object (no `PT_INTERP`, not `DF_1_PIE`) that has a `PT_TLS` segment but neither a TLS dynamic relocation (DTPMOD64, DTPOFF64, TPOFF64, TLSDESC) nor an import of `__tls_get_addr`. The install merge refuses such a file, next to the undefined-builtin check. On its first run in a release gate, the gate found a library the sweep had missed.
@@ -2466,7 +2476,7 @@ TCC compiles `__thread` in a shared library with the local-exec TLS model, which
   - `probe-tlssig@3-1`: both gcc libraries now carry a DTPMOD64 and import `__tls_get_addr`.
   - jump rolled to image version 87e1ec112a0f and stayed up past its 300 s probation, with nslcd and sshd running. An LDAP login was not tried, because jump is not a test target.
 - **The release:** compile probe 0.2.57-630 and the 0.2.57-607 release printed `test_elfcheck_gcc PASS`, `test_installer PASS` and `SELFTEST: PASS`. The test builds the same `__thread` source three ways: tcc `-shared` is refused, while gcc `-fPIC` and a tcc executable are accepted. It also runs the check over every shared object in its build container. 607 booted (slot b, 12 containers running).
-- **The gate on the live box:** installing libsodium 1.0.20-4 into the scratch image `probe-cu` failed. cixd logged `usr/lib/libsodium.so.26.2.0 is a shared library with thread-local data addressed at fixed offsets ... build this package with compiler "gcc" (#653)`. The `pkg ls` row says only that the image's mutate step failed, which is a separate gap.
+- **The gate on the live box:** installing libsodium 1.0.20-4 into the scratch image `probe-cu` failed. cixd logged `usr/lib/libsodium.so.26.2.0 is a shared library with thread-local data addressed at fixed offsets ... build this package with compiler "gcc" (#653)`. The `pkg ls` row said only that the image's mutate step failed; Part 338 fixes that (#654).
 
 ## Part 336: test_installer gates every release (#649, 0.2.57-606)
 
