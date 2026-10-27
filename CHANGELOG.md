@@ -9,6 +9,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 ### A package a gate refuses is reported as refused, not as the image's failure (#655)
 
 - **What changed:** when the undefined-builtin gate (#176) or the thread-local data gate (#653) refuses one of a package's files, the row reads `refused for image "X": the thread-local data gate (#653) failed for "usr/lib/…"`. Before, it read `image "X" could not produce a new version: …`, which blames the image for the package's fault. Every other failure of the merge keeps the image wording, because the image is what failed there. The gates' verdict travels from the producer child in its report (`package_fault`). The gates themselves stay in the child, so the install loop is not slowed (ADR-0356, #617). `test_pkg`'s #654 case checks the new wording.
+- **Verified:** compile probe 0.2.57-636 and the 0.2.57-610 release passed with `test_pkg PASS` and `SELFTEST: PASS`. On 610 (slot b, 12 containers running), libsodium 1.0.20-4 into `probe-cu` was refused with the row `refused for image "probe-cu": the thread-local data gate (#653) failed for "usr/lib/libsodium.so.26.2.0"`. ROADMAP Part 340.
 
 ### "Tarball" means an upstream source archive, never a Cix package
 
