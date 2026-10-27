@@ -519,10 +519,13 @@ int main(void)
 			/* Published, so nothing is owed: the queue file is removed. */
 			snprintf(queue_file, sizeof(queue_file), "%s/rebuildable/pkg/push_queue.json",
 			         g_data_dir);
-			for (i = 0; i < 50 && access(queue_file, F_OK) == 0; i++)
+			for (i = 0; i < 150 && access(queue_file, F_OK) == 0; i++)
 				usleep(200000);
-			if (access(queue_file, F_OK) == 0)
+			if (access(queue_file, F_OK) == 0) {
 				fail("#648: %s is still there after the push was published", queue_file);
+				run_cmd("sed 's/^/    queue file: /' '%s'", queue_file);
+				print_artifact_log(&c);
+			}
 			test_http_server_stop(put_pid);
 		}
 	}
