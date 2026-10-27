@@ -7,6 +7,7 @@
 #include "connthrottle.h"
 #include "pkicrypto.h"
 #include "events.h"
+#include "stallwatch.h"
 
 /* ADR-0317: the contract's permission vocabulary (apigen --emit-permissions). */
 #include "generated/permissions.h"
@@ -245,7 +246,8 @@ static void save_sessions(void)
 {
 	struct json_writer w;
 	time_t now = time(NULL);
-	int i;
+	long long t;
+	int i, rc;
 
 	if (g_sessions_path[0] == '\0')
 		return;
@@ -272,7 +274,17 @@ static void save_sessions(void)
 	}
 	jw_arr_close(&w);
 	jw_obj_close(&w);
-	if (persist_atomic_write(g_sessions_path, w.buf, w.len) == 0) {
+	/*
+	 * #646: tallied, because the session expiry timer's passes held the
+	 * loop 2700, 984 and 959 ms on 192.168.15.95 (2026-10-26, during
+	 * builds) and the stall record could name no step inside them.
+	 * persist_atomic_write() fsyncs, and this says whether that is where
+	 * the time goes.
+	 */
+	t = stallwatch_tally_start();
+	rc = persist_atomic_write(g_sessions_path, w.buf, w.len);
+	stallwatch_tally("session table write", t);
+	if (rc == 0) {
 		chmod(g_sessions_path, 0600);
 		for (i = 0; i < HOSTAUTH_SESSION_MAX; i++)
 			g_sessions[i].saved_expires_at = g_sessions[i].expires_at;
