@@ -11223,11 +11223,32 @@ static int artifact_export_start(const char *name, const char *dest_override, ch
 	(void)pkg_hostbuild_package_info(name, version, bare_version, sizeof(bare_version),
 	                                  &release);
 
-	if (dest_override != NULL)
+	if (dest_override != NULL) {
+		char dest_dir[PATH_MAX];
+		char *slash;
+
 		snprintf(g_artifact_export_path, sizeof(g_artifact_export_path), "%s", dest_override);
-	else
+		/*
+		 * #648: the override is the package cache, and nothing creates
+		 * that directory at start (pkg_cache_init() does not; storing
+		 * an artifact does). On a data directory that has fetched
+		 * nothing -- test_artifact_export's -- `cbs package` had no
+		 * directory to write into.
+		 */
+		snprintf(dest_dir, sizeof(dest_dir), "%s", dest_override);
+		slash = strrchr(dest_dir, '/');
+		if (slash != NULL && slash != dest_dir) {
+			*slash = '\0';
+			if (persist_mkdir_p(dest_dir) != 0) {
+				snprintf(err_msg, err_msg_size, "could not create %s: %s", dest_dir,
+				         strerror(errno));
+				return -1;
+			}
+		}
+	} else {
 		snprintf(g_artifact_export_path, sizeof(g_artifact_export_path), "%s/%s-%s%s", out_dir,
 		         name, version, pkg_artifact_suffix(PKG_ARTIFACT_FORMAT_CIXPKG));
+	}
 	unlink(g_artifact_export_path);
 
 	{

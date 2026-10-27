@@ -183,6 +183,23 @@ static int seed_hostbuild(void)
 	return 0;
 }
 
+/*
+ * The daemon's own account of exports and pushes, printed on a failure:
+ * its log store lives in the data directory this test deletes, so it is
+ * read while the daemon is up or not at all (cix#580's lesson).
+ */
+static void print_artifact_log(struct cix_client *c)
+{
+	struct cix_response r;
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "GET", "/v1/system/logs?source=cixd&regex=artifact&tail=30", NULL,
+	                       &r) == 0 &&
+	    r.body != NULL)
+		printf("    daemon log (artifact): %s\n", r.body);
+	cix_response_free(&r);
+}
+
 /* Polls GET .../export until it leaves "building". Returns the final
  * state string in out_state, and size_bytes via out_size. */
 static int poll_export(struct cix_client *c, const char *path, char *out_state, size_t state_size,
@@ -458,8 +475,10 @@ int main(void)
 			if (!retried)
 				usleep(200000);
 		}
-		if (!retried)
+		if (!retried) {
 			fail("#648: a push that got no answer was not put back to retry");
+			print_artifact_log(&c);
+		}
 
 		snprintf(put_root, sizeof(put_root), "%s/push648", g_data_dir);
 		if (run_cmd("mkdir -p '%s'", put_root) != 0 ||
@@ -493,8 +512,10 @@ int main(void)
 			         u.machine);
 			for (i = 0; i < 150 && access(pushed, R_OK) != 0; i++)
 				usleep(200000);
-			if (access(pushed, R_OK) != 0)
+			if (access(pushed, R_OK) != 0) {
 				fail("#648: the push carried over the restart never arrived (%s)", pushed);
+				print_artifact_log(&c);
+			}
 			/* Published, so nothing is owed: the queue file is removed. */
 			snprintf(queue_file, sizeof(queue_file), "%s/rebuildable/pkg/push_queue.json",
 			         g_data_dir);

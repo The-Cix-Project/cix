@@ -162,6 +162,11 @@ struct pkg_entry {
 	 * longer does.)
 	 */
 	int cache_hit;
+	/* #648: a hostbuild built here whose installed tree is still to be
+	 * exported into the cache (#200). Set at the harvest whether or not
+	 * any repository is marked push; not persisted, since a push owed
+	 * is kept by the push queue itself. */
+	int export_wanted;
 	/* ADR-0157 Phase 2: this build's own real, distinct registry
 	 * container name ("__pkgbuild-<chain index>") -- computed once in
 	 * pkg_fetch_completed() and referenced by spec_out->ns.hostname/
@@ -16380,8 +16385,10 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * hand-off held in memory, which a reboot or a second export
 		 * could lose.
 		 */
-		if (!e->cache_hit)
+		if (!e->cache_hit) {
+			e->export_wanted = 1;
 			pkg_artifact_push_enqueue(e->name, e->version);
+		}
 	} else {
 		/*
 		 * ADR-0356 (#617): the image version is produced in a helper
@@ -20848,13 +20855,40 @@ int pkg_artifact_push_wanted_export(char *name, size_t name_size, char *version,
 		snprintf(version, version_size, "%s", g_push_queue[i].version);
 		return 1;
 	}
+	/*
+	 * And a hostbuild built here with no push owed: its artifact still
+	 * belongs in the cache, which is where #200 put it and what
+	 * artifact_cached reports (#171), whether or not this host publishes.
+	 */
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		struct pkg_entry *e = &g_packages[i];
+
+		if (!e->in_use || !e->export_wanted)
+			continue;
+		if (e->state != PKG_STATE_INSTALLED || strcmp(e->image, PKG_HOSTBUILD_IMAGE) != 0 ||
+		    pkg_artifact_cache_has(e->name, e->version)) {
+			e->export_wanted = 0;
+			continue;
+		}
+		snprintf(name, name_size, "%s", e->name);
+		snprintf(version, version_size, "%s", e->version);
+		return 1;
+	}
 	return 0;
 }
 
 void pkg_artifact_push_drop(const char *name, const char *version, const char *why)
 {
-	int i, kept = 0, dropped = 0;
+	int i, kept = 0, dropped = 0, cleared = 0;
 
+	/* The export that failed is not asked for again. */
+	for (i = 0; i < PKG_MAX_PACKAGES; i++)
+		if (g_packages[i].in_use && g_packages[i].export_wanted &&
+		    strcmp(g_packages[i].image, PKG_HOSTBUILD_IMAGE) == 0 &&
+		    strcmp(g_packages[i].name, name) == 0 && strcmp(g_packages[i].version, version) == 0) {
+			g_packages[i].export_wanted = 0;
+			cleared = 1;
+		}
 	for (i = 0; i < g_push_queue_count; i++) {
 		if (strcmp(g_push_queue[i].name, name) == 0 &&
 		    strcmp(g_push_queue[i].version, version) == 0) {
@@ -20864,11 +20898,14 @@ void pkg_artifact_push_drop(const char *name, const char *version, const char *w
 		g_push_queue[kept++] = g_push_queue[i];
 	}
 	g_push_queue_count = kept;
-	if (dropped == 0)
-		return;
-	logstore_write("cixd", "error", "artifact push: %s@%s not published: %s", name, version,
-	               why);
-	push_queue_save();
+	if (dropped > 0) {
+		logstore_write("cixd", "error", "artifact push: %s@%s not published: %s", name,
+		               version, why);
+		push_queue_save();
+	} else if (cleared) {
+		logstore_write("cixd", "error", "artifact export: %s@%s is not in the local cache: %s",
+		               name, version, why);
+	}
 }
 
 /* The soonest wait still in the future: one already over is the pump's
