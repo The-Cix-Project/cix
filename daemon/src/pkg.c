@@ -4800,12 +4800,19 @@ int pkg_run_capture_sha256(const char *path, char *out, size_t out_size)
  * leaves it describing that failure.
  */
 static char g_merge_fail_reason[256];
+/*
+ * #655: whether that failure is the package's fault -- a gate refusing
+ * one of its files -- rather than the image's. The row says which, and
+ * a package the gate refuses is the thing to fix.
+ */
+static int g_merge_package_fault;
 
 static int merge_fail(const char *relpath, const char *step, int use_errno)
 {
 	const char *where = relpath != NULL && relpath[0] != '\0' ? relpath : "(tree root)";
 	int err = errno;
 
+	g_merge_package_fault = 0;
 	if (use_errno)
 		snprintf(g_merge_fail_reason, sizeof(g_merge_fail_reason), "%s failed for \"%s\": %s",
 		         step, where, strerror(err));
@@ -4813,6 +4820,14 @@ static int merge_fail(const char *relpath, const char *step, int use_errno)
 		snprintf(g_merge_fail_reason, sizeof(g_merge_fail_reason), "%s failed for \"%s\"", step,
 		         where);
 	logstore_write("cixd", "error", "merge: %s", g_merge_fail_reason);
+	return -1;
+}
+
+/* A gate refused one of the package's own files (#176, #653, #655). */
+static int merge_refuse(const char *relpath, const char *gate)
+{
+	merge_fail(relpath, gate, 0);
+	g_merge_package_fault = 1;
 	return -1;
 }
 
@@ -4955,7 +4970,7 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 					               "the compiler did not implement it and emitted it as an "
 					               "external symbol instead, so this binary is broken (#176)",
 					               child_rel, bad_sym);
-					return merge_fail(child_rel, "the undefined compiler builtin gate (#176)", 0);
+					return merge_refuse(child_rel, "the undefined compiler builtin gate (#176)");
 				}
 			}
 			/*
@@ -4979,7 +4994,7 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 				               "-- tcc builds __thread in a shared library this way, so build "
 				               "this package with compiler \"gcc\" (#653)",
 				               child_rel);
-				return merge_fail(child_rel, "the thread-local data gate (#653)", 0);
+				return merge_refuse(child_rel, "the thread-local data gate (#653)");
 			}
 
 			t = stallwatch_tally_start();
@@ -5894,6 +5909,7 @@ struct produce_report {
 	char version[IMAGE_VERSION_MAX];
 	long long took_ms;
 	int file_count;
+	int package_fault; /* #655: a gate refused the package's own file */
 	char held[PRODUCE_HELD_LOG_MAX];
 };
 
@@ -5923,6 +5939,7 @@ static void produce_report_write(const char *report_path, int rc, const char *ve
 	         rc == 0 ? version : "");
 	g_produce_report.took_ms = took_ms;
 	g_produce_report.file_count = rc == 0 && files_of != NULL ? files_of->file_count : 0;
+	g_produce_report.package_fault = rc != 0 && g_merge_package_fault;
 	fd = open(report_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
 	if (fd < 0)
 		return;
@@ -6130,6 +6147,7 @@ static int image_version_fork(const char *image,
 		/* #606: before the sweep, which closes the store's segment. */
 		logstore_hold(g_produce_report.held, sizeof(g_produce_report.held));
 		g_produce_fail_reason[0] = '\0';
+		g_merge_package_fault = 0;
 		if (mutate_reason != NULL)
 			mutate_reason[0] = '\0';
 		/*
@@ -15360,12 +15378,19 @@ static int install_produce_start(int chain_idx, pid_t *out_pid, int *out_pidfd, 
  * Releases the chain.
  */
 static void install_produce_failed(int chain_idx, struct pkg_entry *e, int is_upgrade,
-                                   const char *why)
+                                   const char *why, int package_fault)
 {
 	/* Name the image and what it could not do, not this package -- the
-	 * package is usually blameless (#180). */
-	pkg_fail(e, is_upgrade, PIPELINE_INSTALL, "image \"%s\" could not produce a new version: %s",
-	         g_chains[chain_idx].image, why);
+	 * package is usually blameless (#180). Unless a gate refused one of
+	 * the package's own files: then the package is the thing to fix,
+	 * and the row says so (#655). */
+	if (package_fault)
+		pkg_fail(e, is_upgrade, PIPELINE_INSTALL, "refused for image \"%s\": %s",
+		         g_chains[chain_idx].image, why);
+	else
+		pkg_fail(e, is_upgrade, PIPELINE_INSTALL,
+		         "image \"%s\" could not produce a new version: %s", g_chains[chain_idx].image,
+		         why);
 	install_keep_prev_version(e, is_upgrade, g_chains[chain_idx].produce_prev_version,
 	                          g_chains[chain_idx].produce_prev_depends);
 	chain_release(chain_idx);
@@ -15395,7 +15420,7 @@ static int install_produce_begin(int chain_idx, struct pkg_entry *e, int is_upgr
 		chain_release(chain_idx);
 		return 0;
 	}
-	install_produce_failed(chain_idx, e, is_upgrade, err);
+	install_produce_failed(chain_idx, e, is_upgrade, err, 0);
 	return 0;
 }
 
@@ -15755,7 +15780,8 @@ int pkg_produce_completed(int chain_idx, int exit_status, pid_t *out_pid, int *o
 			snprintf(reason, sizeof(reason), "the producer exited %d and %s", exit_status,
 			         reported ? "gave no reason" : "left no report");
 		free(files);
-		install_produce_failed(chain_idx, e, is_upgrade, reason);
+		install_produce_failed(chain_idx, e, is_upgrade, reason,
+		                       reported && g_produce_report.package_fault);
 		return 0;
 	}
 
@@ -15770,7 +15796,8 @@ int pkg_produce_completed(int chain_idx, int exit_status, pid_t *out_pid, int *o
 		const char *why = pkg_last_image_produce_failure();
 
 		free(files);
-		install_produce_failed(chain_idx, e, is_upgrade, why != NULL ? why : "recording it failed");
+		install_produce_failed(chain_idx, e, is_upgrade, why != NULL ? why : "recording it failed",
+		                       0);
 		return 0;
 	}
 	logstore_write("cixd", "info",

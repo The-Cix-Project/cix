@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A package a gate refuses is reported as refused, not as the image's failure (#655)
+
+- **What changed:** when the undefined-builtin gate (#176) or the thread-local data gate (#653) refuses one of a package's files, the row reads `refused for image "X": the thread-local data gate (#653) failed for "usr/lib/…"`. Before, it read `image "X" could not produce a new version: …`, which blames the image for the package's fault. Every other failure of the merge keeps the image wording, because the image is what failed there. The gates' verdict travels from the producer child in its report (`package_fault`). The gates themselves stay in the child, so the install loop is not slowed (ADR-0356, #617). `test_pkg`'s #654 case checks the new wording.
+
+### "Tarball" means an upstream source archive, never a Cix package
+
+- **What changed:** comments in `daemon/src/pkg.c` that still called a Cix artifact a "tarball" now say "artifact". Two of them described a "tarball path" for installing artifacts, which #569 removed. The push code's file variable is now `upload`. Two dashboard hints on image recipes said a fully pinned recipe "fetches one whole-rootfs tarball"; ADR-0209 removed that path. Applying a recipe declares the manifest, and each package installs from its own `.cixpkg` or its recipe. Upstream source archives (kernel.org, GitHub, Gitea, the recipe-sync tree) keep the word.
+
 ### A queued publish survives a restart and a failed push is retried (#648)
 
 - **What changed:** the artifact push queue is kept on disk (`push_queue.json` in the package directory) and read back at start, and a restart tries every carried-over push at once. A push that gets no answer, a 5xx, a 408 or a 429 is put back with a backoff: 1 minute, doubling to at most an hour, for up to 12 attempts. That is ADR-0324's "its own retry", which the code had never done. A hostbuild's push is queued when the build ends and waits in the queue for its export, and the export is chosen from the queue, one at a time. Before, one name held in memory handed the export to the push: a second hostbuild finishing during an export wiped the first's publish, and every hostbuild logged a false `has no tarball in the local cache -- not published`. `POST /v1/pkg/{name}/artifact/publish` queues behind a running export with 202, where it answered 409.

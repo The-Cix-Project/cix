@@ -7388,6 +7388,13 @@ skip_resume:
 				        em != NULL ? em : "(no error)");
 				ok = 0;
 			}
+			/* #655: the package is at fault, not the image. */
+			if (em == NULL || strstr(em, "refused for image") == NULL ||
+			    strstr(em, "could not produce a new version") != NULL) {
+				fprintf(stderr, "FAIL: #655 the row must say the package was refused, got: %s\n",
+				        em != NULL ? em : "(no error)");
+				ok = 0;
+			}
 			cix_response_free(&r);
 			if (access(base_path("/usr/lib/libtls654.so"), F_OK) == 0) {
 				fprintf(stderr, "FAIL: #653 a refused install left its library behind\n");
