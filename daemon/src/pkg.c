@@ -15309,6 +15309,11 @@ static void pin_follows_install(const char *image, const char *package, const ch
  * what that costs once the two differ: a snapshot build's output was
  * looked for under an upper layer that no longer exists, and
  * test_installer's first-boot glibc install never reported ready.
+ *
+ * build_tree is never empty here: a chain lives only in this daemon's
+ * memory, so every completion follows its own prep in the same run, and
+ * the prep sets it. Were it empty, dest_dir would name a host path that
+ * does not exist, which the #486 gate refuses by name (#657).
  */
 static void install_staged_paths(const struct pkg_entry *e, char *tree, size_t tree_size,
                                  char *dest_dir, size_t dest_dir_size)
@@ -16371,14 +16376,33 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	 * own messages rather than having this one guess.
 	 */
 	stallwatch_step("pkg install: check the staged tree");
-	if (staged_tree_has_content(dest_dir) == 0) {
+	int staged = staged_tree_has_content(dest_dir);
+	int staged_errno = errno;
+
+	/*
+	 * A staged tree that does not exist at all is refused too (#657).
+	 * Nothing below says so: merge_tree() takes a missing root as
+	 * "nothing to merge", so the install succeeds and records a package
+	 * with no files. Compile probe 0.2.57-639 measured what that costs:
+	 * the output was looked for at a path the build had not used, the
+	 * first boot's glibc read INSTALLED with no loader in the image,
+	 * and the "default image" watcher, which waits for the loader or a
+	 * FAILED state, waited for 1200 s.
+	 */
+	if (staged == 0 || (staged < 0 && staged_errno == ENOENT)) {
 		char msg[320];
 
-		snprintf(msg, sizeof(msg),
-		         "the build staged no files -- %s holds nothing but directories, so this "
-		         "would publish an empty package. Check the install phase, and check "
-		         "whether the finalize phase removed everything it staged (#486)",
-		         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_CBS);
+		if (staged == 0)
+			snprintf(msg, sizeof(msg),
+			         "the build staged no files -- %s holds nothing but directories, so this "
+			         "would publish an empty package. Check the install phase, and check "
+			         "whether the finalize phase removed everything it staged (#486)",
+			         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_CBS);
+		else
+			snprintf(msg, sizeof(msg),
+			         "the build's staged tree %s does not exist, so there is nothing to install "
+			         "(#657)",
+			         dest_dir);
 		logstore_write("cixd", "error", "pkg install: %s@%s: %s", e->name, e->version, msg);
 		pkg_fail(e, is_upgrade, PIPELINE_INSTALL, msg);
 		install_keep_prev_version(e, is_upgrade, prev_version, prev_depends);
