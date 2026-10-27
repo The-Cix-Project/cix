@@ -586,11 +586,9 @@
 			</div>
 			<div class="tab-panel" id="imgd-panel-recipe" data-tab="recipe" hidden>
 				<p class="hint">A declarative package-list definition for this image (ADR-0123) --
-					bulk-declares the manifest above in one shot instead of individual entries; a
-					fully-pinned recipe with a matching configured artifact server (<a
-					href="#pkg-cache">Cache &amp; Artifacts</a>) instead fetches one precompiled
-					whole-rootfs tarball, skipping every per-package build. A recipe's own name is
-					always this image's own name.</p>
+					applying it declares the manifest above in one shot instead of individual
+					entries (ADR-0209). Each package is then installed from its own artifact or
+					built from its recipe. A recipe's own name is always this image's own name.</p>
 				<div id="imgd-recipe-missing" class="hint" hidden>No recipe stored for this image --
 					packages must still be added one at a time via Manifest above.</div>
 				<div id="imgd-recipe-present">
@@ -1972,8 +1970,7 @@
 						<button type="button" id="recipes-image-add">Add recipe&hellip;</button>
 					</div>
 					<p class="hint">A recipe's own name is always its target image's name (1:1, ADR-0123) --
-						applying bulk-declares that image's manifest (or, for a fully-pinned recipe with a
-						matching artifact server, fetches one whole-rootfs tarball).</p>
+						applying it declares that image's manifest in one shot (ADR-0209).</p>
 					<table id="image-recipes">
 						<tbody id="image-recipes-body">
 							<tr><td colspan="2" class="empty">Reading&hellip;</td></tr>

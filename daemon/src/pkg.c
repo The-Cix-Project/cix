@@ -6455,7 +6455,7 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 		jw_null(w);
 	}
 	/*
-	 * Issue #171: whether this package's artifact tarball exists in
+	 * Issue #171: whether this package's .cixpkg artifact exists in
 	 * this host's own cache -- i.e. whether it can be published right
 	 * now, and whether those bytes exist anywhere but this disk.
 	 *
@@ -6467,7 +6467,7 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 	 * This is the field whose absence let a real gap hide for five
 	 * releases. `cix` sat at v2.2.0-rc30 in the artifact cache while
 	 * the host that built it ran rc35, because a hostbuild enqueued a
-	 * push for a tarball nothing had built (#200) -- and nothing in
+	 * push for an artifact nothing had built (#200) -- and nothing in
 	 * this view could distinguish "published" from "exists only here".
 	 * It was found by comparing two systems by hand.
 	 *
@@ -10248,7 +10248,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	 * branch in pkg_fetch_completed()), but the exclusion wrongly
 	 * extended to this READ. Since #129 a hostbuild publishes its
 	 * artifact, and a successful remote artifact fetch saves the
-	 * fetched tarball into the local cache (pkg_cache_save_from_file(),
+	 * fetched artifact into the local cache (pkg_cache_save_from_file(),
 	 * further down), so the local cache legitimately holds hostbuild
 	 * packages -- and reusing those bytes lets a re-hostbuild skip a
 	 * re-download. A hostbuild that BUILDS still never writes the local
@@ -11430,10 +11430,8 @@ static int write_kmod_extra_config(const char *extra_dir, const char *symbols)
  * by pidfd like every other child this daemon starts, and
  * pkg_unpack_completed() resumes the install when it exits.
  *
- * The tarball path is deliberately NOT changed to match: libarchive
- * is a library, so that extraction has no child to wait on and
- * nothing to make asynchronous. One dispatch point, two mechanisms,
- * because the two formats differ in exactly that way.
+ * This is the only artifact format: the .tar.gz artifacts, which
+ * libarchive once extracted in-process, are gone (cix#569, ADR-0329).
  *
  * dest_dir is REMOVED before the fork, not after: cbs_cixpkg_extract()
  * refuses a destination that already exists, and the caller has just
@@ -12286,7 +12284,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 
 	/*
 	 * ADR-0122: start_fetch_for()'s child may have left a checksum-
-	 * verified artifact tarball sitting at the sentinel path instead
+	 * verified artifact sitting at the sentinel path instead
 	 * of ever fetching recipe.source[] at all -- promote it into the
 	 * real local cache right here and fold this job into the exact
 	 * same cache-hit path a local cache hit already takes (set fresh
@@ -12653,12 +12651,11 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
 	/*
 	 * Issue #139: a checksum proves an artifact is intact, never that
 	 * it is usable. Run here rather than left to the caller because
-	 * this is where the tree first exists -- the same point the
-	 * tarball path runs it, just in a different function.
+	 * this is where the tree first exists.
 	 *
 	 * A CIXPKG checks a digest per file and refuses setuid modes and
 	 * non-root ownership on its way out (ADR-0307 clause 4), which is
-	 * strictly more than a tarball offers -- and none of that answers
+	 * strictly more than the .tar.gz artifacts it replaced did -- and none of that answers
 	 * "is this binary executable", which is what #139 was about.
 	 */
 	{
@@ -19877,7 +19874,7 @@ static void pkg_cache_touch(const char *name, const char *version)
 
 /*
  * Caches, under the configured cap and with LRU eviction, an
- * artifact tarball that already exists on disk as a whole file
+ * artifact that already exists on disk as a whole file
  * (pkg_sync_completed()'s own network-fetched pkg/artifacts/ entries)
  * rather than a directory to tar up. Takes ownership of src_path: it
  * either becomes the cache entry (rename) or is removed (copy+unlink
@@ -20994,15 +20991,15 @@ static void pkg_artifact_push_enqueue(const char *name, const char *version)
 }
 
 /*
- * Where a push will look for this package's tarball, and whether it is
+ * Where a push will look for this package's artifact, and whether it is
  * there yet. A hostbuild's artifact is a DIRECTORY -- it is assembled on
  * this host rather than fetched, so nothing ever tarred it into the
  * cache, and pkg_artifact_push_try_start() found nothing to send. That
  * is why "cix", "kernel" and "isotools" could never be published while
  * ordinary source-built packages published themselves automatically:
  * the difference was never the request, it was that half the packages
- * on a box had no tarball for the pusher to find. The caller builds one
- * from the installed tree before enqueuing.
+ * on a box had no artifact for the pusher to find. One is exported
+ * from the installed tree while the push waits in the queue (#648).
  */
 void pkg_artifact_cache_path(const char *name, const char *version, char *out, size_t out_size)
 {
@@ -21587,7 +21584,7 @@ int pkg_artifact_cache_has(const char *name, const char *version)
  * rather than the array deciding. That is the only reading under which
  * publishing such a name works at all: a hostbuild's artifact is the
  * one this host produced, the other entry's came from the cache and is
- * published there already, and rebuilding a tarball from an installed
+ * published there already, and rebuilding an artifact from an installed
  * tree is something only the hostbuild branch knows how to do. A
  * caller that means one specific image says so.
  */
@@ -21816,7 +21813,7 @@ enum pkg_error pkg_artifact_publish(const char *name)
  */
 int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, size_t desc_size)
 {
-	char tarball[PATH_MAX];
+	char upload[PATH_MAX]; /* the file sent: the artifact, or its signature */
 	char artifact[PATH_MAX];
 	char status_path[PATH_MAX];
 	char url[PKG_REPOSITORY_URL_MAX + 256];
@@ -21915,10 +21912,10 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 		(void)cache_artifact_path_existing(g_push_current.name, g_push_current.version,
 		                                    artifact, sizeof(artifact));
 		if (g_push_current.kind == PKG_PUSH_SIGNATURE)
-			cache_signature_path_existing(g_push_current.name, g_push_current.version, tarball,
-			                               sizeof(tarball));
+			cache_signature_path_existing(g_push_current.name, g_push_current.version, upload,
+			                               sizeof(upload));
 		else
-			snprintf(tarball, sizeof(tarball), "%s", artifact);
+			snprintf(upload, sizeof(upload), "%s", artifact);
 		if (stat(artifact, &st) == 0)
 			break;
 		/*
@@ -21977,7 +21974,7 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 		/*
 		 * Signing happens HERE, in the child, for the same reason the
 		 * digest does: Ed25519 is PureEdDSA, so openssl reads the
-		 * whole artifact, and a hundred-megabyte tarball would stall
+		 * whole artifact, and a hundred-megabyte one would stall
 		 * the reactor for as long as that takes (ADR-0247).
 		 *
 		 * The trusted comment is what makes this an approval of a
@@ -21995,14 +21992,14 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 				_exit(PKG_PUSH_EXIT_SHA_FAILED);
 			snprintf(comment, sizeof(comment), "cix pkg %s@%s sha256=%s",
 			          g_push_current.name, g_push_current.version, art_sha);
-			if (releasekey_sign_file(artifact, tarball, comment) != RELEASEKEY_OK)
+			if (releasekey_sign_file(artifact, upload, comment) != RELEASEKEY_OK)
 				_exit(PKG_PUSH_EXIT_SIGN_FAILED);
 		}
 
-		/* Digest in the child, deliberately: hashing a large tarball
+		/* Digest in the child, deliberately: hashing a large artifact
 		 * on the daemon's own thread would stall the event loop for
 		 * exactly as long as the file is big. */
-		if (pkg_run_capture_sha256(tarball, sha, sizeof(sha)) != 0)
+		if (pkg_run_capture_sha256(upload, sha, sizeof(sha)) != 0)
 			_exit(PKG_PUSH_EXIT_SHA_FAILED);
 		snprintf(sha_header, sizeof(sha_header), "X-Cix-Sha256: %s", sha);
 		{
@@ -22021,7 +22018,7 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 
 			memset(&opts, 0, sizeof(opts));
 			opts.url = url;
-			opts.path = tarball;
+			opts.path = upload;
 			opts.upload = 1;
 			opts.header1 = auth_header;
 			opts.header2 = sha_header;
