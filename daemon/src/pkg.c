@@ -1926,8 +1926,9 @@ static int slot_marked(const char *s, int *out_slot)
  *
  * The pre-#501 names ("<name>-<version>-<i>.src", ".artifact-<name>-...",
  * ".fetcherr-<name>", ".fetchnote-<name>") are read by nothing once this
- * build runs, so they go too. ".artifact-push.status" is the push
- * worker's and is kept.
+ * build runs, so they go too, and so does ".artifact-push.status",
+ * which the push worker kept here until #648 moved it to the package
+ * directory.
  */
 static void sources_clear_slot(int chain_idx)
 {
@@ -1944,8 +1945,6 @@ static void sources_clear_slot(int chain_idx)
 		int ours = 0;
 		char path[PATH_MAX];
 
-		if (strcmp(de->d_name, ".artifact-push.status") == 0)
-			continue;
 		for (i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
 			if (strncmp(de->d_name, prefixes[i], strlen(prefixes[i])) == 0) {
 				rest = de->d_name + strlen(prefixes[i]);
@@ -20617,10 +20616,16 @@ static struct pkg_push_job g_push_current;
 /* Where the push child records curl's own HTTP status, so the reaper
  * can say "published" / "already present with different bytes" /
  * "rejected" instead of a bare exit code. One push runs at a time, so
- * one fixed path is enough. */
+ * one fixed path is enough.
+ *
+ * In the package directory, which the push start creates, beside the
+ * queue (#648). It was in the sources directory, which only a fetch
+ * creates: on a host that had fetched nothing the child could not write
+ * it, and a push that succeeded was read as HTTP 0 and retried
+ * (test_artifact_export, compile probe 0.2.57-634). */
 static void push_status_path(char *out, size_t out_size)
 {
-	snprintf(out, out_size, "%s/.artifact-push.status", g_sources_dir);
+	snprintf(out, out_size, "%s/.artifact-push.status", g_pkg_dir);
 }
 
 /*
@@ -20708,7 +20713,8 @@ static void push_queue_load(void)
 	if (g_pkg_dir[0] == '\0')
 		return;
 	push_queue_path(path, sizeof(path));
-	if (persist_read_file(path, &text, &len) != 0)
+	/* A missing file reads as success with no buffer: nothing is owed. */
+	if (persist_read_file(path, &text, &len) != 0 || text == NULL)
 		return;
 	root = json_parse(text, len);
 	free(text);
@@ -21952,6 +21958,7 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 		snprintf(url + ulen, sizeof(url) - ulen, ".minisig");
 	}
 	push_status_path(status_path, sizeof(status_path));
+	(void)persist_mkdir_p(g_pkg_dir); /* where the child writes its status (#648) */
 	unlink(status_path);
 
 	pid = fork();
