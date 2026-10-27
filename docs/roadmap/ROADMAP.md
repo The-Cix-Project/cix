@@ -2445,6 +2445,18 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 341: quota accounting is a host setting, simple by default, chosen when a filesystem is made (#613, ADR-0359, 0.2.57-611)
+
+The owner asked for simple and full quotas as a setting, simple by default. The design was measured first on a scratch btrfs on `vda`, using scratch containers given a volume on it. Simple accounting bounds a container's own writes exactly as full does: a 100 MiB limit refused the next write at 104841216 bytes in both modes. It was also faster: 20 snapshot cycles took 508 ms against 750 ms. But it never counts extents written before it was enabled: a 40 MiB limit let 16 MiB through on a subvolume already holding 88 MiB, which the kernel decides at `qgroup.c:4955` (`probe-squota@2-1`, kernel 7.2.13). ADR-0359, accepted by the owner, therefore makes the mode part of making a filesystem. cixd's format and the installer pass `mkfs.btrfs -O squota` (or `-O quota` under `full`), a filesystem keeps its mode for life, and there is no live switch. A first limit on a filesystem with quotas off now enables full accounting only when quotas are off, where it used to enable full every time and take `EINVAL` as "already on".
+
+**Measured on 192.168.15.95, 2026-10-27:**
+
+- **The gate:** compile probe 0.2.57-638 and the 0.2.57-611 release printed `test_daemon PASS`, `test_apigen PASS` and `SELFTEST: PASS`. 637 had failed only on `test_apigen`'s deliberate operation counts, 352 to 354. `test_daemon` checks the default (`simple`), a PUT of `full`, the configuration document's `storage_quota.mode`, refusals of four bad bodies, and the PUT back to `simple`.
+- **The read on the live box:** `cixctl storage quota` on 611 prints the setting `simple`. It lists `sda` (the image store) and `vdb5` (`/var/lib/cix`) as `full`, read from their qgroup status items, which confirms what the code said about the old lazy enable. `vdb4` (`/config`) and `vda` were `off`.
+- **The format path:** `cixctl storage format vda --fs-type=btrfs` under 611, after which vda reads `simple`.
+- **The release:** 611 booted (slot a, 12 containers running) and published itself to the LAN cache.
+- **What stays:** sda and vdb5 keep full accounting until they are formatted again, which the read and the dashboard say. Releases B and A of the owner's 2026-10-27 storage decisions remain: the btrfs-only store removal (#615, #614, #161, #157) has its own ADR to write.
+
 ## Part 340: a refused package says it was refused, and no installed package lost its relocatable symbols (#655, #651, 0.2.57-610)
 
 Two follow-ups from Part 337, a sweep, and the first live run of Part 339's publish.
