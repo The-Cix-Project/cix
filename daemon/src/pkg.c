@@ -15297,18 +15297,24 @@ static void pin_follows_install(const char *image, const char *package, const ch
 
 /*
  * Where a finished build left its staged tree: the build container's
- * base, and under its upper directory the path the build was told --
- * what the build was told, not a second guess at it; see
+ * build tree (e->build_tree: its snapshot rootfs since ADR-0360, or
+ * the overlay's upper layer), and under it the path the build was told
+ * -- what the build was told, not a second guess at it; see
  * build_dest_rel's own comment. A cache hit never entered a container
  * and may not have set it; its tree is at the same PKG_DEST_REL_CBS,
  * which the unpack populated directly.
+ *
+ * This used to rebuild "<base>/upper" from the container's name, a
+ * second derivation of build_tree. Compile probe 0.2.57-639 measured
+ * what that costs once the two differ: a snapshot build's output was
+ * looked for under an upper layer that no longer exists, and
+ * test_installer's first-boot glibc install never reported ready.
  */
-static void install_staged_paths(const struct pkg_entry *e, char *container_base,
-                                 size_t container_base_size, char *dest_dir, size_t dest_dir_size)
+static void install_staged_paths(const struct pkg_entry *e, char *tree, size_t tree_size,
+                                 char *dest_dir, size_t dest_dir_size)
 {
-	snprintf(container_base, container_base_size, "%s/%s", g_containers_dir,
-	         e->build_container_name);
-	snprintf(dest_dir, dest_dir_size, "%s/upper/%s", container_base,
+	snprintf(tree, tree_size, "%s", e->build_tree);
+	snprintf(dest_dir, dest_dir_size, "%s/%s", tree,
 	         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_CBS);
 }
 
@@ -15379,13 +15385,13 @@ static int install_produce_start(int chain_idx, pid_t *out_pid, int *out_pidfd, 
 	struct pkg_entry *e = g_chains[chain_idx].produce_e;
 	const char *image = g_chains[chain_idx].image;
 	struct install_mutate_ctx ctx;
-	char container_base[PATH_MAX], dest_dir[PATH_MAX], report_path[PATH_MAX];
+	char build_tree[PATH_MAX], dest_dir[PATH_MAX], report_path[PATH_MAX];
 	int r = image_producer_wait(chain_idx, out_pid, out_pidfd, err, err_size);
 
 	if (r != 0)
 		return r < 0 ? -1 : 0;
 
-	install_staged_paths(e, container_base, sizeof(container_base), dest_dir, sizeof(dest_dir));
+	install_staged_paths(e, build_tree, sizeof(build_tree), dest_dir, sizeof(dest_dir));
 
 	/*
 	 * Issue #389, before a single byte is staged -- same discipline as
@@ -15491,9 +15497,9 @@ static int install_produce_begin(int chain_idx, struct pkg_entry *e, int is_upgr
  */
 static int install_after_produce(int chain_idx, struct pkg_entry *e)
 {
-	char container_base[PATH_MAX], dest_dir[PATH_MAX];
+	char build_tree[PATH_MAX], dest_dir[PATH_MAX];
 
-	install_staged_paths(e, container_base, sizeof(container_base), dest_dir, sizeof(dest_dir));
+	install_staged_paths(e, build_tree, sizeof(build_tree), dest_dir, sizeof(dest_dir));
 
 	/*
 	 * #281: the merge said yes -- check that it meant it.
@@ -15594,8 +15600,7 @@ static int install_after_produce(int chain_idx, struct pkg_entry *e)
 			char produced[PATH_MAX];
 			struct stat pst;
 
-			snprintf(produced, sizeof(produced), "%s/upper/%s", container_base,
-			         PKG_CBS_ARTIFACT_REL);
+			snprintf(produced, sizeof(produced), "%s/%s", build_tree, PKG_CBS_ARTIFACT_REL);
 			/*
 			 * Said out loud, because pkg_cache_save_from_file()
 			 * returns silently on a missing source and the next
@@ -15892,7 +15897,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
                          int *out_kept)
 {
 	struct pkg_entry *e;
-	char container_base[PATH_MAX];
+	char build_tree[PATH_MAX];
 	char dest_dir[PATH_MAX];
 	int is_final, is_upgrade;
 	/* #570: what is installed now, kept so an install-stage refusal can
@@ -16288,7 +16293,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	e->build_output_captured_len = 0;
 	e->last_output_at = 0;
 
-	install_staged_paths(e, container_base, sizeof(container_base), dest_dir, sizeof(dest_dir));
+	install_staged_paths(e, build_tree, sizeof(build_tree), dest_dir, sizeof(dest_dir));
 
 	/*
 	 * Move the entry to the version this job installed -- for a fresh
