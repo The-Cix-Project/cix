@@ -303,10 +303,30 @@ int test_data_dir_create(char *out_path, size_t out_size)
 	 *
 	 * /tmp remains the fallback for any environment where /run is not
 	 * writable, which is where every one of these tests ran before.
+	 *
+	 * ADR-0360 decision 4: $TMPDIR before either, when it is set. The
+	 * cix release recipe and the compile probe set it to
+	 * ${build}/selftest-tmp, and since 0.2.57-613 a build container's
+	 * root is a btrfs snapshot (probe-buildfs@2-1), so a test daemon's
+	 * images and containers are subvolumes there, the storage every Cix
+	 * host runs. On /run they were tmpfs, and every container a test
+	 * made took the OverlayFS or copy fallback that no production
+	 * container takes. probe-buildfs@3-1 measured that a build may
+	 * create, snapshot and delete subvolumes under ${build}.
 	 */
-	char tmpl[] = "/run/cix_test_data_XXXXXX";
+	char tmpl[PATH_MAX];
 	char fallback[] = "/tmp/cix_test_data_XXXXXX";
+	const char *tmpdir = getenv("TMPDIR");
 
+	if (tmpdir != NULL && tmpdir[0] != '\0') {
+		if (snprintf(tmpl, sizeof(tmpl), "%s/cix_test_data_XXXXXX", tmpdir) >=
+		    (int)sizeof(tmpl)) {
+			errno = ENAMETOOLONG;
+			return -1;
+		}
+	} else {
+		snprintf(tmpl, sizeof(tmpl), "%s", "/run/cix_test_data_XXXXXX");
+	}
 	if (mkdtemp(tmpl) == NULL) {
 		if (mkdtemp(fallback) == NULL) {
 			perror("mkdtemp");
