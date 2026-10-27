@@ -34,6 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/utsname.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -423,6 +424,86 @@ int main(void)
 		cix_response_free(&r);
 	} else {
 		fail("artifact publish POST failed");
+	}
+
+	/*
+	 * --- #648: a publish outlives a failed push and a restart ---
+	 *
+	 * The push queued above goes to a closed port, so it fails with no
+	 * answer and must be put back to retry, not dropped. The repository
+	 * is then pointed at a server that takes the PUT and the daemon is
+	 * restarted, which is a retry: the queue is on disk, and the bytes
+	 * must arrive with no further request. Before #648 the queue was
+	 * memory and nothing retried -- kernel 7.2.12-1, built by a host
+	 * roll on 192.168.15.95, never reached the artifact cache.
+	 */
+	{
+		char put_root[PATH_MAX];
+		char url_body[128];
+		char pushed[PATH_MAX];
+		char queue_file[PATH_MAX];
+		struct utsname u;
+		pid_t put_pid = -1;
+		int put_port = 0, i, retried = 0;
+
+		for (i = 0; i < 150 && !retried; i++) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&c, "GET",
+			                       "/v1/system/logs?source=cixd&regex=retrying&tail=20", NULL,
+			                       &r) == 0) {
+				retried = r.status == 200 && r.body != NULL &&
+				          strstr(r.body, HB_NAME "@" HB_VERSION " to closed") != NULL;
+				cix_response_free(&r);
+			}
+			if (!retried)
+				usleep(200000);
+		}
+		if (!retried)
+			fail("#648: a push that got no answer was not put back to retry");
+
+		snprintf(put_root, sizeof(put_root), "%s/push648", g_data_dir);
+		if (run_cmd("mkdir -p '%s'", put_root) != 0 ||
+		    test_http_server_start(put_root, 1, &put_port, &put_pid) != 0) {
+			fail("#648: could not start the PUT server");
+			put_pid = -1;
+		}
+		if (put_pid > 0) {
+			snprintf(url_body, sizeof(url_body), "{\"url\":\"http://127.0.0.1:%d/\"}", put_port);
+			if (cix_client_request(&c, "PUT", "/v1/pkg/repositories/closed", url_body, &r) ==
+			    0) {
+				if (r.status != 200)
+					fail("#648: PUT /v1/pkg/repositories/closed: status %d", r.status);
+				cix_response_free(&r);
+			} else {
+				fail("#648: PUT /v1/pkg/repositories/closed failed");
+			}
+			if (stop_daemon(daemon_pid) != 0)
+				fail("#648: daemon did not exit cleanly on SIGTERM before the restart");
+			daemon_pid = start_daemon();
+			if (daemon_pid < 0 || wait_for_daemon(&c, 100) != 0) {
+				fprintf(stderr, "#648: daemon did not come back after the restart\n");
+				if (daemon_pid > 0)
+					stop_daemon(daemon_pid);
+				test_http_server_stop(put_pid);
+				test_data_dir_cleanup(g_data_dir);
+				return 1;
+			}
+			uname(&u);
+			snprintf(pushed, sizeof(pushed), "%s/" HB_NAME "-" HB_VERSION "-%s.cixpkg", put_root,
+			         u.machine);
+			for (i = 0; i < 150 && access(pushed, R_OK) != 0; i++)
+				usleep(200000);
+			if (access(pushed, R_OK) != 0)
+				fail("#648: the push carried over the restart never arrived (%s)", pushed);
+			/* Published, so nothing is owed: the queue file is removed. */
+			snprintf(queue_file, sizeof(queue_file), "%s/rebuildable/pkg/push_queue.json",
+			         g_data_dir);
+			for (i = 0; i < 50 && access(queue_file, F_OK) == 0; i++)
+				usleep(200000);
+			if (access(queue_file, F_OK) == 0)
+				fail("#648: %s is still there after the push was published", queue_file);
+			test_http_server_stop(put_pid);
+		}
 	}
 
 	if (test_assert_no_drift(&c, NULL) != 0)

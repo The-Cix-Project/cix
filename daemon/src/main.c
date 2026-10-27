@@ -1292,6 +1292,7 @@ enum conn_kind {
 	CONN_EVENTS_TIMER,      /* ADR-0339: the events stream's heartbeat, every 10 s */
 	CONN_EVENTS_CHECK_TIMER, /* ADR-0339: samples due and one state read checked, every 1 s */
 	CONN_SESSION_EXPIRY_TIMER, /* ADR-0339: armed at the soonest session expiry, which it reaps */
+	CONN_PUSH_RETRY_TIMER,  /* #648: armed at the soonest artifact push retry, which it pumps */
 	CONN_KMSG,              /* /dev/kmsg -- feeds real kernel dmesg lines into the consolidated log store */
 	CONN_UEVENT,            /* NETLINK_KOBJECT_UEVENT multicast socket (ADR-0161 Phase C) -- real
 	                          * kernel hotplug add/remove events, modeled on CONN_KMSG's own async
@@ -1366,6 +1367,7 @@ static const char *const g_conn_kind_names[CONN_KIND_COUNT] = {
 	[CONN_EVENTS_TIMER] = "events-timer",
 	[CONN_EVENTS_CHECK_TIMER] = "events-check-timer",
 	[CONN_SESSION_EXPIRY_TIMER] = "session-expiry-timer",
+	[CONN_PUSH_RETRY_TIMER] = "push-retry-timer",
 	[CONN_KMSG] = "kmsg",
 	[CONN_UEVENT] = "uevent",
 	[CONN_DEAD] = "dead",
@@ -10028,7 +10030,7 @@ static void artifact_push_pump(void);
  */
 static int artifact_export_start(const char *name, const char *dest_override, char *err_msg,
                                  size_t err_msg_size);
-static void publish_hostbuild_artifact(const char *name);
+static void hostbuild_export_drive(void);
 static void spawn_cix_bootroot_assembly(const char *artifact_dir);
 /* ADR-0327: the host roll, defined after spawn_cix_bootroot_assembly(). */
 static void hostroll_tick(void);
@@ -10215,13 +10217,13 @@ static void pkg_completion_followup(int next, pid_t pkg_pid, int pkg_pidfd, int 
 		try_start_queued_pkg_rebuild();
 
 	/*
-	 * Issue #200: a hostbuild's output is a directory, so pkg.c's own
-	 * post-build enqueue had no tarball for the pusher to upload and
-	 * every push was skipped. Build one first; its completion queues
-	 * the push. Before the pump, so the pump below still handles every
-	 * other package that finished.
+	 * Issue #200: a hostbuild's output is a directory, so the push
+	 * pkg.c queued for it has no artifact until one is exported from
+	 * the installed tree, and the push waits for it (#648). Before the
+	 * pump, so the pump below still handles every other package that
+	 * finished.
 	 */
-	publish_hostbuild_artifact(hostbuild_done_name);
+	hostbuild_export_drive();
 
 	/* Issue #129: a build just finished, so there may be something to
 	 * publish. Cheap no-op when the queue is empty or push is off. */
@@ -10910,12 +10912,12 @@ static char g_artifact_export_version[IMAGE_VERSION_MAX];
 static char g_artifact_export_path[PATH_MAX];
 static char g_artifact_export_error[256];
 /*
- * A publish that had to build its own artifact first: the export runs to
- * the cache path a push reads from, and the push is enqueued only once
- * the bytes are actually there. Empty when the export is an ordinary
- * operator-requested one.
+ * #648: this export makes a hostbuild's artifact for a push waiting in
+ * pkg.c's queue, rather than one an operator asked for. It runs to the
+ * cache path the push reads. The push itself is never handed over here:
+ * it was queued when the hostbuild finished, and the queue is on disk.
  */
-static char g_artifact_export_publish_name[PKG_NAME_MAX];
+static int g_artifact_export_for_push;
 
 /*
  * Issue #200: make a hostbuild's output publishable.
@@ -10930,53 +10932,41 @@ static char g_artifact_export_publish_name[PKG_NAME_MAX];
  *
  * Package the installed tree first -- the same export the manual
  * publish endpoint uses, so there is one way to produce these bytes
- * rather than two -- and let its completion queue the push through
- * g_artifact_export_publish_name, exactly as that path does.
+ * rather than two. #648: what to export is asked of the push queue,
+ * where the push already waits, so nothing that matters is held here.
+ * The previous hand-off was one name in memory, set before the export
+ * started and cleared when a start failed: a second hostbuild finishing
+ * during an export wiped the first one's publish, and a reboot lost it.
+ * One export runs at a time; the next is started as one ends.
  *
- * Silent when there is nothing to do: not a hostbuild, or already
- * cached (a cache hit, which pkg.c does not enqueue anyway).
+ * Silent when there is nothing to do: no push waits for an export, or
+ * an export is running.
  */
-static void publish_hostbuild_artifact(const char *name)
+static void hostbuild_export_drive(void)
 {
-	char version[PKG_VERSION_MAX];
-	int is_hostbuild = 0;
+	char name[PKG_NAME_MAX], version[PKG_VERSION_MAX];
 	char dest[PATH_MAX];
 	char err[256];
 
-	if (name == NULL || name[0] == '\0')
-		return;
-	/*
-	 * The HOSTBUILD entry specifically. A name-only resolve answers
-	 * with whichever entry g_packages holds first, and for `kernel`
-	 * that is the `base` install from a cached artifact, not the
-	 * hostbuild -- so this returned at !is_hostbuild, no artifact was
-	 * ever built, and no host-built kernel reached the artifact cache
-	 * (#520). `cix` was unaffected only because its one entry is the
-	 * hostbuild.
-	 */
-	if (pkg_artifact_publish_resolve_in(name, PKG_HOSTBUILD_IMAGE, version, sizeof(version),
-	                                     &is_hostbuild) != PKG_OK)
-		return;
-	if (!is_hostbuild || pkg_artifact_cache_has(name, version))
-		return;
-
-	/*
-	 * The path this will be WRITTEN to: the .cixpkg spelling, not
-	 * pkg_artifact_cache_path(), whose job is to find a file that exists
-	 * and whose not-found answer is spelled .tar.gz. Every hostbuild once
-	 * published a tarball for that one reason (cix#528).
-	 */
-	pkg_artifact_cache_path_for(name, version, PKG_ARTIFACT_FORMAT_CIXPKG, dest, sizeof(dest));
-	snprintf(g_artifact_export_publish_name, sizeof(g_artifact_export_publish_name), "%s", name);
-	if (artifact_export_start(name, dest, err, sizeof(err)) != 0) {
-		g_artifact_export_publish_name[0] = '\0';
+	while (g_artifact_export_state != ARTIFACT_EXPORT_BUILDING &&
+	       pkg_artifact_push_wanted_export(name, sizeof(name), version, sizeof(version))) {
+		/*
+		 * The path this will be WRITTEN to: the .cixpkg spelling, not
+		 * pkg_artifact_cache_path(), whose job is to find a file that
+		 * exists and whose not-found answer is spelled .tar.gz. Every
+		 * hostbuild once published a tarball for that one reason
+		 * (cix#528).
+		 */
+		pkg_artifact_cache_path_for(name, version, PKG_ARTIFACT_FORMAT_CIXPKG, dest,
+		                            sizeof(dest));
+		if (artifact_export_start(name, dest, err, sizeof(err)) == 0) {
+			g_artifact_export_for_push = 1;
+			return;
+		}
 		/* Name the package and the reason: this whole class went
 		 * unnoticed for five releases behind a message that asserted
-		 * the wrong cause. */
-		logstore_write("cixd", "warning",
-		                "artifact publish: could not build an artifact for %s@%s, so it will "
-		                "not be published: %s",
-		                name, version, err);
+		 * the wrong cause. Dropping it is what ends the loop. */
+		pkg_artifact_push_drop(name, version, err);
 	}
 }
 /* Read end of the export child's stderr pipe -- -1 when no export is
@@ -11016,6 +11006,60 @@ static void register_artifact_export_pidfd(pid_t pid, int pidfd)
  * child here. Called after anything that might have finished a build,
  * and again after each push completes so a queue drains.
  */
+/*
+ * #648: a push that failed for the moment waits out a backoff in pkg.c's
+ * queue, and nothing else would pump the queue when it ends -- a push is
+ * otherwise started only after something finishes. So the pump arms this
+ * at the soonest wait still in the future, absolute on CLOCK_REALTIME
+ * because the wait is wall time; 0 disarms. A wait already over is not
+ * armed for: the pump that just ran either started it or is waiting on
+ * the push or export in flight, whose completion pumps again.
+ */
+static struct conn g_push_retry_conn = { .fd = -1 }; /* permanent */
+
+static void arm_push_retry_timer(void)
+{
+	struct itimerspec its;
+	long long at = pkg_artifact_push_next_due();
+
+	if (g_push_retry_conn.fd < 0)
+		return;
+	memset(&its, 0, sizeof(its));
+	if (at > (long long)time(NULL))
+		its.it_value.tv_sec = (time_t)at;
+	if (timerfd_settime(g_push_retry_conn.fd, TFD_TIMER_ABSTIME, &its, NULL) != 0)
+		perror("timerfd_settime (push retry)");
+}
+
+static void handle_push_retry_timer_event(struct conn *cc)
+{
+	uint64_t expirations;
+
+	if (read(cc->fd, &expirations, sizeof(expirations)) < 0 && errno != EAGAIN)
+		perror("read (push retry timerfd)");
+	artifact_push_pump(); /* re-arms */
+}
+
+static void start_push_retry_timer(void)
+{
+	struct cix_epoll_event ev;
+	int fd = timerfd_create(CLOCK_REALTIME, TFD_NONBLOCK | TFD_CLOEXEC);
+
+	if (fd < 0) {
+		perror("timerfd_create (push retry)");
+		return;
+	}
+	g_push_retry_conn.kind = CONN_PUSH_RETRY_TIMER;
+	g_push_retry_conn.fd = fd;
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.ptr = &g_push_retry_conn;
+	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+		close(fd);
+		g_push_retry_conn.fd = -1;
+	}
+}
+
 static void artifact_push_pump(void)
 {
 	pid_t pid;
@@ -11024,8 +11068,10 @@ static void artifact_push_pump(void)
 	struct conn *cc;
 	struct cix_epoll_event ev;
 
-	if (pkg_artifact_push_try_start(&pid, &pidfd, desc, sizeof(desc)) != 1)
+	if (pkg_artifact_push_try_start(&pid, &pidfd, desc, sizeof(desc)) != 1) {
+		arm_push_retry_timer();
 		return;
+	}
 
 	cc = calloc(1, sizeof(*cc));
 	if (cc == NULL) {
@@ -11043,6 +11089,7 @@ static void artifact_push_pump(void)
 		perror("epoll_ctl ADD artifact push pidfd");
 		abort();
 	}
+	arm_push_retry_timer();
 }
 
 static void handle_artifact_push_event(struct conn *cc)
@@ -11073,25 +11120,8 @@ static void handle_artifact_export_event(struct conn *cc)
 		g_artifact_export_state = ARTIFACT_EXPORT_READY;
 		logstore_write("cixd", "info", "artifact export: %s@%s ready at %s", g_artifact_export_name,
 		               g_artifact_export_version, g_artifact_export_path);
-		/* The artifact exists now, which is the whole reason this
-		 * export ran -- enqueue the push it was built for. */
-		if (g_artifact_export_publish_name[0] != '\0') {
-			/* The hostbuild entry, not whichever entry of that
-			 * name comes first: publish_hostbuild_artifact() is
-			 * the only thing that sets this name, and it exported
-			 * the hostbuild's tree (#520). */
-			enum pkg_error perr = pkg_artifact_publish_in(g_artifact_export_publish_name,
-			                                               PKG_HOSTBUILD_IMAGE);
-
-			if (perr == PKG_OK)
-				artifact_push_pump();
-			else
-				logstore_write("cixd", "error",
-				                "artifact publish: %s was exported for publishing but "
-				                "could not be queued",
-				                g_artifact_export_publish_name);
-			g_artifact_export_publish_name[0] = '\0';
-		}
+		/* The artifact exists now, which is the whole reason a push's
+		 * export ran: the push waiting for it can go (the pump below). */
 	} else {
 		/* The child has fully exited, so a bounded read of its whole
 		 * stderr can't block past the pipe's own buffered content --
@@ -11110,14 +11140,15 @@ static void handle_artifact_export_event(struct conn *cc)
 		unlink(g_artifact_export_path);
 		logstore_write("cixd", "error", "artifact export: %s failed -- %s", g_artifact_export_name,
 		               g_artifact_export_error);
-		if (g_artifact_export_publish_name[0] != '\0') {
-			logstore_write("cixd", "error",
-			                "artifact publish: %s not published -- could not package its "
-			                "installed tree",
-			                g_artifact_export_publish_name);
-			g_artifact_export_publish_name[0] = '\0';
+		if (g_artifact_export_for_push) {
+			char why[sizeof(g_artifact_export_error) + 48];
+
+			snprintf(why, sizeof(why), "could not package its installed tree: %s",
+			         g_artifact_export_error);
+			pkg_artifact_push_drop(g_artifact_export_name, g_artifact_export_version, why);
 		}
 	}
+	g_artifact_export_for_push = 0;
 	if (g_artifact_export_errfd >= 0) {
 		close(g_artifact_export_errfd);
 		g_artifact_export_errfd = -1;
@@ -11128,6 +11159,10 @@ static void handle_artifact_export_event(struct conn *cc)
 	pkg_announce_cache();
 	close(cc->fd);
 	free(cc);
+	/* #648: the next export a push waits for, and the push this one
+	 * made possible. */
+	hostbuild_export_drive();
+	artifact_push_pump();
 }
 
 /*
@@ -30418,6 +30453,7 @@ static void op_publishPkgArtifact(const struct api_ctx *ctx)
 {
 	const char *pkg_name = ctx->p[0];
 	enum pkg_error perr;
+	int needs_export = 0;
 
 	{
 		char pv[IMAGE_VERSION_MAX];
@@ -30427,52 +30463,40 @@ static void op_publishPkgArtifact(const struct api_ctx *ctx)
 		/*
 		 * A hostbuild's artifact is a directory this host assembled,
 		 * never a file it fetched, so nothing had ever put one in the
-		 * cache the pusher reads from. Package the installed tree with
-		 * `cbs package` first -- the same export the automatic path
-		 * uses (#200) -- and let its completion queue the push.
+		 * cache the pusher reads from. Its installed tree is packaged
+		 * with `cbs package` first -- the same export the automatic
+		 * path uses (#200) -- while the push waits in the queue (#648).
 		 */
 		if (perr == PKG_OK && !pkg_artifact_cache_has(pkg_name, pv)) {
-			char dest[PATH_MAX];
-			char eerr[256];
-
 			if (!is_hostbuild) {
 				respond_error(ctx->fd, 409, "Conflict",
 				              "this package's artifact is not in the local cache and "
 				              "cannot be rebuilt from the installed tree");
 				return;
 			}
-			/* Written, not found: the .cixpkg path, never the existing-file
-			 * lookup whose not-found answer is spelled .tar.gz (cix#528). */
-			pkg_artifact_cache_path_for(pkg_name, pv, PKG_ARTIFACT_FORMAT_CIXPKG, dest,
-			                            sizeof(dest));
-			snprintf(g_artifact_export_publish_name,
-			         sizeof(g_artifact_export_publish_name), "%s", pkg_name);
-			if (artifact_export_start(pkg_name, dest, eerr, sizeof(eerr)) != 0) {
-				g_artifact_export_publish_name[0] = '\0';
-				respond_error(ctx->fd, 409, "Conflict", eerr);
-				return;
-			}
-			{
-				struct json_writer w;
-
-				jw_init(&w);
-				jw_obj_open(&w);
-				jw_key(&w, "status");
-				jw_str(&w, "building artifact");
-				jw_obj_close(&w);
-				respond_json(ctx->fd, 202, "Accepted", &w);
-			}
-			return;
+			needs_export = 1;
 		}
 	}
 	perr = pkg_artifact_publish(pkg_name);
 	/*
-	 * Enqueuing is not starting. Nothing pumps this queue on its own --
-	 * a push is only ever kicked off after something else finishes a
-	 * build, and after each push completes so the queue drains.
-	 * Publishing on request has to schedule its own work, like every
-	 * other caller of the pump does.
+	 * Enqueuing is not starting. A push is kicked off after something
+	 * else finishes -- a build, an export, a push, a retry's wait --
+	 * so publishing on request schedules its own work, like every
+	 * other caller of the pump does. A hostbuild's push waits for its
+	 * export, which starts now or as the running one ends (#648).
 	 */
+	if (perr == PKG_OK && needs_export) {
+		struct json_writer w;
+
+		hostbuild_export_drive();
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "status");
+		jw_str(&w, "building artifact");
+		jw_obj_close(&w);
+		respond_json(ctx->fd, 202, "Accepted", &w);
+		return;
+	}
 	if (perr == PKG_OK)
 		artifact_push_pump();
 	if (perr == PKG_ERR_NOT_FOUND) {
@@ -39366,6 +39390,11 @@ static int cixd_main(int argc, char **argv)
 	start_ntp_periodic_timer(); /* same g_epfd/best-effort posture, task #751 */
 	start_build_stall_timer();  /* reports an in-flight build that has gone quiet */
 	start_session_expiry_timer(); /* ADR-0339: a session expires by code, announced */
+	/* #648: the publishes carried over from before this start -- the
+	 * exports they wait for, then the pushes; the pump arms the timer. */
+	start_push_retry_timer();
+	hostbuild_export_drive();
+	artifact_push_pump();
 	start_scheduler_timer();    /* ADR-0257 -- no-op until a schedule exists */
 	start_events_timer();       /* ADR-0339 -- the event stream's heartbeat and listener */
 	start_serverhealth_timer(); /* issue #81 -- probes every registered server on an interval */
@@ -39696,6 +39725,8 @@ static int cixd_main(int argc, char **argv)
 				handle_events_check_timer_event(cc);
 			else if (cc->kind == CONN_SESSION_EXPIRY_TIMER)
 				handle_session_expiry_timer_event(cc);
+			else if (cc->kind == CONN_PUSH_RETRY_TIMER)
+				handle_push_retry_timer_event(cc);
 			else if (cc->kind == CONN_EVENTS_TIMER)
 				handle_events_timer_event(cc);
 			else if (cc->kind == CONN_KMSG)

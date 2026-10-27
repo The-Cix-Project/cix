@@ -1839,6 +1839,20 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 void pkg_artifact_push_completed(int exit_status);
 
 /*
+ * #648: the queue is kept on disk and a failure of the moment is
+ * retried. A hostbuild's push waits in the queue for the export that
+ * makes its artifact, and main.c, which owns the export, asks which one
+ * to make: 1 with the hostbuild's name and version, 0 for none. An
+ * export that fails drops every push queued for that name@version, with
+ * the reason. pkg_artifact_push_next_due() is the soonest wall time a
+ * retry waits for, 0 for none, for main.c's retry timer.
+ */
+int pkg_artifact_push_wanted_export(char *name, size_t name_size, char *version,
+                                    size_t version_size);
+void pkg_artifact_push_drop(const char *name, const char *version, const char *why);
+long long pkg_artifact_push_next_due(void);
+
+/*
  * ADR-0220: the PUT an arbitrary artifact filename needs, for a
  * caller that is not the package push queue above.
  *

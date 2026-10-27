@@ -1992,6 +1992,7 @@ static void approval_forget(const char *gate, const char *target);
 static void pkg_runs_load(void);           /* ADR-0272 */
 static void pkg_open_runs_save(void);      /* #375 */
 static void pkg_open_runs_recover(void);   /* #375 */
+static void push_queue_load(void);         /* #648 */
 
 static void pkg_record_outcome(struct pkg_entry *e, int keep_installed,
                                 enum pipeline_stage stage, enum pipeline_status status,
@@ -7310,6 +7311,8 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 	 * load_state() is the first thing that does (ADR-0307 clause 7).
 	 */
 	explain_sweep_if_engine_changed();
+	/* #648: the publishes still owed, before anything can enqueue one. */
+	push_queue_load();
 	return load_state();
 }
 
@@ -16368,6 +16371,14 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 *
 		 * Only a fresh build, same as below: a cache hit's bytes
 		 * already came from the cache.
+		 *
+		 * Queued before its artifact exists, and that is right since
+		 * #648: the push waits in the queue, which is on disk, for the
+		 * export main.c starts from the installed tree. It used to be
+		 * taken at once, found nothing, and was dropped, and only a
+		 * second enqueue from the export's completion published -- a
+		 * hand-off held in memory, which a reboot or a second export
+		 * could lose.
 		 */
 		if (!e->cache_hit)
 			pkg_artifact_push_enqueue(e->name, e->version);
@@ -20394,6 +20405,10 @@ struct pkg_push_job {
 	char version[PKG_VERSION_MAX];
 	enum pkg_push_kind kind;
 	char repo[PKG_SOURCE_NAME_MAX]; /* ADR-0324: the repository it is pushed to */
+	/* #648: failed tries so far, and the wall time before which it is
+	 * not tried again (0: now). */
+	int attempts;
+	long long not_before;
 };
 
 static struct pkg_push_job g_push_queue[PKG_PUSH_QUEUE_MAX];
@@ -20590,22 +20605,278 @@ static void push_status_path(char *out, size_t out_size)
 	snprintf(out, out_size, "%s/.artifact-push.status", g_sources_dir);
 }
 
-/* One push of one artifact (or its signature) to one repository. -1 when the queue is full. */
+/*
+ * #648: the push queue is kept on disk, written whole on every change,
+ * and read back at start, so a publish outlives the daemon. ADR-0324
+ * gives every repository marked push its own upload and its own retry,
+ * and before this nothing retried and the queue was memory: a host roll
+ * that rolled only the kernel reboots about 45 s after the build
+ * (0.2.57-608's assembly took 45 s on 192.168.15.95), which is the
+ * export's own runtime, and kernel 7.2.12-1 never reached the cache.
+ *
+ * The push in flight is written too, because it is not done until it is
+ * reaped. Same shape as open_runs.json (#375): no file when there is
+ * nothing to do.
+ */
+#define PUSH_RETRY_FIRST_SECS 60
+#define PUSH_RETRY_MAX_SECS 3600
+#define PUSH_RETRY_MAX_ATTEMPTS 12
+
+static void push_queue_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/push_queue.json", g_pkg_dir);
+}
+
+/* in_flight: the push being made now. A restart cuts it off, which
+ * counts as one attempt -- and marks it taken, so its publish approval
+ * (ADR-0273), already spent, is not asked for again. */
+static void push_job_write(struct json_writer *w, const struct pkg_push_job *j, int in_flight)
+{
+	jw_obj_open(w);
+	jw_key(w, "name");
+	jw_str(w, j->name);
+	jw_key(w, "version");
+	jw_str(w, j->version);
+	jw_key(w, "kind");
+	jw_str(w, j->kind == PKG_PUSH_SIGNATURE ? "signature" : "artifact");
+	jw_key(w, "repo");
+	jw_str(w, j->repo);
+	jw_key(w, "attempts");
+	jw_int(w, j->attempts + (in_flight ? 1 : 0));
+	jw_obj_close(w);
+}
+
+static void push_queue_save(void)
+{
+	struct json_writer w;
+	char path[PATH_MAX];
+	int i;
+
+	if (g_pkg_dir[0] == '\0')
+		return;
+	push_queue_path(path, sizeof(path));
+	if (g_push_queue_count == 0 && !g_push_in_flight) {
+		(void)unlink(path);
+		return;
+	}
+	(void)persist_mkdir_p(g_pkg_dir);
+	jw_init(&w);
+	jw_arr_open(&w);
+	if (g_push_in_flight)
+		push_job_write(&w, &g_push_current, 1);
+	for (i = 0; i < g_push_queue_count; i++)
+		push_job_write(&w, &g_push_queue[i], 0);
+	jw_arr_close(&w);
+	if (w.buf == NULL || persist_atomic_write(path, w.buf, w.len) != 0)
+		logstore_write("cixd", "error",
+		               "artifact push: could not write %s -- the queued publishes will not "
+		               "survive a restart",
+		               path);
+	jw_free(&w);
+}
+
+/*
+ * At start, before anything can enqueue. A restart is a retry: every
+ * entry is due at once, the one that was in flight included.
+ */
+static void push_queue_load(void)
+{
+	char path[PATH_MAX];
+	char *text = NULL;
+	size_t len = 0, i;
+	struct json_value *root;
+
+	g_push_queue_count = 0;
+	if (g_pkg_dir[0] == '\0')
+		return;
+	push_queue_path(path, sizeof(path));
+	if (persist_read_file(path, &text, &len) != 0)
+		return;
+	root = json_parse(text, len);
+	free(text);
+	if (root == NULL || root->type != JSON_ARRAY) {
+		logstore_write("cixd", "error", "artifact push: %s is not a JSON array -- ignored",
+		               path);
+		json_free(root);
+		return;
+	}
+	for (i = 0; i < root->u.array.count && g_push_queue_count < PKG_PUSH_QUEUE_MAX; i++) {
+		const struct json_value *o = root->u.array.items[i];
+		const struct json_value *att;
+		const char *name, *version, *kind, *repo;
+		struct pkg_push_job *j = &g_push_queue[g_push_queue_count];
+
+		if (o == NULL || o->type != JSON_OBJECT)
+			continue;
+		name = json_as_string(json_object_get(o, "name"));
+		version = json_as_string(json_object_get(o, "version"));
+		kind = json_as_string(json_object_get(o, "kind"));
+		repo = json_as_string(json_object_get(o, "repo"));
+		att = json_object_get(o, "attempts");
+		if (name == NULL || version == NULL || kind == NULL || repo == NULL)
+			continue;
+		memset(j, 0, sizeof(*j));
+		snprintf(j->name, sizeof(j->name), "%s", name);
+		snprintf(j->version, sizeof(j->version), "%s", version);
+		snprintf(j->repo, sizeof(j->repo), "%s", repo);
+		j->kind = strcmp(kind, "signature") == 0 ? PKG_PUSH_SIGNATURE : PKG_PUSH_ARTIFACT;
+		j->attempts = att != NULL && att->type == JSON_NUMBER ? (int)json_as_number(att) : 0;
+		g_push_queue_count++;
+	}
+	json_free(root);
+	if (g_push_queue_count > 0)
+		logstore_write("cixd", "info",
+		               "artifact push: %d publish(es) carried over from before the restart",
+		               g_push_queue_count);
+}
+
+/* One push of one artifact (or its signature) to one repository. -1 when the queue is full.
+ * A job already queued, or in flight, is not queued twice. */
 static int push_enqueue_one(const char *name, const char *version, enum pkg_push_kind kind,
                             const char *repo)
 {
+	struct pkg_push_job *j;
+	int i;
+
+	for (i = -1; i < g_push_queue_count; i++) {
+		j = i < 0 ? (g_push_in_flight ? &g_push_current : NULL) : &g_push_queue[i];
+		if (j != NULL && j->kind == kind && strcmp(j->name, name) == 0 &&
+		    strcmp(j->version, version) == 0 && strcmp(j->repo, repo) == 0)
+			return 0;
+	}
 	if (g_push_queue_count >= PKG_PUSH_QUEUE_MAX) {
 		logstore_write("cixd", "error",
 		                "artifact push: queue full (%d) -- %s@%s will NOT be published to %s",
 		                PKG_PUSH_QUEUE_MAX, name, version, repo);
 		return -1;
 	}
-	snprintf(g_push_queue[g_push_queue_count].name, PKG_NAME_MAX, "%s", name);
-	snprintf(g_push_queue[g_push_queue_count].version, PKG_VERSION_MAX, "%s", version);
-	snprintf(g_push_queue[g_push_queue_count].repo, PKG_SOURCE_NAME_MAX, "%s", repo);
-	g_push_queue[g_push_queue_count].kind = kind;
+	j = &g_push_queue[g_push_queue_count];
+	memset(j, 0, sizeof(*j));
+	snprintf(j->name, PKG_NAME_MAX, "%s", name);
+	snprintf(j->version, PKG_VERSION_MAX, "%s", version);
+	snprintf(j->repo, PKG_SOURCE_NAME_MAX, "%s", repo);
+	j->kind = kind;
 	g_push_queue_count++;
+	push_queue_save();
 	return 0;
+}
+
+/*
+ * #648: the push in flight failed in a way a later try can fix -- the
+ * repository did not answer, or answered 5xx. It goes to the back of
+ * the queue to wait out its backoff (1 minute, doubling, at most an
+ * hour), and after PUSH_RETRY_MAX_ATTEMPTS failures it is given up and
+ * says how to publish it by hand.
+ */
+static void push_retry_later(const char *why)
+{
+	struct pkg_push_job j = g_push_current;
+	long long delay = PUSH_RETRY_FIRST_SECS;
+	int k;
+
+	j.attempts++;
+	if (j.attempts >= PUSH_RETRY_MAX_ATTEMPTS) {
+		logstore_write("cixd", "error",
+		               "artifact push: %s@%s to %s: %s -- given up after %d attempts; publish "
+		               "it with POST /v1/pkg/%s/artifact/publish",
+		               j.name, j.version, j.repo, why, j.attempts, j.name);
+		push_queue_save();
+		return;
+	}
+	for (k = 1; k < j.attempts && delay < PUSH_RETRY_MAX_SECS; k++)
+		delay *= 2;
+	if (delay > PUSH_RETRY_MAX_SECS)
+		delay = PUSH_RETRY_MAX_SECS;
+	j.not_before = (long long)time(NULL) + delay;
+	if (g_push_queue_count >= PKG_PUSH_QUEUE_MAX) {
+		logstore_write("cixd", "error",
+		               "artifact push: %s@%s to %s: %s -- not retried, the queue is full",
+		               j.name, j.version, j.repo, why);
+		push_queue_save();
+		return;
+	}
+	g_push_queue[g_push_queue_count++] = j;
+	logstore_write("cixd", "warning",
+	               "artifact push: %s@%s to %s: %s -- retrying in %lld s (attempt %d of %d)",
+	               j.name, j.version, j.repo, why, delay, j.attempts + 1,
+	               PUSH_RETRY_MAX_ATTEMPTS);
+	push_queue_save();
+}
+
+/* #648: does a hostbuild entry hold exactly this version, so that its
+ * installed tree can be exported as the artifact? */
+static int push_hostbuild_holds(const char *name, const char *version)
+{
+	int i;
+
+	for (i = 0; i < PKG_MAX_PACKAGES; i++)
+		if (g_packages[i].in_use && g_packages[i].state == PKG_STATE_INSTALLED &&
+		    strcmp(g_packages[i].image, PKG_HOSTBUILD_IMAGE) == 0 &&
+		    strcmp(g_packages[i].name, name) == 0 && strcmp(g_packages[i].version, version) == 0)
+			return 1;
+	return 0;
+}
+
+/*
+ * #648: an artifact push for a hostbuild whose artifact does not exist
+ * yet. A hostbuild's output is a directory (#200), so its artifact is
+ * exported from the installed tree, and the job waits in the queue until
+ * the export puts it in the cache.
+ */
+static int push_job_awaits_export(const struct pkg_push_job *j)
+{
+	return j->kind == PKG_PUSH_ARTIFACT && !pkg_artifact_cache_has(j->name, j->version) &&
+	       push_hostbuild_holds(j->name, j->version);
+}
+
+int pkg_artifact_push_wanted_export(char *name, size_t name_size, char *version,
+                                    size_t version_size)
+{
+	int i;
+
+	for (i = 0; i < g_push_queue_count; i++) {
+		if (!push_job_awaits_export(&g_push_queue[i]))
+			continue;
+		snprintf(name, name_size, "%s", g_push_queue[i].name);
+		snprintf(version, version_size, "%s", g_push_queue[i].version);
+		return 1;
+	}
+	return 0;
+}
+
+void pkg_artifact_push_drop(const char *name, const char *version, const char *why)
+{
+	int i, kept = 0, dropped = 0;
+
+	for (i = 0; i < g_push_queue_count; i++) {
+		if (strcmp(g_push_queue[i].name, name) == 0 &&
+		    strcmp(g_push_queue[i].version, version) == 0) {
+			dropped++;
+			continue;
+		}
+		g_push_queue[kept++] = g_push_queue[i];
+	}
+	g_push_queue_count = kept;
+	if (dropped == 0)
+		return;
+	logstore_write("cixd", "error", "artifact push: %s@%s not published: %s", name, version,
+	               why);
+	push_queue_save();
+}
+
+/* The soonest wait still in the future: one already over is the pump's
+ * to start, not a timer's. */
+long long pkg_artifact_push_next_due(void)
+{
+	long long now = (long long)time(NULL);
+	long long soonest = 0;
+	int i;
+
+	for (i = 0; i < g_push_queue_count; i++)
+		if (g_push_queue[i].not_before > now &&
+		    (soonest == 0 || g_push_queue[i].not_before < soonest))
+			soonest = g_push_queue[i].not_before;
+	return soonest;
 }
 
 /*
@@ -21516,6 +21787,7 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 	 */
 	for (;;) {
 		int pick = -1;
+		long long now = (long long)time(NULL);
 
 		if (g_push_queue_count == 0)
 			return 0;
@@ -21530,6 +21802,10 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 		for (i = 0; i < g_push_queue_count; i++) {
 			char t[PKG_APPROVAL_TARGET_MAX];
 
+			/* #648: waiting out a retry backoff, or for the export
+			 * that makes a hostbuild's artifact. Both stay queued. */
+			if (g_push_queue[i].not_before > now || push_job_awaits_export(&g_push_queue[i]))
+				continue;
 			/* A signature is only ever queued after its artifact's
 			 * own push succeeded, so the person who approved that
 			 * publish has already approved this. Asking again would
@@ -21537,7 +21813,8 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 			 * decision nobody made twice -- and an artifact whose
 			 * signature never arrives is worse than one that was
 			 * never published, because it looks complete. */
-			if (g_push_queue[i].kind == PKG_PUSH_SIGNATURE) {
+			/* And a retry was approved when it was first taken. */
+			if (g_push_queue[i].kind == PKG_PUSH_SIGNATURE || g_push_queue[i].attempts > 0) {
 				pick = i;
 				break;
 			}
@@ -21548,20 +21825,21 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 			}
 		}
 		if (pick < 0)
-			return 0; /* everything queued is waiting for a person */
+			return 0; /* everything queued is waiting: for a person, a backoff or an export */
 
 		g_push_current = g_push_queue[pick];
 		for (i = pick + 1; i < g_push_queue_count; i++)
 			g_push_queue[i - 1] = g_push_queue[i];
 		g_push_queue_count--;
-		if (g_push_current.kind != PKG_PUSH_SIGNATURE) {
+		if (g_push_current.kind != PKG_PUSH_SIGNATURE && g_push_current.attempts == 0) {
 			char t[PKG_APPROVAL_TARGET_MAX];
 			int more = 0;
 
 			/* One approval publishes the artifact to every repository
-			 * marked push (ADR-0324): it is spent with the last copy. */
+			 * marked push (ADR-0324): it is spent with the last copy
+			 * taken for the first time. */
 			for (i = 0; i < g_push_queue_count; i++)
-				if (g_push_queue[i].kind != PKG_PUSH_SIGNATURE &&
+				if (g_push_queue[i].kind != PKG_PUSH_SIGNATURE && g_push_queue[i].attempts == 0 &&
 				    strcmp(g_push_queue[i].name, g_push_current.name) == 0 &&
 				    strcmp(g_push_queue[i].version, g_push_current.version) == 0)
 					more = 1;
@@ -21574,6 +21852,7 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 			                "artifact push: %s@%s not pushed to %s -- that repository is no "
 			                "longer configured",
 			                g_push_current.name, g_push_current.version, g_push_current.repo);
+			push_queue_save();
 			continue;
 		}
 
@@ -21592,24 +21871,20 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 		if (stat(artifact, &st) == 0)
 			break;
 		/*
-		 * Two different causes, and the message used to assert the
-		 * wrong one. "No longer in the local cache" claims eviction --
-		 * and the comment here said so outright -- but for a hostbuild
-		 * the tarball was NEVER there: its output is a directory, and
-		 * nothing built a tarball from it before this enqueue. Anyone
-		 * reading the old line went looking for an LRU-sizing problem
-		 * that did not exist, which is how `cix` sat five releases
-		 * behind on the artifact cache without being noticed (#200).
-		 *
-		 * A message confidently wrong about its own cause is worse
-		 * than a vague one. This one now says only what it knows: the
-		 * tarball is not there. #200's fix means a hostbuild builds
-		 * one before this point, so reaching here really is eviction
-		 * -- but the message no longer bets on that.
+		 * Not a hostbuild waiting for its export -- the picker steps
+		 * over those (#648) -- so these bytes are not coming back: an
+		 * ordinary package's artifact left the cache, a signature's
+		 * artifact went with it, or the hostbuild moved on to another
+		 * version. Before #648 every hostbuild reached here once,
+		 * because the push was queued before the export ran, and this
+		 * line ("has no tarball") was printed for a publish that then
+		 * succeeded through the export's own enqueue.
 		 */
 		logstore_write("cixd", "info",
-		                "artifact push: %s@%s has no tarball in the local cache -- not published",
+		                "artifact push: %s@%s has no artifact in the local cache -- not "
+		                "published",
 		                g_push_current.name, g_push_current.version);
+		push_queue_save();
 	}
 	/* The bytes being pushed were found by cache_artifact_path_existing(),
 	 * which looks only for a .cixpkg (cix#569). */
@@ -21626,6 +21901,7 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 			logstore_write("cixd", "error",
 			                "artifact push: %s@%s signature URL too long -- not published",
 			                g_push_current.name, g_push_current.version);
+			push_queue_save();
 			return 0;
 		}
 		snprintf(url + ulen, sizeof(url) - ulen, ".minisig");
@@ -21635,8 +21911,10 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 
 	pid = fork();
 	if (pid < 0) {
-		logstore_write("cixd", "error", "artifact push: fork failed: %s -- %s@%s not published",
-		                strerror(errno), g_push_current.name, g_push_current.version);
+		char why[96];
+
+		snprintf(why, sizeof(why), "fork failed: %s", strerror(errno));
+		push_retry_later(why); /* #648 */
 		return 0;
 	}
 	if (pid == 0) {
@@ -21713,12 +21991,16 @@ int pkg_artifact_push_try_start(pid_t *out_pid, int *out_pidfd, char *out_desc, 
 	}
 	pidfd = sys_pidfd_open(pid, 0);
 	if (pidfd < 0) {
-		logstore_write("cixd", "error", "artifact push: pidfd_open failed: %s", strerror(errno));
+		char why[96];
+
+		snprintf(why, sizeof(why), "pidfd_open failed: %s", strerror(errno));
 		kill(pid, SIGKILL);
 		waitpid(pid, NULL, 0);
+		push_retry_later(why); /* #648 */
 		return 0;
 	}
 	g_push_in_flight = 1;
+	push_queue_save(); /* #648: in flight is still owed */
 	*out_pid = pid;
 	*out_pidfd = pidfd;
 	snprintf(out_desc, desc_size, "%s@%s", g_push_current.name, g_push_current.version);
@@ -22024,7 +22306,9 @@ static void approve_published_artifact(const char *name, const char *version)
 	writeback_after_approval(name, version); /* ADR-0324: git learns it too */
 }
 
-void pkg_artifact_push_completed(int exit_status)
+/* What the push that just ended means, said once; a failure a later try
+ * can fix goes back in the queue (#648). */
+static void push_completed_report(int exit_status)
 {
 	char status_path[PATH_MAX];
 	char *buf = NULL;
@@ -22107,9 +22391,28 @@ void pkg_artifact_push_completed(int exit_status)
 		                g_push_current.name, g_push_current.version, code);
 		return;
 	}
+	/*
+	 * #648: no answer, a server error, a timeout or a rate limit is a
+	 * failure of the moment, and ADR-0324 gives every repository its
+	 * own retry. Any other answer would be the same next time.
+	 */
+	if (code == 0 || code >= 500 || code == 408 || code == 429) {
+		char why[96];
+
+		snprintf(why, sizeof(why), "failed (HTTP %ld, curl exit status 0x%x)", code,
+		         (unsigned)exit_status);
+		push_retry_later(why);
+		return;
+	}
 	logstore_write("cixd", "error",
 	                "artifact push: %s@%s failed (HTTP %ld, curl exit status 0x%x)",
 	                g_push_current.name, g_push_current.version, code, (unsigned)exit_status);
+}
+
+void pkg_artifact_push_completed(int exit_status)
+{
+	push_completed_report(exit_status);
+	push_queue_save(); /* #648: whatever it did to the queue */
 }
 
 /* out_url: <base_url>/<name>-<version>.tar.gz (a trailing slash on

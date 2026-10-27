@@ -11759,8 +11759,11 @@ paths:
       responses:
         "202":
           description: >
-            Queued (status "queued"), or packaging the artifact has started
-            first (status "building artifact")
+            Queued (status "queued"), or queued behind the packaging of a
+            hostbuild's artifact (status "building artifact"), which starts
+            now or when a running export ends. The push queue is kept on
+            disk and a push that fails for want of an answer, or with a 5xx,
+            408 or 429, is retried with a backoff (#648).
         "400":
           description: Artifact publishing is not configured
           content:
@@ -11776,7 +11779,7 @@ paths:
         "409":
           description: >
             Not in the local cache and not a hostbuild (nothing to package
-            an artifact from), or an export is already running
+            an artifact from)
           content:
             application/json:
               schema:
