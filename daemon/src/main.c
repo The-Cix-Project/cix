@@ -14307,6 +14307,12 @@ static int stage_container_bytes(const char *upperdir, const char *path, const v
 	gid_t eff_group;
 	int fd;
 
+	/* A missing tree must never become a path relative to the daemon's
+	 * working directory: glibc prints a NULL %s as "(null)" (#657). */
+	if (upperdir == NULL || upperdir[0] == '\0') {
+		errno = EINVAL;
+		return -1;
+	}
 	if (snprintf(target, sizeof(target), "%s%s", upperdir, path) >= (int)sizeof(target)) {
 		errno = ENAMETOOLONG;
 		return -1;
@@ -27311,6 +27317,16 @@ static enum registry_error spawn_pkgbuild_container(int chain_idx, const char *w
 		char err[256];
 		int out = stdio_write_fd;
 		int devnull = -1;
+		/*
+		 * The tree the container's root is made from, which is where
+		 * cix-init and the platform files go: the snapshot itself on
+		 * the direct path (ADR-0360 decision 2), the upper layer on the
+		 * overlay path. Staging into spec->ov.upperdir alone sent a
+		 * direct build's cix-init to "(null)/sbin/cix-init", relative
+		 * to the daemon's working directory -- EROFS on .95's root,
+		 * measured by probe-buildfs@2-1 on 0.2.57-612 (#657).
+		 */
+		const char *tree = spec->ov.direct_rootfs ? spec->ov.merged : spec->ov.upperdir;
 
 		if (out < 0) {
 			devnull = open("/dev/null", O_WRONLY | O_CLOEXEC);
@@ -27319,7 +27335,7 @@ static enum registry_error spawn_pkgbuild_container(int chain_idx, const char *w
 		if (cixinit_table_single(&init_table, "build", spec->argv, CIXINIT_TYPE_ONESHOT,
 		                         CIXINIT_ON_EXIT_FAIL_CONTAINER) != 0 ||
 		    init_transport_open(&init_tp, &init_table, out, spec, err, sizeof(err)) != 0 ||
-		    stage_cix_init(spec->ov.upperdir, 0, err, sizeof(err)) != 0 ||
+		    stage_cix_init(tree, 0, err, sizeof(err)) != 0 ||
 		    /*
 		     * ADR-0333: the platform files a build container used to
 		     * get from its build-environment IMAGE, which
@@ -27334,7 +27350,7 @@ static enum registry_error spawn_pkgbuild_container(int chain_idx, const char *w
 		     * never userns (spec->userns_enabled = 0 above) and is
 		     * never an ldap_client.
 		     */
-		    stage_container_platform_files(spec->ov.upperdir, 0, 0, err, sizeof(err)) != 0) {
+		    stage_container_platform_files(tree, 0, 0, err, sizeof(err)) != 0) {
 			logstore_write("cixd", "error", "pkgbuild %s (%s): cix-init setup failed: %s", what,
 			               build_container_name, err);
 			init_transport_close_all(&init_tp);
