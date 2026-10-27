@@ -22,13 +22,12 @@
  * the test would pass just as happily against the broken code. The bug is
  * only reachable when the two differ.
  *
- * It runs the whole body TWICE, once against each rootfs presentation --
- * the phase-2b copy+chown tree, and the phase-3 host-0-owned tree behind an
- * id-mapped mount -- because those differ in who owns the rootfs on disk,
- * and a container's root has to own what it is given either way. #321 is
- * why: the id-mapped branch is chosen by cix_btrfs_is_backing(), this test
- * runs on /tmp, and so the branch that broke every workload on a btrfs host
- * had never once been executed by any test in this suite.
+ * It runs against the phase-3 presentation: a host-0-owned snapshot behind
+ * an id-mapped mount. It used to run twice, the phase-2b copy+chown tree as
+ * well, because #321 had shown that the id-mapped branch, chosen by
+ * cix_btrfs_is_backing(), was never executed by a test on /tmp. ADR-0360
+ * removed the copy and put the gate's data dir on btrfs, so this now runs
+ * the branch every host takes, with no hook to force it (cix#658).
  *
  * That means this test needs an environment that can actually run one. The
  * dev sandbox cannot (see test_image_fixture.c, which seeds
@@ -86,10 +85,10 @@ static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 	return -1;
 }
 
-static pid_t start_daemon(int idmap)
+static pid_t start_daemon(void)
 {
 	pid_t pid;
-	char *dargv[5];
+	char *dargv[4];
 	int n = 0;
 	static char data_dir_arg[PATH_MAX + 11];
 
@@ -98,16 +97,12 @@ static pid_t start_daemon(int idmap)
 	dargv[n++] = PORT_ARG;
 	dargv[n++] = data_dir_arg;
 	/*
-	 * #321: without this the id-mapped presentation is unreachable here.
-	 * It is selected by cix_btrfs_is_backing(), and this test's data dir
-	 * is a mkdtemp under /tmp, which is not btrfs -- so every run of this
-	 * test for the life of the feature exercised copy+chown and nothing
-	 * else. --test-userns-idmap makes the copy present itself exactly as
-	 * a snapshot does (host-0-owned, id-mapped); id-mapped mounts need no
-	 * btrfs, only the kernel.
+	 * #321 used to need --test-userns-idmap here: the data dir was not
+	 * btrfs, so the id-mapped presentation was unreachable without it.
+	 * Since ADR-0360 the data dir is under $TMPDIR, which the gate puts
+	 * on btrfs, so a userns container gets the id-mapped snapshot the
+	 * way every production one does, and the hook is gone (cix#658).
 	 */
-	if (idmap)
-		dargv[n++] = "--test-userns-idmap";
 	dargv[n] = NULL;
 
 	pid = fork();
@@ -174,7 +169,7 @@ static int wait_exit_status(const struct cix_client *c, const char *name, char *
  * own what the platform gives it no matter how its rootfs was provisioned,
  * and the two presentations disagree about who owns the tree on disk.
  */
-static int run_presentation(int idmap, const char *label)
+static int run_presentation(const char *label)
 {
 	pid_t daemon_pid;
 	struct cix_client client;
@@ -203,7 +198,7 @@ static int run_presentation(int idmap, const char *label)
 		return 1;
 	}
 
-	daemon_pid = start_daemon(idmap);
+	daemon_pid = start_daemon();
 	if (daemon_pid < 0) {
 		test_data_dir_cleanup(g_data_dir);
 		return 1;
@@ -315,13 +310,13 @@ static int run_presentation(int idmap, const char *label)
 	 * ADR-0207 phase 3's whole claim is that the snapshot stays
 	 * host-uid-0 on disk and the kernel does the presenting -- so the
 	 * mount point the container's own root just created inside its
-	 * rootfs must land as on-disk 0 under the id-map, and as the
-	 * subordinate base under copy+chown, where there is no map to
-	 * translate it. Asserting the two directions separately is what
-	 * makes this a test of the model rather than of the code: a "fix"
-	 * that chowned the snapshot to the subordinate base would leave
-	 * every container running perfectly and fail right here, which is
-	 * exactly the wrong turn taken while diagnosing #321.
+	 * rootfs must land as on-disk 0 under the id-map. This is a test of
+	 * the model rather than of the code: a "fix" that chowned the
+	 * snapshot to the subordinate base would leave every container
+	 * running perfectly and fail right here, which is exactly the wrong
+	 * turn taken while diagnosing #321. The copy+chown presentation,
+	 * whose tree was owned by the subordinate base, was removed by
+	 * ADR-0360 (cix#658).
 	 */
 	{
 		char vp[PATH_MAX];
@@ -332,14 +327,9 @@ static int run_presentation(int idmap, const char *label)
 			check(0, "the container's rootfs still carries its volume mount point");
 		} else {
 			printf("  %s/vol on-disk uid=%u\n", vp, (unsigned)vst.st_uid);
-			if (idmap)
-				check(vst.st_uid == 0,
-				      "id-mapped presentation: the rootfs stays host-uid-0 on "
-				      "disk, the kernel does the presenting (ADR-0207 phase 3)");
-			else
-				check(vst.st_uid != 0,
-				      "copy+chown presentation: the rootfs is owned by the "
-				      "container's subordinate base (ADR-0179 phase 2b)");
+			check(vst.st_uid == 0,
+			      "id-mapped presentation: the rootfs stays host-uid-0 on "
+			      "disk, the kernel does the presenting (ADR-0207 phase 3)");
 		}
 	}
 
@@ -359,13 +349,11 @@ done:
 int main(void)
 {
 	/*
-	 * Both presentations, every time. Running only the one this host's
-	 * filesystem happens to select is what let #321 ship: the id-mapped
-	 * path took every workload on a btrfs host down while this test, on
-	 * /tmp, went on passing against the other branch entirely.
+	 * The one presentation every host runs. #321 shipped because this
+	 * test, on /tmp, exercised a different branch from the one a btrfs
+	 * host takes; on the gate's btrfs data dir it takes the same one.
 	 */
-	run_presentation(0, "copy+chown (ADR-0179 phase 2b)");
-	run_presentation(1, "id-mapped snapshot (ADR-0207 phase 3)");
+	run_presentation("id-mapped snapshot (ADR-0207 phase 3)");
 
 	if (g_failures > 0) {
 		fprintf(stderr, "USERNS /run: FAIL (%d)\n", g_failures);

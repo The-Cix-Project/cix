@@ -1,7 +1,7 @@
 /*
  * ADR-0143 end-to-end test: the optional "dns_servers" field on
  * POST /v1/containers -- staged as a real /etc/resolv.conf directly
- * into the container's own overlay upperdir before its process ever
+ * into the container's own rootfs before its process ever
  * execve()s, echoed back on GET (id-only, like "files"), and rejected
  * (400) if combined with an explicit files[] entry for the same path.
  *
@@ -224,13 +224,13 @@ int main(void)
 	cix_response_free(&r);
 
 	/* 5. The real content actually staged into the container's own
-	 * overlay upperdir, readable directly from the host side. */
+	 * rootfs, readable directly from the host side (cix#658). */
 	{
 		char resolv_path[PATH_MAX];
 		char content[256];
 
-		snprintf(resolv_path, sizeof(resolv_path), "%s/containers/realdns/upper/etc/resolv.conf",
-		         g_data_dir);
+		test_container_tree_path(g_data_dir, "realdns", "/etc/resolv.conf", resolv_path,
+		                         sizeof(resolv_path));
 		if (read_whole_file(resolv_path, content, sizeof(content)) != 0) {
 			fprintf(stderr, "FAIL: could not read staged %s\n", resolv_path);
 			ok = 0;
@@ -263,8 +263,8 @@ int main(void)
 		char resolv_path[PATH_MAX];
 		FILE *f;
 
-		snprintf(resolv_path, sizeof(resolv_path), "%s/containers/nodns/upper/etc/resolv.conf",
-		         g_data_dir);
+		test_container_tree_path(g_data_dir, "nodns", "/etc/resolv.conf", resolv_path,
+		                         sizeof(resolv_path));
 		f = fopen(resolv_path, "r");
 		if (f != NULL) {
 			fclose(f);
@@ -337,8 +337,8 @@ int main(void)
 		char resolv_path[PATH_MAX];
 		FILE *f;
 
-		snprintf(resolv_path, sizeof(resolv_path), "%s/containers/srvdns2/upper/etc/resolv.conf",
-		         g_data_dir);
+		test_container_tree_path(g_data_dir, "srvdns2", "/etc/resolv.conf", resolv_path,
+		                         sizeof(resolv_path));
 		f = fopen(resolv_path, "r");
 		if (f != NULL) {
 			fclose(f);
@@ -379,8 +379,8 @@ int main(void)
 		char resolv_path[PATH_MAX];
 		char content[256];
 
-		snprintf(resolv_path, sizeof(resolv_path), "%s/containers/defclient/upper/etc/resolv.conf",
-		         g_data_dir);
+		test_container_tree_path(g_data_dir, "defclient", "/etc/resolv.conf", resolv_path,
+		                         sizeof(resolv_path));
 		if (read_whole_file(resolv_path, content, sizeof(content)) != 0) {
 			fprintf(stderr, "FAIL: defclient has no staged resolv.conf -- #451 is not fixed\n");
 			ok = 0;
@@ -407,8 +407,8 @@ int main(void)
 		char resolv_path[PATH_MAX];
 		FILE *f;
 
-		snprintf(resolv_path, sizeof(resolv_path),
-		         "%s/containers/emptyclient/upper/etc/resolv.conf", g_data_dir);
+		test_container_tree_path(g_data_dir, "emptyclient", "/etc/resolv.conf", resolv_path,
+		                         sizeof(resolv_path));
 		f = fopen(resolv_path, "r");
 		if (f != NULL) {
 			fclose(f);
@@ -436,8 +436,8 @@ int main(void)
 		char resolv_path[PATH_MAX];
 		char content[256];
 
-		snprintf(resolv_path, sizeof(resolv_path), "%s/containers/fileclient/upper/etc/resolv.conf",
-		         g_data_dir);
+		test_container_tree_path(g_data_dir, "fileclient", "/etc/resolv.conf", resolv_path,
+		                         sizeof(resolv_path));
 		if (read_whole_file(resolv_path, content, sizeof(content)) != 0 ||
 		    !str_eq(content, "nameserver 9.9.9.9\n")) {
 			fprintf(stderr, "FAIL: fileclient's own files[] resolv.conf must win, got: %s\n",
@@ -463,8 +463,8 @@ int main(void)
 		char resolv_path[PATH_MAX];
 		FILE *f;
 
-		snprintf(resolv_path, sizeof(resolv_path),
-		         "%s/containers/otherclient/upper/etc/resolv.conf", g_data_dir);
+		test_container_tree_path(g_data_dir, "otherclient", "/etc/resolv.conf", resolv_path,
+		                         sizeof(resolv_path));
 		f = fopen(resolv_path, "r");
 		if (f != NULL) {
 			fclose(f);
@@ -510,8 +510,8 @@ int main(void)
 		char resolv_path[PATH_MAX];
 		char content[256];
 
-		snprintf(resolv_path, sizeof(resolv_path), "%s/containers/afterstop/upper/etc/resolv.conf",
-		         g_data_dir);
+		test_container_tree_path(g_data_dir, "afterstop", "/etc/resolv.conf", resolv_path,
+		                         sizeof(resolv_path));
 		if (read_whole_file(resolv_path, content, sizeof(content)) != 0 ||
 		    !str_eq(content, "nameserver 172.43.0.5\nnameserver 172.43.0.6\n")) {
 			fprintf(stderr, "FAIL: the default must come from the DEFINITION, so a stopped "

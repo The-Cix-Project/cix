@@ -294,8 +294,8 @@ int main(void)
 		char buf[128];
 		struct stat st;
 
-		snprintf(bird_conf_path, sizeof(bird_conf_path), "%s/filetest/upper/etc/bird.conf",
-		         g_containers_dir);
+		test_container_tree_path(g_data_dir, "filetest", "/etc/bird.conf", bird_conf_path,
+		                         sizeof(bird_conf_path));
 		f = fopen(bird_conf_path, "r");
 
 		if (f == NULL) {
@@ -572,9 +572,18 @@ int main(void)
 		ok = 0;
 	}
 	{
-		char cmd[PATH_MAX + 16];
+		/*
+		 * Both of the container's trees, so the file below can only be
+		 * there because the restart re-staged it: its base, and its
+		 * rootfs, which is where staged files live since ADR-0341 and
+		 * the only tree on btrfs (cix#658). Removing the base alone
+		 * would leave the file in place and prove nothing.
+		 */
+		char cmd[2 * PATH_MAX + 32];
+		char rootfs[PATH_MAX];
 
-		snprintf(cmd, sizeof(cmd), "rm -rf '%s/persisttest'", g_containers_dir);
+		test_container_tree_path(g_data_dir, "persisttest", "", rootfs, sizeof(rootfs));
+		snprintf(cmd, sizeof(cmd), "rm -rf '%s/persisttest' '%s'", g_containers_dir, rootfs);
 		system(cmd);
 	}
 
@@ -597,8 +606,8 @@ int main(void)
 		FILE *f;
 		char buf[128];
 
-		snprintf(pbr_conf_path, sizeof(pbr_conf_path), "%s/persisttest/upper/etc/pbr.conf",
-		         g_containers_dir);
+		test_container_tree_path(g_data_dir, "persisttest", "/etc/pbr.conf", pbr_conf_path,
+		                         sizeof(pbr_conf_path));
 		f = fopen(pbr_conf_path, "r");
 
 		if (f == NULL) {
@@ -735,7 +744,8 @@ int main(void)
 		}
 		cix_response_free(&r);
 
-		snprintf(owned_path, sizeof(owned_path), "%s/ownertest/upper/etc/owned", g_containers_dir);
+		test_container_tree_path(g_data_dir, "ownertest", "/etc/owned", owned_path,
+		                         sizeof(owned_path));
 		if (stat(owned_path, &st) != 0) {
 			fprintf(stderr, "FAIL: stat(%s): %s\n", owned_path, strerror(errno));
 			ok = 0;
@@ -785,8 +795,8 @@ int main(void)
 		char buf[128];
 		struct stat st;
 
-		snprintf(live_conf_path, sizeof(live_conf_path), "%s/writetest/upper/etc/live.conf",
-		         g_containers_dir);
+		test_container_tree_path(g_data_dir, "writetest", "/etc/live.conf", live_conf_path,
+		                         sizeof(live_conf_path));
 		f = fopen(live_conf_path, "r");
 		if (f == NULL) {
 			fprintf(stderr, "FAIL: PUT'd file not found on disk (running)\n");
@@ -1001,8 +1011,8 @@ int main(void)
 		char cfg_path[PATH_MAX];
 		FILE *f;
 
-		snprintf(cfg_path, sizeof(cfg_path), "%s/ldapseed/upper/etc/glauth.cfg",
-		         g_containers_dir);
+		test_container_tree_path(g_data_dir, "ldapseed", "/etc/glauth.cfg", cfg_path,
+		                         sizeof(cfg_path));
 		f = fopen(cfg_path, "r");
 		if (f == NULL) {
 			fprintf(stderr, "FAIL: ldapseed's glauth config not staged at all\n");
@@ -1035,8 +1045,8 @@ int main(void)
 	{
 		char cfg_path[PATH_MAX];
 
-		snprintf(cfg_path, sizeof(cfg_path), "%s/ldapseed/upper/etc/glauth.cfg",
-		         g_containers_dir);
+		test_container_tree_path(g_data_dir, "ldapseed", "/etc/glauth.cfg", cfg_path,
+		                         sizeof(cfg_path));
 
 		/*
 		 * 11a. listeners_managed is false until an operator asks, and

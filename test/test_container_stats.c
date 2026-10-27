@@ -376,10 +376,18 @@ int main(void)
 	cix_response_free(&r);
 
 	/*
-	 * 7. POST .../stop, unlike a natural exit, really does remove the
-	 * registry entry (registry_remove(), same as pause/unpause already
-	 * 404 after it) -- stats must 404 too, for consistency with every
-	 * other registry_find()-based endpoint.
+	 * 7. POST .../stop, unlike a natural exit, removes the registry
+	 * entry (registry_remove(), same as pause/unpause already 404 after
+	 * it) -- stats must 404 too, for consistency with every other
+	 * registry_find()-based endpoint.
+	 *
+	 * The removal is ASYNCHRONOUS: stop asks cix-init to shut down and
+	 * answers, and the exit's completion removes the entry (main.c's
+	 * #162 comment says so). This used to assert the 404 on the very
+	 * next request, which passed on the overlay path by timing and
+	 * failed on btrfs at compile probe 0.2.57-642, the first gate run
+	 * there (cix#658). So it waits, for longer than the 15 s SIGKILL
+	 * grace, and says how long the removal took.
 	 */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers/statsctr/stop", NULL, &r) != 0 ||
@@ -389,13 +397,29 @@ int main(void)
 	}
 	cix_response_free(&r);
 
-	memset(&r, 0, sizeof(r));
-	if (fetch_stats(&client, "statsctr", &r) != 0 || r.status != 404) {
-		fprintf(stderr, "FAIL: GET statsctr/stats after stop should be 404 (registry_remove()'d), got %d\n",
-		        r.status);
-		ok = 0;
+	{
+		int gone = 0, last = 0, polls;
+
+		for (polls = 0; polls < 200 && !gone; polls++) {
+			memset(&r, 0, sizeof(r));
+			if (fetch_stats(&client, "statsctr", &r) == 0)
+				last = r.status;
+			gone = (last == 404);
+			cix_response_free(&r);
+			if (!gone)
+				usleep(100000);
+		}
+		if (!gone) {
+			fprintf(stderr,
+			        "FAIL: GET statsctr/stats should be 404 once the stop's exit removes "
+			        "the entry, still %d after 20 s\n",
+			        last);
+			ok = 0;
+		} else {
+			fprintf(stderr, "statsctr: stats answered 404 within %d ms of the stop\n",
+			        polls * 100);
+		}
 	}
-	cix_response_free(&r);
 
 	/*
 	 * Delete the real bridge this test created (DELETE /v1/networks is

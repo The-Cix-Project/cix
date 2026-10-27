@@ -1,33 +1,38 @@
 /*
- * Part 4 (bare-metal-readiness plan, ADR-0062) end-to-end test: proves
- * disk_quota_bytes' real wiring over real HTTP against a real cixd
- * subprocess -- JSON parsing, quotamap_get_or_assign()'s real,
- * persisted project-id allocation (same name always gets the same id
- * back; a fresh name gets a fresh, incrementing one), and the full
- * daemon/src/main.c set_disk_quota()/resolve_backing_device() path
- * actually running and correctly propagating a real filesystem-level
- * error as a clean 500, not a crash or (worse) a silent false promise.
+ * test_disk_quota -- a container's disk_quota_bytes is a btrfs qgroup
+ * limit on its rootfs snapshot (ADR-0207, ADR-0359, ADR-0360).
  *
- * What this test deliberately does NOT prove, and cannot in this
- * sandbox (see ADR-0062's own Consequences section): a real write past
- * the quota genuinely failing with EDQUOT. This sandbox has no loop
- * devices and no access to the raw block device backing its own root
- * filesystem, so there is no way here to mount a freshly ext4
- * project-quota-enabled filesystem at all -- confirmed directly
- * (FS_IOC_FSSETXATTR against this sandbox's own real, non-quota-
- * enabled root ext4 returns EOPNOTSUPP, exactly the expected,
- * correct kernel behavior for a filesystem mkfs never gave the quota
- * feature to, not a bug). That real, positive-path enforcement needs
- * either a real installed system or a test environment with genuine
- * block/loop-device access, neither available here -- exactly the
- * class of gap Part 3's own real-hardware-only verification already
- * established as honest, not a shortcut.
+ * Proves, over real HTTP against a real cixd subprocess, on the
+ * btrfs data directory the gate provides (test_data_dir_create() puts
+ * it under $TMPDIR, a build container's snapshot):
+ *
+ *   1. a create with disk_quota_bytes answers 201, and the container's
+ *      rootfs (<data_dir>/rebuildable/rootfs/<name>) is a subvolume
+ *      whose qgroup carries exactly that MAX_EXCL limit;
+ *   2. a create without one answers 201 and its qgroup carries no
+ *      limit, so a quota is never applied that was not asked for;
+ *   3. GET .../stats answers disk.usage from the qgroup, not a walk.
+ *
+ * This test used to prove the ext4 project-quota backend (ADR-0062):
+ * the persisted project-id map, and a 500 on a filesystem without the
+ * quota feature. ADR-0360 removed that backend with the overlay path it
+ * tagged, and compile probe 0.2.57-642, the first gate run on btrfs,
+ * failed it for that reason (cix#658). Measured there on the way: a
+ * 1 MiB limit is smaller than what cixd stages into a rootfs before the
+ * container starts, so that create failed at a mkdir with "Disk quota
+ * exceeded". The limits here are well above it.
+ *
+ * It does not write past the limit from inside a container. ADR-0359
+ * measured that on 192.168.15.95: a 100 MiB limit refused a write at
+ * 104841216 bytes, in both accounting modes.
  */
 #include "httpclient.h"
 #include "json.h"
+#include "btrfs.h"
 #include "test_image_fixture.h"
 #include "test_drift.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
@@ -40,6 +45,8 @@ extern char **environ;
 
 #define TEST_PORT 7637
 #define PORT_ARG "--port=7637"
+
+#define QUOTA_BYTES (64ULL * 1024 * 1024)
 
 static char g_data_dir[PATH_MAX];
 static char g_image_root[PATH_MAX];
@@ -94,41 +101,38 @@ static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 	return -1;
 }
 
-/* Real, whole-file read of the daemon's own persisted project-id map
- * -- the same cix_test_data_dir_XXXXXX path start_daemon() itself
- * was pointed at, so this is the exact file quotamap_init()/
- * quotamap_get_or_assign() actually read and wrote, not a guess at
- * its shape. */
-static int read_quota_projids(char *out, size_t out_size)
+/*
+ * The MAX_EXCL limit on container NAME's rootfs qgroup, read host-side
+ * with the daemon's own helper. 0 means no limit; -1 means the rootfs is
+ * not a subvolume with a qgroup, which is itself a failure here.
+ */
+static int rootfs_limit(const char *name, unsigned long long *limit)
 {
-	char path[PATH_MAX];
-	FILE *f;
-	size_t n;
+	char rootfs[PATH_MAX];
 
-	snprintf(path, sizeof(path), "%s/state/quota_projids.json", g_data_dir);
-	f = fopen(path, "r");
-	if (f == NULL)
+	if (test_container_tree_path(g_data_dir, name, "", rootfs, sizeof(rootfs)) != 0)
 		return -1;
-	n = fread(out, 1, out_size - 1, f);
-	fclose(f);
-	out[n] = '\0';
+	if (cix_btrfs_qgroup_query(rootfs, NULL, limit, NULL) != 0) {
+		fprintf(stderr, "qgroup query on %s: %s\n", rootfs, strerror(errno));
+		return -1;
+	}
 	return 0;
 }
 
-/* Counts occurrences of needle in haystack -- used to confirm exactly
- * one persisted entry exists for a given name after two separate
- * failing create attempts (proving get-before-assign, not a fresh
- * allocation each time). */
-static int count_occurrences(const char *haystack, const char *needle)
+static int create(struct cix_client *client, const char *body)
 {
-	int count = 0;
-	const char *p = haystack;
+	struct cix_response r;
+	int status;
 
-	while ((p = strstr(p, needle)) != NULL) {
-		count++;
-		p += strlen(needle);
-	}
-	return count;
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(client, "POST", "/v1/containers", body, &r) != 0)
+		return -1;
+	status = r.status;
+	if (status != 201)
+		fprintf(stderr, "create answered %d: %.*s\n", status, (int)r.body_len,
+		        r.body != NULL ? r.body : "");
+	cix_response_free(&r);
+	return status;
 }
 
 int main(void)
@@ -137,7 +141,8 @@ int main(void)
 	struct cix_client client;
 	int ok = 1;
 	struct cix_response r;
-	char projmap[8192];
+	unsigned long long limit = 0;
+	char body[512];
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -172,108 +177,64 @@ int main(void)
 		return 1;
 	}
 
-	/*
-	 * 1. A quota request against a container name -- this sandbox's
-	 * own real backing filesystem has no ext4 project-quota support
-	 * (confirmed directly, see the header comment above), so
-	 * set_disk_quota() must fail and the daemon must propagate that
-	 * as a clean 500, never a crash and never a silent 201.
-	 */
-	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "POST", "/v1/containers",
-	                       "{\"name\":\"quotafail1\",\"image\":\"quotatest\","
-	                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\"]}],\"disk_quota_bytes\":1048576}",
-	                       &r) != 0 ||
-	    r.status != 500) {
-		fprintf(stderr, "FAIL: quota create on unsupported fs: expected 500, got %d\n", r.status);
+	/* 1. A quota is the qgroup limit on the snapshot, exactly. */
+	snprintf(body, sizeof(body),
+	         "{\"name\":\"quota64\",\"image\":\"quotatest\","
+	         "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\","
+	         "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}],\"disk_quota_bytes\":%llu}",
+	         QUOTA_BYTES);
+	if (create(&client, body) != 201) {
+		fprintf(stderr, "FAIL: create with disk_quota_bytes: expected 201\n");
 		ok = 0;
+	} else if (rootfs_limit("quota64", &limit) != 0) {
+		fprintf(stderr, "FAIL: quota64's rootfs has no qgroup to read\n");
+		ok = 0;
+	} else if (limit != QUOTA_BYTES) {
+		fprintf(stderr, "FAIL: quota64's qgroup limit is %llu, expected %llu\n", limit,
+		        QUOTA_BYTES);
+		ok = 0;
+	}
+
+	/* 2. No quota asked for, none applied. */
+	if (create(&client, "{\"name\":\"noquota\",\"image\":\"quotatest\","
+	                    "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\","
+	                    "\"cmd\":[\"/bin/daemon_child\",\"120\",\"0\"]}]}") != 201) {
+		fprintf(stderr, "FAIL: no-quota create: expected 201\n");
+		ok = 0;
+	} else if (rootfs_limit("noquota", &limit) != 0) {
+		fprintf(stderr, "FAIL: noquota's rootfs has no qgroup to read\n");
+		ok = 0;
+	} else if (limit != 0) {
+		fprintf(stderr, "FAIL: noquota's qgroup carries a limit of %llu it never asked for\n",
+		        limit);
+		ok = 0;
+	}
+
+	/* 3. The stats figure comes from that qgroup. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET", "/v1/containers/quota64/stats", NULL, &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: GET quota64/stats, status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const struct json_value *disk = json_object_get(r.json, "disk");
+		const struct json_value *usage = json_object_get(disk, "usage");
+		const struct json_value *source = json_object_get(usage, "source");
+
+		if (source == NULL || source->type != JSON_STRING ||
+		    strcmp(source->u.string, "qgroup") != 0) {
+			fprintf(stderr, "FAIL: quota64's disk.usage should come from the qgroup: %s\n",
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
 	}
 	cix_response_free(&r);
 
-	/* No container should exist -- creation must have failed clean,
-	 * before ever spawning anything. */
 	memset(&r, 0, sizeof(r));
-	if (ok && (cix_client_request(&client, "GET", "/v1/containers/quotafail1", NULL, &r) != 0 ||
-	           r.status != 404)) {
-		fprintf(stderr, "FAIL: quotafail1 should not exist after a failed quota create "
-		                "(got status %d)\n",
-		        r.status);
-		ok = 0;
-	}
+	cix_client_request(&client, "DELETE", "/v1/containers/quota64", NULL, &r);
 	cix_response_free(&r);
-
-	/*
-	 * 2. Same name, second attempt -- quotamap_get_or_assign() must
-	 * return the *same* project id it already persisted for
-	 * "quotafail1" above, not allocate a fresh one. Verified by
-	 * reading the real persisted state file directly and confirming
-	 * exactly one entry for this name exists, not two.
-	 */
 	memset(&r, 0, sizeof(r));
-	if (ok && (cix_client_request(&client, "POST", "/v1/containers",
-	                              "{\"name\":\"quotafail1\",\"image\":\"quotatest\","
-	                              "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\"]}],\"disk_quota_bytes\":2097152}",
-	                              &r) != 0 ||
-	           r.status != 500)) {
-		fprintf(stderr, "FAIL: second quota create on quotafail1: expected 500, got %d\n",
-		        r.status);
-		ok = 0;
-	}
-	cix_response_free(&r);
-
-	if (ok && read_quota_projids(projmap, sizeof(projmap)) != 0) {
-		fprintf(stderr, "FAIL: could not read persisted quota_projids.json\n");
-		ok = 0;
-	}
-	if (ok && count_occurrences(projmap, "\"quotafail1\"") != 1) {
-		fprintf(stderr, "FAIL: expected exactly one persisted entry for quotafail1, "
-		                "got a different count in: %s\n",
-		        projmap);
-		ok = 0;
-	}
-
-	/*
-	 * 3. A second, different container name must get its own,
-	 * distinct project id -- both now present in the persisted map.
-	 */
-	memset(&r, 0, sizeof(r));
-	if (ok && (cix_client_request(&client, "POST", "/v1/containers",
-	                              "{\"name\":\"quotafail2\",\"image\":\"quotatest\","
-	                              "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\"]}],\"disk_quota_bytes\":1048576}",
-	                              &r) != 0 ||
-	           r.status != 500)) {
-		fprintf(stderr, "FAIL: quota create on quotafail2: expected 500, got %d\n", r.status);
-		ok = 0;
-	}
-	cix_response_free(&r);
-
-	if (ok && read_quota_projids(projmap, sizeof(projmap)) != 0) {
-		fprintf(stderr, "FAIL: could not re-read persisted quota_projids.json\n");
-		ok = 0;
-	}
-	if (ok && (count_occurrences(projmap, "\"quotafail1\"") != 1 ||
-	           count_occurrences(projmap, "\"quotafail2\"") != 1)) {
-		fprintf(stderr, "FAIL: expected exactly one persisted entry each for quotafail1 "
-		                "and quotafail2, got: %s\n",
-		        projmap);
-		ok = 0;
-	}
-
-	/*
-	 * 4. Baseline, no-regression check: a container with no
-	 * disk_quota_bytes at all must still create successfully -- the
-	 * overwhelmingly common case (most containers never request a
-	 * quota) must be completely unaffected.
-	 */
-	memset(&r, 0, sizeof(r));
-	if (ok && (cix_client_request(&client, "POST", "/v1/containers",
-	                              "{\"name\":\"noquota\",\"image\":\"quotatest\","
-	                              "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\"]}]}",
-	                              &r) != 0 ||
-	           r.status != 201)) {
-		fprintf(stderr, "FAIL: no-quota create: expected 201, got %d\n", r.status);
-		ok = 0;
-	}
+	cix_client_request(&client, "DELETE", "/v1/containers/noquota", NULL, &r);
 	cix_response_free(&r);
 
 	if (test_assert_no_drift(&client, NULL) != 0)

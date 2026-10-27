@@ -420,6 +420,17 @@ void test_data_dir_cleanup(const char *path)
 		fprintf(stderr, "warning: cleanup of %s failed\n", path);
 }
 
+int test_container_tree_path(const char *data_dir, const char *name, const char *rel, char *out,
+                             size_t out_size)
+{
+	if (snprintf(out, out_size, "%s/rebuildable/rootfs/%s%s", data_dir, name, rel) >=
+	    (int)out_size) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	return 0;
+}
+
 int test_image_fixture_write_manifest(const char *image_dir, const char *version)
 {
 	char manifest_path[PATH_MAX];

@@ -1,15 +1,15 @@
 /*
  * test_direct_rootfs -- the ADR-0207 phase 2 direct-rootfs container
- * path, exercised end to end under --test-direct-rootfs.
+ * path, exercised end to end.
  *
  * On btrfs a container's rootfs is a writable snapshot of its image's
- * subvolume and there is no overlay. This sandbox is ext4 with no loop
- * devices (documented in CLAUDE.md), so the snapshot ioctl itself
- * cannot run here -- what CAN run, and what this proves, is every
- * other part of the direct machinery, driven through the copy variant
- * the test flag forces:
+ * subvolume and there is no overlay. This used to run under
+ * --test-direct-rootfs, which forced a copy in place of the snapshot,
+ * because the data dir was not btrfs. Since ADR-0360 it is under
+ * $TMPDIR, which the gate puts on btrfs, so it runs the real snapshot
+ * and the hook is gone (cix#658). What it proves:
  *
- *   - provisioning: the rootfs copy exists, the overlay dirs never do
+ *   - provisioning: the rootfs exists, the overlay dirs never do
  *   - staging: files[] land in the rootfs, not a dead upperdir
  *   - the child self-binds and pivots into the rootfs (the container
  *     RUNS, and reads the staged file from inside)
@@ -22,9 +22,11 @@
  *   - the image itself is never touched by container writes
  *   - deletion removes the whole container base
  *
- * The one thing left for the real btrfs host (.95) is SNAP_CREATE_V2
- * versus this test's copy -- everything downstream of provisioning is
- * identical by construction.
+ * The one thing still not exercised is SNAP_CREATE_V2 itself:
+ * test_image_fixture_build() writes the image as a plain directory, so
+ * cix_btrfs_snapshot_or_copy() takes its #180 branch (a new subvolume,
+ * filled by a copy). Everything downstream of provisioning is identical
+ * by construction, and the snapshot ioctl runs on every real host.
  */
 #include "httpclient.h"
 #include "json.h"
@@ -93,8 +95,7 @@ static pid_t start_daemon(void)
 	dargv[0] = "build/cixd";
 	dargv[1] = PORT_ARG;
 	dargv[2] = data_dir_arg;
-	dargv[3] = "--test-direct-rootfs";
-	dargv[4] = NULL;
+	dargv[3] = NULL;
 
 	pid = fork();
 	if (pid < 0) {
@@ -246,7 +247,7 @@ int main(void)
 		cix_response_free(&cr);
 	}
 
-	/* 1. Create with a files[] entry. Under --test-direct-rootfs this
+	/* 1. Create with a files[] entry. On the btrfs data dir this
 	 * must provision <base>/rootfs and stage the file INTO it. */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",

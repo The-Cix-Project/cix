@@ -1430,8 +1430,8 @@ int main(void)
 		}
 		cix_response_free(&r);
 
-		snprintf(bundle_path, sizeof(bundle_path),
-		         "%s/containers/trustc/upper/etc/ssl/certs/cix-ca-bundle.pem", g_data_dir);
+		test_container_tree_path(g_data_dir, "trustc", "/etc/ssl/certs/cix-ca-bundle.pem",
+		                         bundle_path, sizeof(bundle_path));
 
 		if (stat(bundle_path, &st) != 0 || st.st_size == 0) {
 			fprintf(stderr, "FAIL: cix-ca-bundle.pem missing or empty at %s -- "

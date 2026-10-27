@@ -10040,25 +10040,6 @@ static void hostroll_tick(void);
 static void hostroll_assembly_done(int ok);
 static void kernel_running_version(char *out, size_t out_size);
 
-/* ADR-0207 phase 2: force the direct-rootfs container path with a COPY
- * instead of a snapshot, so the btrfs-incapable dev sandbox (ext4, no
- * loop devices) can exercise the whole direct machinery -- provisioning,
- * self-bind + pivot, persistence across restart, stopped-file access,
- * deletion -- everything except SNAP_CREATE_V2 itself, which only a
- * real btrfs host can prove. Same test-hook family as
- * --test-esp-entries-dir/--test-efivars-dir. */
-static int g_test_direct_rootfs;
-/*
- * #321: the userns twin of the flag above. cix_btrfs_is_backing() is false
- * on the test suite's own /tmp data dir, so the ADR-0207 phase 3 snapshot
- * presentation -- host-0-owned rootfs behind an id-mapped mount -- was
- * unreachable in every test this project has, and shipped a break that took
- * every workload on a btrfs host down. This makes the copy path present
- * itself the same way a snapshot does (host-0-owned, id-mapped) so the
- * branch is exercised on any filesystem; id-mapped mounts need no btrfs.
- */
-static int g_test_userns_idmap;
-
 /*
  * ADR-0341: where a container's rootfs is, and the one place that path
  * is built. Beside the image store, on the images' filesystem, so that
@@ -17080,13 +17061,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 				return 500;
 			}
 			rootfs_seed_version_write(userns_rootfs, resolved_image_version);
-			if (g_test_userns_idmap) {
-				/* Leave the copy host-0-owned and id-map it: that is
-				 * byte-for-byte the presentation a btrfs snapshot gets,
-				 * the only difference being how the tree was made. */
-				spec.userns_idmap = 1;
-			} else if (subid_lookup_or_assign(name, &base) != 0 ||
-			           chown_tree(userns_rootfs, (uid_t)base, (gid_t)base) != 0) {
+			if (subid_lookup_or_assign(name, &base) != 0 ||
+			    chown_tree(userns_rootfs, (uid_t)base, (gid_t)base) != 0) {
 				/* chown the whole copy to the container's subordinate base
 				 * id so its mapped root owns it (subid_lookup_or_assign is
 				 * idempotent -- the spec block below re-derives the same
@@ -17139,7 +17115,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		 * replace would drop the container onto the overlay path with
 		 * an empty upperdir, which is worse than the staleness.
 		 */
-		int can_seed = (g_test_direct_rootfs || cix_btrfs_is_backing(CONTAINER_ROOTFS_DIR));
+		int can_seed = cix_btrfs_is_backing(CONTAINER_ROOTFS_DIR);
 
 		container_rootfs_dir(name, direct_rootfs_dir, sizeof(direct_rootfs_dir));
 		if (can_seed && stat(direct_rootfs_dir, &rst) == 0 && S_ISDIR(rst.st_mode) &&
@@ -38537,10 +38513,6 @@ static int cixd_main(int argc, char **argv)
 			snprintf(g_esp_entries_dir, sizeof(g_esp_entries_dir), "%s", argv[i] + 23);
 		else if (strncmp(argv[i], "--test-efivars-dir=", 19) == 0)
 			esp_set_efivars_dir(argv[i] + 19);
-		else if (strcmp(argv[i], "--test-direct-rootfs") == 0)
-			g_test_direct_rootfs = 1;
-		else if (strcmp(argv[i], "--test-userns-idmap") == 0)
-			g_test_userns_idmap = 1;
 		else if (strncmp(argv[i], "--test-update-image=", 20) == 0)
 			test_update_image = argv[i] + 20;
 		else if (strncmp(argv[i], "--test-update-kernel=", 21) == 0)

@@ -680,7 +680,7 @@ $(BUILD)/output_child: test/output_child.c | $(BUILD)
 $(BUILD)/test_container_lifecycle: test/test_container_lifecycle.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
-$(BUILD)/test_disk_quota: test/test_disk_quota.c test/test_image_fixture.c test/test_drift.c $(CLIENT_SRCS) | $(BUILD)
+$(BUILD)/test_disk_quota: test/test_disk_quota.c test/test_image_fixture.c test/test_drift.c src/btrfs.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
 $(BUILD)/test_osrelease: test/test_osrelease.c daemon/src/osrelease.c | $(BUILD)

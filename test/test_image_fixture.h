@@ -191,6 +191,18 @@ int test_pkg_config_seed_cleared(const char *pkg_state_dir);
 void test_data_dir_cleanup(const char *path);
 
 /*
+ * Where container NAME's file at REL (absolute inside the container,
+ * e.g. "/etc/resolv.conf") is on the host, under a test daemon started
+ * with --data-dir=DATA_DIR: its rootfs, <data_dir>/rebuildable/rootfs/
+ * <name>, which is a btrfs snapshot of its image (ADR-0341, ADR-0360).
+ * Tests read a container's staged files through this, never through
+ * "<data_dir>/containers/<name>/upper", which only the removed overlay
+ * path had (cix#658). Returns 0, or -1 with ENAMETOOLONG.
+ */
+int test_container_tree_path(const char *data_dir, const char *name, const char *rel, char *out,
+                             size_t out_size);
+
+/*
  * ADR-0107/0108: an image no longer has one fixed rootfs path -- each
  * install/upgrade/delete produces a new immutable
  * <image_dir>/<version>/rootfs directory, with manifest.json's own
