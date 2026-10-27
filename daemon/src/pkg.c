@@ -34,6 +34,7 @@
 #include "jsondiff.h"
 #include "recipe_format.h"
 #include "persist.h"
+#include "daemonpaths.h"
 #include "rootfsdiscard.h"
 #include "treecopy.h"
 #include "pki.h"
@@ -177,7 +178,16 @@ struct pkg_entry {
 	 * wouldn't survive that call boundary the way an entry-owned one
 	 * does). */
 	char build_container_name[PKG_NAME_MAX];
-	char build_lowerdir[PATH_MAX], build_upperdir[PATH_MAX];
+	/*
+	 * build_tree is the tree this build's staging writes into and its
+	 * output is read back from: the build container's own rootfs, a
+	 * btrfs snapshot of build_lowerdir at CONTAINER_ROOTFS_DIR/<name>,
+	 * when build_direct is set (ADR-0360 decision 2), and the overlay
+	 * upper layer <base>/upper otherwise. Release B of ADR-0360 removes
+	 * the overlay case.
+	 */
+	char build_lowerdir[PATH_MAX], build_tree[PATH_MAX];
+	int build_direct;
 	/* Issue #85: "<parent>/<container>" -- the cgroup path this build's
 	 * own leaf lives at, under the shared budget parent. Stored on the
 	 * entry because spec_out->cg.name must stay valid until clone3(). */
@@ -11280,10 +11290,16 @@ static int start_build_container_spec(int chain_idx, struct pkg_entry *e,
 		logstore_write("cixd", "info", "pkg %s@%s: build container requests capabilities: %s",
 		               e->name, e->image, build_caps);
 	}
-	spec_out->ov.lowerdir = e->build_lowerdir;
-	spec_out->ov.upperdir = e->build_upperdir;
-	spec_out->ov.workdir = e->build_workdir;
-	spec_out->ov.merged = e->build_merged;
+	if (e->build_direct) {
+		/* ADR-0360 decision 2: no overlay, the snapshot is the rootfs. */
+		spec_out->ov.direct_rootfs = 1;
+		spec_out->ov.merged = e->build_tree;
+	} else {
+		spec_out->ov.lowerdir = e->build_lowerdir;
+		spec_out->ov.upperdir = e->build_tree;
+		spec_out->ov.workdir = e->build_workdir;
+		spec_out->ov.merged = e->build_merged;
+	}
 	spec_out->mnt.put_old_rel = ".old_root";
 	spec_out->argv = e->build_argv;
 	spec_out->envp = e->build_envp;
@@ -11780,37 +11796,70 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		chain_release(chain_idx);
 		return 0;
 	}
-	snprintf(e->build_upperdir, sizeof(e->build_upperdir), "%s/upper", container_base);
-	snprintf(e->build_workdir, sizeof(e->build_workdir), "%s/work", container_base);
-	snprintf(e->build_merged, sizeof(e->build_merged), "%s/merged", container_base);
-
-	snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_upperdir, PKG_DEST_REL_CBS);
-	/* ADR-0305: cbs refuses any recipe path not ending in .cbs
-	 * (has_cbs_extension(), in `build` as well as `explain`), so the
-	 * name this is staged under is load-bearing rather than cosmetic --
-	 * a build.cbs staged under any other name could not be built. */
-	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe" PKG_RECIPE_CBS_SUFFIX,
-	         e->build_upperdir);
-	snprintf(extra_dir, sizeof(extra_dir), "%s/build/extra", e->build_upperdir);
-
 	/*
 	 * The previous build's tree, set aside (#626) -- its own step, so a
-	 * slow one is named apart from the staging below.
+	 * slow one is named apart from the staging below. That is the
+	 * slot's base and, since ADR-0360, its snapshot rootfs as well.
 	 *
 	 * NEVER on a re-entry after the cixpkg unpack child exited (ADR-0307
 	 * clause 3): every step below has already run then, the child filled
 	 * dest_dir, and pkg_unpack_completed() checked the result. Resetting
 	 * here would set aside the tree the child just extracted, leaving an
-	 * empty package that installs cleanly.
+	 * empty package that installs cleanly. The re-entry keeps the
+	 * build_tree and build_direct the first pass chose, for the same
+	 * reason.
 	 */
 	int reset_failed = 0, reset_errno = 0;
 
 	stallwatch_step("build prep: set the previous build aside");
-	if (!g_chains[chain_idx].unpacked &&
-	    reset_build_container_dir(e->build_container_name, container_base) != 0) {
-		reset_failed = 1;
-		reset_errno = errno;
+	if (!g_chains[chain_idx].unpacked) {
+		char snap[PATH_MAX];
+
+		snprintf(snap, sizeof(snap), "%s/%s", CONTAINER_ROOTFS_DIR, e->build_container_name);
+		if (reset_build_container_dir(e->build_container_name, container_base) != 0 ||
+		    rootfs_discard(e->build_container_name, snap, CONTAINER_ROOTFS_DIR) != 0) {
+			reset_failed = 1;
+			reset_errno = errno;
+		}
+		/*
+		 * ADR-0360 decision 2: the build container's rootfs is a
+		 * snapshot of its build environment's image version, as an
+		 * ordinary container's is of its image (ADR-0341), so a slot
+		 * costs one snapshot ioctl rather than an overlay whose upper
+		 * layer sits on a different filesystem from its lower one.
+		 * The source is checked to be a subvolume on btrfs first, so
+		 * cix_btrfs_snapshot_or_copy() can only snapshot here, never
+		 * copy. Anything else falls back to the overlay, loudly, until
+		 * ADR-0360's release B removes it.
+		 */
+		e->build_direct = 0;
+		if (!reset_failed && e->build_lowerdir[0] != '\0' &&
+		    cix_btrfs_is_backing(CONTAINER_ROOTFS_DIR) &&
+		    cix_btrfs_is_subvolume(e->build_lowerdir)) {
+			if (cix_btrfs_snapshot_or_copy(e->build_lowerdir, snap) == 0)
+				e->build_direct = 1;
+			else
+				logstore_write("cixd", "warn",
+				               "pkg %s@%s: could not snapshot the build environment for %s "
+				               "(%s) -- building on the overlay path instead",
+				               e->name, e->image, e->build_container_name, strerror(errno));
+		}
+		if (e->build_direct)
+			snprintf(e->build_tree, sizeof(e->build_tree), "%s", snap);
+		else
+			snprintf(e->build_tree, sizeof(e->build_tree), "%s/upper", container_base);
+		snprintf(e->build_workdir, sizeof(e->build_workdir), "%s/work", container_base);
+		snprintf(e->build_merged, sizeof(e->build_merged), "%s/merged", container_base);
 	}
+
+	snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_tree, PKG_DEST_REL_CBS);
+	/* ADR-0305: cbs refuses any recipe path not ending in .cbs
+	 * (has_cbs_extension(), in `build` as well as `explain`), so the
+	 * name this is staged under is load-bearing rather than cosmetic --
+	 * a build.cbs staged under any other name could not be built. */
+	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe" PKG_RECIPE_CBS_SUFFIX,
+	         e->build_tree);
+	snprintf(extra_dir, sizeof(extra_dir), "%s/build/extra", e->build_tree);
 
 	stallwatch_step("build prep: stage the build tree"); /* #619 */
 	{
@@ -11830,7 +11879,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		 * directory already has -- benefits every future
 		 * recipe run against a minimal image, not just this one.
 		 */
-		snprintf(tmp_dir, sizeof(tmp_dir), "%s/tmp", e->build_upperdir);
+		snprintf(tmp_dir, sizeof(tmp_dir), "%s/tmp", e->build_tree);
 
 		/*
 		 * A sequential if/else-if chain rather than the equivalent
@@ -11945,7 +11994,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			} else if (copy_file_simple(recipe_path, recipe_dst) != 0) {
 				prep_step = "copy recipe";
 				prep_errno = errno;
-			} else if (write_finalize_script(e->build_upperdir) != 0) {
+			} else if (write_finalize_script(e->build_tree) != 0) {
 				/* ADR-0251: the policy is not optional, so a build
 				 * that could not be given it does not run. */
 				prep_step = "write finalize.sh";
@@ -12050,7 +12099,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		 * reports nothing. Two build cycles were spent on that, and it
 		 * is one mkdir.
 		 */
-		snprintf(cbs_ws_dir, sizeof(cbs_ws_dir), "%s/%s", e->build_upperdir,
+		snprintf(cbs_ws_dir, sizeof(cbs_ws_dir), "%s/%s", e->build_tree,
 		         PKG_CBS_WORKSPACE_REL);
 		if (persist_mkdir_p(cbs_ws_dir) != 0) {
 			logstore_write("cixd", "error",
@@ -12061,7 +12110,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			chain_release(chain_idx);
 			return 0;
 		}
-		snprintf(cbs_cache_dir, sizeof(cbs_cache_dir), "%s/%s", e->build_upperdir,
+		snprintf(cbs_cache_dir, sizeof(cbs_cache_dir), "%s/%s", e->build_tree,
 		         PKG_CBS_CACHE_REL);
 		if (persist_mkdir_p(cbs_cache_dir) != 0) {
 			logstore_write("cixd", "error",
@@ -12680,7 +12729,7 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
 		char dest_dir[PATH_MAX];
 		int reported = 0;
 
-		snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_upperdir,
+		snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_tree,
 		         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_CBS);
 		warn_unexecutable_binaries(dest_dir, e->name, 0, &reported);
 	}
@@ -12699,7 +12748,7 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
  * attempt, restarted from zero after every single fixup, is what
  * motivated filing this). Reuses the kept container's own lowerdir/
  * upperdir/workdir/merged paths completely unchanged (still sitting in
- * e->build_lowerdir/build_upperdir/build_workdir/build_merged exactly
+ * e->build_lowerdir/build_tree/build_workdir/build_merged exactly
  * as pkg_fetch_completed() last computed them -- registry_remove()
  * never touches disk, confirmed directly in registry.c, so nothing
  * here was ever at risk of being wiped); only the recipe.sh staged
@@ -12789,16 +12838,16 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 		}
 	}
 
-	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe%s", e->build_upperdir,
+	snprintf(recipe_dst, sizeof(recipe_dst), "%s/build/recipe%s", e->build_tree,
 	         PKG_RECIPE_CBS_SUFFIX);
-	snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_upperdir, PKG_DEST_REL_CBS);
-	snprintf(extra_dir, sizeof(extra_dir), "%s/build/extra", e->build_upperdir);
+	snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_tree, PKG_DEST_REL_CBS);
+	snprintf(extra_dir, sizeof(extra_dir), "%s/build/extra", e->build_tree);
 
 	if (copy_file_simple(recipe_path, recipe_dst) != 0)
 		return PKG_ERR_PERSIST_FAILED;
 	/* ADR-0251: staged wherever recipe.sh is, so the two cannot
 	 * disagree about whether the policy ran. */
-	if (write_finalize_script(e->build_upperdir) != 0)
+	if (write_finalize_script(e->build_tree) != 0)
 		return PKG_ERR_PERSIST_FAILED;
 	if (cix_btrfs_subvol_delete_or_rmtree(dest_dir) != 0)
 		return PKG_ERR_PERSIST_FAILED;
@@ -14505,7 +14554,7 @@ static void pkg_build_events_start(int chain_idx, struct pkg_entry *e, unsigned 
 	c->events_off = 0;
 	c->events_len = 0;
 	c->events_skipping = 0;
-	snprintf(c->events_path, sizeof(c->events_path), "%s/%s", e->build_upperdir,
+	snprintf(c->events_path, sizeof(c->events_path), "%s/%s", e->build_tree,
 	         PKG_CBS_EVENTS_REL);
 	(void)unlink(c->events_path);
 	cbs_progress_init(&e->progress, declared_phases);
