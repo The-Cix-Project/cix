@@ -6,6 +6,19 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The container store is btrfs, and nothing else is a rootfs (#658, #615, #614, ADR-0360 release B)
+
+- **What changed:**
+  - **Every container pivots onto its snapshot.** `src/overlay.c` and `test_overlay` are gone; `struct overlay_spec` is `struct rootfs_spec` (`path`, `userns_mountpoint`). A create on a host whose image store is not btrfs is refused naming ADR-0360.
+  - **The copy path is gone.** The userns copy+chown presentation, `chown_tree()`, `userns_idmap` and the two test hooks that forced it (`--test-direct-rootfs`, `--test-userns-idmap`) went with it. A userns rootfs left chowned on disk is set aside and seeded as a snapshot, said once.
+  - **A quota is the qgroup limit on the snapshot**, set after staging, so a small limit no longer refuses the create at a `mkdir`. The ext4 project-quota and upper-layer qgroup backends are gone; volumes keep theirs through `quotamap_tag_dir()`.
+  - **The files API reads the rootfs.** It no longer falls back to the image (`X-Cix-Source: image` is gone, #394), and an exited container's listing has no layers to merge.
+  - **A container has no `disk`** (a non-null one is a 400; `null` is accepted for stored definitions). `migrate-storage`, its CLI, dashboard and contract surfaces, `containerstoragemigrate.c` and its test are removed. `container_file_host_path()` is the one place a host-side path into a container is built.
+  - **The `container-storage` role is `volume-storage`**, and a stored assignment is renamed at start. A disk's role delete, unmount and format now refuse a disk that holds a volume, which they never checked: the guard used to count containers placed with `disk`.
+  - **Rebuildable storage is btrfs only.** It cannot move to, or be formatted as, anything else, and the image producer's ext4 hardlink copy is gone.
+- **Why:** the owner's decisions of 2026-10-27, ADR-0360. With the gate on btrfs (#658), the fallbacks were the only thing still exercised by nothing that runs in production.
+- **Verified:** pending the release.
+
 ### An export never puts a half-written artifact in the package cache (#658)
 
 - **What changed:** `cbs package` now writes to `.<artifact>.partial` beside the final path, and cixd renames it into place only when the child succeeds. A failed export removes only the partial, so an artifact already cached from an earlier export stays.
