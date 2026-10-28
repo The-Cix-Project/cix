@@ -10,13 +10,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** `exec_into_container()` takes the session's environment, and the console handler gives it the container's `env`. The session gets that plus the pty's `TERM`, which replaces any `TERM` in `env`. It no longer passes `environ`, cixd's own environment. `test_console_exec` asserts both halves: a variable the fixture's definition sets reaches the session, and one set only in the test daemon's environment does not.
 - **Why:** on 192.168.15.95 a console in vpn-1 had `HOME=/` and an empty `PATH`, while its definition sets both and its service (started by cix-init with the container's `env`) had them. So `longwire status` looked for `/.longwire/ctl` beside a node listening on `/var/lib/longwire/.longwire/ctl`, and answered "no node is running". The contract's `env` already said a container gets only these and never a copy of cixd's environment; it now says consoles get the same.
-- **Verified:** pending.
+- **Verified:** 0.2.57-617 on 192.168.15.95 (0.2.57-616 failed its selftest on test_pkg's 5 s daemon start ceiling, now 30 s). A fresh console in vpn-1 printed `HOME=/var/lib/longwire PATH=/usr/bin:/bin`, and `longwire status` answered `"node":"up"` and number 353-768-703, where on 615 it had `HOME=/` and "no node is running".
 
 ### A sync's counts say when they belong to the last completed run (#662)
 
 - **What changed:** while a sync is running, `cixctl pkg sync` without `--wait` and `cixctl pkg sync-status` print a line under the counts. It says they are the last completed sync's, and that `--wait` gives this run's. The dashboard's sync status labels Added and Skipped "(last completed sync)" while one runs.
 - **Why:** #662 reported that a newer deployment version synced from git did not replace the stored one. It did. `pkg sync` returns at once, printing `state=running` and the previous run's counts. On 192.168.15.95 a sync took about 20 s (`state=running` at 13:58:22Z, `success` at 13:58:27Z, 2026-10-28). The `deployment show` that looked stale ran a few seconds after the push, before the sync had finished. The counts are the contract's ("the most recent completed sync"); printed unlabelled beside `running`, they read as this run's.
-- **Verified:** `build/cixctl pkg sync` against .95 printed the new line under `state=running`. The dashboard half ships with the next release.
+- **Verified:** `build/cixctl pkg sync` against .95 printed the new line under `state=running`. The dashboard half shipped in 0.2.57-617.
 
 ### A disk is mounted when it gets its role, and a volume is placed only on a mounted disk (#660, #661)
 
