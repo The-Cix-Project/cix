@@ -17,13 +17,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - **The `container-storage` role is `volume-storage`**, and a stored assignment is renamed at start. A disk's role delete, unmount and format now refuse a disk that holds a volume, which they never checked: the guard used to count containers placed with `disk`.
   - **Rebuildable storage is btrfs only.** It cannot move to, or be formatted as, anything else, and the image producer's ext4 hardlink copy is gone.
 - **Why:** the owner's decisions of 2026-10-27, ADR-0360. With the gate on btrfs (#658), the fallbacks were the only thing still exercised by nothing that runs in production.
-- **Verified:** pending the release.
+- **Verified:** 0.2.57-614 is live on slot a with 12 containers running and nothing logged against ADR-0360 since boot. A create with a `disk` is a 400, a role delete on a disk holding a volume is a 409, and a build ran on its snapshot. Compile probes 642 to 648 are the trail; ROADMAP Part 343.
 
 ### An export never puts a half-written artifact in the package cache (#658)
 
 - **What changed:** `cbs package` now writes to `.<artifact>.partial` beside the final path, and cixd renames it into place only when the child succeeds. A failed export removes only the partial, so an artifact already cached from an earlier export stays.
 - **Why:** cbs writes `--output` in place (`fopen "wb"`), and since #648 a hostbuild's export targets the package cache itself. So while one ran, `GET /v1/pkg/cache` listed a growing artifact and a fetch could be handed half of one, with no announcement until the export ended. The start of an export also unlinked the cached artifact it was replacing. Compile probe 0.2.57-643's drift check found it in `test_kmod_build`: `getPkgCache changed without an announcement`.
-- **Verified:** pending.
+- **Verified:** compile probe 0.2.57-644 passed with it, the first gate run on btrfs with nothing failing; released in 0.2.57-614. ROADMAP Part 343.
 
 ### A build container's rootfs is a snapshot of its build environment (#657, ADR-0360 release A)
 
