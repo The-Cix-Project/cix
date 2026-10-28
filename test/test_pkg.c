@@ -104,6 +104,20 @@ static int create_image(const struct cix_client *c, const char *name)
 	return rc;
 }
 
+/*
+ * How long a started daemon gets to answer /v1/health, in 100 ms tries.
+ * It was 50 (5 s) at every call site, and the 0.2.57-616 release's
+ * selftest on 192.168.15.95 (2026-10-28) failed one of this file's nine
+ * restarts on it: "#572 daemon never accepted connections". The same
+ * commit had passed in compile probe 651, and the same selftest
+ * recorded the box's disk stalling -- a 32 s stall in D state on
+ * write_all_supers, and a 34.8 s slow pass on pkg-produce, in another
+ * test's daemon. Why that one daemon took more than 5 s is not
+ * established. 300 (30 s) only bounds how long a daemon that never
+ * starts is waited for; one that does start costs the same as before.
+ */
+#define DAEMON_START_ATTEMPTS 300
+
 static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 {
 	int i;
@@ -1558,7 +1572,7 @@ static int test_pkg_config_defaults(void)
 
 	cix_client_init(&c, "127.0.0.1", TEST_PORT);
 	pid = start_daemon();
-	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+	if (pid < 0 || wait_for_daemon(&c, DAEMON_START_ATTEMPTS) != 0) {
 		fprintf(stderr, "FAIL: defaults: daemon never accepted connections\n");
 		ok = 0;
 		goto out;
@@ -1602,7 +1616,7 @@ static int test_pkg_config_defaults(void)
 		ok = 0;
 	}
 	pid = start_daemon();
-	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+	if (pid < 0 || wait_for_daemon(&c, DAEMON_START_ATTEMPTS) != 0) {
 		fprintf(stderr, "FAIL: defaults: daemon did not come back after restart\n");
 		ok = 0;
 		goto out;
@@ -1658,7 +1672,7 @@ static int test_schedule_defaults(void)
 
 	cix_client_init(&c, "127.0.0.1", TEST_PORT);
 	pid = start_daemon();
-	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+	if (pid < 0 || wait_for_daemon(&c, DAEMON_START_ATTEMPTS) != 0) {
 		fprintf(stderr, "FAIL: schedule defaults: daemon never accepted connections\n");
 		ok = 0;
 		goto out;
@@ -1708,7 +1722,7 @@ static int test_schedule_defaults(void)
 		ok = 0;
 	}
 	pid = start_daemon();
-	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+	if (pid < 0 || wait_for_daemon(&c, DAEMON_START_ATTEMPTS) != 0) {
 		fprintf(stderr, "FAIL: schedule defaults: daemon did not come back after restart\n");
 		ok = 0;
 		goto out;
@@ -1779,7 +1793,7 @@ static int test_interrupted_run_recovered(void)
 	cix_client_init(&c, "127.0.0.1", TEST_PORT);
 
 	pid = start_daemon();
-	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+	if (pid < 0 || wait_for_daemon(&c, DAEMON_START_ATTEMPTS) != 0) {
 		fprintf(stderr, "FAIL: #375 daemon never accepted connections\n");
 		ok = 0;
 		goto out;
@@ -1825,7 +1839,7 @@ static int test_interrupted_run_recovered(void)
 	kill(pid, SIGKILL);
 	waitpid(pid, NULL, 0);
 	pid = start_daemon();
-	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+	if (pid < 0 || wait_for_daemon(&c, DAEMON_START_ATTEMPTS) != 0) {
 		fprintf(stderr, "FAIL: #375 daemon did not come back after being killed\n");
 		ok = 0;
 		goto out;
@@ -1857,7 +1871,7 @@ static int test_interrupted_run_recovered(void)
 		goto out;
 	}
 	pid = start_daemon();
-	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+	if (pid < 0 || wait_for_daemon(&c, DAEMON_START_ATTEMPTS) != 0) {
 		fprintf(stderr, "FAIL: #375 daemon did not come back for the second restart\n");
 		ok = 0;
 		goto out;
@@ -1928,7 +1942,7 @@ static int test_one_job_per_target(void)
 	cix_client_init(&c, "127.0.0.1", TEST_PORT);
 
 	pid = start_daemon();
-	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+	if (pid < 0 || wait_for_daemon(&c, DAEMON_START_ATTEMPTS) != 0) {
 		fprintf(stderr, "FAIL: #572 daemon never accepted connections\n");
 		ok = 0;
 		goto out;
@@ -2149,7 +2163,7 @@ int main(void)
 		return 1;
 
 	cix_client_init(&client, "127.0.0.1", TEST_PORT);
-	if (wait_for_daemon(&client, 50) != 0) {
+	if (wait_for_daemon(&client, DAEMON_START_ATTEMPTS) != 0) {
 		fprintf(stderr, "FAIL: daemon never accepted connections\n");
 		kill(daemon_pid, SIGKILL);
 		waitpid(daemon_pid, NULL, 0);
