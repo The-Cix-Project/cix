@@ -16855,7 +16855,8 @@ components:
             with the overlay path (ADR-0360). Omit for no limit.
         disk:
           title: Disk
-          type: "null"
+          type: string
+          nullable: true
           description: >
             Removed by ADR-0360. A container's rootfs is a btrfs snapshot
             of its image version beside the image store, and its base
