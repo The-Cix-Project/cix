@@ -29,7 +29,9 @@ PORT = 9222 + (os.getpid() % 500)
 
 import ssl
 ctx = ssl._create_unverified_context()
-pw = open("/tmp/cxpw.txt").read().strip()
+# The password file the operator keeps, never one written for this
+# (CLAUDE.md, THE SANDBOX RULE's second exception, #641).
+pw = open(os.path.expanduser("~/cixpass.txt")).read().strip()
 r = urllib.request.Request("https://%s/v1/login" % HOST,
     data=json.dumps({"username": "claude", "password": pw}).encode(),
     headers={"Content-Type": "application/json"}, method="POST")
