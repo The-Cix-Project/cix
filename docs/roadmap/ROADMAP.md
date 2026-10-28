@@ -2445,6 +2445,18 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 344: a session write is durable only where losing it is unsafe, and a volume's disk is checked and mounted (#659, #660, #661, ADR-0361, 0.2.57-615)
+
+Three fixes found while verifying 614. A login and a session's sliding refresh no longer fsync the session table, and dropping an expired session writes nothing (ADR-0361). A disk given a role is mounted at once when it already carries a filesystem. A volume is placed only on a mounted `volume-storage` disk, at create and at migrate.
+
+**Measured on 192.168.15.95, 2026-10-28:**
+
+- **The gate:** compile probe 0.2.57-649 failed only `test_docindex`, because ADR-0361 had no row in `docs/adr/README.md`. 650, of commit `f362298b`, passed.
+- **The release:** 0.2.57-615 booted on slot b with 12 containers running.
+- **Sessions:** `GET /v1/system/stalls` has no record since 615 booted, across two logins. Its newest records are 614's `POST /v1/login (1422 ms), most in session table write (1421 ms)` and `session-expiry-timer (1856 ms), most in session table write (1855 ms)`.
+- **The volume refusals:** with vda unmounted (`POST /v1/storage/vda/unmount`, 200), `POST /v1/volumes` with `"disk":"vda"` answered 409 `that disk is not mounted`. `"disk":"sda"`, a mounted `rebuildable-storage` disk, answered 409 `that disk does not carry the volume-storage role`. `"disk":"nosuchdisk"` answered 404.
+- **Mount on assignment:** `DELETE /v1/storage-roles/vda` and then `POST` with `volume-storage` answered 201, and `GET /v1/storage` showed vda `"mounted":true` with no reboot. The log store recorded `storage role: mounted vda (btrfs, discovered by probe) at /mnt/cix/vda`. Before the unmount, a create on the mounted vda answered 201 with `host_path` `/mnt/cix/vda/volumes/v661a`, and it was deleted.
+
 ## Part 343: the container store is btrfs, and nothing else is a rootfs (#658, #615, #614, ADR-0360 release B, 0.2.57-614)
 
 ADR-0360 decisions 1 and 3 to 7, as the owner decided on 2026-10-27. Every container pivots onto a btrfs snapshot of its image version: OverlayFS, the userns copy, the overlay quota backends, the container `disk` and `migrate-storage` are removed, `container-storage` is `volume-storage`, and rebuildable storage is btrfs only. The release gate runs on btrfs (decision 4), which is what made removing the fallbacks safe.

@@ -13,13 +13,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - **`POST /v1/volumes` with a `disk` checks it** (#661): a disk that does not exist is a 404, and one that is not mounted or does not carry `volume-storage` is a 409. `volume_check_disk()` is the check, and a migrate now makes the same one of its target, which never checked the role.
   - **A test data directory's disk mounts are detached before it is deleted**, so `rm -rf` cannot follow one into a real filesystem.
 - **Why:** on 0.2.57-614, `vda`'s role was removed and re-added as `volume-storage`. The disk kept its btrfs filesystem but stayed unmounted until a reboot, and `cixctl volume create --name=adr360vol --disk=vda` succeeded. Read from the code, `volume_host_path()` falls back to the default location for an unmounted disk, so the volume went on the OS disk while its record named `vda`.
-- **Verified:** pending.
+- **Verified:** 0.2.57-615 on 192.168.15.95: a volume create on the unmounted vda answered 409, on the `rebuildable-storage` sda 409, and on a missing disk 404. Removing and re-adding vda's role mounted it with no reboot, and the log store said so. ROADMAP Part 344.
 
 ### A session write is durable only where losing it is unsafe (#659, ADR-0361)
 
 - **What changed:** dropping an expired session, in the expiry reaper or at a lookup, writes nothing. A login and a sliding refresh write the session table with `persist_atomic_replace()`, the same atomic rename without the fsync. Logout, revoke and a consumed single-use token keep `persist_atomic_write()` and its fsync.
 - **Why:** measured on 192.168.15.95, `POST /v1/login` held the event loop 1422 ms, 1421 of them in the session table write (the #646 tally), and the expiry timer held it 2700 ms. `load_sessions()` already drops expired sessions, so the expiry writes changed nothing a restart reads. A rename survives a daemon crash, a restart and a clean reboot; only a power loss can lose a login or shorten a window by up to 60 s, and it can never bring back a session ended on purpose.
-- **Verified:** pending.
+- **Verified:** 0.2.57-615 on 192.168.15.95: `GET /v1/system/stalls` has no record since boot, across two logins; its newest are 614's login and expiry-timer session table writes. ROADMAP Part 344.
 
 ### The container store is btrfs, and nothing else is a rootfs (#658, #615, #614, ADR-0360 release B)
 
