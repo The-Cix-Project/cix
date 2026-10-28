@@ -15409,6 +15409,13 @@ static void fmt_pkg_sync_status(const struct json_value *v)
 	if (error != NULL)
 		printf(" error=%s", error);
 	printf("\n");
+	/* The counts are the last COMPLETED sync's (the contract's own
+	 * wording). Printed beside state=running they read as this run's,
+	 * and on 192.168.15.95, 2026-10-28, that was taken to mean a
+	 * synced recipe had not reached the store, and #662 was filed. */
+	if (state != NULL && strcmp(state, "running") == 0)
+		printf("(a sync is running: these counts are the last completed sync's -- "
+		       "--wait for this one's)\n");
 	/* ADR-0324: approvals going back to git. */
 	{
 		const struct json_value *wb = json_object_get(v, "writeback");

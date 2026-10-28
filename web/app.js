@@ -11487,11 +11487,14 @@ async function refreshPkgSyncStatus() {
 		cache.pkgSyncStatus = status;
 		box.textContent = "";
 
+		/* The counts are the last completed sync's, so while one runs
+		 * they say so rather than reading as this run's (#662). */
+		const of = status.state === "running" ? " (last completed sync)" : "";
 		const lines = [
 			["State", status.state],
 			["Last attempt", status.last_attempt || "(never)"],
-			["Added", status.added],
-			["Skipped", status.skipped],
+			["Added" + of, status.added],
+			["Skipped" + of, status.skipped],
 			["Error", status.error || "-"],
 		];
 		for (const [label, value] of lines) {
