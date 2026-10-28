@@ -351,6 +351,65 @@ static int try_mount_one(const struct discovered_disk *d, const char *fs_type, c
 	return mount(d->dev_path, mount_path_out, fs_type, MS_NOSUID | MS_NODEV, NULL);
 }
 
+int diskformat_mount_role_disk(const struct discovered_disk *d, const char *mount_base_dir, char *msg,
+                               size_t msg_size)
+{
+	const char *fs_type;
+	char mount_path[PATH_MAX];
+
+	if (msg_size > 0)
+		msg[0] = '\0';
+	if (d->is_os_disk || d->mounted || diskrole_lookup(d->name) == NULL)
+		return 0;
+	fs_type = diskrole_lookup_fs_type(d->name);
+
+	if (fs_type != NULL) {
+		if (try_mount_one(d, fs_type, mount_base_dir, mount_path, sizeof(mount_path)) != 0) {
+			snprintf(msg, msg_size, "%s: mount(2) as %s failed: %s", d->name, fs_type,
+			         strerror(errno));
+			return -1;
+		}
+		snprintf(msg, msg_size, "mounted %s (%s) at %s", d->name, fs_type, mount_path);
+		return 1;
+	}
+
+	/*
+	 * No remembered fs_type -- a disk role-assigned and formatted
+	 * before diskrole_set_fs_type() existed (confirmed live: a
+	 * real, already-deployed box had exactly this disk, formatted
+	 * during the original Phase C work, well before this
+	 * persistence mechanism shipped), or a role given to a disk
+	 * that already carries a filesystem (#660). Rather than leaving
+	 * it unmounted until an operator destructively re-formats it,
+	 * probe the two filesystem types this project's own format
+	 * mechanism has ever produced (fs_type_str()'s own complete
+	 * range) -- mount(2) with a mismatched fstype string just fails
+	 * cleanly (EINVAL, typically), the same safe, standard technique
+	 * real mount tooling already relies on when a filesystem type
+	 * isn't specified up front. Once one succeeds, the discovery is
+	 * persisted so every later mount uses the remembered path.
+	 */
+	{
+		static const char *const probe_types[] = { "ext4", "btrfs" };
+		size_t j;
+
+		for (j = 0; j < sizeof(probe_types) / sizeof(probe_types[0]); j++) {
+			if (try_mount_one(d, probe_types[j], mount_base_dir, mount_path,
+			                  sizeof(mount_path)) == 0) {
+				diskrole_set_fs_type(d->name, probe_types[j]);
+				snprintf(msg, msg_size, "mounted %s (%s, discovered by probe) at %s",
+				         d->name, probe_types[j], mount_path);
+				return 1;
+			}
+		}
+	}
+	snprintf(msg, msg_size,
+	         "%s: has a role but no remembered fs_type, and neither ext4 nor btrfs "
+	         "mounted -- left unmounted (format it to give it a filesystem)",
+	         d->name);
+	return -1;
+}
+
 void diskformat_remount_present_role_disks(const char *os_containers_dir, const char *mount_base_dir)
 {
 	struct discovered_disk disks[DISK_ENUM_MAX];
@@ -358,72 +417,10 @@ void diskformat_remount_present_role_disks(const char *os_containers_dir, const 
 	int i;
 
 	for (i = 0; i < n; i++) {
-		const char *role;
-		const char *fs_type;
-		char mount_path[PATH_MAX];
+		char msg[PATH_MAX + 256];
 
-		if (disks[i].is_os_disk || disks[i].mounted)
-			continue;
-		role = diskrole_lookup(disks[i].name);
-		if (role == NULL)
-			continue;
-		fs_type = diskrole_lookup_fs_type(disks[i].name);
-
-		if (fs_type != NULL) {
-			if (try_mount_one(&disks[i], fs_type, mount_base_dir, mount_path, sizeof(mount_path)) !=
-			    0) {
-				fprintf(stderr,
-				        "diskformat_remount_present_role_disks: %s: mount(2) failed: %s\n",
-				        disks[i].name, strerror(errno));
-				continue;
-			}
-			fprintf(stderr, "diskformat_remount_present_role_disks: remounted %s (%s) at %s\n",
-			        disks[i].name, fs_type, mount_path);
-			continue;
-		}
-
-		/*
-		 * No remembered fs_type -- a disk role-assigned and formatted
-		 * before diskrole_set_fs_type() existed (confirmed live: a
-		 * real, already-deployed box had exactly this disk, formatted
-		 * during the original Phase C work, well before this
-		 * persistence mechanism shipped). Rather than leaving it
-		 * permanently unmounted until an operator destructively
-		 * re-formats it, probe the two filesystem types this project's
-		 * own format mechanism has ever produced (fs_type_str()'s own
-		 * complete range) -- mount(2) with a mismatched fstype string
-		 * just fails cleanly (EINVAL, typically), the same safe,
-		 * standard technique real mount tooling already relies on when
-		 * a filesystem type isn't specified up front. Once one
-		 * succeeds, the discovery is persisted so every future boot
-		 * uses the direct, remembered path instead of probing again.
-		 */
-		{
-			static const char *const probe_types[] = { "ext4", "btrfs" };
-			size_t j;
-			int mounted = 0;
-
-			for (j = 0; j < sizeof(probe_types) / sizeof(probe_types[0]) && !mounted; j++) {
-				if (try_mount_one(&disks[i], probe_types[j], mount_base_dir, mount_path,
-				                   sizeof(mount_path)) == 0) {
-					mounted = 1;
-					fs_type = probe_types[j];
-				}
-			}
-			if (!mounted) {
-				fprintf(stderr,
-				        "diskformat_remount_present_role_disks: %s: has a role but no "
-				        "remembered fs_type, and probing ext4/btrfs both failed -- left "
-				        "unmounted\n",
-				        disks[i].name);
-				continue;
-			}
-			diskrole_set_fs_type(disks[i].name, fs_type);
-			fprintf(stderr,
-			        "diskformat_remount_present_role_disks: remounted %s (%s, discovered by "
-			        "probe) at %s\n",
-			        disks[i].name, fs_type, mount_path);
-		}
+		if (diskformat_mount_role_disk(&disks[i], mount_base_dir, msg, sizeof(msg)) != 0)
+			fprintf(stderr, "diskformat_remount_present_role_disks: %s\n", msg);
 	}
 }
 

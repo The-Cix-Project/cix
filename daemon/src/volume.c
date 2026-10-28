@@ -1,6 +1,7 @@
 #include "volume.h"
 #include "btrfs.h"
 #include "disk.h"
+#include "diskrole.h"
 #include "persist.h"
 #include "treecopy.h"
 #include "volumebackup.h"
@@ -183,6 +184,36 @@ void volume_set_dir(const char *dir)
 	snprintf(g_volumes_dir, sizeof(g_volumes_dir), "%s", dir);
 }
 
+/*
+ * A disk named for a volume has to be a real, currently-mounted device:
+ * the precondition volume_host_path() applies when it resolves a
+ * placement, checked here so a refusal is explicit rather than a silent
+ * fall back to the default location. One check for both of the places a
+ * volume is put on a disk: its create and its migrate. The create had
+ * none, and on 192.168.15.95 (2026-10-28) a volume created on an
+ * unmounted vda landed on the OS disk while recording vda (#661).
+ * And it has to carry the volume-storage role, which is the one thing
+ * that places a volume on a disk (ADR-0360); neither path checked it.
+ */
+static enum volume_error volume_check_disk(const char *disk_name)
+{
+	struct discovered_disk disks[DISK_ENUM_MAX];
+	int count = disk_enumerate(disks, DISK_ENUM_MAX, g_volumes_dir);
+	int i;
+
+	for (i = 0; i < count; i++) {
+		const char *role;
+
+		if (strcmp(disks[i].name, disk_name) != 0)
+			continue;
+		role = diskrole_lookup(disk_name);
+		if (role == NULL || strcmp(role, "volume-storage") != 0)
+			return VOLUME_ERR_TARGET_WRONG_ROLE;
+		return disks[i].mounted ? VOLUME_OK : VOLUME_ERR_TARGET_NOT_READY;
+	}
+	return VOLUME_ERR_TARGET_NOT_FOUND;
+}
+
 enum volume_error volume_create(const char *name, const char *disk, struct volume **out)
 {
 	struct volume *v;
@@ -193,6 +224,12 @@ enum volume_error volume_create(const char *name, const char *disk, struct volum
 		return VOLUME_ERR_INVALID_NAME;
 	if (find_slot(name) != NULL)
 		return VOLUME_ERR_DUPLICATE;
+	if (disk != NULL && disk[0] != '\0') {
+		enum volume_error derr = volume_check_disk(disk);
+
+		if (derr != VOLUME_OK)
+			return derr;
+	}
 	for (i = 0; i < VOLUME_MAX; i++) {
 		if (!g_volumes[i].in_use) {
 			slot = i;
@@ -467,11 +504,9 @@ enum volume_error volume_apply_owner(const struct volume *v, int recursive)
 enum volume_error volume_migrate(const char *name, const char *disk_name)
 {
 	struct volume *v = volume_find(name);
-	struct discovered_disk disks[DISK_ENUM_MAX];
 	char old_path[PATH_MAX];
 	char new_path[PATH_MAX];
 	char old_disk[VOLUME_DISK_NAME_MAX];
-	int count, i, found = 0;
 
 	if (v == NULL)
 		return VOLUME_ERR_NOT_FOUND;
@@ -481,22 +516,11 @@ enum volume_error volume_migrate(const char *name, const char *disk_name)
 	if (strcmp(v->disk, disk_name) == 0)
 		return VOLUME_ERR_SAME_PLACE;
 
-	/* An explicit target has to be a real, currently-mounted device --
-	 * the same precondition volume_host_path() already applies when it
-	 * resolves a placement, checked here so the refusal is explicit
-	 * rather than a silent fall back to the default location. */
 	if (disk_name[0] != '\0') {
-		count = disk_enumerate(disks, DISK_ENUM_MAX, g_volumes_dir);
-		for (i = 0; i < count; i++) {
-			if (strcmp(disks[i].name, disk_name) != 0)
-				continue;
-			found = 1;
-			if (!disks[i].mounted)
-				return VOLUME_ERR_TARGET_NOT_READY;
-			break;
-		}
-		if (!found)
-			return VOLUME_ERR_TARGET_NOT_FOUND;
+		enum volume_error terr = volume_check_disk(disk_name);
+
+		if (terr != VOLUME_OK)
+			return terr;
 	}
 
 	if (volume_host_path(v, old_path, sizeof(old_path)) != 0)

@@ -5,6 +5,8 @@
 
 #include <sys/types.h>
 
+struct discovered_disk;
+
 /*
  * Multi-disk management Phase C: destructive format + mount of a disk
  * already given a role by Phase B (diskrole.h). Deliberately a
@@ -153,6 +155,17 @@ void diskformat_write_status_json(struct json_writer *w, const char *want_disk_n
  * a caller needs to act on.
  */
 void diskformat_remount_present_role_disks(const char *os_containers_dir, const char *mount_base_dir);
+
+/*
+ * The one disk's half of the pass above, and what a role assignment
+ * calls so a disk that already carries a filesystem is mounted when it
+ * is given its role, not at the next boot (#660). Answers 0 when there
+ * is nothing to do (the OS disk, already mounted, or no role), 1 when
+ * it mounted the disk, and -1 when it could not. msg says which, for
+ * the caller to log where its own caller will see it.
+ */
+int diskformat_mount_role_disk(const struct discovered_disk *d, const char *mount_base_dir, char *msg,
+                               size_t msg_size);
 
 /*
  * The reverse of the mount half of diskformat_start() -- a real,

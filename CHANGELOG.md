@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A disk is mounted when it gets its role, and a volume is placed only on a mounted disk (#660, #661)
+
+- **What changed:**
+  - **Assigning a role mounts a disk that already carries a filesystem** (#660). `diskformat_mount_role_disk()` is the startup remount pass's per-disk step, and `POST /v1/storage-roles` and a configuration apply both call it through `diskrole_mount_assigned()`. A disk with no filesystem stays unmounted and is never formatted by this; the log store says which. `createStorageRole` now announces `listStorage`.
+  - **`POST /v1/volumes` with a `disk` checks it** (#661): a disk that does not exist is a 404, and one that is not mounted or does not carry `volume-storage` is a 409. `volume_check_disk()` is the check, and a migrate now makes the same one of its target, which never checked the role.
+  - **A test data directory's disk mounts are detached before it is deleted**, so `rm -rf` cannot follow one into a real filesystem.
+- **Why:** on 0.2.57-614, `vda`'s role was removed and re-added as `volume-storage`. The disk kept its btrfs filesystem but stayed unmounted until a reboot, and `cixctl volume create --name=adr360vol --disk=vda` succeeded. Read from the code, `volume_host_path()` falls back to the default location for an unmounted disk, so the volume went on the OS disk while its record named `vda`.
+- **Verified:** pending.
+
 ### A session write is durable only where losing it is unsafe (#659, ADR-0361)
 
 - **What changed:** dropping an expired session, in the expiry reaper or at a lookup, writes nothing. A login and a sliding refresh write the session table with `persist_atomic_replace()`, the same atomic rename without the fsync. Logout, revoke and a consumed single-use token keep `persist_atomic_write()` and its fsync.

@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/mount.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
@@ -415,6 +416,31 @@ void test_data_dir_cleanup(const char *path)
 {
 	char cmd[PATH_MAX + 16];
 
+	char disks[PATH_MAX];
+	DIR *d;
+
+	/*
+	 * A test daemon mounts a disk it gives a role under PATH/disks
+	 * (#660), and rm -rf follows a mount into the real filesystem
+	 * beneath it. So detach whatever is mounted there first. Not
+	 * --one-file-system instead: a container's rootfs here is a btrfs
+	 * subvolume, which is its own device, and would be left behind.
+	 */
+	snprintf(disks, sizeof(disks), "%s/disks", path);
+	d = opendir(disks);
+	if (d != NULL) {
+		struct dirent *de;
+
+		while ((de = readdir(d)) != NULL) {
+			char m[PATH_MAX];
+
+			if (de->d_name[0] == '.')
+				continue;
+			if (snprintf(m, sizeof(m), "%s/%s", disks, de->d_name) < (int)sizeof(m))
+				umount2(m, MNT_DETACH);
+		}
+		closedir(d);
+	}
 	snprintf(cmd, sizeof(cmd), "rm -rf '%s'", path);
 	if (system(cmd) != 0)
 		fprintf(stderr, "warning: cleanup of %s failed\n", path);

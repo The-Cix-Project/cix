@@ -44,6 +44,7 @@
 #include "api_config.h"
 
 #include "apiresp.h"
+#include "api_storage.h"
 #include "backupconfig.h"
 #include "dhcp.h"
 #include "diskrole.h"
@@ -1469,6 +1470,7 @@ static int cfg_disk_roles_create(const struct json_value *el, int dry_run, char 
 		snprintf(err, errsz, "the role \"%s\" was refused for %s", role, disk);
 		return -1;
 	}
+	diskrole_mount_assigned(disk, g_containers_dir);
 	return 0;
 }
 

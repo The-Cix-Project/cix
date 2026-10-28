@@ -53,11 +53,16 @@ static void respond_volume_error(int fd, enum volume_error e)
 		respond_error(fd, 500, "Internal Server Error", "could not create the volume directory");
 		return;
 	case VOLUME_ERR_TARGET_NOT_FOUND:
-		respond_error(fd, 404, "Not Found", "no such disk or partition to migrate onto");
+		respond_error(fd, 404, "Not Found", "no such disk or partition");
 		return;
 	case VOLUME_ERR_TARGET_NOT_READY:
 		respond_error(fd, 409, "Conflict",
 		              "that disk is not mounted -- give it a role and format it first");
+		return;
+	case VOLUME_ERR_TARGET_WRONG_ROLE:
+		respond_error(fd, 409, "Conflict",
+		              "that disk does not carry the volume-storage role -- a volume is placed only "
+		              "on a disk with that role (POST /v1/storage-roles)");
 		return;
 	case VOLUME_ERR_SAME_PLACE:
 		respond_error(fd, 409, "Conflict", "this volume is already there");

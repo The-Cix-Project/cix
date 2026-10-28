@@ -217,6 +217,27 @@ void handle_diskrole_list(int fd)
 	jw_free(&w);
 }
 
+void diskrole_mount_assigned(const char *disk_name, const char *containers_dir)
+{
+	struct discovered_disk disks[DISK_ENUM_MAX];
+	int n = disk_enumerate(disks, DISK_ENUM_MAX, containers_dir);
+	int i;
+
+	for (i = 0; i < n; i++) {
+		char msg[PATH_MAX + 256];
+		int rc;
+
+		if (strcmp(disks[i].name, disk_name) != 0)
+			continue;
+		rc = diskformat_mount_role_disk(&disks[i], DISKS_MOUNT_DIR, msg, sizeof(msg));
+		if (rc > 0)
+			logstore_write("cixd", "info", "storage role: %s", msg);
+		else if (rc < 0)
+			logstore_write("cixd", "warn", "storage role: %s", msg);
+		return;
+	}
+}
+
 void handle_diskrole_create(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
@@ -251,6 +272,7 @@ void handle_diskrole_create(int fd, const char *body, size_t body_len)
 			respond_diskrole_error(fd, derr);
 			return;
 		}
+		diskrole_mount_assigned(disk_name_buf, CONTAINERS_DIR);
 
 		{
 			struct json_writer w;

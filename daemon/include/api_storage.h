@@ -32,6 +32,17 @@ int is_active_storage_singleton_placement(const char *disk_name);
 
 int disk_holds_volumes(const char *disk_name);
 
+/*
+ * Mount a disk that has just been given a role, when it already
+ * carries a filesystem (#660). Before this the mount waited for the
+ * next boot's remount pass, so the role took and the disk stayed
+ * unmounted. Called by every path that assigns a role -- the REST
+ * create and a configuration apply -- and the outcome goes to the log
+ * store. Not mounting is never an error to the caller: the role is
+ * already recorded, and the storage list says whether it is mounted.
+ */
+void diskrole_mount_assigned(const char *disk_name, const char *containers_dir);
+
 void respond_diskformat_error(int fd, enum diskformat_error err);
 
 void handle_device_list(int fd);
