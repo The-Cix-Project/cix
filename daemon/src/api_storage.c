@@ -18,6 +18,7 @@
 #include "namecheck.h"
 #include "storageplacement.h"
 #include "persist.h"
+#include "volume.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -180,7 +181,7 @@ static void respond_diskrole_error(int fd, enum diskrole_error err)
 		 * exists.
 		 */
 		respond_error(fd, 400, "Bad Request",
-		              "role must be one of \"container-storage\", \"backup\", "
+		              "role must be one of \"volume-storage\", \"backup\", "
 		              "\"rebuildable-storage\", \"log-storage\" or \"swap\"");
 		break;
 	case DISKROLE_ERR_IS_OS_DISK:
@@ -290,50 +291,26 @@ int is_active_storage_singleton_placement(const char *disk_name)
 }
 
 /*
- * ADR-0142 Section 4's own natural extension of the safety check above:
- * a container-storage-role disk that one or more real containers are
- * actually placed on (via POST /containers' own original "disk" field,
- * ADR-0102 -- predating this ADR entirely, migrate-storage is simply
- * the first thing that ever needed this check to exist) is exactly as
- * unsafe to pull the role out from under, or reformat, as any of the
- * four singleton placements above -- doing so would silently orphan or
- * destroy that container's own live workload data. Checks every live
- * registry entry (e->disk_name) and every persisted definition
- * currently between a crash and its next restart (re-parsed from its
- * own stored body's "disk" field, the same fallback DELETE's own
- * crashed-container cleanup already uses) -- a container can be using
- * a disk in either state.
+ * True if a volume's data is on disk_name. A disk with the
+ * volume-storage role is where volumes are placed (ADR-0183, ADR-0360),
+ * so pulling the role out from under one, unmounting the disk or
+ * formatting it would orphan or destroy that volume's data -- exactly
+ * as unsafe as the four singleton placements above.
+ *
+ * This was disk_has_container_in_use(), which asked whether a container
+ * had been placed there with POST /containers' "disk". ADR-0360 removed
+ * that field, and the check had never counted volumes, so a disk
+ * holding them was not protected at all (cix#658).
  */
-int disk_has_container_in_use(const char *disk_name)
+int disk_holds_volumes(const char *disk_name)
 {
-	char names[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
-	int count = containerdef_resolve_order(names);
+	struct volume vols[VOLUME_MAX];
+	int count = volume_list(vols, VOLUME_MAX);
 	int i;
 
 	for (i = 0; i < count; i++) {
-		struct registry_entry *live = registry_find(names[i]);
-
-		if (live != NULL) {
-			if (live->disk_name[0] != '\0' && strcmp(live->disk_name, disk_name) == 0)
-				return 1;
-			continue;
-		}
-		{
-			struct container_def *def = containerdef_find(names[i]);
-			struct json_value *defroot;
-
-			if (def == NULL)
-				continue;
-			defroot = json_parse(def->body, def->body_len);
-			if (defroot != NULL) {
-				const char *d = json_as_string(json_object_get(defroot, "disk"));
-				int match = (d != NULL && strcmp(d, disk_name) == 0);
-
-				json_free(defroot);
-				if (match)
-					return 1;
-			}
-		}
+		if (vols[i].disk[0] != '\0' && strcmp(vols[i].disk, disk_name) == 0)
+			return 1;
 	}
 	return 0;
 }
@@ -351,11 +328,10 @@ void handle_diskrole_delete(int fd, const char *disk_name)
 		              "POST /v1/system/swap with a different disk/omitted) before removing its role");
 		return;
 	}
-	if (disk_has_container_in_use(disk_name)) {
+	if (disk_holds_volumes(disk_name)) {
 		respond_error(fd, 409, "Conflict",
-		              "one or more containers currently have their own storage on this disk -- "
-		              "migrate them away first (POST /containers/{name}/migrate-storage) before "
-		              "removing its role");
+		              "one or more volumes are on this disk -- migrate them away first "
+		              "(POST /volumes/{volume_name}/migrate) before removing its role");
 		return;
 	}
 	derr = diskrole_delete(disk_name);
@@ -459,11 +435,11 @@ void handle_disk_unmount_post(int fd, const char *disk_name, const char *body, s
 		              "unmounting it would break whatever currently relies on it; migrate away first");
 		return;
 	}
-	if (disk_has_container_in_use(disk_name)) {
+	if (disk_holds_volumes(disk_name)) {
 		respond_error(fd, 409, "Conflict",
-		              "one or more containers currently have their own storage on this disk -- "
-		              "unmounting it would break them; migrate them away first "
-		              "(POST /containers/{name}/migrate-storage)");
+		              "one or more volumes are on this disk -- unmounting it would break the "
+		              "containers mounting them; migrate them away first "
+		              "(POST /volumes/{volume_name}/migrate)");
 		return;
 	}
 

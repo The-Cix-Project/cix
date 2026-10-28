@@ -5673,9 +5673,6 @@ function renderContainerDetail(name) {
 		"No files staged"
 	);
 
-	renderContainerStorage(name);
-	refreshContainerStorageMigrate(name);
-
 	document.getElementById("cd-start").onclick = () => startContainer(c.name);
 	document.getElementById("cd-pause").onclick = () => pauseContainer(c.name);
 	document.getElementById("cd-unpause").onclick = () => unpauseContainer(c.name);
@@ -7344,66 +7341,6 @@ function renderAllStoragePlacements() {
 
 
 /*
- * ADR-0142 Section 4: one container's own overlay-storage placement --
- * same shape as STORAGE_KINDS above (current placement text, migrate
- * form populated from container-storage-role disks, inline migration
- * status), but keyed by whichever container's detail view is
- * currently open rather than a fixed daemon-wide slot, since cache.storage/
- * storageRoleFor() are already kept fresh by the global poll loop
- * regardless of which view is active.
- */
-async function refreshContainerStorageMigrate(name) {
-	if (currentContainerDetailName !== name)
-		return;
-	try {
-		cache.containerStorageMigrate = await apiRequest("GET", CIX_API.getContainerStorageMigrateStatus(name));
-	} catch (e) {
-		cache.containerStorageMigrate = null;
-	}
-	if (currentContainerDetailName === name)
-		renderContainerStorage(name);
-}
-
-function renderContainerStorage(name) {
-	const c = cache.containers.find((x) => x.name === name);
-	const current = document.getElementById("cd-storage-current");
-
-	if (!c)
-		return;
-	current.textContent = "Storage: " + (c.disk || "default OS-disk placement");
-
-	/* Disks with the container-storage role; the blank sends null, the
-	 * default OS-disk placement. */
-	syncForm(document.getElementById("cd-storage-migrate-form"), "migrateContainerStorage", {
-		args: [name],
-		choices: { disk: (cache.storage || [])
-			.filter((d) => { const r = storageRoleFor(d.name); return !d.protected && r !== null && r.role === "container-storage"; })
-			.map((d) => ({ value: d.name, label: d.name + (d.model ? " (" + d.model + ")" : "") })) },
-		submit: "Migrate", saved: "Storage migration started",
-		failed: "Failed to start storage migration for " + name,
-		after: (body, result) => {
-			cache.containerStorageMigrate = result;
-			renderContainerStorage(name);
-		},
-	});
-
-	const statusP = document.getElementById("cd-storage-migrate-status");
-	const m = cache.containerStorageMigrate;
-
-	if (!m || m.state === "none") {
-		statusP.hidden = true;
-	} else {
-		statusP.hidden = false;
-		statusP.textContent =
-			"Migration: " +
-			m.state +
-			(m.disk ? " (" + m.disk + ")" : "") +
-			(m.state === "failed" && m.error ? " -- " + m.error : "");
-	}
-}
-
-
-/*
  * Whole disks only. Partitions used to be listed here as peers of the
  * disks they belong to, which is what made vda, vda1..vda5, sda and sr0
  * read as one flat set of eight equivalent things. A partition now
@@ -8098,7 +8035,7 @@ async function openAssignRole(name) {
 	openForm("createStorageRole", {
 		title: "Assign a role to " + name,
 		submit: "Assign role",
-		values: { disk_name: name, role: "container-storage" },
+		values: { disk_name: name, role: "volume-storage" },
 		choices: choices,
 		/* The roles, wherever the form was opened from: the tree's
 		 * right-click menu reads them too, on every page. */
@@ -12191,7 +12128,7 @@ function containerFormSections() {
 	return [
 		{ title: "Identity", fields: ["name", "image", "services"] },
 		{ title: "Resources", fields: ["memory_max", "memory_swap_max", "pids_max", "cpu_max",
-		                               "cpuset_cpus", "disk_quota_bytes", "disk", "ksm"] },
+		                               "cpuset_cpus", "disk_quota_bytes", "ksm"] },
 		{ title: "Networking", fields: ["networks", "routes", "dns_servers", "dns_register",
 		                                "ip_forward", "sysctls", "interfaces"] },
 		{ title: "Devices and access", fields: ["devices", "reserve_devices", "cap_add", "userns", "procfuse",

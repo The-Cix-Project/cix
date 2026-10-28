@@ -775,7 +775,7 @@ static int servers_have_tls_certs(char *out_container, size_t out_container_size
 		entry = registry_find(g_bindings[i].container_name);
 		if (entry == NULL || !entry->running)
 			continue; /* already warned about loudly by the render */
-		container_file_host_path(g_bindings[i].container_name, entry->disk_name,
+		container_file_host_path(g_bindings[i].container_name,
 		                          PKI_CONTAINER_CERT_DIR "/tls.crt", cert_path,
 		                          sizeof(cert_path));
 		if (stat(cert_path, &st) != 0 || st.st_size == 0) {
@@ -1814,7 +1814,7 @@ void ldap_record_sync_all(void)
 		 * list and rejected every bind, while this loop reported
 		 * nothing at all.
 		 */
-		container_file_host_path(g_bindings[i].container_name, entry->disk_name,
+		container_file_host_path(g_bindings[i].container_name,
 		                          g_bindings[i].config_path, full_path, sizeof(full_path));
 		/* #276: which file, for which container, on every render. The
 		 * bug being chased is that creates appear and updates do not,

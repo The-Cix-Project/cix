@@ -28,10 +28,11 @@
  * (rather than leaving data orphaned or silently removing data still in
  * use).
  *
- * Deliberately NOT a second storage story: a volume is placed by the
- * same disk-role mechanism container overlays already use, so
- * "container-storage" disks serve both, and there is one answer to
- * "where does container data live" rather than two.
+ * Placed by the disk-role mechanism: a disk with the "volume-storage"
+ * role. That role used to be "container-storage" and placed containers'
+ * overlay storage too; ADR-0360 removed that, so a volume is the one
+ * thing that puts container data on a disk, and the role is named for
+ * it.
  */
 
 #define VOLUME_MAX 64
@@ -76,10 +77,8 @@ enum volume_running_mode {
 struct volume {
 	char name[VOLUME_NAME_MAX];
 	/*
-	 * Which disk this volume's data sits on, by the same disk-role
-	 * naming container overlays use. Empty means the default OS-disk
-	 * placement -- the identical convention a container's own "disk"
-	 * field already has, so there is one rule to learn, not two.
+	 * Which disk this volume's data sits on, a disk with the
+	 * volume-storage role. Empty means the default OS-disk placement.
 	 */
 	char disk[VOLUME_DISK_NAME_MAX];
 	time_t created_at;

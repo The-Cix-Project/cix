@@ -236,7 +236,6 @@ static const struct budget g_budgets[] = {
 	{ "daemon/src/pkicrypto.c", 0, "#351: the PKI, release-key and signing-key work moved in-process to libcrypto; opensslrun.c and its one bounded wait on a forked openssl are gone" },
 	{ "daemon/src/kmod.c", 1, "modprobe, bounded" },
 	{ "daemon/src/storagemigrate.c", 1, "double-fork intermediate" },
-	{ "daemon/src/containerstoragemigrate.c", 1, "double-fork intermediate" },
 	{ "src/container.c", 5,
 	  "clone3 intermediates, container_wait, and the reap of a child that wrote its "
 	  "diagnostic and is already exiting before exec (#622)" },

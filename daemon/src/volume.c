@@ -151,9 +151,9 @@ void volume_repoint(const char *new_state_path)
 }
 
 /*
- * Where a volume's data actually lives. Mirrors container_root_for()'s
- * own resolution exactly: a named, currently-mounted disk puts it under
- * that disk, anything else falls back to the default location. Resolved
+ * Where a volume's data actually lives: a named, currently-mounted disk
+ * puts it under that disk, anything else falls back to the default
+ * location. Resolved
  * FRESH every time rather than cached, the same "look up the disk now,
  * never trust a remembered path" discipline the rest of this project's
  * storage placement already follows.
@@ -455,10 +455,10 @@ enum volume_error volume_apply_owner(const struct volume *v, int recursive)
  * first would open a window where it points at a location the data has
  * not reached yet.
  *
- * Deliberately synchronous, unlike container-storage migration
- * (ADR-0142), which is an async job with a poll endpoint. That one moves
- * a container's whole overlay while the container keeps running, so it
- * has to be. This refuses to run while anything using the volume is
+ * Deliberately synchronous, unlike the container-storage migration that
+ * ADR-0360 removed, which was an async job with a poll endpoint because
+ * it moved a container's whole overlay while the container kept
+ * running. This refuses to run while anything using the volume is
  * running at all, so there is nothing to keep alive during the copy and
  * an async job would be machinery with no purpose. If volumes large
  * enough to need one show up, that is a real reason to revisit it --

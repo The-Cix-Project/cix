@@ -178,10 +178,10 @@ void diskformat_remount_present_role_disks(const char *os_containers_dir, const 
  * disk_enumerate() doesn't currently report as mounted at all
  * (DISKFORMAT_ERR_NOT_MOUNTED) -- main.c's own handler additionally
  * checks is_active_storage_singleton_placement()/
- * disk_has_container_in_use() before ever calling this, the same two
+ * disk_holds_volumes() before ever calling this, the same two
  * checks handle_disk_format_post() already has, since a disk actively
  * backing live state/rebuildable/log/backup/swap placement or a
- * container's own storage must never be pulled out from under it --
+ * volume must never be pulled out from under it --
  * this function has no knowledge of either check itself (that
  * knowledge lives in main.c, next to the other placement lookups), it
  * only enforces the two invariants named above.
@@ -203,7 +203,7 @@ enum diskformat_error diskformat_unmount(const char *disk_name, const char *os_c
  * mounted under it, and the operator has no way to tell that apart from
  * an open file or a running process -- which is exactly what happened
  * on the OS disk's cix-containers partition: /var/lib/cix carries both
- * the rebuildable-storage and container-storage disks under
+ * the rebuildable-storage and volume-storage disks under
  * /var/lib/cix/disks/, so unmounting it can never succeed until those
  * go first, and the error said only that something "may still be busy".
  *

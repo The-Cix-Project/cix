@@ -48,16 +48,6 @@ struct registry_console {
  */
 #define REGISTRY_TEARDOWN_RESTART 3
 /*
- * #448: "stop it, copy its storage, then replay the definition."
- * Container storage migration is a different intent from a restart --
- * there is a copy pass and a disk re-pointing between the stop and the
- * replay -- so it gets its own kind rather than being bent into
- * RESTART. It used to stop the container with registry_remove()'s
- * synchronous kill-and-wait, on the reactor, with no running check of
- * any kind.
- */
-#define REGISTRY_TEARDOWN_MIGRATE 4
-/*
  * ADR-0347: "this incarnation has failed, by the daemon's decision" --
  * the hardware under one of its interfaces[] grants left the host. The
  * stop is graceful like any other, and the exit then takes the
@@ -528,17 +518,6 @@ struct registry_entry {
 	struct container_env env[CONTAINER_MAX_ENV];
 	int env_count; /* 0 = no extra env vars */
 	/*
-	 * The disk (disk.h's own bare kernel name, e.g. "sdb") this
-	 * container's own upper/work/merged overlay directories live
-	 * under, or an empty string for the default (CONTAINERS_DIR, the
-	 * OS disk) -- task #638/ADR-0102. Purely a memo for reconstructing
-	 * the right base path at stats/file-read time (see main.c's
-	 * container_base_for()); registry_create() itself is handed the
-	 * already-resolved path, this field never drives any path
-	 * computation on its own.
-	 */
-	char disk_name[DISKROLE_DISK_NAME_MAX];
-	/*
 	 * The real /etc/resolv.conf nameserver IPs staged into this
 	 * container's own upperdir at creation time (POST /v1/containers'
 	 * own "dns_servers" field, ADR-0143) -- display-only, the exact
@@ -614,13 +593,6 @@ void registry_init(void);
  * failing container_create()/cgroup_create() call.
  */
 /*
- * disk_name (task #638/ADR-0102): the disk this container's overlay
- * storage was placed on -- an empty string ("") for the default
- * (CONTAINERS_DIR). Purely recorded onto the new entry, same
- * display-only reasoning file_paths/file_count already have; the
- * caller has already resolved the actual filesystem paths (spec->ov.*)
- * before calling this.
- *
  * dns_server_ips/dns_server_count (ADR-0143): the same display-only
  * "already staged onto disk, this is purely so GET can echo it" shape
  * file_paths/file_count already have, for the "dns_servers" field's
@@ -633,7 +605,7 @@ enum registry_error registry_create(const char *name, const char *image,
                                      const struct registry_device_attachment *devices,
                                      int device_count,
                                      const char file_paths[][CONTAINER_FILE_PATH_MAX],
-                                     int file_count, const char *disk_name,
+                                     int file_count,
                                      const char dns_server_ips[][RESOLV_IP_STRLEN],
                                      int dns_server_count,
                                      struct registry_entry **out);

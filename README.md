@@ -8,7 +8,7 @@ version 3](LICENSE), or (at your option) any later version
 Contributions follow the [DCO-based contribution guide](CONTRIBUTING.md); the
 Cix name and marks are governed separately by [TRADEMARK.md](TRADEMARK.md).
 
-Cix OS is a rolling-release hardware and workload orchestration platform, compiled entirely from source: a hand-rolled container runtime on raw Linux namespaces and cgroups, image layering by btrfs snapshot (OverlayFS where btrfs is absent), a 100% custom C networking data plane, and a REST control layer for the host, containers, hardware, disks, networks, DNS, PKI, and more — no runc, no Open vSwitch, no eBPF-based networking dataplane. Cix's own code is compiled exclusively with the Tiny C Compiler (TCC); third-party packages build with TCC by default and with Cix's own self-hosted gcc where TCC cannot ([ADR-0224](docs/adr/0224-the-toolchain-tenet.md), [ADR-0226](docs/adr/0226-gcc-is-an-ordinary-choice-for-third-party-packages.md)). Every capability, including hardware itself, is a first-class API resource; containers are where all real work happens, the host is the thinnest possible layer underneath them. Full charter: [`docs/mission/MISSION.md`](docs/mission/MISSION.md).
+Cix OS is a rolling-release hardware and workload orchestration platform, compiled entirely from source: a hand-rolled container runtime on raw Linux namespaces and cgroups, image layering by btrfs snapshot, a 100% custom C networking data plane, and a REST control layer for the host, containers, hardware, disks, networks, DNS, PKI, and more — no runc, no Open vSwitch, no eBPF-based networking dataplane. Cix's own code is compiled exclusively with the Tiny C Compiler (TCC); third-party packages build with TCC by default and with Cix's own self-hosted gcc where TCC cannot ([ADR-0224](docs/adr/0224-the-toolchain-tenet.md), [ADR-0226](docs/adr/0226-gcc-is-an-ordinary-choice-for-third-party-packages.md)). Every capability, including hardware itself, is a first-class API resource; containers are where all real work happens, the host is the thinnest possible layer underneath them. Full charter: [`docs/mission/MISSION.md`](docs/mission/MISSION.md).
 
 ## Versioning
 
@@ -25,7 +25,7 @@ The leading `0` is not modesty, it is accurate: Cix has not shipped a stable int
 | Part | Principle |
 |---|---|
 | **C** | Both meanings are literal here. The core is hand-rolled C all the way down — the container runtime, the networking data plane, the REST control layer — compiled exclusively with the Tiny C Compiler; C is not an implementation detail, it is the product. And **c**ontainers are where all real work happens, with the host as the thinnest possible layer underneath them. |
-| **ix** | For POSIX and UNIX: direct Linux primitives, exposed rather than wrapped. Raw namespaces and cgroups, OverlayFS, rtnetlink — no runc, no Open vSwitch, no bundled platform services. It exposes the kernel, not an opinion. |
+| **ix** | For POSIX and UNIX: direct Linux primitives, exposed rather than wrapped. Raw namespaces and cgroups, btrfs snapshots, rtnetlink — no runc, no Open vSwitch, no bundled platform services. It exposes the kernel, not an opinion. |
 
 The name is the architecture, not a label bolted on afterward. Its full brand system — strategy, voice, colour, typography, the mark and the UI icon set — lives in [`docs/brand/`](docs/brand/), with [`brand-guidelines.md`](docs/brand/brand-guidelines.md) as the authority.
 
@@ -53,7 +53,7 @@ See [`docs/roadmap/ROADMAP.md`](docs/roadmap/ROADMAP.md) for the full part-by-pa
 
 ```
 include/       runtime library public API (container.h) and internal glue
-src/           runtime implementation (cgroup, namespaces, mounts, overlay, container networking)
+src/           runtime implementation (cgroup, namespaces, mounts, btrfs, container networking)
 netplane/      custom rtnetlink control plane (bridges, veth, routes — no ip/iproute2, no OVS)
 daemon/        cixd: the REST daemon — the only process with direct runtime/network/DNS/PKI access
 client/        shared HTTP client library used by the CLI and the daemon's own test suite

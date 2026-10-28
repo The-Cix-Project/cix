@@ -53,6 +53,7 @@ enum storagemigrate_error {
 	STORAGEMIGRATE_ERR_NOT_MOUNTED,      /* target disk carries the role but isn't currently mounted */
 	STORAGEMIGRATE_ERR_ALREADY_ACTIVE,   /* target disk (or NULL/default) is already the active placement */
 	STORAGEMIGRATE_ERR_SPAWN_FAILED,
+	STORAGEMIGRATE_ERR_NOT_BTRFS,        /* rebuildable-storage target is not btrfs (ADR-0360) */
 };
 
 /*

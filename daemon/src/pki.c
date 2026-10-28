@@ -669,9 +669,7 @@ enum pki_error pki_cert_deliver(const char *name, const char *container_name,
 	 * no staging directory to write into.
 	 */
 	{
-		const struct registry_entry *re = registry_find(container_name);
-
-		container_file_host_path(container_name, re != NULL ? re->disk_name : "", dest_dir,
+		container_file_host_path(container_name, dest_dir,
 		                          parent, sizeof(parent));
 	}
 	if (parent[0] == '\0' ||

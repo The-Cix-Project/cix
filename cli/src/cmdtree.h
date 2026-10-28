@@ -832,11 +832,6 @@ static const struct cli_node n_container_files_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
-static const char *const n_container_migrate_storage_flags[] = {
-	"--disk=",
-	NULL
-};
-
 static const char *const n_container_network_attach_flags[] = {
 	"--ifname=",
 	"--ip=",
@@ -876,7 +871,6 @@ static const char *const n_container_run_flags[] = {
 	"--depends-on=",
 	"--device=",
 	"--disk-quota=",
-	"--disk=",
 	"--dns-register",
 	"--dns-server=",
 	"--env=",
@@ -952,8 +946,6 @@ static const struct cli_node n_container_subs[] = {
 	{ "files", NULL, n_container_files_subs },
 	{ "inspect", NULL, NULL },
 	{ "ls", NULL, NULL },
-	{ "migrate-storage", n_container_migrate_storage_flags, NULL },
-	{ "migrate-storage-status", NULL, NULL },
 	{ "network", NULL, n_container_network_subs },
 	{ "pause", NULL, NULL },
 	{ "rm", NULL, NULL },

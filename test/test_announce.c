@@ -145,7 +145,6 @@ int main(void)
 	printf("test_announce\n");
 	check_file("daemon/src/pkg.c", "state", pkg_allowed, NULL);
 	check_file("daemon/src/storagemigrate.c", "state", migrate_allowed, NULL);
-	check_file("daemon/src/containerstoragemigrate.c", "state", migrate_allowed, NULL);
 	check_file("daemon/src/pkg.c", "name[0]", chain_allowed, NULL);
 	/* registry.c: a container's running state, announced on the spot. */
 	check_file("daemon/src/registry.c", "running", NULL, "registry_announce();");

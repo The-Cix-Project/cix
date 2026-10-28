@@ -102,8 +102,8 @@ static struct diskrole_entry *role_find(const char *disk_name)
 static const char *role_str(enum diskrole_kind role)
 {
 	switch (role) {
-	case DISKROLE_CONTAINER_STORAGE:
-		return "container-storage";
+	case DISKROLE_VOLUME_STORAGE:
+		return "volume-storage";
 	case DISKROLE_REBUILDABLE_STORAGE:
 		return "rebuildable-storage";
 	case DISKROLE_LOG_STORAGE:
@@ -118,8 +118,8 @@ static const char *role_str(enum diskrole_kind role)
 
 static int role_from_str(const char *s, enum diskrole_kind *out)
 {
-	if (strcmp(s, "container-storage") == 0)
-		*out = DISKROLE_CONTAINER_STORAGE;
+	if (strcmp(s, "volume-storage") == 0)
+		*out = DISKROLE_VOLUME_STORAGE;
 	else if (strcmp(s, "backup") == 0)
 		*out = DISKROLE_BACKUP;
 	else if (strcmp(s, "rebuildable-storage") == 0)
@@ -232,6 +232,7 @@ static int load_state(void)
 	struct json_value *root;
 	size_t i;
 	int count = 0;
+	int renamed = 0;
 
 	if (persist_read_file(g_state_path, &buf, &len) != 0)
 		return -1;
@@ -277,6 +278,21 @@ static int load_state(void)
 			        "config partition now (#251); the disk and its contents are untouched\n",
 			        g_state_path, disk_name != NULL ? disk_name : "?");
 			continue;
+		}
+		/*
+		 * ADR-0360 decision 6: "container-storage" is "volume-storage".
+		 * A container has no disk any more, so the role places volumes
+		 * and nothing else, and its name says so. A stored assignment
+		 * of the old name is renamed here, said once, and saved below,
+		 * so the next start reads the new name.
+		 */
+		if (role != NULL && strcmp(role, "container-storage") == 0) {
+			fprintf(stderr,
+			        "%s: renaming the 'container-storage' role on %s to 'volume-storage' "
+			        "(ADR-0360) -- it places volumes, which are untouched\n",
+			        g_state_path, disk_name != NULL ? disk_name : "?");
+			role = "volume-storage";
+			renamed++;
 		}
 		if (!simple_name_is_valid(disk_name, DISKROLE_DISK_NAME_MAX) || role == NULL ||
 		    role_from_str(role, &role_kind) != 0) {
@@ -345,13 +361,12 @@ static int load_state(void)
 			snprintf(g_roles[i].fs_uuid, sizeof(g_roles[i].fs_uuid), "%s", uuid);
 			adopted++;
 		}
-		if (adopted > 0) {
+		if (adopted > 0)
 			fprintf(stderr, "%s: adopted filesystem UUIDs for %d disk role(s) (#255)\n",
 			        g_state_path, adopted);
-			if (save_state() != 0)
-				fprintf(stderr, "%s: could not persist adopted UUIDs -- they will be "
-				                "read again next boot\n", g_state_path);
-		}
+		if ((adopted > 0 || renamed > 0) && save_state() != 0)
+			fprintf(stderr, "%s: could not persist adopted UUIDs or renamed roles -- they "
+			                "will be read again next boot\n", g_state_path);
 	}
 	return 0;
 }

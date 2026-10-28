@@ -5093,74 +5093,6 @@ static int merge_tree(const char *src_root, const char *dst_root, const char *re
 	return 0;
 }
 
-/*
- * Recursively reproduces src_root's own tree at dst_root -- directories
- * created fresh, symlinks recreated fresh (readlink+symlink, matching
- * merge_tree()'s own symlink handling -- hard-linking a symlink's own
- * dentry works on Linux but is needless fragility for a file that's a
- * few bytes either way), and every other type (regular files, and the
- * char device nodes an image used to carry, before ADR-0333) HARD-LINKED
- * (link(2), not copied). This is ADR-0107/0108's own "copy-forward"
- * mechanism -- an unchanged file occupies zero new disk space or copy
- * time, only the genuinely new/changed files a subsequent merge_tree()
- * call writes ever land on a new inode. This is the actual fix the
- * package/image versioning epic exists to deliver: a version's own
- * rootfs, once produced, is never written to again -- copy_tree_hardlink()
- * is always followed by mutation of a freshly named STAGING directory,
- * never of src_root itself.
- */
-static int copy_tree_hardlink(const char *src_root, const char *dst_root)
-{
-	DIR *d;
-	struct dirent *de;
-
-	d = opendir(src_root);
-	if (d == NULL)
-		return -1;
-
-	while ((de = readdir(d)) != NULL) {
-		char src_path[PATH_MAX], dst_path[PATH_MAX];
-		struct stat st;
-
-		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
-			continue;
-		snprintf(src_path, sizeof(src_path), "%s/%s", src_root, de->d_name);
-		snprintf(dst_path, sizeof(dst_path), "%s/%s", dst_root, de->d_name);
-
-		if (lstat(src_path, &st) != 0) {
-			closedir(d);
-			return -1;
-		}
-
-		if (S_ISDIR(st.st_mode)) {
-			if (persist_mkdir_p(dst_path) != 0 || copy_tree_hardlink(src_path, dst_path) != 0) {
-				closedir(d);
-				return -1;
-			}
-		} else if (S_ISLNK(st.st_mode)) {
-			char target[PATH_MAX];
-			ssize_t len = readlink(src_path, target, sizeof(target) - 1);
-
-			if (len < 0) {
-				closedir(d);
-				return -1;
-			}
-			target[len] = '\0';
-			if (symlink(target, dst_path) != 0) {
-				closedir(d);
-				return -1;
-			}
-		} else {
-			if (link(src_path, dst_path) != 0) {
-				closedir(d);
-				return -1;
-			}
-		}
-	}
-	closedir(d);
-	return 0;
-}
-
 /* PKG_MAX_PACKAGES entries at up to PKG_NAME_MAX+PKG_VERSION_MAX bytes
  * each is a multi-KB working set -- a file-scope static buffer for a
  * single-job-at-a-time result, not a large per-call stack frame. */
@@ -5708,21 +5640,17 @@ static int image_version_build(const char *image,
 	 * current version's subvolume -- an O(1), copy-on-write clone,
 	 * which is the whole point of the substrate change (production
 	 * costs only the mutate's changed extents, not a copy of the
-	 * rootfs). On ext4 the fast hardlink copy is kept exactly as
-	 * before. Both leave `staging` a writable tree the mutate step and
-	 * the atomic rename below treat identically.
+	 * rootfs). The image store is btrfs, required (ADR-0360), so there
+	 * is no other way: the ext4 hardlink copy went with the fallbacks.
 	 */
 	stallwatch_step("image version: snapshot the current rootfs forward");
-	if (cix_btrfs_is_backing(old_rootfs)) {
-		if (cix_btrfs_snapshot_or_copy(old_rootfs, staging) != 0)
-			return produce_fail(image, NULL, "snapshotting the current rootfs forward", 1);
-	} else {
-		if (persist_mkdir_p(staging) != 0)
-			return produce_fail(image, NULL, "creating the staging directory", 1);
-		if (copy_tree_hardlink(old_rootfs, staging) != 0)
-			return produce_fail(image, staging, "hardlink-copying the current rootfs forward",
-			                     1);
-	}
+	if (!cix_btrfs_is_backing(old_rootfs))
+		return produce_fail(image, NULL,
+		                    "snapshotting the current rootfs forward: the image store is not "
+		                    "btrfs (ADR-0360)",
+		                    1);
+	if (cix_btrfs_snapshot_or_copy(old_rootfs, staging) != 0)
+		return produce_fail(image, NULL, "snapshotting the current rootfs forward", 1);
 
 	stallwatch_step("image version: the caller's mutate step");
 	if (mutate(staging, ctx) != 0)

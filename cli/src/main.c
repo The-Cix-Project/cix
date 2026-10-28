@@ -149,11 +149,6 @@ static const char USAGE_TEXT[] =
 	        "  container device attach NAME ID / container device detach NAME ID  -- a\n"
 	        "               device id or devicemap name, resolved live; detach refuses a\n"
 	        "               device granted at creation (409)\n"
-	        "  container migrate-storage NAME [--disk=NAME]  -- move this container's base to a\n"
-	        "               disk carrying the container-storage role (ADR-0142); its rootfs stays\n"
-	        "               beside its image (ADR-0341); omit --disk= for the default OS-disk\n"
-	        "               placement; briefly restarts for the cutover -- poll\n"
-	        "               container migrate-storage-status NAME\n"
 	        "  container console NAME [--console=NAME]  -- attach to one of the consoles a\n"
 	        "               container DECLARES; --console picks which (default: the first\n"
 	        "               declared). A container that declares none has no console and says\n"
@@ -516,7 +511,7 @@ static const char USAGE_TEXT[] =
 	        "  storage rm-partition DISK_NAME PARTITION_NAME  -- removes one partition;\n"
 	        "               refused (409) if it still has a role assigned (diskrole rm first)\n"
 	        "  storage-role create --disk=NAME\n"
-	        "               --role=container-storage|backup|rebuildable-storage|log-storage|swap\n"
+	        "               --role=volume-storage|backup|rebuildable-storage|log-storage|swap\n"
 	        "               -- assign a persisted role to a disk (never the OS disk)\n"
 	        "  storage-role ls / storage-role rm NAME  -- list assigned roles (with whether each\n"
 	        "               disk is currently present) / remove one; refused (409) if the\n"
@@ -5683,8 +5678,6 @@ static int cmd_rm(const struct cix_client *c, int json_mode, int argc, char **ar
 static int cmd_container_stats(const struct cix_client *c, int json_mode, int argc, char **argv);
 static int cmd_console(const struct cix_client *c, int argc, char **argv);
 static int cmd_files(const struct cix_client *c, int argc, char **argv);
-static int cmd_migrate_storage(const struct cix_client *c, int json_mode, int argc, char **argv);
-static int cmd_migrate_storage_status(const struct cix_client *c, int json_mode, int argc, char **argv);
 
 static int cmd_container_edit(const struct cix_client *c, int json_mode, int argc,
                                char **argv); /* issue #11 -- defined below */
@@ -5747,16 +5740,12 @@ static int cmd_container(const struct cix_client *c, int json_mode, int argc, ch
 		return cmd_console(c, argc - 1, argv + 1);
 	if (argc >= 1 && strcmp(argv[0], "files") == 0)
 		return cmd_files(c, argc - 1, argv + 1);
-	if (argc >= 1 && strcmp(argv[0], "migrate-storage") == 0)
-		return cmd_migrate_storage(c, json_mode, argc - 1, argv + 1);
-	if (argc >= 1 && strcmp(argv[0], "migrate-storage-status") == 0)
-		return cmd_migrate_storage_status(c, json_mode, argc - 1, argv + 1);
 	fprintf(stderr,
 	        "usage: cixctl container ls [--all] | drift | run ... | start NAME | stop NAME |\n"
 	        "         pause NAME |\n"
 	        "         unpause NAME | rm NAME | inspect NAME | stats NAME |\n"
 	        "         console NAME [--console=NAME] |\n"
-	        "         files get|put NAME --path=PATH | migrate-storage NAME [--disk=NAME] | migrate-storage-status NAME\n"
+	        "         files get|put NAME --path=PATH\n"
 	        "       cixctl deployment add --name=NAME --file=PATH\n"
 	        "       cixctl deployment show|rm NAME / deployment ls\n"
 	        "       cixctl deployment apply NAME [--secret=KEY=VALUE ...]\n"
@@ -5815,71 +5804,6 @@ static int cmd_stop(const struct cix_client *c, int json_mode, int argc, char **
 		return 1;
 	}
 	return emit(&r, json_mode, fmt_health);
-}
-
-/*
- * ADR-0142 Section 4: same {"disk": "name"|null} contract and
- * fmt_storage_migrate_status() rendering every `storage <kind> migrate`
- * subcommand above already uses, narrowed to one container's own
- * overlay directory -- see main.c's handle_container_migrate_storage_
- * post()/get() for the full cutover this triggers daemon-side.
- */
-static int cmd_migrate_storage(const struct cix_client *c, int json_mode, int argc, char **argv)
-{
-	const char *disk = NULL;
-	char path[300];
-	struct json_writer w;
-	struct cix_response r;
-	int i;
-
-	if (argc < 1) {
-		fprintf(stderr, "cixctl: migrate-storage requires a container name\n");
-		return 2;
-	}
-	for (i = 1; i < argc; i++) {
-		if (strncmp(argv[i], "--disk=", 7) == 0)
-			disk = argv[i] + 7;
-		else {
-			fprintf(stderr, "cixctl: unknown migrate-storage option '%s'\n", argv[i]);
-			return 2;
-		}
-	}
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	jw_key(&w, "disk");
-	if (disk != NULL)
-		jw_str(&w, disk);
-	else
-		jw_null(&w);
-	jw_obj_close(&w);
-	w.buf[w.len] = '\0';
-
-	snprintf(path, sizeof(path), CIX_API_migrateContainerStorage, argv[0]);
-	if (cix_client_request(c, "POST", path, w.buf, &r) != 0) {
-		jw_free(&w);
-		fprintf(stderr, "cixctl: could not reach daemon\n");
-		return 1;
-	}
-	jw_free(&w);
-	return emit(&r, json_mode, fmt_storage_migrate_status);
-}
-
-static int cmd_migrate_storage_status(const struct cix_client *c, int json_mode, int argc, char **argv)
-{
-	char path[300];
-	struct cix_response r;
-
-	if (argc < 1) {
-		fprintf(stderr, "cixctl: migrate-storage-status requires a container name\n");
-		return 2;
-	}
-	snprintf(path, sizeof(path), CIX_API_getContainerStorageMigrateStatus, argv[0]);
-	if (cix_client_request(c, "GET", path, NULL, &r) != 0) {
-		fprintf(stderr, "cixctl: could not reach daemon\n");
-		return 1;
-	}
-	return emit(&r, json_mode, fmt_storage_migrate_status);
 }
 
 static int cmd_start(const struct cix_client *c, int json_mode, int argc, char **argv)
@@ -10462,7 +10386,6 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 	const char *cpu_max = NULL;
 	const char *cpuset_cpus = NULL;
 	long long disk_quota_bytes = -1;
-	const char *disk = NULL;
 	const char *dns_servers[CLI_MAX_DNS_SERVERS];
 	int dns_server_count = 0;
 	int i = 0;
@@ -10486,8 +10409,6 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 			cpuset_cpus = argv[i] + 9;
 		else if (strncmp(argv[i], "--disk-quota=", 13) == 0)
 			disk_quota_bytes = atoll(argv[i] + 13);
-		else if (strncmp(argv[i], "--disk=", 7) == 0)
-			disk = argv[i] + 7;
 		else if (strncmp(argv[i], "--network=", 10) == 0) {
 			if (network_count >= CLI_MAX_NETWORKS) {
 				fprintf(stderr, "cixctl: too many --network= flags (max %d)\n",
@@ -10741,7 +10662,7 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 		fprintf(stderr,
 		        "usage: cixctl container run --name=NAME --image=IMAGE [--memory-max=N] "
 		        "[--pids-max=N] [--cpu-max=\"QUOTA PERIOD\"] [--cpuset=0-1,3] "
-		        "[--disk-quota=BYTES] [--disk=NAME] "
+		        "[--disk-quota=BYTES] "
 		        "[--network=NAME[:IP] ...] [--ip-forward] [--dns-register] "
 		        "[--pki-issue | --pki-cert=NAME] [--pki-cert-dir=PATH] [--pki-days=N] "
 		        "[--ldap-provision] [--ldap-user=NAME] [--ldap-group=NAME] "
@@ -10825,10 +10746,6 @@ static int cmd_run(const struct cix_client *c, int json_mode, int argc, char **a
 	if (disk_quota_bytes >= 0) {
 		jw_key(&w, "disk_quota_bytes");
 		jw_int(&w, disk_quota_bytes);
-	}
-	if (disk != NULL) {
-		jw_key(&w, "disk");
-		jw_str(&w, disk);
 	}
 	if (network_count > 0) {
 		jw_key(&w, "networks");
@@ -12904,7 +12821,7 @@ static int cmd_diskrole_create(const struct cix_client *c, int json_mode, int ar
 	}
 	if (disk_name == NULL || role == NULL) {
 		fprintf(stderr,
-		        "usage: cixctl storage-role create --disk=NAME --role=container-storage|backup|rebuildable-storage|log-storage|swap\n");
+		        "usage: cixctl storage-role create --disk=NAME --role=volume-storage|backup|rebuildable-storage|log-storage|swap\n");
 		return 2;
 	}
 
@@ -12960,7 +12877,7 @@ static int cmd_diskrole(const struct cix_client *c, int json_mode, int argc, cha
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl storage-role create --disk=NAME --role=container-storage|backup|rebuildable-storage|log-storage|swap\n"
+		fprintf(stderr, "usage: cixctl storage-role create --disk=NAME --role=volume-storage|backup|rebuildable-storage|log-storage|swap\n"
 		                "       cixctl storage-role ls\n"
 		                "       cixctl storage-role rm NAME\n");
 		return 2;
@@ -20103,7 +20020,7 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 	/*
 	 * All container operations are under the `container` namespace (issue
 	 * #74) -- ls/run/start/stop/pause/unpause/rm/inspect/stats/console/
-	 * files/migrate-storage[-status], plus recipe/apply-recipe/network/
+	 * files, plus recipe/apply-recipe/network/
 	 * device. No top-level container verbs, consistent with every other
 	 * resource noun below.
 	 */

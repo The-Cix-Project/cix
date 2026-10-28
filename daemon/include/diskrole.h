@@ -18,7 +18,7 @@
  * The role vocabulary is a small, fixed, closed set -- not an arbitrary
  * operator-chosen string the way a devicemap name is -- because a role
  * is meaningful only insofar as a later phase (C: mount/format, D:
- * container-storage migration) actually understands and acts on it;
+ * volume placement) actually understands and acts on it;
  * an open vocabulary here would just be state nothing could ever
  * interpret.
  *
@@ -39,10 +39,10 @@
 #define DISKROLE_MAX 32
 
 enum diskrole_kind {
-	DISKROLE_CONTAINER_STORAGE,
+	DISKROLE_VOLUME_STORAGE,
 	DISKROLE_BACKUP,
 	/* ADR-0141: each of these three is a daemon-wide singleton (unlike
-	 * container-storage, which is inherently multi-instance) -- multiple
+	 * volume-storage, which is inherently multi-instance) -- multiple
 	 * disks can carry the same one of these roles (eligible candidates),
 	 * but only one is ever the *active* placement at a time, tracked
 	 * separately (see storageplacement.h). Assigning the role itself
@@ -101,7 +101,7 @@ int diskrole_resolve_recorded(const char *recorded_name, const char *recorded_uu
                                char *out_name, size_t out_size);
 
 /*
- * Assigns role_str ("container-storage", "backup", "state-storage",
+ * Assigns role_str ("volume-storage", "backup",
  * "rebuildable-storage", or "log-storage" -- anything else is
  * DISKROLE_ERR_INVALID_ROLE) to disk_name. disk_name is validated
  * as a plain simple name (same charset every other simple resource

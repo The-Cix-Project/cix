@@ -20,7 +20,7 @@ creates directly, with no runc or other runtime in between. Every
 container has:
 
 - **an image version** it was created from — its root filesystem is a
-  btrfs snapshot (or a copy) of that version, see
+  btrfs snapshot of that version, see
   [`storage.md`](storage.md#6-snapshots-and-why-container-storage-is-cheap);
 - **`cix-init` as pid 1** — the platform's own supervisor, staged into
   the container by the daemon, which runs the **services** the container
@@ -106,7 +106,6 @@ required. Everything else is optional:
 | `--dns-register` | Register the container's name in the platform's DNS records |
 | `--interface=IFNAME` | Move a host NIC (or a radio's whole PHY) into the container, exclusively |
 | `--memory-max=BYTES` `--memory-swap-max=BYTES` `--pids-max=N` `--cpu-max="QUOTA PERIOD"` `--cpuset=0-1,3` | cgroup v2 limits. `--memory-swap-max=0` forbids swap |
-| `--disk=NAME` | Put its base on a disk with the `container-storage` role; its rootfs stays beside its image ([`storage.md`](storage.md#3-the-roles-you-assign)) |
 | `--disk-quota=BYTES` | Kernel-enforced limit on its own storage |
 | `--volume=NAME:/path[:ro]` | Mount a [volume](#volumes), up to 8 |
 | `--file=CONTAINER_PATH=LOCAL_PATH[:MODE]` | Stage a local file into the container before it starts; `--file-owner=CONTAINER_PATH:UID:GID` sets its owner |

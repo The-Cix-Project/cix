@@ -128,7 +128,7 @@ Everything else about storage — the five disk roles and what each is for, when
 The two-step shape is worth knowing here, because it is what stops an accident:
 
 ```sh
-cixctl storage-role create --disk=sdb --role=container-storage   # metadata only, reversible
+cixctl storage-role create --disk=sdb --role=volume-storage   # metadata only, reversible
 cixctl storage format sdb                                        # destructive, needs a role first
 cixctl storage format-status sdb                                 # async: none/running/ready/failed
 ```

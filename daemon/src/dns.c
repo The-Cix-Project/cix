@@ -484,7 +484,7 @@ void dns_forwarders_sync_all(void)
 		if (entry == NULL || !entry->running)
 			continue;
 		/* Host-side path, not the container's own id-mapped view (#269). */
-		container_file_host_path(g_bindings[i].container_name, entry->disk_name,
+		container_file_host_path(g_bindings[i].container_name,
 		                          DNS_SERVERS_FILE_PATH, full_path, sizeof(full_path));
 		if (dns_write_servers_file(full_path) != 0)
 			continue;
@@ -584,15 +584,8 @@ enum dns_server_error dns_server_register(const char *container_name, pid_t pid,
 		return DNS_SERVER_ERR_FULL;
 
 	{
-		/*
-		 * Host-side path (#269). The entry is looked up for its disk
-		 * rather than deriving anything from pid: which disk a
-		 * container lives on is what decides where its tree is, and
-		 * the pid says nothing about that.
-		 */
-		const struct registry_entry *re = registry_find(container_name);
-
-		container_file_host_path(container_name, re != NULL ? re->disk_name : "", hosts_path,
+		/* Host-side path (#269): the container's rootfs, by name. */
+		container_file_host_path(container_name, hosts_path,
 		                          full_path, sizeof(full_path));
 	}
 
@@ -615,9 +608,7 @@ enum dns_server_error dns_server_register(const char *container_name, pid_t pid,
 	 * registration does not happen at all.
 	 */
 	{
-		const struct registry_entry *re = registry_find(container_name);
-
-		container_file_host_path(container_name, re != NULL ? re->disk_name : "",
+		container_file_host_path(container_name,
 		                          DNS_SERVERS_FILE_PATH, servers_full_path,
 		                          sizeof(servers_full_path));
 	}
@@ -704,7 +695,7 @@ void dns_server_sync_all(void)
 			continue;
 
 		/* Host-side path, not the container's own id-mapped view (#269). */
-		container_file_host_path(g_bindings[i].container_name, entry->disk_name,
+		container_file_host_path(g_bindings[i].container_name,
 		                          g_bindings[i].hosts_path, full_path, sizeof(full_path));
 		if (dns_write_hosts_file(full_path) != 0)
 			continue;

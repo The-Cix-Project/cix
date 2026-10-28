@@ -30,7 +30,7 @@
  */
 int is_active_storage_singleton_placement(const char *disk_name);
 
-int disk_has_container_in_use(const char *disk_name);
+int disk_holds_volumes(const char *disk_name);
 
 void respond_diskformat_error(int fd, enum diskformat_error err);
 

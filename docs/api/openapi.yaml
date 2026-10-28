@@ -6665,7 +6665,7 @@ paths:
         filter's meaning is refused, never escaped. Refused (400)
         without ldap_client, since there is nothing to restrict.
       operationId: createContainer
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listVolumes, getVolume, listDevices, listDeviceMaps, listDnsRecords]
+      x-cix-invalidates: [listContainers, getContainer, listNetworks, getNetwork, listVolumes, getVolume, listDevices, listDeviceMaps, listDnsRecords]
       x-cix-permission: containers:write
       x-cix-expose: [cli, web]
       requestBody:
@@ -6761,11 +6761,9 @@ paths:
         config/containers partition layout -- never a candidate for role
         assignment or formatting; every other disk or partition is
         available for a role (POST /storage-roles) and, once role-assigned,
-        formatting (POST /disks/{disk_name}/format). A container's own
-        storage disk is selected at creation time (POST /containers'
-        `disk` field, ADR-0102) -- moving an *existing* container's storage
-        after creation is a separate, not-yet-built follow-up
-        (ADR-0142, see docs/roadmap/ROADMAP.md).
+        formatting (POST /disks/{disk_name}/format). A container has no
+        disk of its own: its rootfs is a snapshot beside the image store,
+        and a volume is what puts container data on a disk (ADR-0360).
       operationId: listStorage
       x-cix-read: sample
       x-cix-sample-period: 30
@@ -6904,9 +6902,8 @@ paths:
         returns 202 immediately with the job's initial
         `{"state":"running",...}` status; poll GET on this same path for
         completion. Mounted at a fixed path under this platform's own
-        data directory by default; a container-storage-role disk can
-        also be selected explicitly per container via POST /containers'
-        own `disk` field (ADR-0102, Phase D, already built).
+        data directory by default; a disk with the volume-storage role
+        is where a volume can be placed (ADR-0183, ADR-0360).
       operationId: formatStorage
       x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices, listDeviceMaps]
       x-cix-permission: storage:write
@@ -6945,11 +6942,10 @@ paths:
             single-job limit), or this disk is the active placement for
             log-storage or rebuildable-storage, or the
             currently configured backup-config disk (ADR-0141), or one
-            or more containers currently have their own storage on this
-            disk (ADR-0102/ADR-0142) -- formatting it would destroy
-            live data; migrate away first (POST
-            /containers/{name}/migrate-storage for a container, or for
-            the daemon-wide kinds POST .../migrate / PUT a different
+            or more volumes are on this disk -- formatting it would
+            destroy live data; migrate away first (POST
+            /volumes/{volume_name}/migrate for a volume, or for the
+            daemon-wide kinds POST .../migrate / PUT a different
             backup-config disk/null).
           content:
             application/json:
@@ -7024,8 +7020,7 @@ paths:
             This disk is the active placement for log-
             storage, rebuildable-storage, or swap, or the currently
             configured backup-config disk (ADR-0141), or one or more
-            containers currently have their own storage on this disk
-            (ADR-0102/ADR-0142) -- unmounting it would break whatever
+            volumes are on this disk -- unmounting it would break whatever
             currently relies on it; migrate away first. Also returned
             when the filesystem carries the daemon's own data directory
             (issue #249): that one is structural rather than a
@@ -7621,11 +7616,10 @@ paths:
             This disk is the active placement for
             log-storage, or rebuildable-storage, or the currently
             configured backup-config disk (ADR-0141), or one or more
-            containers currently have their own storage on this disk
-            (ADR-0102/ADR-0142) -- migrate away first (POST
+            volumes are on this disk -- migrate away first (POST
             /system/{state,log,rebuildable}-storage/migrate, PUT
             /system/backup-config with a different disk/null, or POST
-            /containers/{name}/migrate-storage for a container).
+            /volumes/{volume_name}/migrate for a volume).
           content:
             application/json:
               schema:
@@ -7662,9 +7656,9 @@ paths:
       description: >
         A volume is a named directory whose lifetime is independent of
         any container using it -- deleting a container never deletes its
-        volumes (ADR-0183). Placement reuses the same disk-role
-        mechanism container overlays already use, rather than being a
-        second storage story.
+        volumes (ADR-0183). A volume is placed on a disk with the
+        volume-storage role, and is the one thing that puts container
+        data on a disk (ADR-0360).
       operationId: createVolume
       x-cix-invalidates: [listVolumes, getVolume, getVolumeUsage, getVolumeBackups]
       x-cix-permission: volumes:write
@@ -8145,8 +8139,8 @@ paths:
         loop, so their space comes back when those finish.
 
         Refused with 409 while any package job is in flight: a build
-        holds its image's rootfs as its container's lowerdir, and
-        collection is never urgent enough to race one.
+        snapshots its image's rootfs for its container, and collection
+        is never urgent enough to race one.
       operationId: imagesGc
       x-cix-invalidates: [listImages, getImage, getImageVersionManifest, getImagePolicy]
       x-cix-permission: images:write
@@ -8584,9 +8578,9 @@ paths:
         persisted, so a failure changes nothing.
 
 
-        Refused while any container references the image -- a running
-        container's overlay lowerdir points into this directory by path,
-        so renaming it out from under one is not survivable.
+        Refused while any container references the image -- a container
+        records its image by name, so a rename would leave it naming one
+        that does not exist.
       operationId: renameImage
       x-cix-invalidates: [listImages, getImage, getImageVersionManifest, listImageRecipes, getImageRecipe, getImagePolicy]
       x-cix-permission: images:write
@@ -13546,7 +13540,7 @@ paths:
         (optionally different, newly-fixed) recipe version, instead of a full
         fetch+extract+build restart (ADR-0177, issue #46). No fetch subprocess runs at
         all -- the already-extracted source tree inside the preserved container's own
-        overlay is left completely untouched; only the recipe.cbs staged inside it and
+        rootfs is left completely untouched; only the recipe.cbs staged inside it and
         the previous attempt's partial install destination are refreshed. name/image
         must address an entry currently in the "failed" state with a non-null
         kept_build_container (GET /pkg/{name} or /pkg/hostbuild/{name} shows this) --
@@ -13971,9 +13965,8 @@ paths:
         due to a depends_on cycle or an unknown dependency) -- 404 only
         if neither a live instance nor a persisted definition exists for
         this name. Also removes the container's on-disk storage -- its
-        rootfs beside the image store (ADR-0341) and its base, which holds
-        an overlay container's upper/work/merged (ADR-0106), each set aside
-        and deleted by a helper child -- best-
+        rootfs beside the image store (ADR-0341) and its base, each set
+        aside and deleted by a helper child -- best-
         effort: a cleanup failure is logged but never turns this into an
         error response, since the registry/definition state, not the
         disk, is the one source of truth for whether a container exists.
@@ -13994,7 +13987,7 @@ paths:
         chain on full teardown should poll this container's own GET to
         404 first.
       operationId: deleteContainer
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listVolumes, getVolume, listDevices, listDeviceMaps, listDnsRecords, listDnsServers, listLdapServers, listNtpServers, listSyslogTargets, listLdapUsers, listPkiCerts]
+      x-cix-invalidates: [listContainers, getContainer, listNetworks, getNetwork, listVolumes, getVolume, listDevices, listDeviceMaps, listDnsRecords, listDnsServers, listLdapServers, listNtpServers, listSyslogTargets, listLdapUsers, listPkiCerts]
       x-cix-permission: containers:write
       x-cix-expose: [cli, web]
       parameters:
@@ -14038,7 +14031,7 @@ paths:
         parser here would be a parallel implementation of the same
         validation. Recreate the container to change those.
       operationId: patchContainer
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listVolumes, getVolume, listDevices, listDeviceMaps]
+      x-cix-invalidates: [listContainers, getContainer, listNetworks, getNetwork, listVolumes, getVolume, listDevices, listDeviceMaps]
       x-cix-permission: containers:write
       x-cix-expose: [cli]
       parameters:
@@ -14104,7 +14097,7 @@ paths:
         unlike boot-time autostart -- an explicit, manual start always
         means start it.
       operationId: startContainer
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listDevices, listDeviceMaps]
+      x-cix-invalidates: [listContainers, getContainer, listNetworks, getNetwork, listDevices, listDeviceMaps]
       x-cix-permission: containers:operate
       x-cix-expose: [cli, web]
       parameters:
@@ -14154,7 +14147,7 @@ paths:
         409, not a silent 200 -- the caller should already know this
         from its last GET.
       operationId: pauseContainer
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus]
+      x-cix-invalidates: [listContainers, getContainer]
       x-cix-permission: containers:operate
       x-cix-expose: [cli, web]
       parameters:
@@ -14193,7 +14186,7 @@ paths:
         the inverse of POST .../pause. 404 if not currently a live
         container; 409 if it is live but not currently paused.
       operationId: unpauseContainer
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus]
+      x-cix-invalidates: [listContainers, getContainer]
       x-cix-permission: containers:operate
       x-cix-expose: [cli, web]
       parameters:
@@ -14271,122 +14264,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /containers/{name}/migrate-storage:
-    get:
-      summary: Status of the most recent (or currently running) storage migration job for one container (ADR-0142)
-      description: >
-        Same shape as the daemon-wide `GET /system/{log,rebuildable}-storage/migrate`
-        status endpoints, keyed by this one container instead. Reports
-        `{"state":"none"}` if this container has never had a migration
-        started for it.
-      operationId: getContainerStorageMigrateStatus
-      x-cix-read: state
-      x-cix-permission: containers:read
-      x-cix-expose: [cli, web]
-      parameters:
-        - $ref: "#/components/parameters/ContainerName"
-      responses:
-        "200":
-          description: Migration job status
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/StorageMigrateStatus"
-        "404":
-          description: No such container
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-    post:
-      summary: Moves one container's own storage to a new disk, or back to the default OS-disk placement (ADR-0142)
-      description: >
-        `disk` is required -- a real disk name (must already carry the
-        `container-storage` role and be currently mounted) or `null` to
-        migrate back to the default OS-disk placement; omitting the
-        field entirely is a 400, the same convention every other
-        storage-placement migration endpoint already has. Requires a
-        persisted definition to exist (`restart` other than `"no"`) --
-        the cutover this triggers always ends with a real stop-then-
-        replay, so a container with nothing to replay from is rejected
-        with a 400 rather than accepted and left half-done.
-
-
-        What moves is the container's base, never its rootfs. A
-        snapshot container's rootfs (ADR-0207) is a btrfs snapshot of
-        its image version, kept beside the image store so that it can
-        be one (ADR-0341), and it stays there, still sharing extents
-        with its image. An overlay container's `upper` and `work` live
-        in the base and are copied as ordinary trees. On a btrfs host
-        every container is a snapshot container, so the base holds
-        little more than the mountpoint the container pivots onto.
-
-
-        Unlike the daemon-wide storage kinds, this is not purely
-        a background repoint: the bulk copy runs asynchronously while
-        the container keeps running and writing normally (same "no
-        pause during the bulk phase" design), but once that finishes
-        this daemon briefly stops the container, does one more
-        synchronous copy pass to capture anything written since, patches
-        the persisted definition's own `disk` field, and automatically
-        restarts the container from the new location -- the real,
-        necessary difference ADR-0142 calls out (a container's own
-        overlay is actively read/written by its own live process the
-        whole time, unlike a daemon-wide singleton this reactor alone
-        touches). A failure at any point after the stop restarts the
-        container from its ORIGINAL location rather than leaving it
-        down -- the migration is all-or-nothing from the caller's point
-        of view. Returns 202 immediately with the job's initial
-        `{"state":"running",...}` status; poll GET on this same path
-        for completion.
-      operationId: migrateContainerStorage
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus]
-      x-cix-permission: containers:write
-      x-cix-expose: [cli, web]
-      parameters:
-        - $ref: "#/components/parameters/ContainerName"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [disk]
-              properties:
-                disk:
-                  type: string
-                  nullable: true
-                  description: A Disk.name from GET /disks, or null for the default OS-disk placement.
-      responses:
-        "202":
-          description: Migration job started
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/StorageMigrateStatus"
-        "400":
-          description: >
-            disk field missing, invalid/unknown disk, disk is the OS
-            disk, disk doesn't carry the container-storage role, disk
-            carries the role but isn't currently mounted, or this
-            container has no persisted definition to restart from
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "404":
-          description: No such container
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "409":
-          description: A migration for this container is already running, or the requested placement is already active
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-
   /containers/{name}/stop:
     post:
       summary: >
@@ -14422,7 +14299,7 @@ paths:
         being fully gone (e.g. before deleting a network it was
         attached to) should poll to status "stopped" first.
       operationId: stopContainer
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork, listDevices, listDeviceMaps]
+      x-cix-invalidates: [listContainers, getContainer, listNetworks, getNetwork, listDevices, listDeviceMaps]
       x-cix-permission: containers:operate
       x-cix-expose: [cli, web]
       parameters:
@@ -14479,7 +14356,7 @@ paths:
         what an operator does to it is visible in GET as the service's
         state.
       operationId: startContainerService
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus]
+      x-cix-invalidates: [listContainers, getContainer]
       x-cix-permission: containers:operate
       x-cix-expose: [cli, web]
       parameters:
@@ -14509,7 +14386,7 @@ paths:
         already running are left alone (a failing daemon does not
         cascade); ones not yet started cannot start while it is held.
       operationId: stopContainerService
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus]
+      x-cix-invalidates: [listContainers, getContainer]
       x-cix-permission: containers:operate
       x-cix-expose: [cli, web]
       parameters:
@@ -14536,7 +14413,7 @@ paths:
         modelled separately: bouncing bird on a router no longer bounces
         keepalived.
       operationId: restartContainerService
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus]
+      x-cix-invalidates: [listContainers, getContainer]
       x-cix-permission: containers:operate
       x-cix-expose: [cli, web]
       parameters:
@@ -14798,11 +14675,10 @@ paths:
         root, no privilege boundary crossed since the daemon already
         runs as real root). Once the container is down -- whether it
         exited on its own or was cleanly stopped -- the file is read
-        from the container's own real, host-visible writable tree
-        (its rootfs for a direct-rootfs container, its overlay upperdir
-        for a classic one), falling back for an exited-but-still-
-        registered container to the image's own read-only rootfs if the
-        path was never written by the container itself.
+        from the container's rootfs on the host, the snapshot of its
+        image that holds the whole of its tree (ADR-0360). There is no
+        further fallback: the image's copy of a file the container does
+        not have is not the container's file (#394).
 
 
         A cleanly STOPPED container is a valid target (issue #162). It
@@ -14811,18 +14687,8 @@ paths:
         permanently, while a container that exited on its own kept its
         entry and stayed readable indefinitely. The container exists
         either way -- startable, definition persisted, on-disk state
-        intact -- so the handler now falls back to that persisted
-        definition, taking the disk from the same "disk" field a start
-        would use. Only a container with no definition at all is a 404.
-
-
-        One limit worth stating: for a stopped container this reaches
-        its WRITABLE tree. A direct-rootfs container (the default) has
-        its whole filesystem there, so reads are complete; a legacy
-        overlay container has only what it wrote, so a path existing
-        solely in the image's lower layer is still a 404 while it is
-        down -- the lowerdir is recorded on the registry entry, which a
-        stopped container does not have.
+        intact -- so the handler reads its rootfs whenever a definition
+        exists. Only a container with no definition at all is a 404.
 
 
         The path query parameter must be an absolute, "/"-leading,
@@ -14869,7 +14735,7 @@ paths:
             X-Cix-Source:
               schema:
                 type: string
-                enum: [container, writable, image]
+                enum: [container, writable]
               description: >
                 WHICH tree answered (#394), and reading it is not optional for any caller
                 asking "what does this container see".
@@ -14877,11 +14743,14 @@ paths:
 
                 "container" is the running container's own view
                 (`/proc/<pid>/root<path>`) and is the only value that answers that
-                question. "writable" is the container's own writable tree, read when the
+                question. "writable" is the container's rootfs on disk, read when the
                 /proc path did not produce the file -- which happens for a stopped
                 container, and also for one that is genuinely dead while `running` is
-                still 1 because its pidfd event has not been processed yet. "image" is
-                the container's pinned image version, the last fallback.
+                still 1 because its pidfd event has not been processed yet. There used
+                to be a third value, "image", for a fallback to the container's pinned
+                image version; ADR-0360 removed it, because the rootfs is the whole of
+                the container's tree and the image's copy of a file the container
+                does not have is not the container's file.
 
 
                 Before this header existed a 200 meant only "some tree the daemon can
@@ -14953,9 +14822,8 @@ paths:
 
         Path resolution mirrors GET's own running/not-running split:
         while running, written through /proc/<pid>/root/<path> (the
-        result lands in the container's own rootfs, or by copy-up in an
-        overlay container's upperdir, same as any in-container process
-        writing that path would produce; a userns container refused
+        result lands in the container's own rootfs, same as any
+        in-container process writing that path would produce; a userns container refused
         there with EOVERFLOW is written host-side into its rootfs
         instead, #333); once stopped or exited, written directly into
         the container's own writable tree. Same traversal-free,
@@ -14968,7 +14836,7 @@ paths:
         operator wants on one that is down. It resolves to the same tree
         the next start will run from.
       operationId: putContainerFile
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus]
+      x-cix-invalidates: [listContainers, getContainer]
       x-cix-permission: containers:write
       x-cix-expose: [cli]
       parameters:
@@ -14998,11 +14866,9 @@ paths:
                   type: integer
                   description: >-
                     Numeric uid, as the HOST sees it. Omitted means the file inherits the
-                    ownership of the container's own rootfs, which is what makes it appear
-                    as root inside the container under either userns presentation -- a
-                    tree owned by host uid 0 is id-mapped, and one owned by a subordinate
-                    base is a chowned copy. On a container with no host-side rootfs
-                    (overlay-backed) the file is simply created root-owned.
+                    ownership of the container's own rootfs, host uid 0, which is what
+                    makes it appear as root inside the container: a userns container's
+                    rootfs is presented through an id-mapped mount (ADR-0207, ADR-0360).
                 group:
                   type: integer
                   description: Numeric gid, same rule as owner above.
@@ -15070,7 +14936,7 @@ paths:
         operation than removing a file, and this endpoint has only ever dealt
         in single files.
       operationId: deleteContainerFile
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus]
+      x-cix-invalidates: [listContainers, getContainer]
       x-cix-permission: containers:write
       tags: [containers]
       parameters:
@@ -15353,9 +15219,9 @@ paths:
     put:
       summary: Set or clear a volume's size limit (issue #93)
       description: >
-        A real, kernel-enforced hard limit -- an ext4 project quota on
-        the volume's own directory, the same mechanism a container
-        overlay has had since ADR-0062. A write past it fails with
+        A real, kernel-enforced hard limit -- a btrfs qgroup limit on the
+        volume's subvolume, or an ext4 project quota on its directory on
+        an ext4 disk (ADR-0062). A write past it fails with
         EDQUOT at the filesystem level rather than being noticed
         afterwards by something watching.
 
@@ -15849,9 +15715,9 @@ paths:
         container is fine and picks up the new location on its next
         start, like any other definition change.
 
-        Synchronous, unlike container-storage migration (ADR-0142),
-        which is an async job because it moves a container's storage
-        while that container keeps running. Nothing is running here, so
+        Synchronous, unlike the container-storage migration ADR-0360
+        removed, which was an async job because it moved a container's
+        storage while that container kept running. Nothing is running here, so
         there is nothing to keep alive during the copy.
       operationId: migrateVolume
       x-cix-invalidates: [listVolumes, getVolume, getVolumeUsage, getVolumeBackups]
@@ -15935,7 +15801,7 @@ paths:
         reports "on next start" in that case rather than claiming
         success.
       operationId: attachContainerVolume
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listVolumes, getVolume]
+      x-cix-invalidates: [listContainers, getContainer, listVolumes, getVolume]
       x-cix-permission: containers:write
       x-cix-expose: [cli]
       parameters:
@@ -15990,7 +15856,7 @@ paths:
         Never deletes the volume or its data -- only this container's
         reference to it.
       operationId: detachContainerVolume
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listVolumes, getVolume]
+      x-cix-invalidates: [listContainers, getContainer, listVolumes, getVolume]
       x-cix-permission: containers:write
       x-cix-expose: [cli]
       parameters:
@@ -16059,7 +15925,7 @@ paths:
         stays until the next start, which gets a fresh namespace with the
         kernel's default. No default is recorded to restore it to.
       operationId: setContainerSysctls
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus]
+      x-cix-invalidates: [listContainers, getContainer]
       x-cix-permission: containers:write
       x-cix-expose: [cli, web]
       parameters:
@@ -16131,7 +15997,7 @@ paths:
         fields already use at creation time, just performed against an
         already-running container's netns instead of a brand-new one.
       operationId: attachContainerNetwork
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork]
+      x-cix-invalidates: [listContainers, getContainer, listNetworks, getNetwork]
       x-cix-permission: containers:write
       x-cix-expose: [cli]
       parameters:
@@ -16192,7 +16058,7 @@ paths:
         ends (a real kernel behavior), so no setns() is needed for this
         direction.
       operationId: detachContainerNetwork
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listNetworks, getNetwork]
+      x-cix-invalidates: [listContainers, getContainer, listNetworks, getNetwork]
       x-cix-permission: containers:write
       x-cix-expose: [cli]
       parameters:
@@ -16248,7 +16114,7 @@ paths:
         pending_devices entry appears -- this endpoint is what makes
         that available to call by hand too.
       operationId: attachContainerDevice
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listDevices, listDeviceMaps]
+      x-cix-invalidates: [listContainers, getContainer, listDevices, listDeviceMaps]
       x-cix-permission: containers:write
       x-cix-expose: [cli]
       parameters:
@@ -16329,7 +16195,7 @@ paths:
         stale, now-superseded program in place would silently keep
         granting the device just removed).
       operationId: detachContainerDevice
-      x-cix-invalidates: [listContainers, getContainer, getContainerStorageMigrateStatus, listDevices, listDeviceMaps]
+      x-cix-invalidates: [listContainers, getContainer, listDevices, listDeviceMaps]
       x-cix-permission: containers:write
       x-cix-expose: [cli]
       parameters:
@@ -16977,41 +16843,26 @@ components:
           format: int64
           description: >
             Real, kernel-enforced hard limit in bytes for this
-            container's own writes -- its overlay upperdir, or, for a
-            container whose rootfs is a snapshot of its image
-            (ADR-0341), the bytes exclusive to that snapshot. The enforcement
-            mechanism is chosen automatically from the backing
-            filesystem's own type -- no separate flag needed. On ext4
-            (the default for a real installed system's containers
-            partition), this is a project quota (rounded up to the
-            nearest 1KiB quota block; requires the filesystem to have
-            been created with project-quota support, cix-install.c's
-            own mkfs.ext4 -O quota -E quotatype=prjquota); writes past
-            the limit fail with EDQUOT at the filesystem level. On
-            btrfs (see ADR-0103), this is a qgroup hard limit set
-            directly on the container's own rootfs or upperdir subvolume via
-            BTRFS_IOC_QGROUP_LIMIT, with the same real, kernel-enforced
-            (not advisory) semantics. Either way, if the backing
-            filesystem can't support the requested enforcement,
-            container creation fails with a clear error rather than
-            silently not enforcing the limit. Omit for no limit.
+            container's own writes: a btrfs qgroup limit
+            (BTRFS_IOC_QGROUP_LIMIT) on the exclusive bytes of its rootfs
+            snapshot, the bytes it has written that its image does not
+            hold (ADR-0207, ADR-0341). Writes past the limit fail with
+            EDQUOT at the filesystem level. It is set after the files the
+            daemon stages are written, so a small limit bounds what the
+            container writes rather than refusing the create. The quota
+            accounting mode, simple or full, is the host's (ADR-0359).
+            The ext4 project-quota and overlay upper-layer backends went
+            with the overlay path (ADR-0360). Omit for no limit.
         disk:
           title: Disk
-          type: string
+          type: "null"
           description: >
-            Bare kernel name (e.g. "sdb", no "/dev/" prefix -- disk.h's
-            own naming, see GET /disks) of a real, currently-mounted
-            disk this container's base should live on, in place of the
-            default OS-disk containers directory (task #638, ADR-0102).
-            The base holds an overlay container's upperdir and workdir
-            and the mountpoint a container pivots onto. It does NOT
-            hold the rootfs: that is a snapshot of the container's image
-            version, kept beside the image store on rebuildable storage
-            whatever this says (ADR-0341), because a snapshot cannot
-            cross a filesystem. The disk must already carry the
-            "container-storage" role (POST /storage-roles) -- 400 if it
-            doesn't exist, isn't mounted, or lacks that role. Omit for
-            the default placement.
+            Removed by ADR-0360. A container's rootfs is a btrfs snapshot
+            of its image version beside the image store, and its base
+            holds nothing else of its own, so there is nothing for a
+            disk to place. Any value but null is 400; null is accepted
+            because definitions stored before this carry it and replay
+            through the same create. Put data on a disk with a volume.
         dns_servers:
           title: DNS servers
           type: array
@@ -17532,8 +17383,7 @@ components:
             container's own filesystem before its process ever starts,
             so multiple containers built from the same image can each
             run their own configuration. Written directly into this
-            container's own writable tree (its rootfs, or an overlay
-            container's upperdir) by the daemon's
+            container's own rootfs by the daemon's
             own host process, entirely before the container is created
             -- unlike a live write (PUT /containers/{name}/files,
             ADR-0153), the file is already
@@ -17712,8 +17562,8 @@ components:
           description: >
             Persistent volumes to bind-mount into this container
             (issue #88, ADR-0183). Unlike everything else the container
-            writes -- which lives in its rootfs (an overlay container's
-            upper layer) and is removed by DELETE (ADR-0106) -- a volume's data outlives the
+            writes -- which lives in its rootfs and is removed by DELETE
+            (ADR-0106) -- a volume's data outlives the
             container entirely, so it is what a home directory, a
             database or anything else worth keeping across a recreate
             belongs on. Naming a volume that does not exist is a hard
@@ -18621,8 +18471,8 @@ components:
             once the container's cix-init has started, the service that
             ended it (e.g. "service hostapd exited with status 1",
             "service main killed by signal 11 (SIGSEGV)"); or a fixed
-            category string (e.g. "clean exit", "overlay: mount(2)
-            itself failed") when neither applies. exit_status
+            category string (e.g. "clean exit", "chdir into the new root
+            failed") when neither applies. exit_status
             alone was never enough to act on -- this is the same numeric
             scheme documented in src/container.c decoded into something
             an operator can actually read, without needing serial console
@@ -18799,13 +18649,6 @@ components:
           description: >
             The extra environment variables this container was created
             with (see ContainerCreateRequest.env). Empty if none.
-        disk:
-          type: string
-          nullable: true
-          description: >
-            The disk (see ContainerCreateRequest.disk) this
-            container's base lives on, or null for the
-            default OS-disk placement (task #638, ADR-0102).
         dns_servers:
           type: array
           items:
@@ -21648,7 +21491,7 @@ components:
           description: A Disk.name from GET /disks (e.g. "sdb") -- not an operator-chosen alias, the real disk's own kernel name.
         role:
           type: string
-          enum: [container-storage, backup, rebuildable-storage, log-storage, swap]
+          enum: [volume-storage, backup, rebuildable-storage, log-storage, swap]
           description: >
             A small, fixed, closed vocabulary -- not free-form, since a
             role is only meaningful insofar as this daemon actually
@@ -21687,7 +21530,7 @@ components:
           description: A disk or partition with no role yet, and not part of the OS layout.
         role:
           type: string
-          enum: [container-storage, backup, rebuildable-storage, log-storage, swap]
+          enum: [volume-storage, backup, rebuildable-storage, log-storage, swap]
           title: Role
           description: What the disk is for. Assigning a role never touches what is on it; formatting is a separate action on the disk's own page.
 
@@ -24203,10 +24046,10 @@ components:
           title: Keep the build container on failure
           default: false
           description: >
-            Leave a failed build container mounted so you can read what
-            it produced. A failed build container (any nonzero exit) is
+            Keep a failed build container so you can read what it
+            produced. A failed build container (any nonzero exit) is
             normally torn down immediately like any other exited one;
-            this leaves it registered and its overlay mounted instead
+            this leaves it registered with its rootfs snapshot instead
             (ADR-0175, #35) -- readable afterward via GET /containers/{name}/files?path=...
             (ADR-0055), for pulling a crashing binary, a core dump, or a partial
             build tree off the box for real debugging. Only ever applies to the

@@ -109,7 +109,7 @@ enum registry_error registry_create(const char *name, const char *image,
                                      const struct registry_device_attachment *devices,
                                      int device_count,
                                      const char file_paths[][CONTAINER_FILE_PATH_MAX],
-                                     int file_count, const char *disk_name,
+                                     int file_count,
                                      const char dns_server_ips[][RESOLV_IP_STRLEN],
                                      int dns_server_count,
                                      struct registry_entry **out)
@@ -245,9 +245,6 @@ enum registry_error registry_create(const char *name, const char *image,
 		strncpy(e->env[i].value, eq + 1, sizeof(e->env[i].value) - 1);
 	}
 	e->env_count = i;
-	memset(e->disk_name, 0, sizeof(e->disk_name));
-	if (disk_name != NULL)
-		strncpy(e->disk_name, disk_name, sizeof(e->disk_name) - 1);
 	memset(e->dns_server_ips, 0, sizeof(e->dns_server_ips));
 	e->dns_server_count = dns_server_count;
 	for (i = 0; i < dns_server_count; i++)
@@ -1101,11 +1098,6 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		jw_str(w, entry->env[i].value);
 	}
 	jw_obj_close(w);
-	jw_key(w, "disk");
-	if (entry->disk_name[0] != '\0')
-		jw_str(w, entry->disk_name);
-	else
-		jw_null(w);
 	jw_key(w, "dns_servers");
 	jw_arr_open(w);
 	for (i = 0; i < entry->dns_server_count; i++)

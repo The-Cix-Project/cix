@@ -115,12 +115,12 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    base["BASE_DIR<br/>the cix-containers partition"] --> rebuild["rebuildable/<br/>its own disk when one carries rebuildable-storage"]
+    base["BASE_DIR<br/>the cix-containers partition"] --> rebuild["rebuildable/, btrfs<br/>its own disk when one carries rebuildable-storage"]
     rebuild --> imgs["images/<br/>one immutable rootfs per version"]
-    rebuild --> rootfs["rootfs/<br/>each container's rootfs, a snapshot of its image version"]
+    rebuild --> rootfs["rootfs/<br/>each container's rootfs, build containers too,<br/>a snapshot of its image version"]
     imgs -. "snapshot, O(1), same filesystem" .-> rootfs
     rebuild --> arts["artifacts/, pkg/<br/>hostbuild output, package cache"]
-    base --> ctrs["containers/<br/>per-container base: overlay upper, pivot mountpoint"]
+    base --> ctrs["containers/<br/>per-container base: the userns pivot mountpoint"]
     base --> vols["volumes/<br/>outlive their containers, own backups"]
     base --> logs["logs/<br/>the log store, unless log storage has a disk"]
     config["cix-config partition<br/>mounted at /config"] --> cfg["state/<br/>networks, dns, pki, ldap, ntp,<br/>site, definitions, schedules"]
@@ -137,7 +137,7 @@ An **image** is a set of immutable, content-addressed rootfs trees, one per vers
 ```mermaid
 flowchart LR
     hdr["include/container.h<br/>linked into cixd and nothing else"] --> ns["Namespaces + cgroups<br/>clone3 directly, no runc"]
-    hdr --> ovl["A snapshot rootfs per container<br/>OverlayFS where storage is not btrfs"]
+    hdr --> ovl["A snapshot rootfs per container<br/>btrfs, required"]
     hdr --> netplane["netplane<br/>rtnetlink and nl80211 directly"]
     hdr --> devcg["BPF_CGROUP_DEVICE<br/>default-deny allow-list"]
     ns --> ctr["a container"]
@@ -149,7 +149,7 @@ flowchart LR
 `include/container.h`, linked directly into cixd and nothing else.
 
 - **Namespaces and cgroups**, via `clone3` directly — no runc, no libcontainer. User namespaces are the default ([ADR-0179](../adr/0179-user-namespaces-by-default-subordinate-id-allocation.md), [ADR-0207](../adr/0207-btrfs-storage-substrate-userns-by-default.md)), and a userns container sees its snapshot rootfs through an id-mapped mount rather than a per-inode chown.
-- **A btrfs snapshot** of the image version is every container's rootfs ([ADR-0207](../adr/0207-btrfs-storage-substrate-userns-by-default.md), [ADR-0341](../adr/0341-a-containers-rootfs-is-a-snapshot-on-its-images-filesystem.md)). Only where rebuildable storage is not btrfs does a non-userns container fall back to **OverlayFS**, with the image version as its shared lower layer, and a userns one to a copy.
+- **A btrfs snapshot** of the image version is every container's rootfs, build containers included ([ADR-0207](../adr/0207-btrfs-storage-substrate-userns-by-default.md), [ADR-0341](../adr/0341-a-containers-rootfs-is-a-snapshot-on-its-images-filesystem.md), [ADR-0360](../adr/0360-the-container-store-is-btrfs-and-build-containers-are-snapshots.md)). The image store is btrfs, required: there is no OverlayFS and no copy, and a host whose image store is not btrfs runs no container.
 - **netplane** talks to the kernel over rtnetlink sockets directly, never shelling out to `ip`/iproute2 — and over `nl80211` for a radio, because a wireless netdev belongs to a wiphy and cannot move alone. cixd also sends the host's **wireless country** over `nl80211`, at start and on `PUT /v1/system/wireless`: the kernel keeps one regulatory domain for the whole host and takes it only from the initial user namespace, so no container's access point can set it ([ADR-0354](../adr/0354-the-wireless-regulatory-domain-is-a-host-setting.md)).
 - **`BPF_CGROUP_DEVICE`** is a default-deny allow-list ([ADR-0017](../adr/0017-ebpf-cgroup-device-filter-for-hardware-passthrough.md)): the devices a container declared plus the standard nodes, then a deny epilogue. A container declaring no devices gets no program, and so no restriction.
 

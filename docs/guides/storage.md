@@ -50,8 +50,8 @@ e.g. `vda5`) is refused with a `409` saying why
 ([#249](https://git.home.arpa/itdlabs/cix/issues/249)).
 
 Moving everything *out* of it does not change that. `rebuildable-storage`
-and `log-storage` each move with their own call, and each container's
-storage moves with `container migrate-storage`; do all of that and the
+and `log-storage` each move with their own call, and each volume moves
+with `volume migrate`; do all of that and the
 partition is nearly empty, but `/var/lib/cix` is still the data
 directory and still lives there. Emptying its **contents** changes
 nothing about its **mount**.
@@ -74,7 +74,7 @@ data directory, so they never pin `cix-containers` in place
 ## 2. Two steps, always: assign a role, then format
 
 ```
-cixctl storage-role create --disk=sdb --role=container-storage
+cixctl storage-role create --disk=sdb --role=volume-storage
 cixctl storage format sdb
 cixctl storage format-status sdb
 ```
@@ -101,8 +101,8 @@ disk or partition takes one of these roles:
 
 | Role | One per host? | What lives there | What puts it there |
 |---|---|---|---|
-| `container-storage` | No — many disks can have it | A container's base; its rootfs stays beside its image ([ADR-0341](../adr/0341-a-containers-rootfs-is-a-snapshot-on-its-images-filesystem.md)) | Per container, at creation: `cixctl container run --disk=NAME` ([ADR-0102](../adr/0102-per-container-disk-selection.md)); an existing container moves with `cixctl container migrate-storage NAME --disk=NAME` |
-| `rebuildable-storage` | Yes | Anything regenerable from recipes and sources: container images, every container's rootfs, installed packages, build artifacts, staged ISOs | `cixctl storage rebuildable migrate --disk=NAME` |
+| `volume-storage` | No — many disks can have it | Volumes: the data that outlives a container ([ADR-0183](../adr/0183-persistent-volumes.md)). It was `container-storage` and also placed a container's base, until [ADR-0360](../adr/0360-the-container-store-is-btrfs-and-build-containers-are-snapshots.md) | `cixctl volume create --name=NAME --disk=DISK`; an existing volume moves with `cixctl volume migrate NAME --disk=DISK` |
+| `rebuildable-storage` | Yes | Anything regenerable from recipes and sources: container images, every container's rootfs, installed packages, build artifacts, staged ISOs. **btrfs, required** ([ADR-0360](../adr/0360-the-container-store-is-btrfs-and-build-containers-are-snapshots.md)): a move or a format onto anything else is refused | `cixctl storage rebuildable migrate --disk=NAME` |
 | `log-storage` | Yes | The consolidated log store | `cixctl storage logs migrate --disk=NAME` |
 | `swap` | Yes | Backs a host swap file | `cixctl swap enable --size-mb=N --disk=NAME` ([ADR-0069](../adr/0069-host-swap-file.md)) |
 | `backup` | Yes | Scheduled configuration snapshots | `cixctl backup-config set --disk=NAME --enable` |
@@ -135,9 +135,8 @@ largest thing on the box. A backup only has to cover the first.
 In rough order of how often it is worth doing:
 
 - **Container data outgrowing the OS disk** → `rebuildable-storage`,
-  which holds every container's rootfs beside its image. A
-  `container-storage` disk, chosen per container with
-  `container run --disk=`, takes only the container's base.
+  which holds every container's rootfs beside its image, and a
+  `volume-storage` disk for the data a volume holds.
 - **Package and image content filling the box** → `rebuildable-storage`.
   This is usually the largest consumer: images, every installed
   package's files, build artifacts, staged ISOs. Moving it off the OS
@@ -193,24 +192,22 @@ root filesystem, and on disk it costs only the extents it actually
 changes. Ten containers from one image cost one image plus ten sets of
 differences.
 
-Where a snapshot is not possible, the rootfs is built another way
-(`daemon/src/main.c`, container create):
-
-| Image store (where the rootfs lives) | User-namespaced container (the default) | Non-userns container |
-|---|---|---|
-| btrfs, snapshot succeeds | Snapshot, presented through an id-mapped mount | Snapshot |
-| btrfs, snapshot fails | Full copy, logged as a warning | OverlayFS over the image version, logged as a warning |
-| not btrfs (e.g. an ext4 `rebuildable-storage` disk) | Full copy | OverlayFS over the image version |
+There is no other way. The image store is **btrfs, required**
+([ADR-0360](../adr/0360-the-container-store-is-btrfs-and-build-containers-are-snapshots.md)):
+every container's rootfs is a snapshot, a user-namespaced one presented
+through an id-mapped mount, and build containers are snapshots of their
+build environment too. A host whose image store is not btrfs runs no
+container, and a create says so. The OverlayFS and full-copy fallbacks
+that used to cover a failed snapshot or an ext4 image store are gone.
 
 Consequences worth knowing:
 
-- **A container on btrfs has a real subvolume as its rootfs**, not a
-  union mount.
+- **A container has a real subvolume as its rootfs**, not a union mount.
 - **Snapshots are per-filesystem.** That is why a container's rootfs
-  lives beside the image store rather than on its `--disk=`
-  ([ADR-0341](../adr/0341-a-containers-rootfs-is-a-snapshot-on-its-images-filesystem.md)).
-  An image store on ext4 costs every container a full copy of its
-  image (or an overlay, for a non-userns container).
+  lives beside the image store
+  ([ADR-0341](../adr/0341-a-containers-rootfs-is-a-snapshot-on-its-images-filesystem.md)),
+  and why `rebuildable-storage` can only move to, or be formatted as,
+  btrfs.
 - **`used_bytes` on a btrfs disk counts shared extents once.** Adding up
   per-container usage will exceed the disk's own figure. That is
   correct, not a bug.
@@ -232,10 +229,11 @@ cixctl container run --name=web --image=base --disk-quota=2147483648 \
     --service="web=/usr/bin/some-server --port=8080"
 ```
 
-The mechanism is chosen automatically from the backing filesystem —
-btrfs qgroups or ext4 project quotas. You do not select it, and the disk
-role and format choice do not change whether quotas are available, only
-which implementation is used. Volumes have their own size limit
+It is a btrfs qgroup limit on the exclusive bytes of the container's
+rootfs snapshot: what it has written that its image does not hold. It
+is set after the files the daemon stages are written, so even a small
+limit bounds what the container writes rather than refusing the create.
+Volumes have their own size limit
 (`cixctl volume quota NAME BYTES`, see
 [`containers-and-services.md`](containers-and-services.md#volumes)).
 
@@ -276,9 +274,9 @@ partition is then an ordinary disk name everywhere in the API:
 
 ```
 cixctl storage partition-table sdc
-cixctl storage add-partition sdc --name=containers --size-mib=51200
+cixctl storage add-partition sdc --name=volumes --size-mib=51200
 cixctl storage add-partition sdc --name=backups
-cixctl storage-role create --disk=sdc1 --role=container-storage
+cixctl storage-role create --disk=sdc1 --role=volume-storage
 cixctl storage-role create --disk=sdc2 --role=backup
 cixctl storage format sdc1
 cixctl storage format sdc2
@@ -303,14 +301,16 @@ cixctl storage rebuildable migrate --disk=sdb
 cixctl storage rebuildable migrate-status
 cixctl storage logs migrate --disk=sdb
 cixctl storage logs migrate-status
-cixctl container migrate-storage web --disk=sdb
-cixctl container migrate-storage-status web
 ```
 
 Omit `--disk=` to move a placement back to the OS disk. The REST calls
-are `POST /v1/system/rebuildable-storage/migrate`,
-`POST /v1/system/log-storage/migrate` and
-`POST /v1/containers/{name}/migrate-storage`, each with `{"disk": ...}`.
+are `POST /v1/system/rebuildable-storage/migrate` and
+`POST /v1/system/log-storage/migrate`, each with `{"disk": ...}`. A
+volume moves with `cixctl volume migrate NAME --disk=DISK`
+(`POST /v1/volumes/{volume_name}/migrate`), synchronously. A container
+has nothing of its own to move: its rootfs is a snapshot beside the
+image store, and `container migrate-storage` went with the container
+`disk` ([ADR-0360](../adr/0360-the-container-store-is-btrfs-and-build-containers-are-snapshots.md)).
 
 A disk that is the active placement for any of these cannot be
 unmounted — the daemon refuses with a message naming the reason, because

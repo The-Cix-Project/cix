@@ -6,6 +6,7 @@
 #include "events.h"
 #include "treecopy.h"
 #include "daemonpaths.h"
+#include "btrfs.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -132,6 +133,15 @@ enum storagemigrate_error storagemigrate_start(enum storage_kind kind, const cha
 			return STORAGEMIGRATE_ERR_WRONG_ROLE;
 		if (!d.mounted)
 			return STORAGEMIGRATE_ERR_NOT_MOUNTED;
+		/*
+		 * ADR-0360 decision 1: the image store is btrfs, required. A
+		 * container's rootfs is a snapshot of its image there, and
+		 * nothing else is a rootfs, so a rebuildable move onto any
+		 * other filesystem would leave every container unable to
+		 * start.
+		 */
+		if (kind == STORAGE_KIND_REBUILDABLE && !cix_btrfs_is_backing(d.mount_path))
+			return STORAGEMIGRATE_ERR_NOT_BTRFS;
 	}
 
 	if (strcmp(job->target_disk, target_disk_name != NULL ? target_disk_name : "") == 0 &&

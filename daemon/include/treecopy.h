@@ -4,8 +4,8 @@
 /*
  * A real, permission-preserving recursive directory copy -- shared by
  * every ADR-0141 storage-placement migration job (state/rebuildable/
- * log-storage, and ADR-0142's container-storage-after-creation
- * migration), each of which needs to move a real directory tree across
+ * log-storage; ADR-0142's container-storage migration used it too,
+ * until ADR-0360 removed it), each of which needs to move a real directory tree across
  * a filesystem boundary (rename(2) can't -- EXDIST across mounted
  * disks) while preserving real file modes: state-storage in particular
  * carries pki.c's own 0600 private keys, and a copy that silently
@@ -62,9 +62,7 @@ int treecopy_recursive(const char *src_root, const char *dst_root);
  * container's rootfs is a snapshot of its image, and a plain copy of
  * one is neither a snapshot nor something the container should resume
  * on, so the container is seeded again from its image at its next
- * start. A container-storage move skips a rootfs left in the base by an
- * older release and the trees set aside in ".discard", since both are
- * about to be deleted.
+ * start.
  */
 int treecopy_recursive_except(const char *src_root, const char *dst_root,
                               const char *const *skip_top);

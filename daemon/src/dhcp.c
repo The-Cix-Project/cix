@@ -766,12 +766,12 @@ void dhcp_sync_all(char changed[][DHCP_SERVER_NAME_MAX], int max_changed, int *o
 		 * the results are checked -- both writes used to be issued and
 		 * discarded, so a DHCP server could serve a stale config
 		 * indefinitely with nothing recorded (#269). */
-		container_file_host_path(names[i], entry->disk_name, DHCP_CONF_PATH,
+		container_file_host_path(names[i], DHCP_CONF_PATH,
 		                          path, sizeof(path));
 		if (persist_atomic_write(path, conf, strlen(conf)) != 0)
 			logstore_write("cixd", "error", "dhcp: could not write %s config to %s",
 			                names[i], path);
-		container_file_host_path(names[i], entry->disk_name, DHCP_HOSTS_PATH,
+		container_file_host_path(names[i], DHCP_HOSTS_PATH,
 		                          path, sizeof(path));
 		if (persist_atomic_write(path, hosts, strlen(hosts)) != 0)
 			logstore_write("cixd", "error", "dhcp: could not write %s hosts to %s",

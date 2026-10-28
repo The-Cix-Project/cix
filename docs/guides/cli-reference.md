@@ -23,7 +23,7 @@ Completion reaches the end of a command, not just the first word:
 
 ```
 cixctl dns forwarders <TAB>      -> set  show  --forwarder=
-cixctl container mig<TAB>        -> migrate-storage  migrate-storage-status
+cixctl container st<TAB>         -> start  stats  stop
 cixctl update --<TAB>            -> --image=  --image-sha256=  --image-url=  --kernel=
 ```
 
@@ -265,8 +265,8 @@ See [`storage.md`](storage.md) for how disks, roles and filesystems fit together
 | `storage rm-partition DISK_NAME PARTITION_NAME` | Remove one partition; refused (409) while it has a role |
 | `storage format NAME [--fs-type=ext4\|btrfs]` | Destructive: `mkfs` and mount a role-assigned, non-OS disk (btrfs by default). Refused (409) against an active placement |
 | `storage format-status NAME` | State, mount path and error of the most recent format |
-| `storage unmount NAME` | `umount2(2)` a mounted non-OS disk (#34); data untouched. Refused (409) if it is an active placement or holds a running container's storage |
-| `storage-role create --disk=NAME --role=container-storage\|backup\|rebuildable-storage\|log-storage\|swap` | Assign a role to a disk or partition (never the OS disk) |
+| `storage unmount NAME` | `umount2(2)` a mounted non-OS disk (#34); data untouched. Refused (409) if it is an active placement or holds a volume |
+| `storage-role create --disk=NAME --role=volume-storage\|backup\|rebuildable-storage\|log-storage\|swap` | Assign a role to a disk or partition (never the OS disk) |
 | `storage-role ls` / `storage-role rm NAME` | List roles (with whether each disk is present) / remove one; refused (409) while the disk is an active placement |
 | `storage logs [show]` / `storage logs migrate [--disk=NAME]` / `storage logs migrate-status` | Where the log store lives; move it to a disk carrying `log-storage`, or back to the OS disk with no `--disk=` (ADR-0141) |
 | `storage rebuildable [show]` / `storage rebuildable migrate [--disk=NAME]` / `storage rebuildable migrate-status` | The same for images, packages and artifacts (`rebuildable-storage`) |
@@ -291,8 +291,6 @@ Every container operation is a subcommand of `container`. `console NAME` is also
 | `container console NAME [--console=NAME]` | Attach to a console the container **declares** (#248). `--console=` picks which; the default is the first declared. A container that declares none says so. There is no free-text command ([ADR-0261](../adr/0261-reaching-inside-a-container.md)) |
 | `container files get NAME --path=/some/path [--output=PATH]` | Read one file's bytes out of the container; stdout if `--output=` is omitted |
 | `container files put NAME --path=/some/path --file=LOCAL_PATH [--mode=0644]` | Write one file into an existing container, live and not persisted (ADR-0153) |
-| `container migrate-storage NAME [--disk=NAME]` | Move the container's overlay storage to a disk carrying `container-storage`, or back to the OS disk with no `--disk=` (ADR-0142). Briefly restarts it |
-| `container migrate-storage-status NAME` | State, disk and error of the most recent migration |
 | `container network attach NAME --network=NETWORK [--ip=A.B.C.D] [--ifname=NAME]` | Attach a network to a running container, live and not persisted (ADR-0156). `--ifname=` names the interface ([ADR-0259](../adr/0259-an-interface-may-be-named.md)) |
 | `container network detach NAME NETWORK` | Detach a live-attached network; a network from creation is refused (409) |
 | `container device attach NAME ID` | Grant one more device to a running container; `ID` is a device id or devicemap name (ADR-0161) |

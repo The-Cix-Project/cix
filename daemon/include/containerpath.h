@@ -29,10 +29,12 @@
  * inside. It is also the same path creation-time staging already uses,
  * which is why staging never had this problem.
  *
- * rel_path is absolute in the CONTAINER's namespace ("/etc/hosts").
- * disk_name may be empty for a container on the default OS disk.
+ * rel_path is absolute in the CONTAINER's namespace ("/etc/hosts"). The
+ * tree is the container's rootfs, CONTAINER_ROOTFS_DIR/<name>, the whole
+ * of it since ADR-0360 removed the overlay and a container's `disk`, so
+ * this is the one place a host-side path into a container is built.
  */
-void container_file_host_path(const char *container_name, const char *disk_name,
-                              const char *rel_path, char *out, size_t out_size);
+void container_file_host_path(const char *container_name, const char *rel_path, char *out,
+                              size_t out_size);
 
 #endif /* CIX_CONTAINERPATH_H */

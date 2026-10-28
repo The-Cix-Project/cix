@@ -257,11 +257,11 @@ int main(void)
 
 		/* 5. Configuring a disk with the WRONG role -> snapshot-now
 		 * fails with a clear, distinct reason. */
-		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"container-storage\"}",
+		snprintf(body, sizeof(body), "{\"disk_name\":\"%s\",\"role\":\"volume-storage\"}",
 		         non_os_disk);
 		memset(&r, 0, sizeof(r));
 		if (cix_client_request(&client, "POST", "/v1/storage-roles", body, &r) != 0 || r.status != 201) {
-			fprintf(stderr, "FAIL: POST /v1/storage-roles (container-storage), status=%d\n",
+			fprintf(stderr, "FAIL: POST /v1/storage-roles (volume-storage), status=%d\n",
 			        r.status);
 			ok = 0;
 		}
