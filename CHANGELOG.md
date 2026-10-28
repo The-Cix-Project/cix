@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A sync's counts say when they belong to the last completed run (#662)
+
+- **What changed:** while a sync is running, `cixctl pkg sync` without `--wait` and `cixctl pkg sync-status` print a line under the counts. It says they are the last completed sync's, and that `--wait` gives this run's. The dashboard's sync status labels Added and Skipped "(last completed sync)" while one runs.
+- **Why:** #662 reported that a newer deployment version synced from git did not replace the stored one. It did. `pkg sync` returns at once, printing `state=running` and the previous run's counts. On 192.168.15.95 a sync took about 20 s (`state=running` at 13:58:22Z, `success` at 13:58:27Z, 2026-10-28). The `deployment show` that looked stale ran a few seconds after the push, before the sync had finished. The counts are the contract's ("the most recent completed sync"); printed unlabelled beside `running`, they read as this run's.
+- **Verified:** `build/cixctl pkg sync` against .95 printed the new line under `state=running`. The dashboard half ships with the next release.
+
 ### A disk is mounted when it gets its role, and a volume is placed only on a mounted disk (#660, #661)
 
 - **What changed:**
