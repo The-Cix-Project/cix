@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-28, for #656. It carries out the owner's decision of 2026-10-27 (#628), *"Make it TCC too"*, which ended the gcc exception for the UEFI boot manager ([ADR-0215](0215-our-own-efi-boot-manager.md)). It corrects the conclusion [ADR-0211](0211-tcc-msabi-and-atomics-tier3.md) drew for this program. That ADR's finding about `__builtin_ms_va_list` under the native tcc stays true.
+Accepted by the owner on 2026-10-28 (proposed the same day), for #656. It carries out the owner's decision of 2026-10-27 (#628), *"Make it TCC too"*, which ended the gcc exception for the UEFI boot manager ([ADR-0215](0215-our-own-efi-boot-manager.md)). It corrects the conclusion [ADR-0211](0211-tcc-msabi-and-atomics-tier3.md) drew for this program. That ADR's finding about `__builtin_ms_va_list` under the native tcc stays true.
 
 ## Context
 
