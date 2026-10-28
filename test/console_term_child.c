@@ -139,10 +139,18 @@ static void report(void)
 		wsz.ws_col = 0;
 		wsz.ws_row = 0;
 	}
+	/* #663: CIXENV is set by the container's definition and must arrive;
+	 * DAEMONENV is in the test daemon's own environment only, so it must
+	 * not -- a session used to carry cixd's environment instead. */
+	const char *cixenv = getenv("CIX_CONSOLE_ENV");
+	const char *daemonenv = getenv("CIX_TEST_DAEMON_ENV");
+
 	len = snprintf(line, sizeof(line),
-	               "TERMINFO TERM=%s COLS=%u ROWS=%u OOMADJ=%s TTY=%s USERNS=%s EUID=%d\n",
+	               "TERMINFO TERM=%s COLS=%u ROWS=%u OOMADJ=%s TTY=%s USERNS=%s EUID=%d "
+	               "CIXENV=%s DAEMONENV=%s\n",
 	               term != NULL ? term : "(unset)", (unsigned)wsz.ws_col, (unsigned)wsz.ws_row,
-	               report_oom_adj(), report_tty(), report_userns(), (int)geteuid());
+	               report_oom_adj(), report_tty(), report_userns(), (int)geteuid(),
+	               cixenv != NULL ? cixenv : "(unset)", daemonenv != NULL ? daemonenv : "(unset)");
 	if (len > 0)
 		cix_write_all(STDOUT_FILENO, line, (size_t)len > sizeof(line) - 1 ? sizeof(line) - 1
 		                                                                   : (size_t)len);

@@ -93,9 +93,20 @@ struct exec_term {
  * decides what they say. Pass -1 to skip (the container has no
  * cgroup), which restores the old, wrong-answer behaviour and is
  * meant only for that case.
+ *
+ * envp is the CONTAINER's environment, its definition's "env", as
+ * "KEY=VALUE" strings ending in NULL, and the session gets that and the
+ * pty's TERM, nothing else. It used to exec with environ, cixd's own:
+ * on 192.168.15.95, 2026-10-28, a console in vpn-1 had HOME=/ and an
+ * empty PATH where the container sets HOME and PATH, while its services
+ * had them, so its own CLI could not find the service it was beside
+ * (#663). The contract's "env" says a container gets only these, never
+ * a copy of cixd's environment. TERM is the pty's whatever envp holds,
+ * because it describes the terminal actually attached.
  */
+#define EXEC_ENV_MAX 32
 int exec_into_container(pid_t target_pid, int cgroup_procs_fd, char *const cmd_argv[],
-                         const struct exec_term *term,
+                         char *const envp[], const struct exec_term *term,
                          int *out_pty_master_fd, pid_t *out_child_pid);
 
 /*

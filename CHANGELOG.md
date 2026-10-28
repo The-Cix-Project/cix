@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A console session gets the container's env, and none of cixd's (#663)
+
+- **What changed:** `exec_into_container()` takes the session's environment, and the console handler gives it the container's `env`. The session gets that plus the pty's `TERM`, which replaces any `TERM` in `env`. It no longer passes `environ`, cixd's own environment. `test_console_exec` asserts both halves: a variable the fixture's definition sets reaches the session, and one set only in the test daemon's environment does not.
+- **Why:** on 192.168.15.95 a console in vpn-1 had `HOME=/` and an empty `PATH`, while its definition sets both and its service (started by cix-init with the container's `env`) had them. So `longwire status` looked for `/.longwire/ctl` beside a node listening on `/var/lib/longwire/.longwire/ctl`, and answered "no node is running". The contract's `env` already said a container gets only these and never a copy of cixd's environment; it now says consoles get the same.
+- **Verified:** pending.
+
 ### A sync's counts say when they belong to the last completed run (#662)
 
 - **What changed:** while a sync is running, `cixctl pkg sync` without `--wait` and `cixctl pkg sync-status` print a line under the counts. It says they are the last completed sync's, and that `--wait` gives this run's. The dashboard's sync status labels Added and Skipped "(last completed sync)" while one runs.

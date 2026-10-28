@@ -16,8 +16,6 @@
 #include <termios.h>
 #include <unistd.h>
 
-extern char **environ;
-
 /*
  * Every /proc/<target_pid>/ns/* fd needed below MUST be opened before
  * any setns() call is made -- not interleaved one at a time. The first
@@ -275,7 +273,7 @@ static void exec_step_fail(int pipe_w, enum exec_step step, int err)
 }
 
 int exec_into_container(pid_t target_pid, int cgroup_procs_fd, char *const cmd_argv[],
-                         const struct exec_term *term,
+                         char *const envp[], const struct exec_term *term,
                          int *out_pty_master_fd, pid_t *out_child_pid)
 {
 	int master_fd, slave_fd;
@@ -564,20 +562,25 @@ int exec_into_container(pid_t target_pid, int cgroup_procs_fd, char *const cmd_a
 			 * attached, mis-describing the colour and key-sequence
 			 * capabilities of anything that is not one.
 			 *
-			 * setenv() after fork() is safe here specifically
-			 * because cixd is single-threaded (no pthread_create
-			 * anywhere in the daemon), so no other thread can have
-			 * held malloc's lock at the moment of the fork.
-			 *
-			 * Deliberately only on this pty path. The piped variant
-			 * below gives its command no terminal at all, and
-			 * claiming otherwise via $TERM would invite a program to
-			 * emit cursor escapes into what is meant to be a clean
-			 * byte stream -- the exact corruption that path exists
-			 * to avoid.
+			 * The rest is the container's own environment and
+			 * nothing of cixd's (#663, exec.h): the session is
+			 * envp's entries, a TERM in it replaced by this pty's.
+			 * Built on the stack, so no allocation after fork().
 			 */
-			setenv("TERM", term_name, 1);
-			execve(cmd_argv[0], cmd_argv, environ);
+			{
+				char term_kv[96];
+				char *envv[EXEC_ENV_MAX + 2];
+				size_t n = 0, k;
+
+				snprintf(term_kv, sizeof(term_kv), "TERM=%s", term_name);
+				for (k = 0; envp != NULL && envp[k] != NULL && n < EXEC_ENV_MAX; k++) {
+					if (strncmp(envp[k], "TERM=", 5) != 0)
+						envv[n++] = envp[k];
+				}
+				envv[n++] = term_kv;
+				envv[n] = NULL;
+				execve(cmd_argv[0], cmd_argv, envv);
+			}
 			/*
 			 * Issue #108: report the failure back to the daemon, not
 			 * just to the pty.

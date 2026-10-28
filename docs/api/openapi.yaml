@@ -17443,7 +17443,9 @@ components:
             Extra environment variables merged into this container's own
             process environment at execve() time (e.g. {"DEBUG": "1"}) --
             a container gets *only* these, never a copy of cixd's own
-            environment (no implicit inheritance). Keys must be POSIX-
+            environment (no implicit inheritance). Its services and its
+            console sessions get the same environment; a console adds only
+            the TERM of the terminal attached (#663). Keys must be POSIX-
             portable environment variable names (letters, digits,
             underscore, not starting with a digit; 400 otherwise, since
             an unsafe key would corrupt the "KEY=VALUE" boundary this

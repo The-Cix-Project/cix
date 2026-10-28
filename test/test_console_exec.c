@@ -533,6 +533,9 @@ int main(void)
 		return 1;
 	}
 
+	/* #663: in cixd's environment and nowhere else, so a console
+	 * session that reports it was given cixd's environment. */
+	setenv("CIX_TEST_DAEMON_ENV", "leaked", 1);
 	daemon_pid = start_daemon();
 	if (daemon_pid < 0)
 		return 1;
@@ -553,6 +556,8 @@ int main(void)
 	                        * nothing on a host where that default is off. */
 	                       "{\"name\":\"consoletest\",\"image\":\"consoletest\","
 	                       "\"userns\":true,"
+	                       /* #663: a variable a console session must see. */
+	                       "\"env\":{\"CIX_CONSOLE_ENV\":\"from-definition\"},"
 	                       /* ADR-0261: there is no free-text cmd= any more, so every
 	                        * program this file attaches to is declared here. Four is
 	                        * REGISTRY_MAX_CONSOLES, which is why the missing-binary
@@ -897,6 +902,14 @@ int main(void)
 			 */
 			{ "", "EUID=0",
 			  "the console session is the container's own root, not the overflow uid (#293)" },
+			/* #663: the session's environment is the container's
+			 * "env", the one its services get, and nothing of
+			 * cixd's. The fixture sets CIX_CONSOLE_ENV, and this
+			 * test sets CIX_TEST_DAEMON_ENV in its daemon only. */
+			{ "", "CIXENV=from-definition",
+			  "the console session gets the container's env (#663)" },
+			{ "", "DAEMONENV=(unset)",
+			  "the console session carries none of cixd's own environment (#663)" },
 			/* Omitting everything is an ordinary request, not an
 			 * error -- a piped client has no terminal to describe.
 			 * The documented defaults are what it must then get,

@@ -31258,6 +31258,8 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 	char path_only[HTTP_MAX_PATH];
 	char term_buf[64], dim_buf[16];
 	struct exec_term term;
+	char env_kv[CONTAINER_MAX_ENV][CONTAINER_ENV_KEY_MAX + CONTAINER_ENV_VALUE_MAX + 2];
+	char *env_ptrs[CONTAINER_MAX_ENV + 1];
 	const char *query;
 	char accept_val[64];
 	int master_fd;
@@ -31510,8 +31512,21 @@ static enum console_route_result try_console_upgrade(struct conn *cc, const stru
 		                          "read the host's /proc, not the container's",
 		                          strerror(errno));
 
-	if (exec_into_container(entry->handle.pid, cgroup_procs_fd, cmd_argv, &term, &master_fd,
-	                         &exec_pid) != 0) {
+	/* #663: the session's environment is the container's "env", the
+	 * same one cix-init gives its services. */
+	_Static_assert(EXEC_ENV_MAX >= CONTAINER_MAX_ENV, "a container's env must fit a session's");
+	{
+		int ei;
+
+		for (ei = 0; ei < entry->env_count && ei < CONTAINER_MAX_ENV; ei++) {
+			snprintf(env_kv[ei], sizeof(env_kv[ei]), "%s=%s", entry->env[ei].key,
+			         entry->env[ei].value);
+			env_ptrs[ei] = env_kv[ei];
+		}
+		env_ptrs[ei] = NULL;
+	}
+	if (exec_into_container(entry->handle.pid, cgroup_procs_fd, cmd_argv, env_ptrs, &term,
+	                         &master_fd, &exec_pid) != 0) {
 		/* task #764: exec_into_container()'s own diagnostics
 		 * (daemon/src/exec.c's fprintf(stderr,...) calls) go to
 		 * cixd's own stderr -- invisible to a REST client on a
