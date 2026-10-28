@@ -242,7 +242,17 @@ static int find_session(const char *token)
 	return -1;
 }
 
-static void save_sessions(void)
+/*
+ * ADR-0361: which writes must survive a power loss. A logout, a revoke
+ * and a consumed single-use token end a session deliberately, and losing
+ * one would bring it back, so they fsync. A login and a sliding refresh
+ * only need to survive a restart, which an atomic rename gives without
+ * one: a power loss costs a re-login or a window up to
+ * SESSION_SAVE_SLACK shorter, never a longer or revived session.
+ */
+enum session_write { SESSION_WRITE_REPLACE, SESSION_WRITE_DURABLE };
+
+static void save_sessions(enum session_write how)
 {
 	struct json_writer w;
 	time_t now = time(NULL);
@@ -277,12 +287,14 @@ static void save_sessions(void)
 	/*
 	 * #646: tallied, because the session expiry timer's passes held the
 	 * loop 2700, 984 and 959 ms on 192.168.15.95 (2026-10-26, during
-	 * builds) and the stall record could name no step inside them.
-	 * persist_atomic_write() fsyncs, and this says whether that is where
-	 * the time goes.
+	 * builds) and the stall record could name no step inside them. It
+	 * then named this write: POST /v1/login held the loop 1422 ms, 1421
+	 * of them here (ts 1793148654, #659), which is why only a deliberate
+	 * ending fsyncs now (ADR-0361). Kept, so a slow write still says so.
 	 */
 	t = stallwatch_tally_start();
-	rc = persist_atomic_write(g_sessions_path, w.buf, w.len);
+	rc = how == SESSION_WRITE_DURABLE ? persist_atomic_write(g_sessions_path, w.buf, w.len)
+	                                  : persist_atomic_replace(g_sessions_path, w.buf, w.len);
 	stallwatch_tally("session table write", t);
 	if (rc == 0) {
 		chmod(g_sessions_path, 0600);
@@ -315,7 +327,7 @@ static void slide_session(int i, time_t now)
 {
 	g_sessions[i].expires_at = now + (time_t)g_config.idle_timeout_seconds;
 	if (g_sessions[i].expires_at - g_sessions[i].saved_expires_at >= SESSION_SAVE_SLACK)
-		save_sessions();
+		save_sessions(SESSION_WRITE_REPLACE);
 }
 
 static void load_sessions(void)
@@ -984,7 +996,7 @@ enum hostauth_login_result hostauth_issue_session(const char *username,
 	snprintf(g_sessions[slot].source_ip, sizeof(g_sessions[slot].source_ip), "%s",
 	         source_ip != NULL ? source_ip : "");
 	g_sessions[slot].in_use = 1;
-	save_sessions();
+	save_sessions(SESSION_WRITE_REPLACE);
 	events_announce(EV_listHostauthSessions);
 	expiry_may_be_sooner();
 
@@ -999,7 +1011,7 @@ void hostauth_logout(const char *token)
 	if (i < 0)
 		return;
 	drop_session(i);
-	save_sessions();
+	save_sessions(SESSION_WRITE_DURABLE);
 }
 
 /*
@@ -1089,8 +1101,15 @@ int hostauth_reap_expired(void)
 			dropped++;
 		}
 	}
-	if (dropped > 0)
-		save_sessions();
+	/*
+	 * ADR-0361: no write. load_sessions() drops every session whose
+	 * expiry has passed, and the file's expires_at never runs ahead of
+	 * memory's (slide_session() saves only once the window has moved
+	 * SESSION_SAVE_SLACK past it), so a session expired here is expired
+	 * there too. This write held the loop 2700 ms on 192.168.15.95
+	 * while changing nothing a start reads (#659). The next write of the
+	 * table leaves these sessions out.
+	 */
 	return dropped;
 }
 
@@ -1116,7 +1135,7 @@ int hostauth_revoke_sessions_for_user(const char *username)
 		}
 	}
 	if (revoked > 0)
-		save_sessions();
+		save_sessions(SESSION_WRITE_DURABLE);
 	return revoked;
 }
 
@@ -1133,12 +1152,11 @@ int hostauth_check_token(const char *token, char *out_username, size_t out_usern
 		 * contract -- a token is never valid for a second request. */
 		snprintf(out_username, out_username_size, "%s", g_sessions[i].username);
 		drop_session(i);
-		save_sessions();
+		save_sessions(SESSION_WRITE_DURABLE); /* a used token must never return */
 		return 1;
 	}
 	if (g_sessions[i].expires_at <= now) {
-		drop_session(i);
-		save_sessions();
+		drop_session(i); /* no write, as in hostauth_reap_expired() (ADR-0361) */
 		return 0;
 	}
 	slide_session(i, now); /* sliding window */

@@ -11,7 +11,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-int persist_atomic_write(const char *path, const char *data, size_t len)
+/* The one implementation behind both contracts: `durable` says whether
+ * the temporary is fsynced before the rename (persist.h). */
+static int atomic_write(const char *path, const char *data, size_t len, int durable)
 {
 	char tmp_path[PATH_MAX + 8];
 	int fd;
@@ -34,7 +36,7 @@ int persist_atomic_write(const char *path, const char *data, size_t len)
 		close(fd);
 		return -1;
 	}
-	if (fsync(fd) != 0) {
+	if (durable && fsync(fd) != 0) {
 		perror(tmp_path);
 		close(fd);
 		return -1;
@@ -46,6 +48,16 @@ int persist_atomic_write(const char *path, const char *data, size_t len)
 		return -1;
 	}
 	return 0;
+}
+
+int persist_atomic_write(const char *path, const char *data, size_t len)
+{
+	return atomic_write(path, data, len, 1);
+}
+
+int persist_atomic_replace(const char *path, const char *data, size_t len)
+{
+	return atomic_write(path, data, len, 0);
 }
 
 /*

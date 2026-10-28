@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, 2026-10-02. This fixes #562, which the owner reported as *"after adding rbac, the web ui has become flaky ... Logged out, it's not consistent, and does not inspire confidence when I compare it to proxmox's webUI"*. The owner put it next in line after ADR-0324 step C. It amends the in-memory session table that ADR-0144 (host authentication) and ADR-0317 (permissions) built on.
+Accepted, 2026-10-02. This fixes #562, which the owner reported as *"after adding rbac, the web ui has become flaky ... Logged out, it's not consistent, and does not inspire confidence when I compare it to proxmox's webUI"*. The owner put it next in line after ADR-0324 step C. It amends the in-memory session table that ADR-0144 (host authentication) and ADR-0317 (permissions) built on. Its persistence clause is narrowed by [ADR-0361](0361-a-session-write-is-durable-only-where-losing-it-is-unsafe.md): only a deliberate ending is fsynced, and dropping an expired session writes nothing.
 
 ## Context
 

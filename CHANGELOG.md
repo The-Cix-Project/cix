@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A session write is durable only where losing it is unsafe (#659, ADR-0361)
+
+- **What changed:** dropping an expired session, in the expiry reaper or at a lookup, writes nothing. A login and a sliding refresh write the session table with `persist_atomic_replace()`, the same atomic rename without the fsync. Logout, revoke and a consumed single-use token keep `persist_atomic_write()` and its fsync.
+- **Why:** measured on 192.168.15.95, `POST /v1/login` held the event loop 1422 ms, 1421 of them in the session table write (the #646 tally), and the expiry timer held it 2700 ms. `load_sessions()` already drops expired sessions, so the expiry writes changed nothing a restart reads. A rename survives a daemon crash, a restart and a clean reboot; only a power loss can lose a login or shorten a window by up to 60 s, and it can never bring back a session ended on purpose.
+- **Verified:** pending.
+
 ### The container store is btrfs, and nothing else is a rootfs (#658, #615, #614, ADR-0360 release B)
 
 - **What changed:**

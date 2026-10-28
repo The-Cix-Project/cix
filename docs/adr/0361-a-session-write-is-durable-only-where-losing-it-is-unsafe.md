@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-28, for #659. It narrows the persistence clause of [ADR-0325](0325-a-login-survives-a-restart.md): a login still survives a restart, and what a power loss may cost is restated.
+Accepted by the owner on 2026-10-28 (proposed the same day), for #659. It narrows the persistence clause of [ADR-0325](0325-a-login-survives-a-restart.md): a login still survives a restart, and what a power loss may cost is restated.
 
 ## Context
 

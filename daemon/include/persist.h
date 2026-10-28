@@ -20,6 +20,19 @@
 int persist_atomic_write(const char *path, const char *data, size_t len);
 
 /*
+ * The same atomic replace, WITHOUT the fsync: a reader still sees the
+ * whole old file or the whole new one, and the new one survives a
+ * daemon crash, a restart and a clean reboot (unmounting flushes it).
+ * Only a kernel crash or a power loss can lose it, leaving the old file
+ * whole. For state whose loss on a power cut is acceptable and whose
+ * fsync, on the event loop, is not: the session table's login and
+ * sliding-refresh writes, which held the loop 1421 ms on 192.168.15.95
+ * (ADR-0361, #659). Its one caller is save_sessions(); a new caller
+ * states, as that one does, why losing the write is safe.
+ */
+int persist_atomic_replace(const char *path, const char *data, size_t len);
+
+/*
  * Same, but keeps the inode rather than renaming a new file over the
  * target -- required for any file inside a RUNNING container, where a
  * rename into an overlay upper layer is invisible through the merged
