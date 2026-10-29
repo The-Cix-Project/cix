@@ -10,7 +10,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** at start, after the definitions load and before autostart, every directory under `CONTAINERS_DIR` with no container definition and nothing in the registry is set aside into ADR-0341's delete queue (`containers_discard_orphan_bases()`), and the count is logged once. Since ADR-0360 a container's base holds only a userns container's pivot mountpoint, so such a directory is debris. The registry check spares a build that resumed at start.
 - **Why:** `cixctl storage data-dir containers` on 192.168.15.95 (0.2.57-621) found 3.78 GiB of cix-containers' 3.99 GiB used in `__pkgbuild-2`, `-3`, `-4`, `-5` and `-8`: build slots' overlay trees from before ADR-0360 release A. The slot reset (#626) clears only the slots' new location, so nothing ever removed them. `wtest`, `jump-ssh` and `p622` were bases of containers deleted without their directory leaving.
-- **Verified:** pending.
+- **Verified:** 0.2.57-622 on 192.168.15.95 (compile probe 658). The first start logged `set aside 8 container base(s) with no definition for deletion (#664)`, and `cixctl storage data-dir` then reported cix-containers at 0.13 GiB used, down from 3.99 GiB, with 13.94 GiB free. `containers` was 0.000 GiB, holding only the defined containers' pivot directories and an empty `.discard`. All 13 containers were running.
 
 ### The data-directory report looks one level down (#249)
 

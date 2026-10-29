@@ -2445,6 +2445,17 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 347: the API says what lives in the data directory, and 3.9 GiB of debris in it is gone (#249, #664, 0.2.57-620 to 0.2.57-622)
+
+#249, relocating the daemon's data directory, could not be designed without knowing what it would carry, and nothing could say. `GET /v1/system/data-dir` (`cixctl storage data-dir [ENTRY]`) now reports each entry's allocated bytes, its owning placement, and whether that owner still lives there. It drills down one level, where a container's directory says whether that container is still defined. Its first answers found the debris #664 removes.
+
+**Measured on 192.168.15.95, 2026-10-29:**
+
+- **620:** cix-containers was 3.99 GiB used: `containers` 3.826 GiB, `logs` 0.089, `volumes` 0.001, `swap` 0. Every entry was in use and none was `unknown`. The report answered in 5 s, from a helper child.
+- **621:** `containers` broke down to `__pkgbuild-2`, `-3`, `-4`, `-5` and `-8` holding 3.78 GiB, which are build slots' overlay trees from before ADR-0360 release A, plus `wtest`, `jump-ssh` and `p622`, all with no definition. Every defined container's base was 0 GiB.
+- **622:** at start, `set aside 8 container base(s) with no definition for deletion (#664)`, and the partition dropped to 0.13 GiB used, 13.94 GiB free, with 13 containers running.
+- **For #249:** what the data directory carries is now about 0.1 GiB (the log store, one small volume, swap off, two state files). Moving it is much smaller than the 16 GiB partition suggested, and so is what reclaiming the partition gains.
+
 ## Part 346: a hostbuild's harvest deletes nothing on the event loop (#645, 0.2.57-619)
 
 The harvest used to empty `<artifacts>/<name>` with nftw() on the event loop, on every hostbuild, the nightly host roll's kernel and cix included. It now sets the previous tree aside into ADR-0341's delete queue with one rename, as a failed hostbuild already did (#644), and creates the directory empty.
