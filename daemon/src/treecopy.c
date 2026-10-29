@@ -69,6 +69,34 @@ static int copy_file_preserve_mode(const char *src, const char *dst)
 	return rc;
 }
 
+/*
+ * Gives dst the source's owner and mode. Every entry type goes through
+ * this once it exists: before it, a copy kept only a regular file's
+ * mode, so every entry came out owned by the daemon and every directory
+ * 0755. Found on 192.168.15.95, 2026-10-29, moving a home volume whose
+ * user's files belong to a userns-mapped uid and whose ~/.ssh is 0700:
+ * the copy would have handed the user's home to root and opened it.
+ *
+ * Owner first, then mode, because chown() clears setuid and setgid
+ * bits. A symlink's own mode means nothing on Linux and lchmod() does
+ * not exist, so a link gets its owner only. The chown is skipped when
+ * the source already belongs to this process, so an unprivileged
+ * caller copying its own files needs no privilege it lacks.
+ */
+static int apply_owner_and_mode(const char *dst, const struct stat *st)
+{
+	if ((st->st_uid != geteuid() || st->st_gid != getegid()) &&
+	    lchown(dst, st->st_uid, st->st_gid) != 0) {
+		treecopy_fail("set owner", dst);
+		return -1;
+	}
+	if (!S_ISLNK(st->st_mode) && chmod(dst, st->st_mode & 07777) != 0) {
+		treecopy_fail("set mode", dst);
+		return -1;
+	}
+	return 0;
+}
+
 static int is_skipped(const char *name, const char *const *skip)
 {
 	for (; skip != NULL && *skip != NULL; skip++)
@@ -144,17 +172,29 @@ static int treecopy_walk(const char *src_root, const char *dst_root, const char 
 				closedir(d);
 				return -1;
 			}
+			/* After the children: a directory without write permission
+			 * for its owner is still filled first. */
+			if (apply_owner_and_mode(dst_path, &st) != 0) {
+				closedir(d);
+				return -1;
+			}
 		} else if (S_ISLNK(st.st_mode)) {
 			char target[PATH_MAX];
 			ssize_t len = readlink(src_path, target, sizeof(target) - 1);
 
 			if (len < 0) {
+				treecopy_fail("read link", src_path);
 				closedir(d);
 				return -1;
 			}
 			target[len] = '\0';
 			unlink(dst_path); /* tolerate a stale entry from a prior partial attempt */
 			if (symlink(target, dst_path) != 0) {
+				treecopy_fail("create link", dst_path);
+				closedir(d);
+				return -1;
+			}
+			if (apply_owner_and_mode(dst_path, &st) != 0) {
 				closedir(d);
 				return -1;
 			}
@@ -164,7 +204,20 @@ static int treecopy_walk(const char *src_root, const char *dst_root, const char 
 				closedir(d);
 				return -1;
 			}
-		} else if (S_ISCHR(st.st_mode) || S_ISBLK(st.st_mode) || S_ISFIFO(st.st_mode)) {
+			if (apply_owner_and_mode(dst_path, &st) != 0) {
+				closedir(d);
+				return -1;
+			}
+		} else if (S_ISCHR(st.st_mode) || S_ISBLK(st.st_mode) || S_ISFIFO(st.st_mode) ||
+		           S_ISSOCK(st.st_mode)) {
+			/*
+			 * A socket is recreated as a socket node, as a FIFO is:
+			 * the copy is then what the source was, a name with
+			 * nothing listening on it until its server binds again.
+			 * Measured on 192.168.15.95, 2026-10-29: moving jump-home
+			 * failed on osakka/.screen/152.byobu, a screen session's
+			 * socket, while the container was stopped.
+			 */
 			/*
 			 * Device nodes are REAL content here, not stray junk.
 			 * the image baseline staged (removed, ADR-0333) /dev/null, /dev/zero,
@@ -191,18 +244,17 @@ static int treecopy_walk(const char *src_root, const char *dst_root, const char 
 			 * where the source was 0666 -- and a /dev/null a
 			 * non-root process cannot write to breaks any container
 			 * that is not running as host root, which is now the
-			 * default (ADR-0207 phase 3). Set the real mode
-			 * explicitly rather than inheriting whatever umask the
-			 * daemon happens to have.
+			 * default (ADR-0207 phase 3). The real mode is set
+			 * explicitly, with the owner, rather than inheriting
+			 * whatever umask the daemon happens to have.
 			 */
-			if (chmod(dst_path, st.st_mode & 07777) != 0) {
-				treecopy_fail("set device node mode", dst_path);
+			if (apply_owner_and_mode(dst_path, &st) != 0) {
 				closedir(d);
 				return -1;
 			}
 		} else {
 			/*
-			 * Sockets and anything else: fail, do not skip. A
+			 * Anything else: fail, do not skip. A
 			 * storage migration silently dropping content is the one
 			 * behaviour that must never be the default -- the caller
 			 * repoints live state at this copy believing it complete.

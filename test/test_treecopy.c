@@ -315,6 +315,60 @@ int main(void)
 		}
 	}
 
+	/*
+	 * 192.168.15.95, 2026-10-29: a home volume carries a screen
+	 * session's socket, a 0700 ~/.ssh and files owned by a mapped uid.
+	 * The copy refused the socket, made every directory 0755, and would
+	 * have given every entry to the copying process.
+	 */
+	{
+		char hsrc[PATH_MAX], hdst[PATH_MAX], p[PATH_MAX + 32], q[PATH_MAX + 32];
+		char cmd[PATH_MAX * 2 + 64];
+		struct stat st;
+
+		snprintf(hsrc, sizeof(hsrc), "%s/home", src);
+		snprintf(hdst, sizeof(hdst), "%s/home", dst);
+		snprintf(cmd, sizeof(cmd), "rm -rf '%s' '%s' && mkdir -p '%s/.ssh' '%s/.screen'", hsrc,
+		         hdst, hsrc, hsrc);
+		system(cmd);
+		snprintf(p, sizeof(p), "%s/.ssh", hsrc);
+		chmod(p, 0700);
+		snprintf(p, sizeof(p), "%s/.screen/152.byobu", hsrc);
+		if (mknod(p, S_IFSOCK | 0700, 0) != 0)
+			fprintf(stderr, "FAIL: could not create the source socket: %s\n", strerror(errno)),
+			        ok = 0;
+		snprintf(p, sizeof(p), "%s/.ssh/authorized_keys", hsrc);
+		write_file(p, "key\n", 0600);
+		if (geteuid() == 0 && chown(p, 101000, 101000) != 0)
+			fprintf(stderr, "FAIL: could not chown the source file\n"), ok = 0;
+
+		if (treecopy_recursive(hsrc, hdst) != 0) {
+			fprintf(stderr, "FAIL: treecopy over a home with a socket: %s\n",
+			        treecopy_last_error());
+			ok = 0;
+		} else {
+			snprintf(q, sizeof(q), "%s/.screen/152.byobu", hdst);
+			if (lstat(q, &st) != 0 || !S_ISSOCK(st.st_mode)) {
+				fprintf(stderr, "FAIL: the socket was not recreated as a socket\n");
+				ok = 0;
+			}
+			snprintf(q, sizeof(q), "%s/.ssh", hdst);
+			if (lstat(q, &st) != 0 || (st.st_mode & 07777) != 0700) {
+				fprintf(stderr, "FAIL: a 0700 directory was copied as %o\n",
+				        (unsigned)(st.st_mode & 07777));
+				ok = 0;
+			}
+			snprintf(q, sizeof(q), "%s/.ssh/authorized_keys", hdst);
+			if (geteuid() != 0)
+				fprintf(stderr, "SKIP: ownership needs real root\n");
+			else if (lstat(q, &st) != 0 || st.st_uid != 101000 || st.st_gid != 101000) {
+				fprintf(stderr, "FAIL: the file's owner was not kept (got %u:%u)\n",
+				        (unsigned)st.st_uid, (unsigned)st.st_gid);
+				ok = 0;
+			}
+		}
+	}
+
 	if (ok)
 		printf("TREECOPY RESULT: PASS\n");
 	else

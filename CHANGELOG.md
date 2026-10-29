@@ -6,11 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A copied tree keeps its owners, its directory modes and its sockets
+
+- **What changed:** `treecopy_recursive()`, the copy behind every storage migration, volume move, volume backup and restore, and the installer's seed, gives every entry its source's owner and mode through one helper, `apply_owner_and_mode()`. It recreates a socket as a socket node, as it already did a FIFO or a device node. Before this, every entry came out owned by the daemon and every directory 0755, and a socket failed the whole copy.
+- **Why:** moving `jump-home` on 192.168.15.95 failed on a screen socket (entry below). Reading the copy to fix that showed the larger defect: the move would have handed a home whose files belong to a userns-mapped uid to root, and opened its 0700 `~/.ssh` to 0755. The image-store migration copies image rootfs the same way.
+- **Verified:** pending the release; `test_treecopy` checks a 0700 directory, a socket and, as root, a file owned by uid 101000.
+
 ### A failed volume copy says which entry it refused
 
 - **What changed:** `POST /v1/volumes/{name}/migrate`'s 500 now names the entry the copy stopped at and why, from `treecopy_last_error()`, and logs it. treecopy clears its recorded error at the start of each copy, so a reason is never left over from an earlier one. `volume_migrate()` no longer creates the target itself, since treecopy creates it with its parents and records that failure too.
 - **Why:** on 192.168.15.95 (0.2.57-624), moving `jump-home` to vda returned *"could not copy the volume's data to the new location"* with nothing logged, so the cause could not be established from the box.
-- **Verified:** pending the release.
+- **Verified:** 0.2.57-626 on 192.168.15.95 (compile probe 662). The same move answered *"unsupported entry type: /var/lib/cix/volumes/jump-home/osakka/.screen/152.byobu: Invalid argument"*, a screen session's socket, which the next entry fixes.
 
 ### The data directory moves to a disk at the next boot (#249, ADR-0364 decision 3, stage b)
 
