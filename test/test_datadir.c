@@ -84,6 +84,11 @@ static int bool_field(const struct json_value *e, const char *key)
 	return v != NULL && v->type == JSON_BOOL && v->u.boolean;
 }
 
+static int only_alive_is_defined(const char *name)
+{
+	return strcmp(name, "alive") == 0;
+}
+
 int main(void)
 {
 	const char *tmp = getenv("TMPDIR");
@@ -92,7 +97,7 @@ int main(void)
 	struct json_value *doc;
 	const struct json_value *entries, *e;
 	struct datadir_live live;
-	const char *order[] = { "diskroles.json", "logs", "mystery", "rebuildable" };
+	const char *order[] = { "containers", "diskroles.json", "logs", "mystery", "rebuildable" };
 	size_t i;
 
 	snprintf(base, sizeof(base), "%s/cix_test_datadir_XXXXXX", tmp != NULL ? tmp : "/tmp");
@@ -114,13 +119,26 @@ int main(void)
 	check(write_file(path, 128 * 1024) == 0, "write mystery/blob");
 	snprintf(path, sizeof(path), "%s/diskroles.json", base);
 	check(write_file(path, 10) == 0, "write diskroles.json");
+	/* containers/: a defined container's directory, one for a container
+	 * that no longer exists, and the delete queue's trash. */
+	snprintf(path, sizeof(path), "%s/containers", base);
+	mkdir(path, 0755);
+	snprintf(path, sizeof(path), "%s/containers/alive", base);
+	mkdir(path, 0755);
+	snprintf(path, sizeof(path), "%s/containers/gone", base);
+	mkdir(path, 0755);
+	snprintf(path, sizeof(path), "%s/containers/gone/upper", base);
+	check(write_file(path, 32 * 1024) == 0, "write containers/gone/upper");
+	snprintf(path, sizeof(path), "%s/containers/.discard", base);
+	mkdir(path, 0755);
 
 	memset(&live, 0, sizeof(live));
 	live.log_dir = logs;
 	live.rebuildable_dir = "/mnt/elsewhere/rebuildable";
+	live.container_defined = only_alive_is_defined;
 
 	jw_init(&w);
-	check(datadir_write_json(&w, base, &live, 1234) == 0, "datadir_write_json succeeds");
+	check(datadir_write_json(&w, base, NULL, &live, 1234) == 0, "datadir_write_json succeeds");
 	doc = json_parse(w.buf, w.len);
 	check(doc != NULL, "the report is valid JSON");
 	if (doc == NULL) {
@@ -133,9 +151,9 @@ int main(void)
 	check((long long)json_as_number(json_object_get(doc, "measured_at")) == 1234,
 	      "measured_at is the caller's clock");
 	entries = json_object_get(doc, "entries");
-	check(entries != NULL && entries->type == JSON_ARRAY && entries->u.array.count == 4,
-	      "four entries, one per name");
-	for (i = 0; entries != NULL && i < entries->u.array.count && i < 4; i++)
+	check(entries != NULL && entries->type == JSON_ARRAY && entries->u.array.count == 5,
+	      "five entries, one per name");
+	for (i = 0; entries != NULL && i < entries->u.array.count && i < 5; i++)
 		check(strcmp(str_of(json_object_get(entries->u.array.items[i], "name")),
 		             order[i]) == 0,
 		      "entries are sorted by name");
@@ -178,6 +196,38 @@ int main(void)
 
 	json_free(doc);
 	jw_free(&w);
+
+	/* One level down: containers/ broken into what it holds. */
+	jw_init(&w);
+	check(datadir_write_json(&w, base, "containers", &live, 1234) == 0,
+	      "datadir_write_json succeeds for an entry");
+	doc = json_parse(w.buf, w.len);
+	check(doc != NULL, "the entry report is valid JSON");
+	if (doc != NULL) {
+		check(strcmp(str_of(json_object_get(doc, "entry")), "containers") == 0,
+		      "the entry report names its entry");
+		entries = json_object_get(doc, "entries");
+		check(entries != NULL && entries->type == JSON_ARRAY && entries->u.array.count == 3,
+		      "containers/ holds three names");
+		e = entry_named(entries, "alive");
+		check(e != NULL && strcmp(str_of(json_object_get(e, "owner")), "container") == 0 &&
+		              bool_field(e, "in_use"),
+		      "a defined container's directory is in use");
+		e = entry_named(entries, "gone");
+		check(e != NULL && strcmp(str_of(json_object_get(e, "owner")), "container") == 0 &&
+		              !bool_field(e, "in_use"),
+		      "a directory for a container no longer defined is not in use");
+		check(e != NULL && json_as_number(json_object_get(e, "bytes")) >= 32 * 1024,
+		      "that directory is charged for what it holds");
+		e = entry_named(entries, ".discard");
+		check(e != NULL &&
+		              strcmp(str_of(json_object_get(e, "owner")), "discard-queue") == 0 &&
+		              !bool_field(e, "in_use"),
+		      ".discard is the delete queue's trash, not in use");
+		json_free(doc);
+	}
+	jw_free(&w);
+
 	snprintf(path, sizeof(path), "rm -rf '%s'", base);
 	if (system(path) != 0)
 		fprintf(stderr, "warning: cleanup of %s failed\n", base);

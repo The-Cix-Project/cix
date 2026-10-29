@@ -4766,10 +4766,27 @@ paths:
 
         It walks every tree, unbounded, so the report is made in a helper
         child while the request waits, one at a time.
+
+
+        `entry` lists the names one level down, inside that entry, which
+        is how a large entry is broken into what it holds. A child of
+        `containers` has owner `container`, and `in_use` says whether a
+        container of that name is still defined, so the directory of a
+        container that no longer exists shows `in_use: false`. A
+        `.discard` anywhere is `discard-queue`: trees set aside for
+        deletion and not yet deleted. Any other child takes its
+        parent's owner.
       operationId: getSystemDataDir
       x-cix-read: derived
       x-cix-permission: storage:read
       x-cix-expose: [cli]
+      parameters:
+        - name: entry
+          in: query
+          required: false
+          description: One name directly beneath the data directory, to list one level down.
+          schema:
+            type: string
       responses:
         "200":
           description: The report
@@ -4777,6 +4794,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DataDirReport"
+        "400":
+          description: "`entry` is not a single name (it contains a slash, is . or .., or is too long)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No directory of that name directly beneath the data directory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           description: The report ran and produced nothing (the data directory could not be read)
           content:
@@ -24614,11 +24643,15 @@ components:
 
     DataDirReport:
       type: object
-      required: [path, filesystem, entries, entries_bytes, measured_at]
+      required: [path, entry, filesystem, entries, entries_bytes, measured_at]
       properties:
         path:
           type: string
-          description: The data directory reported on.
+          description: The directory listed, the data directory or one entry beneath it.
+        entry:
+          type: string
+          nullable: true
+          description: The entry listed one level down, or null for the data directory itself.
         filesystem:
           type: object
           nullable: true
@@ -24664,14 +24697,18 @@ components:
         owner:
           type: string
           enum: [log-store, rebuildable-storage, volumes, container-pivots, swap, disk-roles,
-                 storage-placement, unknown]
-          description: Which part of the daemon claims this name; `unknown` when none does.
+                 storage-placement, container, discard-queue, unknown]
+          description: >
+            Which part of the daemon claims this name; `unknown` when none
+            does. `container` and `discard-queue` appear one level down.
         in_use:
           type: boolean
           description: >
             True when this is the owner's live tree (or a state file the
             daemon reads here). False on an owned directory means the owner
-            lives at `live_path` now and this tree was left behind.
+            lives at `live_path` now and this tree was left behind. For a
+            `container` entry it says whether a container of that name is
+            defined; `discard-queue` is always false.
         live_path:
           type: string
           nullable: true

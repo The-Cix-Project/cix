@@ -1421,7 +1421,7 @@ static enum park_body_answer backup_ask(const char *target, int *result_fd);
 /* #643: and so does a package verification (verify_ask()). */
 static enum park_body_answer verify_ask(int *result_fd);
 /* #249: and so does a data-directory report (datadir_ask()). */
-static enum park_body_answer datadir_ask(int *result_fd);
+static enum park_body_answer datadir_ask(const char *entry, int *result_fd);
 /* #642: and an uninstall waits for its package job (pkg_delete_ask()). */
 static enum park_body_answer pkg_delete_ask(const char *name, const char *image,
                                             enum pkg_error *out_result);
@@ -28578,9 +28578,39 @@ static void op_verifyPkgFiles(const struct api_ctx *ctx)
  * who owns it, made in a helper child while the request waits. */
 static void op_getSystemDataDir(const struct api_ctx *ctx)
 {
+	char entry[256];
 	int rfd = -1;
 
-	switch (datadir_ask(&rfd)) {
+	entry[0] = '\0';
+	if (url_query_param(ctx->req->path, "entry", entry, sizeof(entry)) != 0) {
+		/* Absent, or too long to be a name: the parser says -1 for both,
+		 * and answering a long one with the top level would mislead. */
+		const char *q = strchr(ctx->req->path, '?');
+
+		if (q != NULL && (strncmp(q + 1, "entry=", 6) == 0 || strstr(q, "&entry=") != NULL)) {
+			respond_error(ctx->fd, 400, "Bad Request", "entry is too long to be a name");
+			return;
+		}
+		entry[0] = '\0';
+	} else if (entry[0] == '\0' || strchr(entry, '/') != NULL || strcmp(entry, ".") == 0 ||
+	           strcmp(entry, "..") == 0) {
+		respond_error(ctx->fd, 400, "Bad Request",
+		              "entry must be one name directly beneath the data directory");
+		return;
+	}
+	if (entry[0] != '\0') {
+		char path[PATH_MAX];
+		struct stat st;
+
+		snprintf(path, sizeof(path), "%s/%s", g_base_dir, entry);
+		if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+			respond_error(ctx->fd, 404, "Not Found",
+			              "no directory of that name directly beneath the data directory");
+			return;
+		}
+	}
+
+	switch (datadir_ask(entry[0] != '\0' ? entry : NULL, &rfd)) {
 	case PARK_ANSWER_ASK:
 		return; /* parked */
 	case PARK_ANSWER_BUSY:
@@ -32513,6 +32543,9 @@ struct park {
 	 * verdict, struct update_result or bootmgr_result, goes to the memfd */
 	char *job_body;
 	size_t job_body_len;
+	/* PARK_DATADIR (#249): the entry to list one level down, or "" for
+	 * the data directory's own top level */
+	char datadir_entry[256];
 };
 
 /*
@@ -32867,6 +32900,11 @@ static int verify_start(struct park *p)
  * beneath g_base_dir walked, into the memory file the parent made
  * before the fork. The live paths are the placements as they were at
  * the fork; it writes nothing the parent reads. */
+static int datadir_container_defined(const char *name)
+{
+	return containerdef_find(name) != NULL;
+}
+
 static int datadir_work(void *arg)
 {
 	struct park *p = arg;
@@ -32877,11 +32915,13 @@ static int datadir_work(void *arg)
 		.volumes_dir = VOLUMES_DIR,
 		.containers_dir = CONTAINERS_DIR,
 		.swap_dir = SWAP_DIR,
+		.container_defined = datadir_container_defined,
 	};
 	int rc;
 
 	jw_init(&w);
-	if (datadir_write_json(&w, g_base_dir, &live, (long long)time(NULL)) != 0) {
+	if (datadir_write_json(&w, g_base_dir, p->datadir_entry[0] != '\0' ? p->datadir_entry : NULL,
+	                       &live, (long long)time(NULL)) != 0) {
 		jw_free(&w);
 		return 1;
 	}
@@ -33443,7 +33483,7 @@ static void verify_done(int exit_status, void *ctx)
  * every tree beneath the data directory, unbounded, so it runs in a
  * helper child like a verification.
  */
-static enum park_body_answer datadir_ask(int *result_fd)
+static enum park_body_answer datadir_ask(const char *entry, int *result_fd)
 {
 	enum park_body_answer a = park_body_take(result_fd);
 	struct park *p;
@@ -33453,6 +33493,7 @@ static enum park_body_answer datadir_ask(int *result_fd)
 	p = park_new(PARK_DATADIR, g_response_conn);
 	if (p == NULL)
 		return PARK_ANSWER_BUSY;
+	snprintf(p->datadir_entry, sizeof(p->datadir_entry), "%s", entry != NULL ? entry : "");
 	return park_body_submit(p);
 }
 

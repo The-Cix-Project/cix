@@ -545,9 +545,10 @@ static const char USAGE_TEXT[] =
 	        "  storage rebuildable [show|migrate [--disk=NAME]|migrate-status]  -- same\n"
 	        "               shape, for where images/packages/artifacts (regenerable from\n"
 	        "               recipes/sources, never irreplaceable) live instead\n"
-	        "  storage data-dir  -- what lives in the daemon's data directory (#249): each\n"
-	        "               entry's size, which placement owns it, and whether that owner\n"
-	        "               still lives there or moved away and left the tree behind\n"
+	        "  storage data-dir [ENTRY]  -- what lives in the daemon's data directory (#249):\n"
+	        "               each entry's size, which placement owns it, and whether that\n"
+	        "               owner still lives there or moved away and left the tree behind;\n"
+	        "               ENTRY lists one level down (containers: is each still defined?)\n"
 	        "  swap  -- show whether the host swap file is enabled (ADR-0069) and which disk\n"
 	        "               (if any) it's placed on\n"
 	        "  swap enable --size-mb=N [--disk=NAME]  -- create and activate a swap file of\n"
@@ -2694,12 +2695,26 @@ static void fmt_data_dir(const struct json_value *v)
 	}
 }
 
-static int cmd_storage_data_dir(const struct cix_client *c, int json_mode)
+static void url_encode_query_value(const char *in, char *out, size_t out_size);
+
+static int cmd_storage_data_dir(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	struct cix_response r;
+	char path[512];
 
-	if (cix_client_request(c, CIX_API_getSystemDataDir_METHOD, CIX_API_getSystemDataDir, NULL,
-	                       &r) != 0) {
+	if (argc > 1) {
+		fprintf(stderr, "usage: cixctl storage data-dir [ENTRY]  -- ENTRY lists one level down\n");
+		return 2;
+	}
+	if (argc == 1) {
+		char encoded[256 * 3 + 1];
+
+		url_encode_query_value(argv[0], encoded, sizeof(encoded));
+		snprintf(path, sizeof(path), "%s?entry=%s", CIX_API_getSystemDataDir, encoded);
+	} else {
+		snprintf(path, sizeof(path), "%s", CIX_API_getSystemDataDir);
+	}
+	if (cix_client_request(c, CIX_API_getSystemDataDir_METHOD, path, NULL, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
@@ -2722,7 +2737,7 @@ static int cmd_storage(const struct cix_client *c, int json_mode, int argc, char
 		return cmd_storage_kind(c, json_mode, "rebuildable", CIX_API_getRebuildableStorage,
 		                         CIX_API_migrateRebuildableStorage, CIX_API_getRebuildableStorageMigrateStatus, argc - 1, argv + 1);
 	if (strcmp(sub, "data-dir") == 0)
-		return cmd_storage_data_dir(c, json_mode);
+		return cmd_storage_data_dir(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "usage: cixctl storage logs|rebuildable [show|migrate|migrate-status] | storage data-dir\n");
 	return 2;

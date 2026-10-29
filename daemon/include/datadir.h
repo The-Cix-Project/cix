@@ -43,15 +43,32 @@ struct datadir_live {
 	const char *volumes_dir;
 	const char *containers_dir;
 	const char *swap_dir;
+	/* Whether a container of this name is defined, for the children of
+	 * containers/; NULL reports none as defined. */
+	int (*container_defined)(const char *name);
 };
 
 /*
- * Writes the report for base_dir into w. measured_at is the caller's
- * clock, so a test can fix it. Returns 0, or -1 with errno set when
- * base_dir itself cannot be read; an entry that cannot be walked is
- * reported with "error" rather than failing the report.
+ * Writes the report into w. measured_at is the caller's clock, so a
+ * test can fix it.
+ *
+ * entry NULL reports the names directly beneath base_dir. entry set
+ * reports the names directly beneath base_dir/entry instead, one level
+ * down, which is how a large entry is broken into what it holds:
+ *   - a child of containers/ has owner "container", and in_use says
+ *     whether a container of that name is defined -- a directory for a
+ *     container that no longer exists is "in_use": false;
+ *   - .discard, wherever it is, has owner "discard-queue": trees set
+ *     aside for ADR-0341's delete queue, not yet deleted;
+ *   - any other child takes its parent's owner and in_use.
+ * entry must be a single name (no '/', not "." or ".."); the caller
+ * checks that.
+ *
+ * Returns 0, or -1 with errno set when the directory itself cannot be
+ * read; an entry that cannot be walked is reported with "error" rather
+ * than failing the report.
  */
-int datadir_write_json(struct json_writer *w, const char *base_dir, const struct datadir_live *live,
-                       long long measured_at);
+int datadir_write_json(struct json_writer *w, const char *base_dir, const char *entry,
+                       const struct datadir_live *live, long long measured_at);
 
 #endif /* DATADIR_H */

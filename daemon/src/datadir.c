@@ -151,19 +151,57 @@ static int name_cmp(const void *a, const void *b)
 	return strcmp(*(char *const *)a, *(char *const *)b);
 }
 
-static void write_entry(struct json_writer *w, const char *base_dir, const char *name,
-                        const struct datadir_live *live, long long *total)
+/*
+ * Who owns one name, and whether it is in use. At the top level that is
+ * owner_of() against the owner's live path. One level down (parent set)
+ * it is the rules datadir.h states: a container's directory, the
+ * discard queue's trash, or the parent's own owner.
+ */
+static const char *classify(const char *base_dir, const char *parent, const char *name,
+                            const char *path, const struct datadir_live *live,
+                            const char **live_path, int *in_use)
+{
+	const char *owner;
+	int is_state_file;
+
+	if (strcmp(name, ".discard") == 0) {
+		*live_path = NULL;
+		*in_use = 0;
+		return "discard-queue";
+	}
+	if (parent == NULL) {
+		owner = owner_of(name, live, live_path, &is_state_file);
+		*in_use = is_state_file || (*live_path != NULL && strcmp(*live_path, path) == 0);
+		return owner;
+	}
+	if (strcmp(parent, "containers") == 0) {
+		*live_path = NULL;
+		*in_use = live->container_defined != NULL && live->container_defined(name);
+		return "container";
+	}
+	{
+		char parent_path[PATH_MAX];
+
+		snprintf(parent_path, sizeof(parent_path), "%s/%s", base_dir, parent);
+		owner = owner_of(parent, live, live_path, &is_state_file);
+		*in_use = is_state_file || (*live_path != NULL && strcmp(*live_path, parent_path) == 0);
+		return owner;
+	}
+}
+
+static void write_entry(struct json_writer *w, const char *base_dir, const char *parent,
+                        const char *list_dir, const char *name, const struct datadir_live *live,
+                        long long *total)
 {
 	char path[PATH_MAX];
 	struct stat st;
 	const char *type, *owner, *live_path;
 	const char *error = NULL;
-	int is_state_file;
 	int in_use;
 	long long bytes = 0, mounts = 0;
 
-	snprintf(path, sizeof(path), "%s/%s", base_dir, name);
-	owner = owner_of(name, live, &live_path, &is_state_file);
+	snprintf(path, sizeof(path), "%s/%s", list_dir, name);
+	owner = classify(base_dir, parent, name, path, live, &live_path, &in_use);
 	if (lstat(path, &st) != 0) {
 		/* Gone between the readdir and the stat. */
 		return;
@@ -182,7 +220,6 @@ static void write_entry(struct json_writer *w, const char *base_dir, const char 
 		type = S_ISREG(st.st_mode) ? "file" : S_ISLNK(st.st_mode) ? "symlink" : "other";
 		bytes = (long long)st.st_blocks * 512;
 	}
-	in_use = is_state_file || (live_path != NULL && strcmp(live_path, path) == 0);
 	*total += bytes;
 
 	jw_obj_open(w);
@@ -211,10 +248,11 @@ static void write_entry(struct json_writer *w, const char *base_dir, const char 
 	jw_obj_close(w);
 }
 
-int datadir_write_json(struct json_writer *w, const char *base_dir, const struct datadir_live *live,
-                       long long measured_at)
+int datadir_write_json(struct json_writer *w, const char *base_dir, const char *entry,
+                       const struct datadir_live *live, long long measured_at)
 {
-	DIR *d = opendir(base_dir);
+	char list_dir[PATH_MAX];
+	DIR *d;
 	struct dirent *de;
 	struct statvfs vfs;
 	char **names = NULL;
@@ -222,6 +260,11 @@ int datadir_write_json(struct json_writer *w, const char *base_dir, const struct
 	long long total = 0;
 	int have_vfs;
 
+	if (entry != NULL)
+		snprintf(list_dir, sizeof(list_dir), "%s/%s", base_dir, entry);
+	else
+		snprintf(list_dir, sizeof(list_dir), "%s", base_dir);
+	d = opendir(list_dir);
 	if (d == NULL)
 		return -1;
 	while ((de = readdir(d)) != NULL) {
@@ -247,7 +290,12 @@ int datadir_write_json(struct json_writer *w, const char *base_dir, const struct
 
 	jw_obj_open(w);
 	jw_key(w, "path");
-	jw_str(w, base_dir);
+	jw_str(w, list_dir);
+	jw_key(w, "entry");
+	if (entry != NULL)
+		jw_str(w, entry);
+	else
+		jw_null(w);
 	jw_key(w, "filesystem");
 	if (have_vfs) {
 		jw_obj_open(w);
@@ -264,7 +312,7 @@ int datadir_write_json(struct json_writer *w, const char *base_dir, const struct
 	jw_key(w, "entries");
 	jw_arr_open(w);
 	for (i = 0; i < count; i++) {
-		write_entry(w, base_dir, names[i], live, &total);
+		write_entry(w, base_dir, entry, list_dir, names[i], live, &total);
 		free(names[i]);
 	}
 	jw_arr_close(w);

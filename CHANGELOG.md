@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The data-directory report looks one level down (#249)
+
+- **What changed:** `GET /v1/system/data-dir?entry=NAME` (`cixctl storage data-dir NAME`) lists the names inside one entry. A child of `containers` has owner `container`, and `in_use` says whether a container of that name is still defined. `.discard` anywhere is `discard-queue`, trees set aside and not yet deleted. Any other child takes its parent's owner. An entry that is not one name is a 400, and one that is not a directory a 404.
+- **Why:** on 0.2.57-620 the top-level report on 192.168.15.95 put 3.826 GiB of the partition's 3.99 GiB used in `containers/`, which since ADR-0360 should hold only userns pivot mountpoints. The report could not say which container's directory held it, or whether that container still exists.
+- **Verified:** pending.
+
 ### The API says what lives in the data directory (#249)
 
 - **What changed:**
@@ -13,7 +19,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - Separately mounted subtrees are skipped, not counted.
   - The report is made by `datadir_write_json()` in a helper child (`PARK_DATADIR`, the sixth park kind), and `test_blocking_waits` counts its call sites. `test_datadir` is in SELFTESTS.
 - **Why:** on 192.168.15.95 the `cix-containers` partition held 4.28 GB, while the log store (capped at 100 MB), its one volume (0.75 MB) and swap (off) accounted for about 0.1 GB, and nothing in the API could say what the rest was. #249, relocating the data directory, cannot be designed without knowing what it would carry, and this is the first step the owner chose (2026-10-29).
-- **Verified:** pending.
+- **Verified:** 0.2.57-620 on 192.168.15.95 (compile probe 656). `cixctl storage data-dir` answered in 5 s: filesystem 15.56 GiB, used 3.99 GiB; `containers` 3.826 GiB, `logs` 0.089, `volumes` 0.001, `swap` 0, both state files, every one in use and none `unknown`. That put the unaccounted space in `containers/`.
 
 ### A hostbuild's harvest no longer deletes the previous tree on the event loop (#645)
 
