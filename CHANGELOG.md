@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The data directory is a placement kind, read before it is mounted (#249, ADR-0364 decision 3, stage a)
+
+- **What changed:**
+  - `STORAGE_KIND_DATA` is a fourth placement kind in `storageplacement.c` (key `data`), and `data-storage` a disk role. Every loop and guard over the kinds is bounded by `STORAGE_KIND_COUNT` rather than by naming the last kind, which would have left the new one unread and unsaved with no error.
+  - `GET /v1/system/data-storage` (`cixctl storage data`) reads it, with the same shape and `degraded` field as the other placements. The three placement reads share one handler, `handle_placement_get()`.
+  - `boot_init()` mounts `/config` before the data directory, and `mount_placed_data_dir()` mounts a placed disk at the data directory when one is recorded: by the filesystem UUID, checked on the device itself, btrfs only. A placed disk that is absent is reported degraded and the boot mounts cix-containers as before.
+  - A disk that is the data directory's placement is refused for role removal, format and unmount, as the other placements' disks are.
+- **Why:** ADR-0364 decision 3, staged by the owner's "Go ahead" of 2026-10-29: the read, the mount order and UUID resolution first, with no placement set, so nothing changes live. The request and the at-boot move come next.
+- **Verified:** pending the release.
+
 ### The data directory holds no boot state, and a volatile one says so (#249, ADR-0364 decisions 1 and 2)
 
 - **What changed:**

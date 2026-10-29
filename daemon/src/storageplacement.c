@@ -41,8 +41,13 @@ static const char *kind_key(enum storage_kind kind)
 		return "log";
 	case STORAGE_KIND_SWAP:
 		return "swap";
+	case STORAGE_KIND_DATA:
+		return "data";
 	default:
-		return "rebuildable";
+		/* Unreachable: every caller loops below STORAGE_KIND_COUNT. A
+		 * key no kind reads, rather than another kind's, so a mistake
+		 * could never overwrite a real placement. */
+		return "unknown";
 	}
 }
 
@@ -72,7 +77,7 @@ static int load_state(void)
 	 * starts at the first live kind -- and the next save drops it.
 	 */
 
-	for (kind = STORAGE_KIND_REBUILDABLE; kind <= STORAGE_KIND_SWAP; kind++) {
+	for (kind = STORAGE_KIND_REBUILDABLE; kind < STORAGE_KIND_COUNT; kind++) {
 		const struct json_value *jdisk = json_object_get(root, kind_key(kind));
 		const char *disk;
 
@@ -118,7 +123,7 @@ static int load_state(void)
 		enum storage_kind k;
 		int adopted = 0;
 
-		for (k = STORAGE_KIND_REBUILDABLE; k <= STORAGE_KIND_SWAP; k++) {
+		for (k = STORAGE_KIND_REBUILDABLE; k < STORAGE_KIND_COUNT; k++) {
 			char resolved[DISKROLE_DISK_NAME_MAX];
 			char dev_path[PATH_MAX];
 
@@ -158,7 +163,7 @@ static enum storageplacement_error save_state(void)
 
 	jw_init(&w);
 	jw_obj_open(&w);
-	for (kind = STORAGE_KIND_REBUILDABLE; kind <= STORAGE_KIND_SWAP; kind++) {
+	for (kind = STORAGE_KIND_REBUILDABLE; kind < STORAGE_KIND_COUNT; kind++) {
 		jw_key(&w, kind_key(kind));
 		if (g_disk[kind][0] != '\0')
 			jw_str(&w, g_disk[kind]);
@@ -190,9 +195,16 @@ int storageplacement_init(const char *state_path)
 
 const char *storageplacement_get(enum storage_kind kind)
 {
-	if (kind < STORAGE_KIND_REBUILDABLE || kind > STORAGE_KIND_SWAP)
+	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_COUNT)
 		return NULL;
 	return g_disk[kind][0] != '\0' ? g_disk[kind] : NULL;
+}
+
+const char *storageplacement_get_uuid(enum storage_kind kind)
+{
+	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_COUNT)
+		return NULL;
+	return g_disk[kind][0] != '\0' && g_uuid[kind][0] != '\0' ? g_uuid[kind] : NULL;
 }
 
 enum storageplacement_error storageplacement_set(enum storage_kind kind, const char *disk_name)
@@ -201,7 +213,7 @@ enum storageplacement_error storageplacement_set(enum storage_kind kind, const c
 	char prev_uuid[DISK_FS_UUID_MAX];
 	enum storageplacement_error err;
 
-	if (kind < STORAGE_KIND_REBUILDABLE || kind > STORAGE_KIND_SWAP)
+	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_COUNT)
 		return STORAGEPLACEMENT_ERR_PERSIST_FAILED;
 
 	snprintf(prev, sizeof(prev), "%s", g_disk[kind]);

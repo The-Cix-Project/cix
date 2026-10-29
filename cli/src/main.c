@@ -511,7 +511,7 @@ static const char USAGE_TEXT[] =
 	        "  storage rm-partition DISK_NAME PARTITION_NAME  -- removes one partition;\n"
 	        "               refused (409) if it still has a role assigned (diskrole rm first)\n"
 	        "  storage-role create --disk=NAME\n"
-	        "               --role=volume-storage|backup|rebuildable-storage|log-storage|swap\n"
+	        "               --role=volume-storage|backup|rebuildable-storage|log-storage|swap|data-storage\n"
 	        "               -- assign a persisted role to a disk (never the OS disk)\n"
 	        "  storage-role ls / storage-role rm NAME  -- list assigned roles (with whether each\n"
 	        "               disk is currently present) / remove one; refused (409) if the\n"
@@ -545,6 +545,8 @@ static const char USAGE_TEXT[] =
 	        "  storage rebuildable [show|migrate [--disk=NAME]|migrate-status]  -- same\n"
 	        "               shape, for where images/packages/artifacts (regenerable from\n"
 	        "               recipes/sources, never irreplaceable) live instead\n"
+	        "  storage data [show]  -- which disk (if any) the daemon's data directory is\n"
+	        "               placed on (ADR-0364); none means the cix-containers partition\n"
 	        "  storage data-dir [ENTRY]  -- what lives in the daemon's data directory (#249):\n"
 	        "               each entry's size, which placement owns it, and whether that\n"
 	        "               owner still lives there or moved away and left the tree behind;\n"
@@ -2728,7 +2730,7 @@ static int cmd_storage(const struct cix_client *c, int json_mode, int argc, char
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl storage logs|rebuildable [show|migrate|migrate-status] | storage data-dir\n");
+		fprintf(stderr, "usage: cixctl storage logs|rebuildable [show|migrate|migrate-status] | storage data [show] | storage data-dir\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -2740,8 +2742,15 @@ static int cmd_storage(const struct cix_client *c, int json_mode, int argc, char
 		                         CIX_API_migrateRebuildableStorage, CIX_API_getRebuildableStorageMigrateStatus, argc - 1, argv + 1);
 	if (strcmp(sub, "data-dir") == 0)
 		return cmd_storage_data_dir(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "data") == 0) {
+		if (argc > 1 && strcmp(argv[1], "show") != 0) {
+			fprintf(stderr, "usage: cixctl storage data [show]\n");
+			return 2;
+		}
+		return cmd_storage_kind_show(c, json_mode, CIX_API_getDataStorage);
+	}
 
-	fprintf(stderr, "usage: cixctl storage logs|rebuildable [show|migrate|migrate-status] | storage data-dir\n");
+	fprintf(stderr, "usage: cixctl storage logs|rebuildable [show|migrate|migrate-status] | storage data [show] | storage data-dir\n");
 	return 2;
 }
 
@@ -12902,7 +12911,7 @@ static int cmd_diskrole_create(const struct cix_client *c, int json_mode, int ar
 	}
 	if (disk_name == NULL || role == NULL) {
 		fprintf(stderr,
-		        "usage: cixctl storage-role create --disk=NAME --role=volume-storage|backup|rebuildable-storage|log-storage|swap\n");
+		        "usage: cixctl storage-role create --disk=NAME --role=volume-storage|backup|rebuildable-storage|log-storage|swap|data-storage\n");
 		return 2;
 	}
 
@@ -12958,7 +12967,7 @@ static int cmd_diskrole(const struct cix_client *c, int json_mode, int argc, cha
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl storage-role create --disk=NAME --role=volume-storage|backup|rebuildable-storage|log-storage|swap\n"
+		fprintf(stderr, "usage: cixctl storage-role create --disk=NAME --role=volume-storage|backup|rebuildable-storage|log-storage|swap|data-storage\n"
 		                "       cixctl storage-role ls\n"
 		                "       cixctl storage-role rm NAME\n");
 		return 2;
@@ -20032,7 +20041,7 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 	 */
 	if (strcmp(cmd, "storage") == 0) {
 		if (argc > 0 && (strcmp(argv[0], "logs") == 0 || strcmp(argv[0], "rebuildable") == 0 ||
-		                 strcmp(argv[0], "data-dir") == 0))
+		                 strcmp(argv[0], "data") == 0 || strcmp(argv[0], "data-dir") == 0))
 			return cmd_storage(client, json_mode, argc, argv);
 		return cmd_disks(client, json_mode, argc, argv);
 	}

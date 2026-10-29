@@ -776,7 +776,7 @@ static void placement_degraded(enum storage_kind kind, const char *fmt, ...)
 {
 	va_list ap;
 
-	if (kind < STORAGE_KIND_REBUILDABLE || kind > STORAGE_KIND_SWAP)
+	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_COUNT)
 		return;
 	va_start(ap, fmt);
 	vsnprintf(g_placement_degraded[kind], sizeof(g_placement_degraded[kind]), fmt, ap);
@@ -797,7 +797,7 @@ static void log_degraded_placements(void)
 {
 	enum storage_kind k;
 
-	for (k = STORAGE_KIND_REBUILDABLE; k <= STORAGE_KIND_SWAP; k++) {
+	for (k = STORAGE_KIND_REBUILDABLE; k < STORAGE_KIND_COUNT; k++) {
 		if (g_placement_degraded[k][0] == '\0')
 			continue;
 		logstore_write("cixd", "error",
@@ -811,7 +811,7 @@ static void log_degraded_placements(void)
  * honoured -- reported on the placement endpoints. */
 static const char *placement_degraded_reason(enum storage_kind kind)
 {
-	if (kind < STORAGE_KIND_REBUILDABLE || kind > STORAGE_KIND_SWAP)
+	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_COUNT)
 		return NULL;
 	return g_placement_degraded[kind][0] != '\0' ? g_placement_degraded[kind] : NULL;
 }
@@ -2619,6 +2619,58 @@ static void resolve_platform_devices(void)
 }
 
 /*
+ * ADR-0364 decision 3: mounts the data directory's placed disk at
+ * g_base_dir, if one is recorded and present. Returns 1 when it did,
+ * 0 when the caller should mount cix-containers as before.
+ *
+ * Runs in boot_init() with /config just mounted, before anything uses
+ * the data directory. storageplacement_init() is the one reader of the
+ * record, and it has already followed the filesystem UUID to the name
+ * the disk answers to this boot (#255). The UUID is checked once more
+ * on the device itself, because a placement whose disk is absent keeps
+ * its recorded name, and another disk may have taken that name: the
+ * data directory is mounted by what the disk IS, never by where it was.
+ *
+ * A placement that cannot be honoured is reported degraded (#256) and
+ * the boot carries on with cix-containers, so the host stays reachable
+ * and the record can be corrected over the API. Nothing on the placed
+ * disk is touched. btrfs only, which the move request requires.
+ */
+static int mount_placed_data_dir(void)
+{
+	const char *disk, *uuid;
+	char dev_path[PATH_MAX], found[DISK_FS_UUID_MAX];
+
+	if (storageplacement_init(STORAGE_PLACEMENT_PATH) != 0)
+		return 0; /* main() reports a malformed record when it reads it again */
+	disk = storageplacement_get(STORAGE_KIND_DATA);
+	if (disk == NULL)
+		return 0;
+	uuid = storageplacement_get_uuid(STORAGE_KIND_DATA);
+	if (uuid == NULL) {
+		placement_degraded(STORAGE_KIND_DATA,
+		                   "data-storage's disk '%s' has no recorded filesystem UUID, and the "
+		                   "data directory is mounted only by one",
+		                   disk);
+		return 0;
+	}
+	snprintf(dev_path, sizeof(dev_path), "/dev/%s", disk);
+	disk_probe_fs_uuid(dev_path, found, sizeof(found));
+	if (found[0] == '\0' || strcasecmp(found, uuid) != 0) {
+		placement_degraded(STORAGE_KIND_DATA,
+		                   "data-storage's disk (filesystem %s) is not present", uuid);
+		return 0;
+	}
+	if (mount(dev_path, g_base_dir, "btrfs", MS_NOSUID | MS_NODEV, NULL) != 0) {
+		placement_degraded(STORAGE_KIND_DATA, "data-storage's disk '%s' could not be mounted (%s)",
+		                   disk, strerror(errno));
+		return 0;
+	}
+	fprintf(stderr, "cix: the data directory is %s (filesystem %s, ADR-0364)\n", dev_path, uuid);
+	return 1;
+}
+
+/*
  * Only reached with --init-mode, i.e. cixd running as PID 1 on a bare
  * kernel boot with no initramfs (Phase 11) -- nothing else has mounted
  * /proc, /sys, or cgroup2 yet. devtmpfs is populated by the kernel itself
@@ -2720,6 +2772,33 @@ static int boot_init(void)
 		perror("mount devpts");
 		return -1;
 	}
+	/*
+	 * The config partition is mounted FIRST, before the data directory
+	 * and before anything reads or writes a path under it.
+	 *
+	 * ADR-0364: the data directory's own placement is recorded in
+	 * STATE_DIR on /config, so /config has to be readable before the
+	 * data directory is mounted. It used to come after the data
+	 * directory, which was harmless only while nothing about that mount
+	 * was configurable.
+	 *
+	 * And earlier still it came after the /etc/resolv.conf setup below,
+	 * which was harmless only while STATE_DIR lived on the containers
+	 * partition. Once state moved to /config (ADR-0232), that ordering
+	 * created STATE_DIR and resolv.conf on the ROOT filesystem's bare
+	 * /config mountpoint, bind-mounted that inode onto
+	 * /etc/resolv.conf, and then mounted the real partition over the
+	 * top -- shadowing the file the mount still pointed at. The daemon
+	 * reported the right nameservers, PUT /v1/system/resolv wrote them
+	 * to the right path, and the host could not resolve a hostname,
+	 * which is issue #138 again by a different route.
+	 *
+	 * Still deliberately non-fatal -- see CONFIG_DEVICE's own comment.
+	 * Left mounted (not unmounted here): bootstrap_management_network()
+	 * reads net.conf from it later in main().
+	 */
+	if (mount(CONFIG_DEVICE, CONFIG_DIR, "btrfs", 0, NULL) != 0)
+		mount(CONFIG_DEVICE, CONFIG_DIR, "ext4", 0, NULL);
 	/* ADR-0207 phase 4: btrfs is the install default for this
 	 * partition; ext4 is what every not-yet-migrated box still has.
 	 * Tried in that order -- mount(2) needs the type named, and
@@ -2727,8 +2806,13 @@ static int boot_init(void)
 	 * kernel's own mount rejection already tells us for free. The
 	 * ext4 branch retires with the rest of ext4 once btrfs has run
 	 * production (the ADR's staged retirement), leaving one type
-	 * again. */
-	if (mount(CONTAINERS_DEVICE, g_base_dir, "btrfs", MS_NOSUID | MS_NODEV, NULL) != 0 &&
+	 * again.
+	 *
+	 * ADR-0364 decision 3: unless the data directory is placed on a
+	 * disk of its own and that disk is here, in which case it is the
+	 * data directory and cix-containers is not mounted at all. */
+	if (!mount_placed_data_dir() &&
+	    mount(CONTAINERS_DEVICE, g_base_dir, "btrfs", MS_NOSUID | MS_NODEV, NULL) != 0 &&
 	    mount(CONTAINERS_DEVICE, g_base_dir, "ext4", MS_NOSUID | MS_NODEV, NULL) != 0) {
 		/*
 		 * ADR-0364 decision 2: still a tmpfs, so the control plane comes
@@ -2790,28 +2874,6 @@ static int boot_init(void)
 	 */
 	{
 		int rfd;
-
-	/*
-	 * The config partition is mounted HERE, before anything reads or
-	 * writes a path under it.
-	 *
-	 * It used to be mounted after the /etc/resolv.conf setup below,
-	 * which was harmless only while STATE_DIR lived on the containers
-	 * partition. Once state moved to /config (ADR-0232), that ordering
-	 * created STATE_DIR and resolv.conf on the ROOT filesystem's bare
-	 * /config mountpoint, bind-mounted that inode onto
-	 * /etc/resolv.conf, and then mounted the real partition over the
-	 * top -- shadowing the file the mount still pointed at. The daemon
-	 * reported the right nameservers, PUT /v1/system/resolv wrote them
-	 * to the right path, and the host could not resolve a hostname,
-	 * which is issue #138 again by a different route.
-	 *
-	 * Still deliberately non-fatal -- see CONFIG_DEVICE's own comment.
-	 * Left mounted (not unmounted here): bootstrap_management_network()
-	 * reads net.conf from it later in main().
-	 */
-	if (mount(CONFIG_DEVICE, CONFIG_DIR, "btrfs", 0, NULL) != 0)
-		mount(CONFIG_DEVICE, CONFIG_DIR, "ext4", 0, NULL);
 
 	/*
 	 * Issue #138: STATE_DIR must exist before the file inside it
@@ -21638,13 +21700,15 @@ static const char *storage_kind_label(enum storage_kind kind)
 	}
 }
 
-static void handle_log_storage_get(int fd)
+/* GET /system/{log,rebuildable,data}-storage: one shape for every
+ * placement kind. */
+static void handle_placement_get(int fd, enum storage_kind kind)
 {
 	struct json_writer w;
 
 	jw_init(&w);
 	jw_obj_open(&w);
-	storageplacement_write_json(&w, STORAGE_KIND_LOG);
+	storageplacement_write_json(&w, kind);
 	/*
 	 * #256: whether this placement is actually in effect. The
 	 * daemon no longer refuses to start when its disk is missing,
@@ -21653,7 +21717,7 @@ static void handle_log_storage_get(int fd)
 	 * API client on a host with no shell.
 	 */
 	{
-		const char *why = placement_degraded_reason(STORAGE_KIND_LOG);
+		const char *why = placement_degraded_reason(kind);
 
 		jw_key(&w, "degraded");
 		jw_bool(&w, why != NULL);
@@ -21776,34 +21840,6 @@ static void handle_log_storage_migrate_get(int fd)
 	jw_free(&w);
 }
 
-static void handle_rebuildable_storage_get(int fd)
-{
-	struct json_writer w;
-
-	jw_init(&w);
-	jw_obj_open(&w);
-	storageplacement_write_json(&w, STORAGE_KIND_REBUILDABLE);
-	/*
-	 * #256: whether this placement is actually in effect. The
-	 * daemon no longer refuses to start when its disk is missing,
-	 * so "configured" and "in use" can now differ -- and if that
-	 * were not reported, a degraded boot would be silent to every
-	 * API client on a host with no shell.
-	 */
-	{
-		const char *why = placement_degraded_reason(STORAGE_KIND_REBUILDABLE);
-
-		jw_key(&w, "degraded");
-		jw_bool(&w, why != NULL);
-		if (why != NULL) {
-			jw_key(&w, "degraded_reason");
-			jw_str(&w, why);
-		}
-	}
-	jw_obj_close(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
 
 static void handle_rebuildable_storage_migrate_post(int fd, const char *body, size_t body_len)
 {
@@ -27883,7 +27919,7 @@ static void op_postKmodBuild(const struct api_ctx *ctx)
 /* GET /v1/system/log-storage */
 static void op_getLogStorage(const struct api_ctx *ctx)
 {
-	handle_log_storage_get(ctx->fd);
+	handle_placement_get(ctx->fd, STORAGE_KIND_LOG);
 }
 
 /* GET /v1/system/log-storage/migrate */
@@ -27901,7 +27937,13 @@ static void op_migrateLogStorage(const struct api_ctx *ctx)
 /* GET /v1/system/rebuildable-storage */
 static void op_getRebuildableStorage(const struct api_ctx *ctx)
 {
-	handle_rebuildable_storage_get(ctx->fd);
+	handle_placement_get(ctx->fd, STORAGE_KIND_REBUILDABLE);
+}
+
+/* GET /v1/system/data-storage (ADR-0364) */
+static void op_getDataStorage(const struct api_ctx *ctx)
+{
+	handle_placement_get(ctx->fd, STORAGE_KIND_DATA);
 }
 
 /* GET /v1/system/rebuildable-storage/migrate */

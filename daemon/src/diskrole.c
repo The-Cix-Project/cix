@@ -110,6 +110,8 @@ static const char *role_str(enum diskrole_kind role)
 		return "log-storage";
 	case DISKROLE_SWAP:
 		return "swap";
+	case DISKROLE_DATA_STORAGE:
+		return "data-storage";
 	case DISKROLE_BACKUP:
 	default:
 		return "backup";
@@ -128,6 +130,8 @@ static int role_from_str(const char *s, enum diskrole_kind *out)
 		*out = DISKROLE_LOG_STORAGE;
 	else if (strcmp(s, "swap") == 0)
 		*out = DISKROLE_SWAP;
+	else if (strcmp(s, "data-storage") == 0)
+		*out = DISKROLE_DATA_STORAGE;
 	else
 		return -1;
 	return 0;

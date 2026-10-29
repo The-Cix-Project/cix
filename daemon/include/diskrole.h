@@ -67,6 +67,12 @@ enum diskrole_kind {
 	 * FILE mechanism.
 	 */
 	DISKROLE_SWAP,
+	/*
+	 * ADR-0364 decision 3: a disk the data directory may be placed on
+	 * (STORAGE_KIND_DATA). The same singleton shape; the move happens
+	 * at the next boot, not in a live job.
+	 */
+	DISKROLE_DATA_STORAGE,
 };
 
 enum diskrole_error {

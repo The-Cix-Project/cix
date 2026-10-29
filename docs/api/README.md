@@ -177,7 +177,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/storage/quota` | The quota mode a new btrfs gets (`simple` by default, or `full`) and the mode each mounted btrfs really has, read from its qgroup status item (ADR-0359) |
 | PUT | `/storage/quota` | Set the quota mode a btrfs cixd formats from now on gets; existing filesystems keep theirs, because simple accounting never counts what was written before it was on (ADR-0359) |
 | GET | `/storage-roles` | List persisted disk role assignments |
-| POST | `/storage-roles` | Assign a role (volume-storage/backup/rebuildable-storage/log-storage/swap) to a disk or partition |
+| POST | `/storage-roles` | Assign a role (volume-storage/backup/rebuildable-storage/log-storage/swap/data-storage) to a disk or partition |
 | DELETE | `/storage-roles/{name}` | Remove a disk's role assignment |
 | GET | `/storage/{name}/format` | Status of the most recent (or running) format+mount job for this disk |
 | POST | `/storage/{name}/format` | Destructive: mkfs (ext4 or btrfs) + mount an already role-assigned disk |
@@ -191,6 +191,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/rebuildable-storage` | Which disk (if any) is the active placement for images/packages/artifacts |
 | GET | `/system/rebuildable-storage/migrate` | Status of the most recent (or running) rebuildable-storage migration |
 | POST | `/system/rebuildable-storage/migrate` | Move images/packages/artifacts to a new disk, or back to the default |
+| GET | `/system/data-storage` | Which disk (if any) the data directory is placed on (ADR-0364); `null` means the cix-containers partition, and `degraded` that the placed disk was absent at boot |
 | POST | `/containers/{name}/volumes` | Attach a volume to an existing container -- edits the definition, applies on next start (issue #92) |
 | DELETE | `/containers/{name}/volumes/{volume_name}` | Detach it again; never touches the volume or its data |
 | POST | `/storage/{name}/partitions/{partition_name}/resize` | Grow a partition **and** the filesystem inside it — grow only (issue #94) |
@@ -2927,7 +2928,7 @@ POST /v1/storage-roles
 {"disk_name": "sdb", "role": "backup"}
 ```
 
-`role` is `"volume-storage"`, `"backup"`, `"rebuildable-storage"`, `"log-storage"`, or `"swap"` (ADR-0141, `swap` added by issue #28) — a small, fixed, closed vocabulary, not an arbitrary operator-chosen string the way a `devicemap` name is, since a role only means something insofar as this daemon actually understands and acts on it. `rebuildable-storage`/`log-storage`/`swap` are each a daemon-wide *singleton* placement: several disks can carry the same one of these roles as eligible candidates, but only one is ever the currently-active placement, tracked separately (`GET /system/rebuildable-storage`, `GET /system/swap`, etc.), not by this role field alone. `swap` reconciles with the existing on-demand host swap *file* mechanism (`POST /system/swap`, ADR-0069) rather than duplicating it — the role names which disk is *allowed* to back an operator-chosen placement; `POST /system/swap`'s own `disk` field is what actually resolves and activates it (see [A host swap file](#a-host-swap-file) above).
+`role` is `"volume-storage"`, `"backup"`, `"rebuildable-storage"`, `"log-storage"`, `"swap"` or `"data-storage"` (ADR-0141; `swap` added by issue #28, `data-storage` by ADR-0364) — a small, fixed, closed vocabulary, not an arbitrary operator-chosen string the way a `devicemap` name is, since a role only means something insofar as this daemon actually understands and acts on it. `rebuildable-storage`/`log-storage`/`swap`/`data-storage` are each a daemon-wide *singleton* placement: several disks can carry the same one of these roles as eligible candidates, but only one is ever the currently-active placement, tracked separately (`GET /system/rebuildable-storage`, `GET /system/swap`, etc.), not by this role field alone. `swap` reconciles with the existing on-demand host swap *file* mechanism (`POST /system/swap`, ADR-0069) rather than duplicating it — the role names which disk is *allowed* to back an operator-chosen placement; `POST /system/swap`'s own `disk` field is what actually resolves and activates it (see [A host swap file](#a-host-swap-file) above).
 
 Real and creatable even for a `disk_name` that isn't currently present (`present: false` on `GET`, not an error — the same tolerant convention `/devicemaps` already established for hardware that might be temporarily absent). Rejected (`400`) for the **fixed OS layout** — the OS disk itself, and its first four partitions (the ESP, both root slots and `/config`), the same set `protected: true` marks on `GET /storage`. A partition an operator appended into the OS disk's reserved free space is *not* part of that layout and can be given a role like any other disk: being able to create such a partition and then never use it was the gap (issue #9). `409` if `disk_name` already has a role (`DELETE` it first to reassign, the same no-silent-overwrite convention `/devicemaps` already established).
 

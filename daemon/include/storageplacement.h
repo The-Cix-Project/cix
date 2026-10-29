@@ -5,19 +5,19 @@
 
 /*
  * ADR-0141 Phase 2: which disk (if any) is the *active* placement for
- * each of Cix's own daemon-wide storage singletons -- state-storage,
- * rebuildable-storage, log-storage. Persisted at a fixed g_base_dir
- * path (STORAGE_PLACEMENT_PATH, main.c), deliberately NEVER inside
- * STATE_DIR itself -- the same bootstrap-circularity reasoning
- * DISKROLE_STATE_PATH's own comment documents: this file has to be
- * readable before STATE_DIR's own real location can even be
- * determined, so it can't live inside the thing it's describing.
+ * each of Cix's own daemon-wide storage singletons -- rebuildable-
+ * storage, log-storage, swap and (ADR-0364) the data directory itself.
+ * Persisted at STORAGE_PLACEMENT_PATH, in STATE_DIR on the config
+ * partition since ADR-0364 decision 1. boot_init() mounts /config
+ * before the data directory, so the record is readable before the
+ * directory it can describe is mounted.
  *
  * A NULL placement (the default, and what every fresh install starts
- * with) means "the default OS-disk location" -- REBUILDABLE_DIR/
- * LOG_DIR's own g_base_dir-relative default, unchanged from before
- * this feature existed. A non-NULL placement names a real disk (by its
- * disk_enumerate() name, e.g. "sdc") that must carry the matching role
+ * with) means "the default location": REBUILDABLE_DIR/LOG_DIR beneath
+ * the data directory, and the cix-containers partition for the data
+ * directory itself. A non-NULL placement names a real disk (by its
+ * disk_enumerate() name, e.g. "sdc", and by its filesystem UUID, #255)
+ * that must carry the matching role
  * (diskrole.h's DISKROLE_REBUILDABLE_STORAGE for
  * STORAGE_KIND_REBUILDABLE, etc.)
  * and be currently mounted for the daemon to actually use it -- this
@@ -35,7 +35,7 @@ enum storage_kind {
 	STORAGE_KIND_REBUILDABLE = 0,
 	STORAGE_KIND_LOG,
 	/*
-	 * issue #28: unlike the three above, swap has no live directory of
+	 * issue #28: unlike the two above, swap has no live directory of
 	 * real, worth-preserving data to migrate -- the swap FILE's own
 	 * content is transient and discardable by definition, so there is
 	 * no storagemigrate.c-style move job for this kind and never will
@@ -45,19 +45,27 @@ enum storage_kind {
 	 * resolves and repoints directly, no migration step involved.
 	 */
 	STORAGE_KIND_SWAP,
+	/*
+	 * ADR-0364 decision 3: the data directory itself (g_base_dir). Like
+	 * swap it has no storagemigrate.c job: a running container holds its
+	 * pivot directory, so the move happens at the next boot, before
+	 * anything runs, and boot_init() is what acts on this pointer.
+	 */
+	STORAGE_KIND_DATA,
 
 	/*
 	 * Always last: how many kinds there are. storageplacement.c sizes
-	 * its per-kind disk pointers from this.
+	 * its per-kind disk pointers from this, and every loop over the
+	 * kinds is bounded by it.
 	 */
 	STORAGE_KIND_COUNT,
 };
 
 /*
- * How many of those kinds have a live directory that can be MIGRATED --
- * the first three. Swap is deliberately excluded, for the reason given
- * above: its file's content is transient by definition, so there is no
- * move job for it and never will be.
+ * How many of those kinds have a live directory that storagemigrate.c
+ * MIGRATES -- the first two. Swap and the data directory are excluded,
+ * for the reasons given above: swap's content is transient by
+ * definition, and the data directory moves at boot, not in a live job.
  *
  * Named, rather than left implicit in a `kind > STORAGE_KIND_LOG` test,
  * because storagemigrate.c sizes an array from it AND guards every
@@ -84,8 +92,8 @@ enum storage_kind {
  * A typedef'd array of size (cond ? 1 : -1) is C89 and works on every
  * compiler; the name is what a reader sees in the error.
  */
-typedef char cix_storage_kind_swap_must_be_last
-    [(STORAGE_KIND_SWAP + 1 == STORAGE_KIND_COUNT) ? 1 : -1];
+typedef char cix_storage_kind_data_must_be_last
+    [(STORAGE_KIND_DATA + 1 == STORAGE_KIND_COUNT) ? 1 : -1];
 typedef char cix_storage_migratable_kinds_must_be_a_prefix
     [(STORAGE_KIND_MIGRATABLE_COUNT == STORAGE_KIND_SWAP) ? 1 : -1];
 
@@ -120,8 +128,15 @@ const char *storageplacement_get(enum storage_kind kind);
  */
 enum storageplacement_error storageplacement_set(enum storage_kind kind, const char *disk_name);
 
+/*
+ * The recorded filesystem UUID of kind's placement disk, or NULL when
+ * none is recorded (no placement, or a filesystem with no UUID). What
+ * boot_init() mounts the data directory by (ADR-0364).
+ */
+const char *storageplacement_get_uuid(enum storage_kind kind);
+
 /* Writes {"disk": "sdc"|null} for kind into w -- the shape every
- * GET /v1/system/{state,rebuildable,log}-storage response has. */
+ * GET /v1/system/{rebuildable,log,data}-storage response has. */
 void storageplacement_write_json(struct json_writer *w, enum storage_kind kind);
 
 #endif /* STORAGEPLACEMENT_H */

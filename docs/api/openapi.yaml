@@ -3780,11 +3780,34 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /system/data-storage:
+    get:
+      summary: Which disk (if any) the daemon's data directory is placed on (ADR-0364)
+      description: >
+        Same shape and singleton-placement model as GET
+        /system/log-storage. `disk: null` means the default: the
+        data directory is the cix-containers partition. A non-null
+        disk carries the `data-storage` role and is named internally
+        by its filesystem UUID; boot mounts it as the data directory
+        before anything runs, so the placement takes effect at the
+        next start. `degraded` is true when that disk was absent at
+        boot and the daemon mounted cix-containers instead.
+      operationId: getDataStorage
+      x-cix-read: state
+      x-cix-permission: storage:read
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: Current data-directory placement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoragePlacement"
   /system/rebuildable-storage:
     get:
       summary: Which disk (if any) is the active placement for images/packages/artifacts (ADR-0141 Phase 4)
       description: >
-        Same shape and singleton-placement model as GET /system/state-
+        Same shape and singleton-placement model as GET /system/log-
         storage. Covers content that's regenerable from recipes/sources
         if lost -- container images, installed packages, build
         artifacts, staged ISOs -- never state, never logs.
@@ -21603,19 +21626,19 @@ components:
           description: A Disk.name from GET /disks (e.g. "sdb") -- not an operator-chosen alias, the real disk's own kernel name.
         role:
           type: string
-          enum: [volume-storage, backup, rebuildable-storage, log-storage, swap]
+          enum: [volume-storage, backup, rebuildable-storage, log-storage, swap, data-storage]
           description: >
             A small, fixed, closed vocabulary -- not free-form, since a
             role is only meaningful insofar as this daemon actually
-            understands and acts on it. "swap" is deliberately not a
-            role here: this platform already has a dedicated on-demand
-            host swap FILE mechanism (POST /system/swap, ADR-0069) with
-            no disk-level equivalent defined. rebuildable-storage and
-            log-storage (ADR-0141) are each a daemon-wide singleton --
-            multiple disks can carry the same one of these (eligible
+            understands and acts on it. rebuildable-storage,
+            log-storage (ADR-0141), swap (issue #28, the disk
+            POST /system/swap may place the swap file on) and
+            data-storage (ADR-0364, a disk the data directory may be
+            placed on) are each a daemon-wide singleton -- multiple
+            disks can carry the same one of these (eligible
             candidates), but only one is ever the *active* placement,
             tracked separately (GET /system/rebuildable-storage etc.),
-            not by this role alone. "state-storage" was a sixth role and
+            not by this role alone. "state-storage" was a seventh role and
             is retired: state lives on the config partition now, and the
             role could never survive the OS-disk failure it existed for.
         fs_type:
@@ -21642,7 +21665,7 @@ components:
           description: A disk or partition with no role yet, and not part of the OS layout.
         role:
           type: string
-          enum: [volume-storage, backup, rebuildable-storage, log-storage, swap]
+          enum: [volume-storage, backup, rebuildable-storage, log-storage, swap, data-storage]
           title: Role
           description: What the disk is for. Assigning a role never touches what is on it; formatting is a separate action on the disk's own page.
 

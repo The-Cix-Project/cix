@@ -287,8 +287,8 @@ void handle_diskrole_create(int fd, const char *body, size_t body_len)
 
 /*
  * ADR-0141: true if disk_name is the *currently active* placement for
- * any of the three daemon-wide storage singletons (state-storage/
- * log-storage/rebuildable-storage), OR the currently configured
+ * any daemon-wide storage placement (rebuildable, log, swap and the
+ * data directory -- storageplacement.h), OR the currently configured
  * backup-config disk -- removing the role out from under an in-use
  * placement, or destroying it via format, would leave the daemon's own
  * live-location tracking (or, for backup, the operator's own configured
@@ -301,15 +301,19 @@ void handle_diskrole_create(int fd, const char *body, size_t body_len)
  */
 int is_active_storage_singleton_placement(const char *disk_name)
 {
-	const char *log_disk = storageplacement_get(STORAGE_KIND_LOG);
-	const char *rebuildable_disk = storageplacement_get(STORAGE_KIND_REBUILDABLE);
 	const char *backup_disk = backupconfig_disk();
-	const char *swap_disk = storageplacement_get(STORAGE_KIND_SWAP);
+	enum storage_kind kind;
 
-	return (log_disk != NULL && strcmp(log_disk, disk_name) == 0) ||
-	       (rebuildable_disk != NULL && strcmp(rebuildable_disk, disk_name) == 0) ||
-	       (backup_disk != NULL && strcmp(backup_disk, disk_name) == 0) ||
-	       (swap_disk != NULL && strcmp(swap_disk, disk_name) == 0);
+	if (backup_disk != NULL && strcmp(backup_disk, disk_name) == 0)
+		return 1;
+	/* Every placement kind, the data directory's (ADR-0364) included. */
+	for (kind = STORAGE_KIND_REBUILDABLE; kind < STORAGE_KIND_COUNT; kind++) {
+		const char *placed = storageplacement_get(kind);
+
+		if (placed != NULL && strcmp(placed, disk_name) == 0)
+			return 1;
+	}
+	return 0;
 }
 
 /*
