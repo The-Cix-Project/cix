@@ -6,11 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container base with no definition is set aside at start (#664)
+
+- **What changed:** at start, after the definitions load and before autostart, every directory under `CONTAINERS_DIR` with no container definition and nothing in the registry is set aside into ADR-0341's delete queue (`containers_discard_orphan_bases()`), and the count is logged once. Since ADR-0360 a container's base holds only a userns container's pivot mountpoint, so such a directory is debris. The registry check spares a build that resumed at start.
+- **Why:** `cixctl storage data-dir containers` on 192.168.15.95 (0.2.57-621) found 3.78 GiB of cix-containers' 3.99 GiB used in `__pkgbuild-2`, `-3`, `-4`, `-5` and `-8`: build slots' overlay trees from before ADR-0360 release A. The slot reset (#626) clears only the slots' new location, so nothing ever removed them. `wtest`, `jump-ssh` and `p622` were bases of containers deleted without their directory leaving.
+- **Verified:** pending.
+
 ### The data-directory report looks one level down (#249)
 
 - **What changed:** `GET /v1/system/data-dir?entry=NAME` (`cixctl storage data-dir NAME`) lists the names inside one entry. A child of `containers` has owner `container`, and `in_use` says whether a container of that name is still defined. `.discard` anywhere is `discard-queue`, trees set aside and not yet deleted. Any other child takes its parent's owner. An entry that is not one name is a 400, and one that is not a directory a 404.
 - **Why:** on 0.2.57-620 the top-level report on 192.168.15.95 put 3.826 GiB of the partition's 3.99 GiB used in `containers/`, which since ADR-0360 should hold only userns pivot mountpoints. The report could not say which container's directory held it, or whether that container still exists.
-- **Verified:** pending.
+- **Verified:** 0.2.57-621 on 192.168.15.95 (compile probe 657). `cixctl storage data-dir containers` broke the 3.826 GiB down. Every defined container's base is 0 GiB, and `__pkgbuild-2`, `-3`, `-4`, `-5` and `-8` hold 3.78 GiB with no definition, which is #664.
 
 ### The API says what lives in the data directory (#249)
 

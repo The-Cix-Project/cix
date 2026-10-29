@@ -14624,6 +14624,50 @@ static void rootfs_discard_sweep(const char *dir)
 }
 
 /*
+ * #664: a container's base (CONTAINERS_DIR/<name>) holds only a userns
+ * container's pivot mountpoint since ADR-0360, so at start a base with
+ * no definition is debris. It is set aside into the delete queue. That
+ * is so of a build slot's base too, unless a package job resumed at
+ * start and its build container is in the registry already. On
+ * 192.168.15.95, 0.2.57-621, the build slots' overlay trees from before
+ * ADR-0360 release A were 3.78 GiB of cix-containers' 3.99 GiB used
+ * (`cixctl storage data-dir containers`), with no code that would ever
+ * remove them.
+ */
+static void containers_discard_orphan_bases(void)
+{
+	DIR *d = opendir(CONTAINERS_DIR);
+	struct dirent *de;
+	int count = 0;
+
+	if (d == NULL)
+		return;
+	while ((de = readdir(d)) != NULL) {
+		char path[PATH_MAX];
+		struct stat st;
+
+		if (de->d_name[0] == '.')
+			continue;
+		if (containerdef_find(de->d_name) != NULL || registry_find(de->d_name) != NULL)
+			continue;
+		snprintf(path, sizeof(path), "%s/%s", CONTAINERS_DIR, de->d_name);
+		if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode))
+			continue;
+		if (rootfs_discard(de->d_name, path, CONTAINERS_DIR) != 0)
+			logstore_write("cixd", "warn", "could not set aside %s, a container base with no "
+			                               "definition (#664): %s",
+			               path, strerror(errno));
+		else
+			count++;
+	}
+	closedir(d);
+	if (count > 0)
+		logstore_write("cixd", "info",
+		               "set aside %d container base(s) with no definition for deletion (#664)",
+		               count);
+}
+
+/*
  * ADR-0343: image.c's discard function. An image's trees -- a version's
  * rootfs, a staging leftover -- are set aside into IMAGES_DIR/.discard,
  * on the same filesystem, and deleted by this queue's helper children.
@@ -38756,6 +38800,9 @@ static int cixd_main(int argc, char **argv)
 	 * not mistaken for them; needs g_epfd for its helper children. */
 	rootfs_discard_sweep(CONTAINER_ROOTFS_DIR);
 	rootfs_discard_sweep(CONTAINERS_DIR);
+	/* #664: then the bases no definition owns, before autostart, so a
+	 * container this start creates is never one of them. */
+	containers_discard_orphan_bases();
 	rootfs_discard_sweep(IMAGES_DIR); /* ADR-0343 */
 	rootfs_discard_sweep(ARTIFACTS_DIR); /* #644: a failed hostbuild's output */
 	pki_set_key_source(keypool_take); /* ADR-0353 */
