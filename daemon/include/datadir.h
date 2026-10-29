@@ -78,4 +78,22 @@ struct datadir_live {
 int datadir_write_json(struct json_writer *w, const char *base_dir, const char *entry,
                        const struct datadir_live *live, long long measured_at);
 
+/*
+ * ADR-0364 decision 3: what the boot carries when the data directory
+ * moves, from source_dir to target_dir (both mounted, neither the live
+ * data directory yet). Only the log store, and only when copy_logs is
+ * set (the log store is on its default placement, inside the data
+ * directory): containers/ holds only pivot directories, which every
+ * create makes again, volumes and swap must already be elsewhere (the
+ * move request refuses otherwise), and rebuildable storage too.
+ *
+ * A target that already has a logs/ (a move back to where the data
+ * directory was before) has it renamed logs.replaced-<now>, never
+ * deleted. The source is never written.
+ *
+ * Returns 0, or -1 with the reason in reason.
+ */
+int datadir_move(const char *source_dir, const char *target_dir, int copy_logs, long long now,
+                 char *reason, size_t reason_size);
+
 #endif /* DATADIR_H */

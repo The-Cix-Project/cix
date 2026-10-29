@@ -135,6 +135,35 @@ enum storageplacement_error storageplacement_set(enum storage_kind kind, const c
  */
 const char *storageplacement_get_uuid(enum storage_kind kind);
 
+/*
+ * ADR-0364 decision 3: a move the next boot makes. disk_name names the
+ * target disk (its filesystem UUID is recorded with it), or NULL for a
+ * move back to the default location. Replaces any pending move.
+ */
+enum storageplacement_error storageplacement_set_pending(enum storage_kind kind,
+                                                         const char *disk_name);
+
+/* Drops a pending move; a request for the current placement does this. */
+enum storageplacement_error storageplacement_clear_pending(enum storage_kind kind);
+
+/*
+ * 1 when a move is pending, with *disk_name the target or NULL for the
+ * default location; 0 when none is. disk_name may be NULL.
+ */
+int storageplacement_get_pending(enum storage_kind kind, const char **disk_name);
+
+/* The pending target's recorded filesystem UUID, or NULL. */
+const char *storageplacement_get_pending_uuid(enum storage_kind kind);
+
+/*
+ * The boot's verdict on a pending move, in one write: when moved, the
+ * pending target becomes the active placement; either way the pending
+ * move is cleared and the outcome ("moved" or "failed"), reason and
+ * time are recorded, for GET /system/data-storage's last_move.
+ */
+enum storageplacement_error storageplacement_finish_move(enum storage_kind kind, int moved,
+                                                         const char *reason, long long at);
+
 /* Writes {"disk": "sdc"|null} for kind into w -- the shape every
  * GET /v1/system/{rebuildable,log,data}-storage response has. */
 void storageplacement_write_json(struct json_writer *w, enum storage_kind kind);

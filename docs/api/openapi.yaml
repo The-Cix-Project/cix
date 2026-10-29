@@ -3803,6 +3803,72 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StoragePlacement"
+  /system/data-storage/migrate:
+    post:
+      summary: Move the data directory at the next boot (ADR-0364)
+      description: >
+        Records a move of the data directory to a disk carrying the
+        `data-storage` role, or back to the cix-containers partition
+        with `disk: null`. Nothing moves now, because a running
+        container holds its pivot directory: the next boot mounts both
+        ends, carries the log store across (when it is on its default
+        placement), and mounts the target as the data directory. The
+        source is never written, and a move that fails leaves the data
+        directory where it was; either way the outcome is reported as
+        `last_move` on GET /system/data-storage. Asking for the current
+        placement drops a pending move (200). The boot carries only the
+        log store, so rebuildable storage, every volume and an enabled
+        swap file must already be on disks of their own (409 names
+        which). The target must be btrfs, and it is named by its
+        filesystem UUID, so a later kernel rename does not lose it.
+      operationId: migrateDataStorage
+      x-cix-invalidates: [getDataStorage]
+      x-cix-permission: storage:write
+      x-cix-expose: [cli]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [disk]
+              properties:
+                disk:
+                  type: string
+                  nullable: true
+                  description: A Disk.name from GET /storage carrying the data-storage role, or null for the cix-containers partition.
+      responses:
+        "200":
+          description: The request named the current placement, and the pending move was dropped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoragePlacement"
+        "202":
+          description: The move is recorded, for the next boot to make
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoragePlacement"
+        "400":
+          description: >
+            disk missing, does not carry the data-storage role, is the
+            cix-containers partition itself (send null), is not btrfs,
+            or has no filesystem UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            This is already the data directory's placement and no move
+            is pending, or something the boot does not carry is still in
+            the data directory: rebuildable storage, a volume with no
+            disk, or an enabled swap file on the default placement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /system/rebuildable-storage:
     get:
       summary: Which disk (if any) is the active placement for images/packages/artifacts (ADR-0141 Phase 4)
@@ -21836,6 +21902,38 @@ components:
           description: >
             Present only when `degraded` is true: what specifically was
             wrong with the configured disk.
+        pending:
+          type: object
+          description: >
+            GET /system/data-storage only (ADR-0364): a move recorded
+            by POST .../migrate for the next boot to make. Absent when
+            none is pending.
+          required: [disk]
+          properties:
+            disk:
+              type: string
+              nullable: true
+              description: The target disk, or null for the cix-containers partition.
+        last_move:
+          type: object
+          description: >
+            GET /system/data-storage only (ADR-0364): what the boot did
+            with the last pending move. Absent when none has been made.
+          required: [outcome, reason, at]
+          properties:
+            outcome:
+              type: string
+              enum: [moved, failed]
+            reason:
+              type: string
+              description: >
+                Why the move failed, or why there was nothing to do; empty
+                for an ordinary successful move. A failed move leaves the
+                data directory where it was.
+            at:
+              type: integer
+              format: unix-seconds
+              description: When the boot made it, in seconds since the epoch.
 
     StorageMigrateStatus:
       type: object

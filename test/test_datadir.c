@@ -255,6 +255,59 @@ int main(void)
 	json_free(doc);
 	jw_free(&w);
 
+	/*
+	 * ADR-0364 decision 3: datadir_move() carries the log store, sets a
+	 * target's own logs/ aside rather than merging into it, and never
+	 * writes the source. base is the source; two targets beside it.
+	 */
+	{
+		char tgt[4096 + 32], reason[512], probe[4096 + 96];
+		struct stat st;
+
+		snprintf(tgt, sizeof(tgt), "%s/target-empty", base);
+		mkdir(tgt, 0755);
+		check(datadir_move(base, tgt, 1, 77, reason, sizeof(reason)) == 0,
+		      "a move to an empty target succeeds");
+		snprintf(probe, sizeof(probe), "%s/logs/segment", tgt);
+		check(stat(probe, &st) == 0 && st.st_size == 64 * 1024,
+		      "the log store's segment is carried whole");
+		snprintf(probe, sizeof(probe), "%s/logs/segment", base);
+		check(stat(probe, &st) == 0, "the source's log store is left in place");
+		snprintf(probe, sizeof(probe), "%s/mystery", tgt);
+		check(stat(probe, &st) != 0, "nothing but the log store is carried");
+
+		/* A move back: the target already has a logs/ of its own. */
+		snprintf(tgt, sizeof(tgt), "%s/target-used", base);
+		mkdir(tgt, 0755);
+		snprintf(probe, sizeof(probe), "%s/logs", tgt);
+		mkdir(probe, 0755);
+		snprintf(probe, sizeof(probe), "%s/logs/older", tgt);
+		check(write_file(probe, 1024) == 0, "write target-used/logs/older");
+		check(datadir_move(base, tgt, 1, 77, reason, sizeof(reason)) == 0,
+		      "a move to a target with its own logs/ succeeds");
+		snprintf(probe, sizeof(probe), "%s/logs.replaced-77/older", tgt);
+		check(stat(probe, &st) == 0, "the target's own logs/ is set aside, not deleted");
+		snprintf(probe, sizeof(probe), "%s/logs/older", tgt);
+		check(stat(probe, &st) != 0, "the two histories are not merged");
+		snprintf(probe, sizeof(probe), "%s/logs/segment", tgt);
+		check(stat(probe, &st) == 0, "the carried log store is the source's");
+
+		/* The log store is placed elsewhere: nothing to carry. */
+		snprintf(tgt, sizeof(tgt), "%s/target-nologs", base);
+		mkdir(tgt, 0755);
+		check(datadir_move(base, tgt, 0, 77, reason, sizeof(reason)) == 0,
+		      "with the log store placed elsewhere the move succeeds");
+		snprintf(probe, sizeof(probe), "%s/logs", tgt);
+		check(stat(probe, &st) != 0, "and carries nothing");
+
+		/* A target that cannot be written fails with a reason: a regular
+		 * file, since treecopy creates a missing directory. */
+		snprintf(tgt, sizeof(tgt), "%s/target-is-a-file", base);
+		check(write_file(tgt, 10) == 0, "write target-is-a-file");
+		check(datadir_move(base, tgt, 1, 77, reason, sizeof(reason)) != 0 && reason[0] != '\0',
+		      "a failed copy fails the move and says why");
+	}
+
 	snprintf(path, sizeof(path), "rm -rf '%s'", base);
 	if (system(path) != 0)
 		fprintf(stderr, "warning: cleanup of %s failed\n", base);

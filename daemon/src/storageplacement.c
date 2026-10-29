@@ -22,6 +22,22 @@ static char g_disk[STORAGE_KIND_COUNT][DISKROLE_DISK_NAME_MAX];
  * no UUID; both fall back to the name.
  */
 static char g_uuid[STORAGE_KIND_COUNT][DISK_FS_UUID_MAX];
+/*
+ * ADR-0364 decision 3: a move recorded now and made at the next boot.
+ * Three states, so a move back to the default is not confused with no
+ * move at all: g_pending_set 0 is none; 1 with an empty g_pending_disk
+ * is "back to the default location"; 1 with a name is that disk, which
+ * is identified by g_pending_uuid as the active placement is. Persisted
+ * as "<kind>_pending": absent, null or a disk name.
+ */
+static int g_pending_set[STORAGE_KIND_COUNT];
+static char g_pending_disk[STORAGE_KIND_COUNT][DISKROLE_DISK_NAME_MAX];
+static char g_pending_uuid[STORAGE_KIND_COUNT][DISK_FS_UUID_MAX];
+/* The outcome of the last move the boot made ("moved" or "failed"),
+ * its reason and when; empty outcome when no move has been made. */
+static char g_move_outcome[STORAGE_KIND_COUNT][16];
+static char g_move_reason[STORAGE_KIND_COUNT][512];
+static long long g_move_at[STORAGE_KIND_COUNT];
 
 static const char *kind_key(enum storage_kind kind);
 static enum storageplacement_error save_state(void);
@@ -30,6 +46,12 @@ static enum storageplacement_error save_state(void);
 static void uuid_key(enum storage_kind kind, char *out, size_t out_size)
 {
 	snprintf(out, out_size, "%s_uuid", kind_key(kind));
+}
+
+/* "<kind>_<suffix>", for the pending and last-move keys. */
+static void suffixed_key(enum storage_kind kind, const char *suffix, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s_%s", kind_key(kind), suffix);
 }
 
 static const char *kind_key(enum storage_kind kind)
@@ -80,6 +102,37 @@ static int load_state(void)
 	for (kind = STORAGE_KIND_REBUILDABLE; kind < STORAGE_KIND_COUNT; kind++) {
 		const struct json_value *jdisk = json_object_get(root, kind_key(kind));
 		const char *disk;
+		char key[64];
+		const struct json_value *jv;
+
+		/* ADR-0364: a pending move and the last move's outcome. Read
+		 * before the active placement, which `continue`s when unset. */
+		suffixed_key(kind, "pending", key, sizeof(key));
+		jv = json_object_get(root, key);
+		if (jv != NULL && (jv->type == JSON_NULL || jv->type == JSON_STRING)) {
+			g_pending_set[kind] = 1;
+			if (jv->type == JSON_STRING)
+				snprintf(g_pending_disk[kind], sizeof(g_pending_disk[kind]), "%s",
+				         json_as_string(jv));
+			suffixed_key(kind, "pending_uuid", key, sizeof(key));
+			jv = json_object_get(root, key);
+			if (jv != NULL && jv->type == JSON_STRING)
+				snprintf(g_pending_uuid[kind], sizeof(g_pending_uuid[kind]), "%s",
+				         json_as_string(jv));
+		}
+		suffixed_key(kind, "move_outcome", key, sizeof(key));
+		jv = json_object_get(root, key);
+		if (jv != NULL && jv->type == JSON_STRING) {
+			snprintf(g_move_outcome[kind], sizeof(g_move_outcome[kind]), "%s",
+			         json_as_string(jv));
+			suffixed_key(kind, "move_reason", key, sizeof(key));
+			jv = json_object_get(root, key);
+			if (jv != NULL && jv->type == JSON_STRING)
+				snprintf(g_move_reason[kind], sizeof(g_move_reason[kind]), "%s",
+				         json_as_string(jv));
+			suffixed_key(kind, "move_at", key, sizeof(key));
+			g_move_at[kind] = (long long)json_as_number(json_object_get(root, key));
+		}
 
 		if (jdisk == NULL || jdisk->type != JSON_STRING)
 			continue;
@@ -127,6 +180,11 @@ static int load_state(void)
 			char resolved[DISKROLE_DISK_NAME_MAX];
 			char dev_path[PATH_MAX];
 
+			/* A pending target follows its filesystem the same way. */
+			if (g_pending_disk[k][0] != '\0' &&
+			    diskrole_resolve_recorded(g_pending_disk[k], g_pending_uuid[k], resolved,
+			                              sizeof(resolved)) == 1)
+				snprintf(g_pending_disk[k], sizeof(g_pending_disk[k]), "%s", resolved);
 			if (g_disk[k][0] == '\0')
 				continue;
 			if (diskrole_resolve_recorded(g_disk[k], g_uuid[k], resolved,
@@ -176,6 +234,34 @@ static enum storageplacement_error save_state(void)
 			jw_key(&w, ukey);
 			jw_str(&w, g_uuid[kind]);
 		}
+		if (g_pending_set[kind]) {
+			char key[64];
+
+			suffixed_key(kind, "pending", key, sizeof(key));
+			jw_key(&w, key);
+			if (g_pending_disk[kind][0] != '\0')
+				jw_str(&w, g_pending_disk[kind]);
+			else
+				jw_null(&w);
+			if (g_pending_uuid[kind][0] != '\0') {
+				suffixed_key(kind, "pending_uuid", key, sizeof(key));
+				jw_key(&w, key);
+				jw_str(&w, g_pending_uuid[kind]);
+			}
+		}
+		if (g_move_outcome[kind][0] != '\0') {
+			char key[64];
+
+			suffixed_key(kind, "move_outcome", key, sizeof(key));
+			jw_key(&w, key);
+			jw_str(&w, g_move_outcome[kind]);
+			suffixed_key(kind, "move_reason", key, sizeof(key));
+			jw_key(&w, key);
+			jw_str(&w, g_move_reason[kind]);
+			suffixed_key(kind, "move_at", key, sizeof(key));
+			jw_key(&w, key);
+			jw_int(&w, g_move_at[kind]);
+		}
 	}
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
@@ -190,6 +276,12 @@ int storageplacement_init(const char *state_path)
 	snprintf(g_state_path, sizeof(g_state_path), "%s", state_path);
 	memset(g_disk, 0, sizeof(g_disk));
 	memset(g_uuid, 0, sizeof(g_uuid));
+	memset(g_pending_set, 0, sizeof(g_pending_set));
+	memset(g_pending_disk, 0, sizeof(g_pending_disk));
+	memset(g_pending_uuid, 0, sizeof(g_pending_uuid));
+	memset(g_move_outcome, 0, sizeof(g_move_outcome));
+	memset(g_move_reason, 0, sizeof(g_move_reason));
+	memset(g_move_at, 0, sizeof(g_move_at));
 	return load_state();
 }
 
@@ -205,6 +297,102 @@ const char *storageplacement_get_uuid(enum storage_kind kind)
 	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_COUNT)
 		return NULL;
 	return g_disk[kind][0] != '\0' && g_uuid[kind][0] != '\0' ? g_uuid[kind] : NULL;
+}
+
+enum storageplacement_error storageplacement_set_pending(enum storage_kind kind,
+                                                         const char *disk_name)
+{
+	int prev_set;
+	char prev_disk[DISKROLE_DISK_NAME_MAX];
+	char prev_uuid[DISK_FS_UUID_MAX];
+	enum storageplacement_error err;
+
+	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_COUNT)
+		return STORAGEPLACEMENT_ERR_PERSIST_FAILED;
+	prev_set = g_pending_set[kind];
+	snprintf(prev_disk, sizeof(prev_disk), "%s", g_pending_disk[kind]);
+	snprintf(prev_uuid, sizeof(prev_uuid), "%s", g_pending_uuid[kind]);
+
+	g_pending_set[kind] = 1;
+	g_pending_disk[kind][0] = '\0';
+	g_pending_uuid[kind][0] = '\0';
+	if (disk_name != NULL) {
+		char dev_path[PATH_MAX];
+
+		snprintf(g_pending_disk[kind], sizeof(g_pending_disk[kind]), "%s", disk_name);
+		snprintf(dev_path, sizeof(dev_path), "/dev/%s", disk_name);
+		disk_probe_fs_uuid(dev_path, g_pending_uuid[kind], sizeof(g_pending_uuid[kind]));
+	}
+	err = save_state();
+	if (err != STORAGEPLACEMENT_OK) {
+		g_pending_set[kind] = prev_set;
+		snprintf(g_pending_disk[kind], sizeof(g_pending_disk[kind]), "%s", prev_disk);
+		snprintf(g_pending_uuid[kind], sizeof(g_pending_uuid[kind]), "%s", prev_uuid);
+	}
+	return err;
+}
+
+enum storageplacement_error storageplacement_clear_pending(enum storage_kind kind)
+{
+	int prev_set;
+	enum storageplacement_error err;
+
+	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_COUNT)
+		return STORAGEPLACEMENT_ERR_PERSIST_FAILED;
+	if (!g_pending_set[kind])
+		return STORAGEPLACEMENT_OK;
+	prev_set = g_pending_set[kind];
+	g_pending_set[kind] = 0;
+	err = save_state();
+	if (err != STORAGEPLACEMENT_OK)
+		g_pending_set[kind] = prev_set;
+	else {
+		g_pending_disk[kind][0] = '\0';
+		g_pending_uuid[kind][0] = '\0';
+	}
+	return err;
+}
+
+int storageplacement_get_pending(enum storage_kind kind, const char **disk_name)
+{
+	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_COUNT || !g_pending_set[kind])
+		return 0;
+	if (disk_name != NULL)
+		*disk_name = g_pending_disk[kind][0] != '\0' ? g_pending_disk[kind] : NULL;
+	return 1;
+}
+
+const char *storageplacement_get_pending_uuid(enum storage_kind kind)
+{
+	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_COUNT || !g_pending_set[kind])
+		return NULL;
+	return g_pending_uuid[kind][0] != '\0' ? g_pending_uuid[kind] : NULL;
+}
+
+enum storageplacement_error storageplacement_finish_move(enum storage_kind kind, int moved,
+                                                         const char *reason, long long at)
+{
+	if (kind < STORAGE_KIND_REBUILDABLE || kind >= STORAGE_KIND_COUNT || !g_pending_set[kind])
+		return STORAGEPLACEMENT_ERR_PERSIST_FAILED;
+	/*
+	 * One record, one write: the active placement, the cleared pending
+	 * move and the outcome change together, so no boot can read a
+	 * record in which the move happened and is still pending, or
+	 * happened with no outcome. Nothing is rolled back on a failed
+	 * write -- the caller has already mounted the outcome, and the
+	 * memory is what this boot runs on; the caller reports it.
+	 */
+	if (moved) {
+		snprintf(g_disk[kind], sizeof(g_disk[kind]), "%s", g_pending_disk[kind]);
+		snprintf(g_uuid[kind], sizeof(g_uuid[kind]), "%s", g_pending_uuid[kind]);
+	}
+	g_pending_set[kind] = 0;
+	g_pending_disk[kind][0] = '\0';
+	g_pending_uuid[kind][0] = '\0';
+	snprintf(g_move_outcome[kind], sizeof(g_move_outcome[kind]), "%s", moved ? "moved" : "failed");
+	snprintf(g_move_reason[kind], sizeof(g_move_reason[kind]), "%s", reason != NULL ? reason : "");
+	g_move_at[kind] = at;
+	return save_state();
 }
 
 enum storageplacement_error storageplacement_set(enum storage_kind kind, const char *disk_name)
@@ -249,4 +437,26 @@ void storageplacement_write_json(struct json_writer *w, enum storage_kind kind)
 		jw_str(w, disk);
 	else
 		jw_null(w);
+	/* ADR-0364: only a kind that moves at boot ever has these. */
+	if (g_pending_set[kind]) {
+		jw_key(w, "pending");
+		jw_obj_open(w);
+		jw_key(w, "disk");
+		if (g_pending_disk[kind][0] != '\0')
+			jw_str(w, g_pending_disk[kind]);
+		else
+			jw_null(w);
+		jw_obj_close(w);
+	}
+	if (g_move_outcome[kind][0] != '\0') {
+		jw_key(w, "last_move");
+		jw_obj_open(w);
+		jw_key(w, "outcome");
+		jw_str(w, g_move_outcome[kind]);
+		jw_key(w, "reason");
+		jw_str(w, g_move_reason[kind]);
+		jw_key(w, "at");
+		jw_int(w, g_move_at[kind]);
+		jw_obj_close(w);
+	}
 }

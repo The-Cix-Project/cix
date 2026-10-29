@@ -1030,8 +1030,8 @@ $(BUILD)/test_pkg_finalize: test/test_pkg_finalize.c daemon/policy/pkg-finalize.
 $(BUILD)/test_fresh_output_dir: test/test_fresh_output_dir.c daemon/src/persist.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_fresh_output_dir.c daemon/src/persist.c -o $@
 
-$(BUILD)/test_datadir: test/test_datadir.c daemon/src/datadir.c daemon/src/json.c | $(BUILD)
-	$(CC) $(CFLAGS) -Idaemon/include test/test_datadir.c daemon/src/datadir.c daemon/src/json.c -o $@
+$(BUILD)/test_datadir: test/test_datadir.c daemon/src/datadir.c daemon/src/treecopy.c daemon/src/json.c | $(BUILD)
+	$(CC) $(CFLAGS) -Idaemon/include test/test_datadir.c daemon/src/datadir.c daemon/src/treecopy.c daemon/src/json.c -o $@
 
 # ADR-0254: OpenPGP clearsign verification. Fixtures are embedded, so
 # this runs with no network and no gpg -- a test needing either is a

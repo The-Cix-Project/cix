@@ -545,8 +545,11 @@ static const char USAGE_TEXT[] =
 	        "  storage rebuildable [show|migrate [--disk=NAME]|migrate-status]  -- same\n"
 	        "               shape, for where images/packages/artifacts (regenerable from\n"
 	        "               recipes/sources, never irreplaceable) live instead\n"
-	        "  storage data [show]  -- which disk (if any) the daemon's data directory is\n"
-	        "               placed on (ADR-0364); none means the cix-containers partition\n"
+	        "  storage data [show|migrate [--disk=NAME]]  -- which disk (if any) the daemon's\n"
+	        "               data directory is placed on (ADR-0364); none means the\n"
+	        "               cix-containers partition. migrate records a move to a\n"
+	        "               data-storage disk, or back with no --disk=, for the NEXT BOOT;\n"
+	        "               show then says pending, and after the boot, the last move\n"
 	        "  storage data-dir [ENTRY]  -- what lives in the daemon's data directory (#249):\n"
 	        "               each entry's size, which placement owns it, and whether that\n"
 	        "               owner still lives there or moved away and left the tree behind;\n"
@@ -2515,10 +2518,39 @@ static void fmt_storage_placement(const struct json_value *v)
 	const struct json_value *jdisk = json_object_get(v, "disk");
 	const char *disk = json_as_string(jdisk);
 
+	const struct json_value *jdeg = json_object_get(v, "degraded");
+	const struct json_value *pending = json_object_get(v, "pending");
+	const struct json_value *last = json_object_get(v, "last_move");
+
 	if (jdisk == NULL || jdisk->type == JSON_NULL || disk == NULL)
 		printf("default OS-disk placement\n");
 	else
 		printf("%s\n", disk);
+	if (jdeg != NULL && jdeg->type == JSON_BOOL && jdeg->u.boolean) {
+		const char *why = json_str_field(v, "degraded_reason");
+
+		printf("DEGRADED, running on the default placement this boot: %s\n",
+		       why != NULL ? why : "no reason given");
+	}
+	/* ADR-0364: the data directory moves at the next boot. */
+	if (pending != NULL && pending->type == JSON_OBJECT) {
+		const char *target = json_str_field(pending, "disk");
+
+		printf("pending: moves to %s at the next boot\n",
+		       target != NULL ? target : "the default OS-disk placement");
+	}
+	if (last != NULL && last->type == JSON_OBJECT) {
+		const char *outcome = json_str_field(last, "outcome");
+		const char *reason = json_str_field(last, "reason");
+		time_t t = (time_t)json_as_number(json_object_get(last, "at"));
+		struct tm tmv;
+		char when[32] = "";
+
+		if (t > 0 && gmtime_r(&t, &tmv) != NULL)
+			strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%SZ", &tmv);
+		printf("last move: %s %s%s%s\n", outcome != NULL ? outcome : "?", when,
+		       reason != NULL && reason[0] != '\0' ? " -- " : "", reason != NULL ? reason : "");
+	}
 }
 
 static void fmt_storage_migrate_status(const struct json_value *v)
@@ -2569,7 +2601,7 @@ static int cmd_storage_kind_show(const struct cix_client *c, int json_mode, cons
 }
 
 static int cmd_storage_kind_migrate(const struct cix_client *c, int json_mode, const char *path_fmt,
-                                     int argc, char **argv)
+                                     void (*fmt)(const struct json_value *), int argc, char **argv)
 {
 	const char *disk = NULL;
 	char path[64];
@@ -2603,7 +2635,7 @@ static int cmd_storage_kind_migrate(const struct cix_client *c, int json_mode, c
 		return 1;
 	}
 	jw_free(&w);
-	return emit(&r, json_mode, fmt_storage_migrate_status);
+	return emit(&r, json_mode, fmt);
 }
 
 static int cmd_storage_kind_migrate_status(const struct cix_client *c, int json_mode,
@@ -2637,7 +2669,8 @@ static int cmd_storage_kind(const struct cix_client *c, int json_mode, const cha
 	if (strcmp(sub, "show") == 0)
 		return cmd_storage_kind_show(c, json_mode, show_path);
 	if (strcmp(sub, "migrate") == 0)
-		return cmd_storage_kind_migrate(c, json_mode, migrate_path, argc - 1, argv + 1);
+		return cmd_storage_kind_migrate(c, json_mode, migrate_path, fmt_storage_migrate_status,
+		                                argc - 1, argv + 1);
 	if (strcmp(sub, "migrate-status") == 0)
 		return cmd_storage_kind_migrate_status(c, json_mode, status_path);
 
@@ -2730,7 +2763,7 @@ static int cmd_storage(const struct cix_client *c, int json_mode, int argc, char
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl storage logs|rebuildable [show|migrate|migrate-status] | storage data [show] | storage data-dir\n");
+		fprintf(stderr, "usage: cixctl storage logs|rebuildable [show|migrate|migrate-status] | storage data [show|migrate [--disk=NAME]] | storage data-dir\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -2743,14 +2776,19 @@ static int cmd_storage(const struct cix_client *c, int json_mode, int argc, char
 	if (strcmp(sub, "data-dir") == 0)
 		return cmd_storage_data_dir(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "data") == 0) {
+		/* ADR-0364: no migrate-status -- the move happens at the next
+		 * boot, and its outcome is last_move on the placement itself. */
+		if (argc > 1 && strcmp(argv[1], "migrate") == 0)
+			return cmd_storage_kind_migrate(c, json_mode, CIX_API_migrateDataStorage,
+			                                fmt_storage_placement, argc - 2, argv + 2);
 		if (argc > 1 && strcmp(argv[1], "show") != 0) {
-			fprintf(stderr, "usage: cixctl storage data [show]\n");
+			fprintf(stderr, "usage: cixctl storage data [show|migrate [--disk=NAME]]\n");
 			return 2;
 		}
 		return cmd_storage_kind_show(c, json_mode, CIX_API_getDataStorage);
 	}
 
-	fprintf(stderr, "usage: cixctl storage logs|rebuildable [show|migrate|migrate-status] | storage data [show] | storage data-dir\n");
+	fprintf(stderr, "usage: cixctl storage logs|rebuildable [show|migrate|migrate-status] | storage data [show|migrate [--disk=NAME]] | storage data-dir\n");
 	return 2;
 }
 

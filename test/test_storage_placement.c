@@ -444,6 +444,56 @@ int main(void)
 		}
 	}
 
+	/*
+	 * ADR-0364 decision 3: the data directory's placement. The move
+	 * itself happens at boot (verified on a real host); here, the read
+	 * and every refusal that needs no formatted disk.
+	 */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET", "/v1/system/data-storage", NULL, &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: GET /v1/system/data-storage, status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const struct json_value *jdisk = json_object_get(r.json, "disk");
+		const struct json_value *jdeg = json_object_get(r.json, "degraded");
+
+		if (jdisk == NULL || jdisk->type != JSON_NULL || jdeg == NULL ||
+		    jdeg->type != JSON_BOOL || jdeg->u.boolean ||
+		    json_object_get(r.json, "pending") != NULL) {
+			fprintf(stderr, "FAIL: a fresh daemon's data-storage should be disk:null, "
+			                "degraded:false, nothing pending\n");
+			ok = 0;
+		}
+	}
+	cix_response_free(&r);
+
+	{
+		static const struct {
+			const char *body;
+			int status;
+			const char *what;
+		} cases[] = {
+			{ "{}", 400, "a body with no disk" },
+			{ "{\"disk\":\"\"}", 400, "an empty disk name" },
+			{ "{\"disk\":\"nonexistentdisk99\"}", 400, "a disk with no data-storage role" },
+			{ "{\"disk\":null}", 409, "the current placement with no move pending" },
+		};
+		size_t i;
+
+		for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/system/data-storage/migrate",
+			                       cases[i].body, &r) != 0 ||
+			    r.status != cases[i].status) {
+				fprintf(stderr, "FAIL: POST data-storage/migrate with %s expected %d, got %d\n",
+				        cases[i].what, cases[i].status, r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+	}
+
 	if (test_assert_no_drift(&client, NULL) != 0)
 		ok = 0;
 	if (stop_daemon(daemon_pid) != 0) {

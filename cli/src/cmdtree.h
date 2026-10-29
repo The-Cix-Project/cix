@@ -408,6 +408,13 @@ static const char *const n_storage_logs_migrate_flags[] = {
 	NULL
 };
 
+/* ADR-0364: no migrate-status; the outcome is on the placement. */
+static const struct cli_node n_storage_data_subs[] = {
+	{ "migrate", n_storage_logs_migrate_flags, NULL },
+	{ "show", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
 static const struct cli_node n_storage_logs_subs[] = {
 	{ "migrate", n_storage_logs_migrate_flags, NULL },
 	{ "migrate-status", NULL, NULL },
@@ -446,7 +453,7 @@ static const struct cli_node n_storage_subs[] = {
 	{ "rm-partition", NULL, NULL },
 	{ "logs", NULL, n_storage_logs_subs },
 	{ "rebuildable", NULL, n_storage_rebuildable_subs },
-	{ "data", NULL, NULL },
+	{ "data", NULL, n_storage_data_subs },
 	{ "data-dir", NULL, NULL },
 	{ "unmount", NULL, NULL },
 	{ NULL, NULL, NULL },

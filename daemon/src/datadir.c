@@ -1,4 +1,5 @@
 #include "datadir.h"
+#include "treecopy.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -330,5 +331,44 @@ int datadir_write_json(struct json_writer *w, const char *base_dir, const char *
 	jw_key(w, "measured_at");
 	jw_int(w, measured_at);
 	jw_obj_close(w);
+	return 0;
+}
+
+int datadir_move(const char *source_dir, const char *target_dir, int copy_logs, long long now,
+                 char *reason, size_t reason_size)
+{
+	char src[PATH_MAX], dst[PATH_MAX], aside[PATH_MAX];
+	struct stat st;
+
+	if (reason_size > 0)
+		reason[0] = '\0';
+	if (!copy_logs)
+		return 0;
+	if (snprintf(src, sizeof(src), "%s/logs", source_dir) >= (int)sizeof(src) ||
+	    snprintf(dst, sizeof(dst), "%s/logs", target_dir) >= (int)sizeof(dst) ||
+	    snprintf(aside, sizeof(aside), "%s/logs.replaced-%lld", target_dir, now) >=
+	            (int)sizeof(aside)) {
+		snprintf(reason, reason_size, "a path under %s or %s is too long", source_dir,
+		         target_dir);
+		return -1;
+	}
+	if (lstat(src, &st) != 0)
+		return 0; /* no log store here yet: nothing to carry */
+	/*
+	 * A target that held the data directory before (a move back) has a
+	 * logs/ of its own from then. Merging the two would mix segments
+	 * of two histories, so the old one is set aside under a dated name,
+	 * never deleted: this runs at boot, where nothing may be lost.
+	 */
+	if (lstat(dst, &st) == 0 && rename(dst, aside) != 0) {
+		snprintf(reason, reason_size, "could not set aside the target's own %s: %s", dst,
+		         strerror(errno));
+		return -1;
+	}
+	if (treecopy_recursive(src, dst) != 0) {
+		snprintf(reason, reason_size, "copying %s to %s failed: %s", src, dst,
+		         treecopy_last_error());
+		return -1;
+	}
 	return 0;
 }

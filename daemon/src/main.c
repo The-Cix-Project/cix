@@ -2619,55 +2619,220 @@ static void resolve_platform_devices(void)
 }
 
 /*
- * ADR-0364 decision 3: mounts the data directory's placed disk at
- * g_base_dir, if one is recorded and present. Returns 1 when it did,
- * 0 when the caller should mount cix-containers as before.
- *
- * Runs in boot_init() with /config just mounted, before anything uses
- * the data directory. storageplacement_init() is the one reader of the
- * record, and it has already followed the filesystem UUID to the name
- * the disk answers to this boot (#255). The UUID is checked once more
- * on the device itself, because a placement whose disk is absent keeps
- * its recorded name, and another disk may have taken that name: the
- * data directory is mounted by what the disk IS, never by where it was.
- *
- * A placement that cannot be honoured is reported degraded (#256) and
- * the boot carries on with cix-containers, so the host stays reachable
- * and the record can be corrected over the API. Nothing on the placed
- * disk is touched. btrfs only, which the move request requires.
+ * What the boot did about a pending data-directory move, kept until the
+ * log store opens (boot_init() runs before it), and whether it failed.
  */
-static int mount_placed_data_dir(void)
-{
-	const char *disk, *uuid;
-	char dev_path[PATH_MAX], found[DISK_FS_UUID_MAX];
+static char g_data_move_note[1024];
+static int g_data_move_failed;
 
-	if (storageplacement_init(STORAGE_PLACEMENT_PATH) != 0)
-		return 0; /* main() reports a malformed record when it reads it again */
-	disk = storageplacement_get(STORAGE_KIND_DATA);
-	if (disk == NULL)
-		return 0;
-	uuid = storageplacement_get_uuid(STORAGE_KIND_DATA);
+/*
+ * The device a placed data-storage disk answers to this boot, checked
+ * by its filesystem UUID on the device itself. storageplacement_init()
+ * has already followed the UUID to the name the disk answers to (#255),
+ * but a placement whose disk is absent keeps its recorded name and
+ * another disk may have taken it: the data directory is mounted by what
+ * the disk IS, never by where it was. 0 with dev_path set, or -1 with
+ * why set.
+ */
+static int data_disk_device(const char *disk, const char *uuid, char *dev_path, size_t dev_size,
+                            char *why, size_t why_size)
+{
+	char found[DISK_FS_UUID_MAX];
+
 	if (uuid == NULL) {
-		placement_degraded(STORAGE_KIND_DATA,
-		                   "data-storage's disk '%s' has no recorded filesystem UUID, and the "
-		                   "data directory is mounted only by one",
-		                   disk);
-		return 0;
+		snprintf(why, why_size,
+		         "data-storage's disk '%s' has no recorded filesystem UUID, and the data "
+		         "directory is mounted only by one",
+		         disk);
+		return -1;
 	}
-	snprintf(dev_path, sizeof(dev_path), "/dev/%s", disk);
+	snprintf(dev_path, dev_size, "/dev/%s", disk);
 	disk_probe_fs_uuid(dev_path, found, sizeof(found));
 	if (found[0] == '\0' || strcasecmp(found, uuid) != 0) {
-		placement_degraded(STORAGE_KIND_DATA,
-		                   "data-storage's disk (filesystem %s) is not present", uuid);
+		snprintf(why, why_size, "data-storage's disk (filesystem %s) is not present", uuid);
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * Mounts a data-directory filesystem at `at`. btrfs, and for
+ * cix-containers (ext4_ok) ext4 too: ADR-0207 phase 4 made btrfs the
+ * install default for that partition and ext4 is what a not-yet-migrated
+ * box still has. Tried in that order -- mount(2) needs the type named,
+ * and probing the superblock would be a second copy of what the
+ * kernel's own refusal already says. A placed disk is btrfs only, which
+ * the move request requires.
+ */
+static int mount_data_fs(const char *dev, const char *at, int ext4_ok)
+{
+	if (dev[0] == '\0') {
+		errno = ENODEV;
+		return -1;
+	}
+	if (mount(dev, at, "btrfs", MS_NOSUID | MS_NODEV, NULL) == 0)
+		return 0;
+	if (ext4_ok && mount(dev, at, "ext4", MS_NOSUID | MS_NODEV, NULL) == 0)
+		return 0;
+	return -1;
+}
+
+/* Where a move mounts its two ends; the root slot is mounted rw. */
+#define DATA_MOVE_SOURCE_MNT "/mnt/cix-data-move/source"
+#define DATA_MOVE_TARGET_MNT "/mnt/cix-data-move/target"
+
+/*
+ * Makes a pending move's copy: both ends mounted beside each other,
+ * never at g_base_dir, so whichever wins is mounted there afterwards
+ * and a failure leaves nothing to undo. datadir_move() decides what is
+ * carried. 0, or -1 with the reason.
+ */
+static int data_dir_copy(const char *src_dev, int src_ext4, const char *tgt_dev, int tgt_ext4,
+                         char *reason, size_t reason_size)
+{
+	int rc;
+
+	if (persist_mkdir_p(DATA_MOVE_SOURCE_MNT) != 0 || persist_mkdir_p(DATA_MOVE_TARGET_MNT) != 0) {
+		snprintf(reason, reason_size, "could not create %s and %s: %s", DATA_MOVE_SOURCE_MNT,
+		         DATA_MOVE_TARGET_MNT, strerror(errno));
+		return -1;
+	}
+	if (mount_data_fs(src_dev, DATA_MOVE_SOURCE_MNT, src_ext4) != 0) {
+		snprintf(reason, reason_size, "the source %s could not be mounted (%s)", src_dev,
+		         strerror(errno));
+		return -1;
+	}
+	if (mount_data_fs(tgt_dev, DATA_MOVE_TARGET_MNT, tgt_ext4) != 0) {
+		snprintf(reason, reason_size, "the target %s could not be mounted as %s (%s)", tgt_dev,
+		         tgt_ext4 ? "btrfs or ext4" : "btrfs", strerror(errno));
+		umount2(DATA_MOVE_SOURCE_MNT, 0);
+		return -1;
+	}
+	rc = datadir_move(DATA_MOVE_SOURCE_MNT, DATA_MOVE_TARGET_MNT,
+	                  storageplacement_get(STORAGE_KIND_LOG) == NULL, (long long)time(NULL), reason,
+	                  reason_size);
+	if (umount2(DATA_MOVE_TARGET_MNT, 0) != 0 && rc == 0) {
+		snprintf(reason, reason_size, "could not unmount the target after the copy (%s)",
+		         strerror(errno));
+		rc = -1;
+	}
+	umount2(DATA_MOVE_SOURCE_MNT, 0);
+	return rc;
+}
+
+/*
+ * ADR-0364 decision 3: mounts the data directory at g_base_dir. Returns
+ * 0, or -1 when nothing could be mounted (the caller falls back to a
+ * tmpfs and reports it, decision 2).
+ *
+ * Runs in boot_init() with /config just mounted, before anything uses
+ * the data directory. The source is the placed disk when one is
+ * recorded and present, otherwise cix-containers; a placement that
+ * cannot be honoured is reported degraded (#256) and the boot carries
+ * on with cix-containers, so the host stays reachable and the record
+ * can be corrected over the API.
+ *
+ * A pending move is made here, before anything runs, because a running
+ * container holds its pivot directory. The source is never written: a
+ * failed copy or a target that will not mount leaves the data
+ * directory where it was, and either way the outcome is recorded in
+ * one write with the pending move cleared, so a boot never retries a
+ * failed move by itself.
+ */
+static int mount_data_dir(void)
+{
+	const char *disk, *pending_disk;
+	char src_dev[PATH_MAX], placed_dev[PATH_MAX], tgt_dev[PATH_MAX], why[512];
+	int src_ext4 = 1;
+
+	snprintf(src_dev, sizeof(src_dev), "%s", CONTAINERS_DEVICE);
+	if (storageplacement_init(STORAGE_PLACEMENT_PATH) != 0)
+		return mount_data_fs(src_dev, g_base_dir, 1); /* main() reports the record */
+
+	disk = storageplacement_get(STORAGE_KIND_DATA);
+	if (disk != NULL) {
+		if (data_disk_device(disk, storageplacement_get_uuid(STORAGE_KIND_DATA), placed_dev,
+		                     sizeof(placed_dev), why, sizeof(why)) == 0) {
+			snprintf(src_dev, sizeof(src_dev), "%s", placed_dev);
+			src_ext4 = 0;
+		} else {
+			placement_degraded(STORAGE_KIND_DATA, "%s", why);
+		}
+	}
+
+	if (storageplacement_get_pending(STORAGE_KIND_DATA, &pending_disk)) {
+		char target_name[DISKROLE_DISK_NAME_MAX];
+		int tgt_ext4 = 0, moved = 0, mounted = 0;
+
+		/* Copied: finish_move() below clears the pending record. */
+		snprintf(target_name, sizeof(target_name), "%s",
+		         pending_disk != NULL ? pending_disk : "cix-containers");
+		why[0] = '\0';
+		if (pending_disk == NULL) {
+			snprintf(tgt_dev, sizeof(tgt_dev), "%s", CONTAINERS_DEVICE);
+			tgt_ext4 = 1;
+			if (tgt_dev[0] == '\0')
+				snprintf(why, sizeof(why), "no partition labelled cix-containers is present");
+		} else {
+			data_disk_device(pending_disk, storageplacement_get_pending_uuid(STORAGE_KIND_DATA),
+			                 tgt_dev, sizeof(tgt_dev), why, sizeof(why));
+		}
+		if (why[0] == '\0') {
+			if (strcmp(tgt_dev, src_dev) == 0) {
+				moved = 1;
+				snprintf(why, sizeof(why), "the data directory was already on %s", tgt_dev);
+			} else if (data_dir_copy(src_dev, src_ext4, tgt_dev, tgt_ext4, why, sizeof(why)) == 0) {
+				if (mount_data_fs(tgt_dev, g_base_dir, tgt_ext4) == 0) {
+					moved = 1;
+					mounted = 1;
+				} else {
+					snprintf(why, sizeof(why), "%s could not be mounted at %s after the copy (%s)",
+					         tgt_dev, g_base_dir, strerror(errno));
+				}
+			}
+		}
+		if (moved) {
+			snprintf(g_data_move_note, sizeof(g_data_move_note),
+			         "the data directory moved from %s to %s (%s) (ADR-0364)", src_dev, tgt_dev,
+			         target_name);
+			/* The target is honoured now, whatever the old placement was. */
+			g_placement_degraded[STORAGE_KIND_DATA][0] = '\0';
+		} else {
+			g_data_move_failed = 1;
+			snprintf(g_data_move_note, sizeof(g_data_move_note),
+			         "the data directory did not move to %s: %s -- it stays on %s (ADR-0364)",
+			         target_name, why, src_dev);
+		}
+		fprintf(stderr, "cix: %s\n", g_data_move_note);
+		if (storageplacement_finish_move(STORAGE_KIND_DATA, moved, moved ? "" : why,
+		                                 (long long)time(NULL)) != STORAGEPLACEMENT_OK) {
+			size_t used = strlen(g_data_move_note);
+
+			g_data_move_failed = 1;
+			snprintf(g_data_move_note + used, sizeof(g_data_move_note) - used,
+			         "; the outcome could not be recorded in %s, so the record still names the "
+			         "move as pending",
+			         STORAGE_PLACEMENT_PATH);
+		}
+		if (mounted)
+			return 0;
+		if (moved) {
+			/* Already there: mount it as the source below. */
+			snprintf(src_dev, sizeof(src_dev), "%s", tgt_dev);
+			src_ext4 = tgt_ext4;
+		}
+	}
+
+	if (mount_data_fs(src_dev, g_base_dir, src_ext4) == 0) {
+		if (!src_ext4)
+			fprintf(stderr, "cix: the data directory is %s (ADR-0364)\n", src_dev);
 		return 0;
 	}
-	if (mount(dev_path, g_base_dir, "btrfs", MS_NOSUID | MS_NODEV, NULL) != 0) {
-		placement_degraded(STORAGE_KIND_DATA, "data-storage's disk '%s' could not be mounted (%s)",
-		                   disk, strerror(errno));
-		return 0;
-	}
-	fprintf(stderr, "cix: the data directory is %s (filesystem %s, ADR-0364)\n", dev_path, uuid);
-	return 1;
+	if (src_ext4)
+		return -1;
+	placement_degraded(STORAGE_KIND_DATA, "data-storage's disk %s could not be mounted (%s)",
+	                   src_dev, strerror(errno));
+	return mount_data_fs(CONTAINERS_DEVICE, g_base_dir, 1);
 }
 
 /*
@@ -2799,21 +2964,9 @@ static int boot_init(void)
 	 */
 	if (mount(CONFIG_DEVICE, CONFIG_DIR, "btrfs", 0, NULL) != 0)
 		mount(CONFIG_DEVICE, CONFIG_DIR, "ext4", 0, NULL);
-	/* ADR-0207 phase 4: btrfs is the install default for this
-	 * partition; ext4 is what every not-yet-migrated box still has.
-	 * Tried in that order -- mount(2) needs the type named, and
-	 * probing the superblock here would be a second copy of what the
-	 * kernel's own mount rejection already tells us for free. The
-	 * ext4 branch retires with the rest of ext4 once btrfs has run
-	 * production (the ADR's staged retirement), leaving one type
-	 * again.
-	 *
-	 * ADR-0364 decision 3: unless the data directory is placed on a
-	 * disk of its own and that disk is here, in which case it is the
-	 * data directory and cix-containers is not mounted at all. */
-	if (!mount_placed_data_dir() &&
-	    mount(CONTAINERS_DEVICE, g_base_dir, "btrfs", MS_NOSUID | MS_NODEV, NULL) != 0 &&
-	    mount(CONTAINERS_DEVICE, g_base_dir, "ext4", MS_NOSUID | MS_NODEV, NULL) != 0) {
+	/* The data directory: cix-containers, or the disk it is placed on,
+	 * after making any move the last boot recorded (ADR-0364). */
+	if (mount_data_dir() != 0) {
 		/*
 		 * ADR-0364 decision 2: still a tmpfs, so the control plane comes
 		 * up and can be reached to fix it, but no longer silently --
@@ -21701,8 +21854,9 @@ static const char *storage_kind_label(enum storage_kind kind)
 }
 
 /* GET /system/{log,rebuildable,data}-storage: one shape for every
- * placement kind. */
-static void handle_placement_get(int fd, enum storage_kind kind)
+ * placement kind. status is 200 for the read, 202 for a move the data
+ * directory makes at the next boot. */
+static void respond_placement(int fd, enum storage_kind kind, int status, const char *status_text)
 {
 	struct json_writer w;
 
@@ -21727,8 +21881,155 @@ static void handle_placement_get(int fd, enum storage_kind kind)
 		}
 	}
 	jw_obj_close(&w);
-	respond_json(fd, 200, "OK", &w);
+	respond_json(fd, status, status_text, &w);
 	jw_free(&w);
+}
+
+static void handle_placement_get(int fd, enum storage_kind kind)
+{
+	respond_placement(fd, kind, 200, "OK");
+}
+
+/*
+ * What must already have left the data directory before it can move
+ * (ADR-0364 decision 3): the boot carries only the log store. Writes
+ * the refusal into msg and returns 1, or returns 0.
+ */
+static int data_move_blocked(char *msg, size_t msg_size)
+{
+	struct volume vols[VOLUME_MAX];
+	int n, i;
+	size_t used;
+
+	if (storageplacement_get(STORAGE_KIND_REBUILDABLE) == NULL) {
+		snprintf(msg, msg_size,
+		         "rebuildable storage (images, packages, artifacts) is in the data directory; "
+		         "move it to a disk first (cixctl storage rebuildable migrate --disk=NAME)");
+		return 1;
+	}
+	if (swap_is_enabled() && storageplacement_get(STORAGE_KIND_SWAP) == NULL) {
+		snprintf(msg, msg_size,
+		         "swap is enabled in the data directory; disable it or place it on a disk first "
+		         "(cixctl swap)");
+		return 1;
+	}
+	n = volume_list(vols, VOLUME_MAX);
+	used = (size_t)snprintf(msg, msg_size, "these volumes are in the data directory; migrate each "
+	                                       "to a disk first (cixctl volume migrate NAME --disk=NAME):");
+	for (i = 0; i < n; i++) {
+		if (vols[i].disk[0] != '\0')
+			continue;
+		if (used < msg_size)
+			used += (size_t)snprintf(msg + used, msg_size - used, " %s", vols[i].name);
+		if (used >= msg_size)
+			break;
+	}
+	for (i = 0; i < n; i++)
+		if (vols[i].disk[0] == '\0')
+			return 1;
+	return 0;
+}
+
+/*
+ * POST /system/data-storage/migrate (ADR-0364 decision 3): records a
+ * move of the data directory to a data-storage disk, or back to
+ * cix-containers with no disk, for the next boot to make. Nothing moves
+ * now: a running container holds its pivot directory.
+ */
+static void handle_data_storage_migrate_post(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	const struct json_value *jdisk;
+	const char *disk = NULL, *active, *pending;
+	char msg[1024];
+
+	if (root == NULL || root->type != JSON_OBJECT) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	jdisk = json_object_get(root, "disk");
+	if (jdisk == NULL) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "disk is required: a disk name, or null for cix-containers");
+		return;
+	}
+	if (jdisk->type != JSON_NULL) {
+		disk = json_as_string(jdisk);
+		if (disk == NULL || disk[0] == '\0') {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", "disk must be a disk name, or null for cix-containers");
+			return;
+		}
+	}
+
+	if (disk != NULL) {
+		const char *role = diskrole_lookup(disk);
+		char dev_path[64], fs[32], uuid[DISK_FS_UUID_MAX];
+
+		if (role == NULL || strcmp(role, "data-storage") != 0) {
+			snprintf(msg, sizeof(msg), "disk '%s' does not carry the data-storage role", disk);
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", msg);
+			return;
+		}
+		snprintf(dev_path, sizeof(dev_path), "/dev/%s", disk);
+		if (strcmp(dev_path, CONTAINERS_DEVICE) == 0) {
+			json_free(root);
+			respond_error(fd, 400, "Bad Request",
+			              "that is the cix-containers partition, the default: send disk null");
+			return;
+		}
+		disk_probe_fs_type(dev_path, fs, sizeof(fs));
+		if (strcmp(fs, "btrfs") != 0) {
+			snprintf(msg, sizeof(msg), "disk '%s' is %s, and the data directory must be btrfs: "
+			                           "format it first",
+			         disk, fs[0] != '\0' ? fs : "not formatted");
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", msg);
+			return;
+		}
+		disk_probe_fs_uuid(dev_path, uuid, sizeof(uuid));
+		if (uuid[0] == '\0') {
+			snprintf(msg, sizeof(msg), "disk '%s' has no filesystem UUID to be mounted by", disk);
+			json_free(root);
+			respond_error(fd, 400, "Bad Request", msg);
+			return;
+		}
+	}
+
+	/* Asking for where it already is drops a pending move. */
+	active = storageplacement_get(STORAGE_KIND_DATA);
+	if ((disk == NULL && active == NULL) ||
+	    (disk != NULL && active != NULL && strcmp(disk, active) == 0)) {
+		json_free(root);
+		if (!storageplacement_get_pending(STORAGE_KIND_DATA, &pending)) {
+			respond_error(fd, 409, "Conflict", "this is already the data directory's placement");
+			return;
+		}
+		if (storageplacement_clear_pending(STORAGE_KIND_DATA) != STORAGEPLACEMENT_OK) {
+			respond_error(fd, 500, "Internal Server Error", "could not record the cancelled move");
+			return;
+		}
+		respond_placement(fd, STORAGE_KIND_DATA, 200, "OK");
+		return;
+	}
+
+	if (data_move_blocked(msg, sizeof(msg))) {
+		json_free(root);
+		respond_error(fd, 409, "Conflict", msg);
+		return;
+	}
+	if (storageplacement_set_pending(STORAGE_KIND_DATA, disk) != STORAGEPLACEMENT_OK) {
+		json_free(root);
+		respond_error(fd, 500, "Internal Server Error", "could not record the move");
+		return;
+	}
+	json_free(root);
+	logstore_write("cixd", "info",
+	               "the data directory will move to %s at the next boot (ADR-0364)",
+	               disk != NULL ? disk : "cix-containers");
+	respond_placement(fd, STORAGE_KIND_DATA, 202, "Accepted");
 }
 
 static void respond_storagemigrate_error(int fd, enum storage_kind kind, enum storagemigrate_error err)
@@ -27944,6 +28245,12 @@ static void op_getRebuildableStorage(const struct api_ctx *ctx)
 static void op_getDataStorage(const struct api_ctx *ctx)
 {
 	handle_placement_get(ctx->fd, STORAGE_KIND_DATA);
+}
+
+/* POST /v1/system/data-storage/migrate (ADR-0364) */
+static void op_migrateDataStorage(const struct api_ctx *ctx)
+{
+	handle_data_storage_migrate_post(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
 /* GET /v1/system/rebuildable-storage/migrate */
@@ -38486,6 +38793,8 @@ static int cixd_main(int argc, char **argv)
 		               g_data_dir_fault);
 	if (g_bootstrap_move_note[0] != '\0')
 		logstore_write("cixd", "info", "%s", g_bootstrap_move_note);
+	if (g_data_move_note[0] != '\0')
+		logstore_write("cixd", g_data_move_failed ? "error" : "info", "%s", g_data_move_note);
 	if (!g_ctype_is_utf8)
 		logstore_write("cixd", "error",
 		                "setlocale(LC_CTYPE, \"C.UTF-8\") failed -- this root has no "

@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The data directory moves to a disk at the next boot (#249, ADR-0364 decision 3, stage b)
+
+- **What changed:**
+  - `POST /v1/system/data-storage/migrate {disk}` (`cixctl storage data migrate --disk=NAME`) records a move of the data directory to a btrfs disk carrying the `data-storage` role, or back to cix-containers with `null`. It is refused (409, naming what) while rebuildable storage, a volume with no disk, or an enabled swap file on the default placement is still in the data directory, since the boot carries only the log store. Asking for the current placement drops a pending move.
+  - At the next boot, `mount_data_dir()` mounts both ends beside each other under `/mnt/cix-data-move`, and `datadir_move()` carries the log store, setting aside a target's own `logs/` rather than merging into it. Then the target is mounted as the data directory. The source is never written. The new placement, the cleared pending move and the outcome are one record write, so a failed move stays on the source and is not retried by itself.
+  - `GET /v1/system/data-storage` reports `pending` and `last_move` (outcome, reason, time), and `cixctl storage data` prints them, along with `degraded`, which it did not print before for any placement.
+- **Why:** ADR-0364 decision 3, the owner's "Go ahead" of 2026-10-29. Rebuildable storage joined the preconditions when this was built: on its default placement it lives in the data directory, and a move that carried only the log store would boot with an empty image store.
+- **Verified:** pending the release and a move on 192.168.15.95.
+
 ### The data directory is a placement kind, read before it is mounted (#249, ADR-0364 decision 3, stage a)
 
 - **What changed:**

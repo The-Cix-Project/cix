@@ -192,6 +192,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/rebuildable-storage/migrate` | Status of the most recent (or running) rebuildable-storage migration |
 | POST | `/system/rebuildable-storage/migrate` | Move images/packages/artifacts to a new disk, or back to the default |
 | GET | `/system/data-storage` | Which disk (if any) the data directory is placed on (ADR-0364); `null` means the cix-containers partition, and `degraded` that the placed disk was absent at boot |
+| POST | `/system/data-storage/migrate` | Record a move of the data directory to a `data-storage` disk, or back to cix-containers with `null`, for the next boot to make; the log store is carried, and rebuildable storage, volumes and an enabled swap file must already be on disks (409 names which). The outcome is `last_move` on the GET |
 | POST | `/containers/{name}/volumes` | Attach a volume to an existing container -- edits the definition, applies on next start (issue #92) |
 | DELETE | `/containers/{name}/volumes/{volume_name}` | Detach it again; never touches the volume or its data |
 | POST | `/storage/{name}/partitions/{partition_name}/resize` | Grow a partition **and** the filesystem inside it — grow only (issue #94) |
