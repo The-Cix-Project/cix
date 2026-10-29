@@ -135,6 +135,7 @@ int main(void)
 	memset(&live, 0, sizeof(live));
 	live.log_dir = logs;
 	live.rebuildable_dir = "/mnt/elsewhere/rebuildable";
+	live.disk_roles_path = "/config/state/diskroles.json";
 	live.container_defined = only_alive_is_defined;
 
 	jw_init(&w);
@@ -187,8 +188,11 @@ int main(void)
 
 	e = entry_named(entries, "diskroles.json");
 	check(e != NULL && strcmp(str_of(json_object_get(e, "type")), "file") == 0 &&
-	              bool_field(e, "in_use"),
-	      "diskroles.json is a state file, in use");
+	              !bool_field(e, "in_use") &&
+	              strcmp(str_of(json_object_get(e, "live_path")),
+	                     "/config/state/diskroles.json") == 0,
+	      "a diskroles.json left in the data directory is not in use: it lives in STATE_DIR "
+	      "(ADR-0364)");
 
 	check(json_as_number(json_object_get(doc, "entries_bytes")) >= (64 + 8 + 128) * 1024,
 	      "entries_bytes sums the entries");
@@ -231,8 +235,12 @@ int main(void)
 	}
 	jw_free(&w);
 
-	/* ADR-0364 decision 2: a data directory on a tmpfs says so. */
+	/* ADR-0364 decision 2: a data directory on a tmpfs says so. And a boot
+	 * whose move failed reads diskroles.json from here, which is then in
+	 * use. */
 	live.fault = "the data partition could not be mounted";
+	snprintf(path, sizeof(path), "%s/diskroles.json", base);
+	live.disk_roles_path = path;
 	jw_init(&w);
 	check(datadir_write_json(&w, base, NULL, &live, 1234) == 0,
 	      "datadir_write_json succeeds with a fault");
@@ -241,6 +249,9 @@ int main(void)
 	              strcmp(str_of(json_object_get(doc, "fault")),
 	                     "the data partition could not be mounted") == 0,
 	      "a fault reports persistent false, with the reason");
+	e = doc != NULL ? entry_named(json_object_get(doc, "entries"), "diskroles.json") : NULL;
+	check(e != NULL && bool_field(e, "in_use"),
+	      "diskroles.json is in use when the daemon is reading it from here");
 	json_free(doc);
 	jw_free(&w);
 

@@ -110,11 +110,9 @@ static int walk_cb(const char *path, const struct stat *sb, int typeflag, struct
 	return FTW_CONTINUE;
 }
 
-static const char *owner_of(const char *name, const struct datadir_live *live, const char **live_path,
-                            int *is_state_file)
+static const char *owner_of(const char *name, const struct datadir_live *live, const char **live_path)
 {
 	*live_path = NULL;
-	*is_state_file = 0;
 	if (strcmp(name, "logs") == 0) {
 		*live_path = live->log_dir;
 		return "log-store";
@@ -135,12 +133,15 @@ static const char *owner_of(const char *name, const struct datadir_live *live, c
 		*live_path = live->swap_dir;
 		return "swap";
 	}
+	/* ADR-0364: these live in STATE_DIR, so a copy here is one the move
+	 * left behind -- unless the move failed and the daemon is reading
+	 * it this boot, which the live path says. */
 	if (strcmp(name, "diskroles.json") == 0) {
-		*is_state_file = 1;
+		*live_path = live->disk_roles_path;
 		return "disk-roles";
 	}
 	if (strcmp(name, "storage_placement.json") == 0) {
-		*is_state_file = 1;
+		*live_path = live->storage_placement_path;
 		return "storage-placement";
 	}
 	return "unknown";
@@ -162,7 +163,6 @@ static const char *classify(const char *base_dir, const char *parent, const char
                             const char **live_path, int *in_use)
 {
 	const char *owner;
-	int is_state_file;
 
 	if (strcmp(name, ".discard") == 0) {
 		*live_path = NULL;
@@ -170,8 +170,8 @@ static const char *classify(const char *base_dir, const char *parent, const char
 		return "discard-queue";
 	}
 	if (parent == NULL) {
-		owner = owner_of(name, live, live_path, &is_state_file);
-		*in_use = is_state_file || (*live_path != NULL && strcmp(*live_path, path) == 0);
+		owner = owner_of(name, live, live_path);
+		*in_use = *live_path != NULL && strcmp(*live_path, path) == 0;
 		return owner;
 	}
 	if (strcmp(parent, "containers") == 0) {
@@ -183,8 +183,8 @@ static const char *classify(const char *base_dir, const char *parent, const char
 		char parent_path[PATH_MAX];
 
 		snprintf(parent_path, sizeof(parent_path), "%s/%s", base_dir, parent);
-		owner = owner_of(parent, live, live_path, &is_state_file);
-		*in_use = is_state_file || (*live_path != NULL && strcmp(*live_path, parent_path) == 0);
+		owner = owner_of(parent, live, live_path);
+		*in_use = *live_path != NULL && strcmp(*live_path, parent_path) == 0;
 		return owner;
 	}
 }

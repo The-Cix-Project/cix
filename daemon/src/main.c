@@ -33017,6 +33017,8 @@ static int datadir_work(void *arg)
 		.volumes_dir = VOLUMES_DIR,
 		.containers_dir = CONTAINERS_DIR,
 		.swap_dir = SWAP_DIR,
+		.disk_roles_path = DISKROLE_STATE_PATH,
+		.storage_placement_path = STORAGE_PLACEMENT_PATH,
 		.container_defined = datadir_container_defined,
 		.fault = g_data_dir_fault[0] != '\0' ? g_data_dir_fault : NULL,
 	};

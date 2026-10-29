@@ -43,6 +43,10 @@ struct datadir_live {
 	const char *volumes_dir;
 	const char *containers_dir;
 	const char *swap_dir;
+	/* ADR-0364: the two bootstrap state files' live paths, in STATE_DIR
+	 * -- or the old data-directory path for a boot whose move failed. */
+	const char *disk_roles_path;
+	const char *storage_placement_path;
 	/* Whether a container of this name is defined, for the children of
 	 * containers/; NULL reports none as defined. */
 	int (*container_defined)(const char *name);

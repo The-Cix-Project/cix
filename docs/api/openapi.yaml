@@ -24722,15 +24722,19 @@ components:
         in_use:
           type: boolean
           description: >
-            True when this is the owner's live tree (or a state file the
-            daemon reads here). False on an owned directory means the owner
-            lives at `live_path` now and this tree was left behind. For a
-            `container` entry it says whether a container of that name is
-            defined; `discard-queue` is always false.
+            True when this is the owner's live tree or file. False on an
+            owned entry means the owner lives at `live_path` now and this
+            one was left behind: since ADR-0364 that includes a
+            `diskroles.json` or `storage_placement.json` here, whose live
+            copy is in `/config/state`. For a `container` entry it says
+            whether a container of that name is defined; `discard-queue`
+            is always false.
         live_path:
           type: string
           nullable: true
-          description: Where the owner's tree lives now; null for a state file or an unknown entry.
+          description: >
+            Where the owner's tree or file lives now; null for a
+            `container`, `discard-queue` or `unknown` entry.
         mounts_skipped:
           type: integer
           description: Separately mounted subtrees beneath this entry, not walked.
