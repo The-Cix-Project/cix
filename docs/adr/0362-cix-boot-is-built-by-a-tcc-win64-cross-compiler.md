@@ -6,7 +6,7 @@ Accepted by the owner on 2026-10-28 (proposed the same day), for #656. Decision 
 
 ## Context
 
-`cix-boot.efi` is the one program in the cix tree built with gcc: `EFI_CC ?= /usr/bin/gcc`, linked to PE/COFF by `ld -m i386pep --subsystem=10 -e efi_main --image-base=0x10000 -s`. A UEFI application needs the Microsoft x64 calling convention. The installed `tcc@0.9.28rc-31` is native only: its file list is `usr/bin/tcc` and `usr/lib/tcc/libtcc1.a`.
+Before this decision, `cix-boot.efi` was the one program in the cix tree built with gcc: `EFI_CC ?= /usr/bin/gcc`, linked to PE/COFF by `ld -m i386pep --subsystem=10 -e efi_main --image-base=0x10000 -s`. A UEFI application needs the Microsoft x64 calling convention. The installed `tcc@0.9.28rc-31` was native only: its file list was `usr/bin/tcc` and `usr/lib/tcc/libtcc1.a`.
 
 tinycc also has an `x86_64-win32` target. Its default ABI is the Microsoft one, and it has its own PE linker. Five probes measured it on 192.168.15.95 on 2026-10-28 (`probe-tccefi@1-1` to `@5-1`). Each used the tinycc source `tcc@0.9.28rc-31` pins (commit 2ba12e83, the same url and sha256) and `cix-boot.c` at cix `f362298b`:
 
