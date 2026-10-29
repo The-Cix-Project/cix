@@ -4,6 +4,8 @@
 
 Accepted
 
+Factual note, 2026-10-29: in cixd the hostbuild harvest meets this rule without `persist_fresh_output_dir()`, because that deletes the previous tree with nftw() where it stands and the harvest runs on the event loop, which never deletes a tree ([ADR-0341](0341-a-containers-rootfs-is-a-snapshot-on-its-images-filesystem.md), #645). It sets the tree aside with one rename into ADR-0341's delete queue and creates the directory empty, which is the same "fresh". `mkbootroot` and `mkinstalleriso`, which are not on a loop, keep the named call.
+
 ## Context
 
 [ADR-0251](0251-a-package-artifact-carries-what-the-platform-runs.md)

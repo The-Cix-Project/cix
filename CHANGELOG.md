@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A hostbuild's harvest no longer deletes the previous tree on the event loop (#645)
+
+- **What changed:** the harvest empties `<artifacts>/<name>` by setting the previous tree aside with one rename into ADR-0341's delete queue, through `discard_hostbuild_artifacts()` (the one a failed hostbuild already uses, #644), and then creating the directory. It used to call `persist_fresh_output_dir()`, which deletes the tree with nftw() where it stands. `mkbootroot` and `mkinstalleriso` keep that call, since neither runs on a loop.
+- **Why:** the harvest runs on the event loop, on every hostbuild, the nightly host roll's kernel (`lib/modules`) and cix included, and the loop never deletes a tree (ADR-0341). No harvest had been measured past stallwatch's 750 ms. A delete there holds every request for as long as the disk takes, so the rule was broken whatever the measured cost. The copy into the emptied directory (`merge_tree()`) is unchanged.
+- **Verified:** pending.
+
 ### cix-boot.efi is built by TCC, and tcc carries the win64 target (#656, ADR-0362, ADR-0363)
 
 - **What changed:**

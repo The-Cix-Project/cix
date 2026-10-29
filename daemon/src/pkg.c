@@ -15387,6 +15387,8 @@ static int install_produce_begin(int chain_idx, struct pkg_entry *e, int is_upgr
 	return 0;
 }
 
+static int discard_hostbuild_artifacts(const char *name, char *out_err, size_t err_size);
+
 /*
  * ADR-0356: the part of an ordinary install that follows its image
  * version being recorded, run once the producer has exited. 0 to go on
@@ -16348,12 +16350,29 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 * build output tree is created fresh or it is not a build
 		 * output tree.
 		 */
+		/*
+		 * Fresh, but not by persist_fresh_output_dir(), which deletes
+		 * the previous tree with nftw() where it stands: this runs on
+		 * the event loop, on every hostbuild, the nightly host roll's
+		 * kernel and cix included, and the loop never deletes a tree
+		 * (ADR-0341, #645). The previous tree is set aside with one
+		 * rename and ADR-0341's queue deletes it in a helper child,
+		 * the way a failed hostbuild's is (#644); then the directory is
+		 * created empty, which is what "fresh" means (ADR-0253).
+		 */
 		stallwatch_step("pkg install: harvest the hostbuild");
 		harvest_why[0] = '\0';
-		if (persist_fresh_output_dir(artifact_dir) != 0)
-			snprintf(harvest_why, sizeof(harvest_why), "emptying %s failed: %s", artifact_dir,
-			         strerror(errno));
-		else if (merge_tree(dest_dir, artifact_dir, "", e, 1) != 0)
+		{
+			char discard_err[256];
+
+			if (discard_hostbuild_artifacts(e->name, discard_err, sizeof(discard_err)) != 0)
+				snprintf(harvest_why, sizeof(harvest_why), "setting %s aside failed: %s",
+				         artifact_dir, discard_err);
+			else if (persist_mkdir_p(artifact_dir) != 0)
+				snprintf(harvest_why, sizeof(harvest_why), "creating %s failed: %s",
+				         artifact_dir, strerror(errno));
+		}
+		if (harvest_why[0] == '\0' && merge_tree(dest_dir, artifact_dir, "", e, 1) != 0)
 			/* #654: merge_fail() has just written why. */
 			snprintf(harvest_why, sizeof(harvest_why), "%s", g_merge_fail_reason);
 		if (harvest_why[0] != '\0') {
