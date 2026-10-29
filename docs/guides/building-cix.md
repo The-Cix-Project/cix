@@ -28,7 +28,7 @@ The kernel Cix boots is not part of this build — see [`kernel-build-and-ab-upd
 
 ## Rebuilding Cix on a running host
 
-The rebuild is a [hostbuild](writing-recipes.md#the-hostbuild-variant) of the `cix` recipe ([ADR-0056](../adr/0056-hostbuild-artifact-mechanism.md), [ADR-0057](../adr/0057-self-hosted-toolchain-and-control-plane-rebuild.md)). Cix's own code is compiled with TCC ([ADR-0001](../adr/0001-tcc-exclusive-toolchain.md)); `cix-boot.efi` is the one gcc-built file, for the reason above.
+The rebuild is a [hostbuild](writing-recipes.md#the-hostbuild-variant) of the `cix` recipe ([ADR-0056](../adr/0056-hostbuild-artifact-mechanism.md), [ADR-0057](../adr/0057-self-hosted-toolchain-and-control-plane-rebuild.md)). Cix's own code, including `cix-boot.efi`, is compiled with TCC ([ADR-0001](../adr/0001-tcc-exclusive-toolchain.md), [ADR-0362](../adr/0362-cix-boot-is-built-by-a-tcc-win64-cross-compiler.md), [ADR-0363](../adr/0363-the-win64-cross-target-is-part-of-the-tcc-package.md)). The EFI image uses TCC's `x86_64-win32` cross-target for its Microsoft x64 calling convention and PE/COFF output.
 
 ### 1. Nothing to prepare for the build itself
 
