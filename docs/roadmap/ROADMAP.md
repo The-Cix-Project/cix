@@ -2445,6 +2445,12 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 346: a hostbuild's harvest deletes nothing on the event loop (#645, 0.2.57-619)
+
+The harvest used to empty `<artifacts>/<name>` with nftw() on the event loop, on every hostbuild, the nightly host roll's kernel and cix included. It now sets the previous tree aside into ADR-0341's delete queue with one rename, as a failed hostbuild already did (#644), and creates the directory empty.
+
+**Measured on 192.168.15.95, 2026-10-29:** compile probe 654 passed the selftest. On 0.2.57-619, two cache-hit hostbuilds (cix 0.2.57-618, then 0.2.57-619) each harvested over the existing tree, and each assembly started from the tree it wrote. `GET /v1/system/stalls` recorded neither. No harvest had been measured past the 750 ms threshold before either, so this changes a rule kept, not a stall seen.
+
 ## Part 345: cix-boot.efi is built by TCC, and a console gets its container's env (#656, #663, #662, ADR-0362, ADR-0363, 0.2.57-617 and 0.2.57-618)
 
 The UEFI boot manager was the last program in Cix's own code built with gcc. It is now built by the win64 cross target of this project's own tcc, which builds both compilers from one tree with every edit. A console session now gets the container's `env` rather than cixd's environment. And a sync in progress says its counts are the previous run's.
