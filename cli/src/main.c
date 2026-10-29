@@ -545,6 +545,9 @@ static const char USAGE_TEXT[] =
 	        "  storage rebuildable [show|migrate [--disk=NAME]|migrate-status]  -- same\n"
 	        "               shape, for where images/packages/artifacts (regenerable from\n"
 	        "               recipes/sources, never irreplaceable) live instead\n"
+	        "  storage data-dir  -- what lives in the daemon's data directory (#249): each\n"
+	        "               entry's size, which placement owns it, and whether that owner\n"
+	        "               still lives there or moved away and left the tree behind\n"
 	        "  swap  -- show whether the host swap file is enabled (ADR-0069) and which disk\n"
 	        "               (if any) it's placed on\n"
 	        "  swap enable --size-mb=N [--disk=NAME]  -- create and activate a swap file of\n"
@@ -2644,12 +2647,71 @@ static int cmd_storage_kind(const struct cix_client *c, int json_mode, const cha
 	return 2;
 }
 
+/*
+ * GET /v1/system/data-dir (#249): what lives in the data directory and
+ * who owns it. "in use" no means the owner has moved to LIVE PATH and
+ * this tree was left behind; owner "unknown" means nothing claims it.
+ */
+static void fmt_data_dir(const struct json_value *v)
+{
+	const struct json_value *fs = json_object_get(v, "filesystem");
+	const struct json_value *arr = json_object_get(v, "entries");
+	const double gib = 1024.0 * 1024.0 * 1024.0;
+	size_t i;
+
+	printf("%s", json_str_field(v, "path") != NULL ? json_str_field(v, "path") : "?");
+	if (fs != NULL && fs->type == JSON_OBJECT)
+		printf("  filesystem %.2f GiB, used %.2f GiB, free %.2f GiB",
+		       json_as_number(json_object_get(fs, "size_bytes")) / gib,
+		       json_as_number(json_object_get(fs, "used_bytes")) / gib,
+		       json_as_number(json_object_get(fs, "free_bytes")) / gib);
+	printf("; entries %.2f GiB\n", json_as_number(json_object_get(v, "entries_bytes")) / gib);
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("(empty)\n");
+		return;
+	}
+	printf("%-28s %-10s %10s  %-20s %-6s %s\n", "NAME", "TYPE", "GiB", "OWNER", "IN USE",
+	       "LIVE PATH / NOTE");
+	for (i = 0; i < arr->u.array.count; i++) {
+		const struct json_value *e = arr->u.array.items[i];
+		const struct json_value *in_use = json_object_get(e, "in_use");
+		const char *live = json_str_field(e, "live_path");
+		const char *error = json_str_field(e, "error");
+		long long mounts = (long long)json_as_number(json_object_get(e, "mounts_skipped"));
+
+		printf("%-28s %-10s %10.3f  %-20s %-6s %s",
+		       json_str_field(e, "name") != NULL ? json_str_field(e, "name") : "?",
+		       json_str_field(e, "type") != NULL ? json_str_field(e, "type") : "?",
+		       json_as_number(json_object_get(e, "bytes")) / gib,
+		       json_str_field(e, "owner") != NULL ? json_str_field(e, "owner") : "?",
+		       in_use != NULL && in_use->type == JSON_BOOL && in_use->u.boolean ? "yes" : "no",
+		       live != NULL ? live : "");
+		if (mounts > 0)
+			printf(" (%lld mount(s) not walked)", mounts);
+		if (error != NULL)
+			printf(" (incomplete: %s)", error);
+		printf("\n");
+	}
+}
+
+static int cmd_storage_data_dir(const struct cix_client *c, int json_mode)
+{
+	struct cix_response r;
+
+	if (cix_client_request(c, CIX_API_getSystemDataDir_METHOD, CIX_API_getSystemDataDir, NULL,
+	                       &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_data_dir);
+}
+
 static int cmd_storage(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl storage logs|rebuildable [show|migrate|migrate-status]\n");
+		fprintf(stderr, "usage: cixctl storage logs|rebuildable [show|migrate|migrate-status] | storage data-dir\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -2659,8 +2721,10 @@ static int cmd_storage(const struct cix_client *c, int json_mode, int argc, char
 	if (strcmp(sub, "rebuildable") == 0)
 		return cmd_storage_kind(c, json_mode, "rebuildable", CIX_API_getRebuildableStorage,
 		                         CIX_API_migrateRebuildableStorage, CIX_API_getRebuildableStorageMigrateStatus, argc - 1, argv + 1);
+	if (strcmp(sub, "data-dir") == 0)
+		return cmd_storage_data_dir(c, json_mode);
 
-	fprintf(stderr, "usage: cixctl storage logs|rebuildable [show|migrate|migrate-status]\n");
+	fprintf(stderr, "usage: cixctl storage logs|rebuildable [show|migrate|migrate-status] | storage data-dir\n");
 	return 2;
 }
 
@@ -19950,7 +20014,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 	 * rather than gaining an artificial `storage placement ...` level.
 	 */
 	if (strcmp(cmd, "storage") == 0) {
-		if (argc > 0 && (strcmp(argv[0], "logs") == 0 || strcmp(argv[0], "rebuildable") == 0))
+		if (argc > 0 && (strcmp(argv[0], "logs") == 0 || strcmp(argv[0], "rebuildable") == 0 ||
+		                 strcmp(argv[0], "data-dir") == 0))
 			return cmd_storage(client, json_mode, argc, argv);
 		return cmd_disks(client, json_mode, argc, argv);
 	}

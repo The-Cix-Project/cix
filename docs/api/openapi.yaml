@@ -4742,6 +4742,60 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /system/data-dir:
+    get:
+      summary: What lives in the daemon's data directory, and who owns it (#249)
+      description: >
+        One entry per name directly beneath the data directory
+        (`/var/lib/cix` on an installed host, the `cix-containers`
+        partition): its type, the bytes the filesystem allocated to it,
+        which placement owns it, and whether that owner's live tree is
+        this one. `in_use: false` on an owned directory means its owner
+        has moved elsewhere (`live_path`) and the tree was left behind.
+        `owner: unknown` is something no part of the daemon claims.
+
+
+        Bytes are allocated blocks, not apparent sizes, because the
+        question is what holds the disk. Trees that share extents
+        (reflinks, btrfs snapshots) are each charged in full, so
+        `entries_bytes` can exceed the filesystem's `used_bytes`. A
+        subtree that is a separate mount is not walked, since its bytes
+        are on another filesystem: it is counted in `mounts_skipped`, and
+        an entry that is itself a mount point has `type: mount`.
+
+
+        It walks every tree, unbounded, so the report is made in a helper
+        child while the request waits, one at a time.
+      operationId: getSystemDataDir
+      x-cix-read: derived
+      x-cix-permission: storage:read
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: The report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataDirReport"
+        "500":
+          description: The report ran and produced nothing (the data directory could not be read)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: >
+            No report could start. One runs at a time with up to 4 waiting;
+            one arriving beyond that is answered at once. Retry after the
+            header's interval.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /system/stalls:
     get:
       summary: Times the control plane stopped going round its own loop (issue #100)
@@ -24558,6 +24612,76 @@ components:
             recomposition, so there is no operator
             decision here worth a knob.
 
+    DataDirReport:
+      type: object
+      required: [path, filesystem, entries, entries_bytes, measured_at]
+      properties:
+        path:
+          type: string
+          description: The data directory reported on.
+        filesystem:
+          type: object
+          nullable: true
+          description: The filesystem holding it, from statvfs(2); null if it could not be read.
+          required: [size_bytes, used_bytes, free_bytes]
+          properties:
+            size_bytes:
+              type: integer
+            used_bytes:
+              type: integer
+            free_bytes:
+              type: integer
+              description: Available to an unprivileged writer.
+        entries:
+          type: array
+          description: One per name directly beneath the data directory, sorted by name.
+          items:
+            $ref: "#/components/schemas/DataDirEntry"
+        entries_bytes:
+          type: integer
+          description: >
+            The sum of the entries' bytes. Can exceed `used_bytes`: trees
+            sharing extents are each charged in full.
+        measured_at:
+          type: integer
+          description: Unix time the report was made.
+    DataDirEntry:
+      type: object
+      required: [name, type, bytes, owner, in_use, live_path, mounts_skipped, error]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [directory, file, symlink, other, mount]
+          description: >
+            `mount` is a directory that is itself a mount point; its bytes
+            are on another filesystem and are not counted.
+        bytes:
+          type: integer
+          description: Allocated bytes (st_blocks) of the entry and everything beneath it.
+        owner:
+          type: string
+          enum: [log-store, rebuildable-storage, volumes, container-pivots, swap, disk-roles,
+                 storage-placement, unknown]
+          description: Which part of the daemon claims this name; `unknown` when none does.
+        in_use:
+          type: boolean
+          description: >
+            True when this is the owner's live tree (or a state file the
+            daemon reads here). False on an owned directory means the owner
+            lives at `live_path` now and this tree was left behind.
+        live_path:
+          type: string
+          nullable: true
+          description: Where the owner's tree lives now; null for a state file or an unknown entry.
+        mounts_skipped:
+          type: integer
+          description: Separately mounted subtrees beneath this entry, not walked.
+        error:
+          type: string
+          nullable: true
+          description: Why the entry could not be walked completely, or null.
     PkgVerifyReport:
       type: object
       required: [packages, checked, incomplete]

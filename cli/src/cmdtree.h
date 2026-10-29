@@ -446,6 +446,7 @@ static const struct cli_node n_storage_subs[] = {
 	{ "rm-partition", NULL, NULL },
 	{ "logs", NULL, n_storage_logs_subs },
 	{ "rebuildable", NULL, n_storage_rebuildable_subs },
+	{ "data-dir", NULL, NULL },
 	{ "unmount", NULL, NULL },
 	{ NULL, NULL, NULL },
 };

@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The API says what lives in the data directory (#249)
+
+- **What changed:**
+  - `GET /v1/system/data-dir` (`cixctl storage data-dir`) reports one entry per name beneath the daemon's data directory. Each has its type, the bytes the filesystem allocated to it, the placement that owns it (log store, rebuildable storage, volumes, container pivots, swap, disk roles, storage placement, or `unknown`), and whether that owner's live tree is this one. When it isn't, `live_path` says where the owner lives now.
+  - Separately mounted subtrees are skipped, not counted.
+  - The report is made by `datadir_write_json()` in a helper child (`PARK_DATADIR`, the sixth park kind), and `test_blocking_waits` counts its call sites. `test_datadir` is in SELFTESTS.
+- **Why:** on 192.168.15.95 the `cix-containers` partition held 4.28 GB, while the log store (capped at 100 MB), its one volume (0.75 MB) and swap (off) accounted for about 0.1 GB, and nothing in the API could say what the rest was. #249, relocating the data directory, cannot be designed without knowing what it would carry, and this is the first step the owner chose (2026-10-29).
+- **Verified:** pending.
+
 ### A hostbuild's harvest no longer deletes the previous tree on the event loop (#645)
 
 - **What changed:** the harvest empties `<artifacts>/<name>` by setting the previous tree aside with one rename into ADR-0341's delete queue, through `discard_hostbuild_artifacts()` (the one a failed hostbuild already uses, #644), and then creating the directory. It used to call `persist_fresh_output_dir()`, which deletes the tree with nftw() where it stands. `mkbootroot` and `mkinstalleriso` keep that call, since neither runs on a loop.

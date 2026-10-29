@@ -618,6 +618,22 @@ static const char *const g_verify_calls[] = {
 	NULL,
 };
 
+/*
+ * A TENTH COUNTED SET (#249): reporting the data directory.
+ * datadir_write_json() walks every tree beneath it, unbounded. Its one
+ * caller is datadir_work(), the helper child GET /v1/system/data-dir
+ * reaches through datadir_ask().
+ */
+static const struct call_budget g_datadir_budgets[] = {
+	{ "datadir.c", "datadir_write_json(", 1, "the definition, not a call" },
+	{ "main.c", "datadir_write_json(", 1, "datadir_work(), which runs only in a helper child" },
+};
+
+static const char *const g_datadir_calls[] = {
+	"datadir_write_json(",
+	NULL,
+};
+
 struct call_set {
 	const char *what;
 	const struct call_budget *budgets;
@@ -664,6 +680,11 @@ static const struct call_set g_call_sets[] = {
 	  "Verifying the installed packages stats every file of every one of them, and cixd has "
 	  "one event loop. Ask for it through verify_ask() (#643), which parks the request and "
 	  "makes the report in a helper child." },
+	{ "data-directory report", g_datadir_budgets,
+	  (int)(sizeof(g_datadir_budgets) / sizeof(g_datadir_budgets[0])), g_datadir_calls,
+	  "Reporting the data directory walks every tree beneath it, and cixd has one event loop. "
+	  "Ask for it through datadir_ask() (#249), which parks the request and makes the report "
+	  "in a helper child." },
 };
 
 #define CALL_SET_COUNT ((int)(sizeof(g_call_sets) / sizeof(g_call_sets[0])))

@@ -413,12 +413,14 @@ int main(void)
 	 *     btrfs gets.
 	 * 352 as of ADR-0360: GET and POST /containers/{name}/migrate-storage
 	 *     went with the container `disk` they moved.
+	 * 353 as of #249: GET /system/data-dir, what lives in the data
+	 *     directory and who owns it.
 	 */
 	status = run_apigen("docs/api/openapi.yaml", NULL, out, sizeof(out));
 	if (status != 0)
 		fail("apigen rejected the real spec: %.300s", out);
-	else if (atoi(out) != 352)
-		fail("apigen found %d operations in the real spec, expected 352 -- if the spec "
+	else if (atoi(out) != 353)
+		fail("apigen found %d operations in the real spec, expected 353 -- if the spec "
 		     "genuinely changed, update this number deliberately; a silently different "
 		     "count is how a lost route hides",
 		     atoi(out));
@@ -653,7 +655,7 @@ int main(void)
 	 * reads it makes stale. The events stream announces from these, so
 	 * a gap is a page that stays stale with nothing saying so -- a
 	 * build failure, as a missing permission is. The real spec passing
-	 * above is the positive control: all 148 reads and 204 changes.
+	 * above is the positive control: all 149 reads and 204 changes.
 	 */
 	expect_refusal("a read with no x-cix-read",
 	               VOCAB
@@ -925,9 +927,9 @@ int main(void)
 			}
 			fclose(f);
 			unlink(routes_path);
-			if (rows != 352 || with_permission != rows)
+			if (rows != 353 || with_permission != rows)
 				fail("the generated route table has %d rows and %d carry a permission; "
-				     "expected 352 and 352 (ADR-0317)",
+				     "expected 353 and 353 (ADR-0317)",
 				     rows, with_permission);
 		}
 	}
@@ -939,8 +941,8 @@ int main(void)
 		 * these lists, so a slot out of range would write past the
 		 * vector and a missing change row would announce nothing --
 		 * both silently. Counted here against the contract itself:
-		 * one slot per announced read (148 reads, less 10 streams and
-		 * 11 derived reads, is 127), one row per change (204).
+		 * one slot per announced read (149 reads, less 10 streams and
+		 * 12 derived reads, is 127), one row per change (204).
 		 */
 		char slots_path[256], table_path[256];
 		char buf[4096];
@@ -1116,10 +1118,10 @@ int main(void)
 			fclose(f);
 			unlink(hdr_path);
 		}
-		if (defines != 352)
-			fail("CLI header has %d path defines, expected one per operation (352)", defines);
-		if (methods != 352)
-			fail("CLI header has %d method defines, expected one per operation (352)", methods);
+		if (defines != 353)
+			fail("CLI header has %d path defines, expected one per operation (353)", defines);
+		if (methods != 353)
+			fail("CLI header has %d method defines, expected one per operation (353)", methods);
 		if (braces != 0)
 			fail("%d CLI path define(s) still contain '{' -- a parameter was not converted "
 			     "to %%s and would put a literal brace in the URL",
@@ -1446,8 +1448,8 @@ int main(void)
 			fclose(f);
 			unlink(js_path);
 		}
-		if (shapes != 352)
-			fail("web api.js has %d _SHAPE entries, expected one per operation (352)",
+		if (shapes != 353)
+			fail("web api.js has %d _SHAPE entries, expected one per operation (353)",
 			     shapes);
 		if (!saw_fields)
 			fail("web api.js has no FIELDS table -- the renderers have nothing to render "
@@ -1673,7 +1675,7 @@ int main(void)
 			     "APIGEN_TEST_MAX_REQ", "");
 		if (n_names == 0)
 			fail("no operation in api.js names a request schema -- 127 of the "
-			     "contract's 352 carry a requestBody, so this is a reader that "
+			     "contract's 353 carry a requestBody, so this is a reader that "
 			     "resolved none of them");
 		if (dangling > 0)
 			fail("%d operation(s) name a request schema with no FIELDS entry, the first "

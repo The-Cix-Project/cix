@@ -90,6 +90,7 @@
 #include "curlfetch.h"
 #include "quotamap.h"
 #include "treesize.h"
+#include "datadir.h"
 #include "registry.h"
 #include "containerpath.h"
 #include "osrelease.h"
@@ -1419,6 +1420,8 @@ static enum park_body_answer park_body_take(int *result_fd);
 static enum park_body_answer backup_ask(const char *target, int *result_fd);
 /* #643: and so does a package verification (verify_ask()). */
 static enum park_body_answer verify_ask(int *result_fd);
+/* #249: and so does a data-directory report (datadir_ask()). */
+static enum park_body_answer datadir_ask(int *result_fd);
 /* #642: and an uninstall waits for its package job (pkg_delete_ask()). */
 static enum park_body_answer pkg_delete_ask(const char *name, const char *image,
                                             enum pkg_error *out_result);
@@ -28571,6 +28574,30 @@ static void op_verifyPkgFiles(const struct api_ctx *ctx)
 	handle_pkg_verify_get(ctx->fd);
 }
 
+/* GET /v1/system/data-dir (#249): what lives in the data directory and
+ * who owns it, made in a helper child while the request waits. */
+static void op_getSystemDataDir(const struct api_ctx *ctx)
+{
+	int rfd = -1;
+
+	switch (datadir_ask(&rfd)) {
+	case PARK_ANSWER_ASK:
+		return; /* parked */
+	case PARK_ANSWER_BUSY:
+		respond_error_hdrs(ctx->fd, 503, "Service Unavailable", "Retry-After: 5\r\n",
+		                   "data-directory reports are busy -- try again shortly", 0);
+		return;
+	case PARK_ANSWER_FAILED:
+		respond_error(ctx->fd, 500, "Internal Server Error",
+		              "the data-directory report ended without a result");
+		return;
+	case PARK_ANSWER_READY:
+	default:
+		break;
+	}
+	respond_json_from_fd(ctx->fd, rfd, "the data-directory report");
+}
+
 /* DELETE /v1/pkg/cache */
 static void op_deletePkgCache(const struct api_ctx *ctx)
 {
@@ -32456,6 +32483,7 @@ enum park_kind {
 	PARK_BOOTMGR,
 	PARK_VERIFY,
 	PARK_PKGDELETE,
+	PARK_DATADIR,
 	PARK_KINDS
 };
 
@@ -32529,6 +32557,7 @@ struct park_queue {
 #define KMOD_WAIT_MAX 256
 #define BACKUP_WAIT_MAX 4
 #define VERIFY_WAIT_MAX 4
+#define DATADIR_WAIT_MAX 4
 static struct park_queue g_park_q[PARK_KINDS] = {
 	[PARK_CRED] = { .running_max = 1, .wait_max = CRED_WAIT_MAX },
 	[PARK_LOGREAD] = { .running_max = LOGREAD_RUNNING_MAX, .wait_max = LOGREAD_WAIT_MAX },
@@ -32538,6 +32567,7 @@ static struct park_queue g_park_q[PARK_KINDS] = {
 	[PARK_BOOTMGR] = { .running_max = 1, .wait_max = 0 },
 	[PARK_VERIFY] = { .running_max = 1, .wait_max = VERIFY_WAIT_MAX },
 	[PARK_PKGDELETE] = { .running_max = PKG_MAX_CONCURRENT_JOBS, .wait_max = 0 },
+	[PARK_DATADIR] = { .running_max = 1, .wait_max = DATADIR_WAIT_MAX },
 };
 
 static void serve_request(struct conn *cc);
@@ -32548,6 +32578,7 @@ static void backup_done(int exit_status, void *ctx);
 static void update_done(int exit_status, void *ctx);
 static void bootmgr_done(int exit_status, void *ctx);
 static void verify_done(int exit_status, void *ctx);
+static void datadir_done(int exit_status, void *ctx);
 
 static struct park *park_new(enum park_kind kind, struct conn *cc)
 {
@@ -32619,7 +32650,7 @@ static void park_abandon(struct park *p)
 		p->cc = NULL;
 		/* A verification (#643) only reads, like a log read. An uninstall
 		 * (#642) is not killed: one that finishes is what was asked for. */
-		if ((p->kind == PARK_LOGREAD || p->kind == PARK_VERIFY ||
+		if ((p->kind == PARK_LOGREAD || p->kind == PARK_VERIFY || p->kind == PARK_DATADIR ||
 		     (p->kind == PARK_BACKUP && p->backup_target[0] == '\0')) &&
 		    p->pid > 0)
 			kill(p->pid, SIGKILL);
@@ -32832,6 +32863,49 @@ static int verify_start(struct park *p)
 	return 0;
 }
 
+/* The helper child of a data-directory report (#249): every entry
+ * beneath g_base_dir walked, into the memory file the parent made
+ * before the fork. The live paths are the placements as they were at
+ * the fork; it writes nothing the parent reads. */
+static int datadir_work(void *arg)
+{
+	struct park *p = arg;
+	struct json_writer w;
+	struct datadir_live live = {
+		.log_dir = LOG_DIR,
+		.rebuildable_dir = REBUILDABLE_DIR,
+		.volumes_dir = VOLUMES_DIR,
+		.containers_dir = CONTAINERS_DIR,
+		.swap_dir = SWAP_DIR,
+	};
+	int rc;
+
+	jw_init(&w);
+	if (datadir_write_json(&w, g_base_dir, &live, (long long)time(NULL)) != 0) {
+		jw_free(&w);
+		return 1;
+	}
+	rc = cix_write_all(p->memfd, w.buf, w.len);
+	jw_free(&w);
+	return rc == 0 ? 0 : 1;
+}
+
+/* Forks a report. A memfd, as for a verification: nothing bounds how
+ * many entries the directory holds. */
+static int datadir_start(struct park *p)
+{
+	p->memfd = memfd_create("cix-datadir", MFD_CLOEXEC);
+	if (p->memfd < 0)
+		return -1;
+	if (helper_run_pid(datadir_work, p, datadir_done, p, "a data-directory report", &p->pid) !=
+	    0) {
+		close(p->memfd);
+		p->memfd = -1;
+		return -1;
+	}
+	return 0;
+}
+
 /* The helper child of a system update (#631): update_stage(), its
  * verdict and its held log lines into the memory file the parent made
  * before the fork. It changes nothing the parent reads; what it writes
@@ -32937,6 +33011,9 @@ static int park_start(struct park *p)
 	case PARK_VERIFY:
 		rc = verify_start(p);
 		break;
+	case PARK_DATADIR:
+		rc = datadir_start(p);
+		break;
 	case PARK_PKGDELETE:
 		/* Never queued: pkg_delete_ask() starts the job itself. */
 		rc = -1;
@@ -32992,7 +33069,8 @@ static void park_unavailable(struct conn *cc, enum park_kind kind)
 	if (kind == PARK_CRED)
 		cc->cred_state = CRED_UNAVAILABLE;
 	else if (kind == PARK_LOGREAD || kind == PARK_BACKUP || kind == PARK_UPDATE ||
-	         kind == PARK_BOOTMGR || kind == PARK_VERIFY || kind == PARK_PKGDELETE)
+	         kind == PARK_BOOTMGR || kind == PARK_VERIFY || kind == PARK_PKGDELETE ||
+	         kind == PARK_DATADIR)
 		cc->body_state = PARK_BODY_UNAVAILABLE;
 	else
 		cc->kmod_state = KMODJOB_STATE_UNAVAILABLE;
@@ -33358,6 +33436,29 @@ static enum park_body_answer verify_ask(int *result_fd)
 static void verify_done(int exit_status, void *ctx)
 {
 	park_body_done(ctx, exit_status, "a package verification");
+}
+
+/*
+ * #249: a data-directory report for the request being served. It walks
+ * every tree beneath the data directory, unbounded, so it runs in a
+ * helper child like a verification.
+ */
+static enum park_body_answer datadir_ask(int *result_fd)
+{
+	enum park_body_answer a = park_body_take(result_fd);
+	struct park *p;
+
+	if (a != PARK_ANSWER_ASK)
+		return a;
+	p = park_new(PARK_DATADIR, g_response_conn);
+	if (p == NULL)
+		return PARK_ANSWER_BUSY;
+	return park_body_submit(p);
+}
+
+static void datadir_done(int exit_status, void *ctx)
+{
+	park_body_done(ctx, exit_status, "a data-directory report");
 }
 
 /* ADR-0357 (#642): the record waiting on each package job slot's

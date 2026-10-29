@@ -29,6 +29,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | DELETE | `/system/hostauth/permissions/{group}` | Remove one group's entry, under the same refusal |
 | GET | `/system/boot` | Build version/time, A/B slot, kernel version (`uname`), and which device backs each of the platform's five partitions this boot |
 | GET | `/system/stalls` | Times the control plane stopped going round its own loop, recorded by a watchdog process (issue #100) — each record names the daemon's own child processes and what each was doing, so a `wchan` of `do_wait` says *which* wait (issue #399) |
+| GET | `/system/data-dir` | What lives in the daemon's data directory and who owns it (#249): one entry per name, its allocated bytes, the placement that owns it, and whether that owner still lives there (`in_use`) or moved to `live_path` and left the tree behind. Separately mounted subtrees are not walked. Made in a helper child while the request waits |
 | GET | `/system/kernel-policy` | Which kernel line this box tracks, what that channel currently points at, and how far behind the running kernel is (issue #65) |
 | PUT | `/system/kernel-policy` | Set the channel — `pinned` / `longterm` / `stable` / `mainline` |
 | POST | `/system/kernel-policy/refresh` | Re-ask kernel.org what each channel is at (202; the fetch is async) |
