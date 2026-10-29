@@ -14,7 +14,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - `boot_init()` mounts `/config` before the data directory, and `mount_placed_data_dir()` mounts a placed disk at the data directory when one is recorded: by the filesystem UUID, checked on the device itself, btrfs only. A placed disk that is absent is reported degraded and the boot mounts cix-containers as before.
   - A disk that is the data directory's placement is refused for role removal, format and unmount, as the other placements' disks are.
 - **Why:** ADR-0364 decision 3, staged by the owner's "Go ahead" of 2026-10-29: the read, the mount order and UUID resolution first, with no placement set, so nothing changes live. The request and the at-boot move come next.
-- **Verified:** pending the release.
+- **Verified:** 0.2.57-624 on 192.168.15.95 (compile probe 660), booted on slot b. `GET /v1/system/data-storage` answered `{"disk":null,"degraded":false}`; log storage stayed on the default, rebuildable storage on sda, the data directory on cix-containers (15.56 GiB, persistent), and all 13 containers came back running. With no placement recorded, the reordered mounts changed nothing live, which is what stage a set out to show.
 
 ### The data directory holds no boot state, and a volatile one says so (#249, ADR-0364 decisions 1 and 2)
 
