@@ -6,11 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
-### cix-boot.efi is built by TCC (#656, ADR-0362)
+### cix-boot.efi is built by TCC, and tcc carries the win64 target (#656, ADR-0362, ADR-0363)
 
 - **What changed:**
-  - `cix-boot.efi` is one compile-and-link with `x86_64-win32-tcc`, the win64 cross target of the tinycc source `tcc` pins, from the new `tcc-win64` package. Its link options are `-subsystem=efiapp`, `-image-base=0x10000`, `-entry=efi_main`, `-dynamicbase` and `-nxcompat`. `EFI_LD` and gcc are gone from the build.
-  - `tcc-win64` carries one source edit, a `.sbat` section class in `tccpe.c`, gated in its own recipe by linking a `.sbat` and extracting that section alone.
+  - `cix-boot.efi` is one compile-and-link with `x86_64-win32-tcc`, the win64 cross target of the tinycc source `tcc` pins, which `tcc@0.9.28rc-32` builds beside the native compiler from one tree with every edit (ADR-0363). Its link options are `-subsystem=efiapp`, `-image-base=0x10000`, `-entry=efi_main`, `-dynamicbase` and `-nxcompat`. `EFI_LD` and gcc are gone from the build.
+  - tcc carries one new edit, a `.sbat` section class in `tccpe.c`, gated by linking a `.sbat` and extracting that section alone. Its native `tcc` is gated byte-identical, stripped, to 0.9.28rc-31's published one: the edit is in a file only a PE target compiles. A `tcc-win64` package, the same source pinned in a second recipe without tcc's other edits, built the probes and is retired.
   - `cix-boot.c` provides `memset` and `memcpy`, as a freestanding program must.
   - `uefi.h`: `EFIAPI` is empty and `#error`s unless the target is win64. `UINTN` is `unsigned long long`, not `unsigned long`. Asserts pin `UINTN` and pointers at 8 bytes and `L""` characters at 2.
 - **Why:** the owner's decision of 2026-10-27 (#628), *"Make it TCC too"*. It was the one gcc-built program in Cix's own code. `UINTN` was 32 bits under the LLP64 win64 target, which would have shifted every UEFI table and failed only in firmware. The probes before ADR-0362 did not catch it, because none of their checks reads a structure layout.

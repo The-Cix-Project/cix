@@ -24,7 +24,7 @@
  *   1. Every protocol function is EFIAPI. UEFI uses the Microsoft x64
  *      calling convention, not the System V one a Linux compiler
  *      defaults to. This file is compiled by tcc's x86_64-win32 cross
- *      target (the tcc-win64 package, ADR-0362), whose DEFAULT
+ *      target (built by the tcc package, ADR-0362, ADR-0363), whose DEFAULT
  *      convention is the Microsoft one, so EFIAPI is empty and the
  *      #error below refuses any compiler that is not that target. tcc
  *      has no ms_abi attribute (measured, probe-tccefi@5-1), so the

@@ -1230,7 +1230,7 @@ $(BUILD)/cix-install: image/src/cix-install.c image/src/dual_console.c image/src
 #
 # cix-boot: the UEFI boot manager (ADR-0215), built by TCC like
 # everything else (ADR-0362). UEFI uses the Microsoft x64 calling
-# convention, and tcc's x86_64-win32 cross target (the tcc-win64
+# convention, and tcc's x86_64-win32 cross target (built by the tcc
 # package) has that as its default and its own PE linker -- so this is
 # one compile-and-link to PE/COFF, with no ld and no ELF-to-PE step.
 #
@@ -1238,7 +1238,7 @@ $(BUILD)/cix-install: image/src/cix-install.c image/src/dual_console.c image/src
 # section off address zero. -dynamicbase is what makes tccpe emit a
 # .reloc directory and clear "relocations stripped", so firmware may
 # load the image anywhere; -nxcompat marks it NX-compatible, which newer
-# shims check. .sbat stays its own section only because tcc-win64
+# shims check. .sbat stays its own section only because the tcc package
 # carries a section class for it (probe-tccefi@2-1 and @5-1).
 #
 EFI_CC ?= /usr/bin/x86_64-win32-tcc
