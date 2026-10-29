@@ -68,6 +68,19 @@ static const char *const g_globs[] = {
 };
 #define NGLOBS ((int)(sizeof(g_globs) / sizeof(g_globs[0])))
 
+/*
+ * The one file whose target is not this one: cix-boot.c is an x86-64
+ * EFI application built by tcc's x86_64-win32 target (ADR-0362), and
+ * uefi.h refuses any compiler that is not that target. gcc here targets
+ * LP64 Linux, so it is told what that target is instead: freestanding
+ * (memset and memcpy are the program's own, not builtins), 16-bit wide
+ * characters, and _WIN64. It lints the same source for warnings; it
+ * cannot check the LLP64 layout, which uefi.h's asserts do under the
+ * real compiler.
+ */
+#define EFI_SOURCE "image/src/cix-boot.c"
+#define EFI_FLAGS "-ffreestanding -fshort-wchar -D_WIN64"
+
 int main(void)
 {
 	char cmd[2048];
@@ -88,11 +101,16 @@ int main(void)
 		return 1;
 	}
 
-	for (i = 0; i < NGLOBS; i++) {
-		snprintf(cmd, sizeof(cmd),
-		         "for f in %s; do [ -e \"$f\" ] || continue; "
-		         "%s %s %s \"$f\" 2>&1; done",
-		         g_globs[i], GCC_BIN, FLAGS, INCLUDES);
+	for (i = 0; i <= NGLOBS; i++) {
+		if (i < NGLOBS)
+			snprintf(cmd, sizeof(cmd),
+			         "for f in %s; do [ -e \"$f\" ] || continue; "
+			         "[ \"$f\" = %s ] && continue; "
+			         "%s %s %s \"$f\" 2>&1; done",
+			         g_globs[i], EFI_SOURCE, GCC_BIN, FLAGS, INCLUDES);
+		else
+			snprintf(cmd, sizeof(cmd), "%s %s %s %s %s 2>&1", GCC_BIN, FLAGS,
+			         EFI_FLAGS, INCLUDES, EFI_SOURCE);
 		p = popen(cmd, "r");
 		if (p == NULL) {
 			printf("LINT RESULT: FAIL (cannot run %s)\n", GCC_BIN);
