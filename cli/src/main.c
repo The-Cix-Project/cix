@@ -2667,6 +2667,8 @@ static void fmt_data_dir(const struct json_value *v)
 		       json_as_number(json_object_get(fs, "used_bytes")) / gib,
 		       json_as_number(json_object_get(fs, "free_bytes")) / gib);
 	printf("; entries %.2f GiB\n", json_as_number(json_object_get(v, "entries_bytes")) / gib);
+	if (json_str_field(v, "fault") != NULL)
+		printf("NOT PERSISTENT: %s (ADR-0364)\n", json_str_field(v, "fault"));
 	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
 		printf("(empty)\n");
 		return;

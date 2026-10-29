@@ -150,6 +150,9 @@ int main(void)
 	      "path is the data directory");
 	check((long long)json_as_number(json_object_get(doc, "measured_at")) == 1234,
 	      "measured_at is the caller's clock");
+	check(bool_field(doc, "persistent") && json_object_get(doc, "fault") != NULL &&
+	              json_object_get(doc, "fault")->type == JSON_NULL,
+	      "with no fault the data directory reports persistent, fault null");
 	entries = json_object_get(doc, "entries");
 	check(entries != NULL && entries->type == JSON_ARRAY && entries->u.array.count == 5,
 	      "five entries, one per name");
@@ -226,6 +229,19 @@ int main(void)
 		      ".discard is the delete queue's trash, not in use");
 		json_free(doc);
 	}
+	jw_free(&w);
+
+	/* ADR-0364 decision 2: a data directory on a tmpfs says so. */
+	live.fault = "the data partition could not be mounted";
+	jw_init(&w);
+	check(datadir_write_json(&w, base, NULL, &live, 1234) == 0,
+	      "datadir_write_json succeeds with a fault");
+	doc = json_parse(w.buf, w.len);
+	check(doc != NULL && !bool_field(doc, "persistent") &&
+	              strcmp(str_of(json_object_get(doc, "fault")),
+	                     "the data partition could not be mounted") == 0,
+	      "a fault reports persistent false, with the reason");
+	json_free(doc);
 	jw_free(&w);
 
 	snprintf(path, sizeof(path), "rm -rf '%s'", base);

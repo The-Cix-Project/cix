@@ -2202,6 +2202,12 @@ async function refreshHealth() {
 		 */
 		updateAuthGatingBanner(health && health.auth_gating_active);
 		noteHostGating(health && health.auth_gating_active);
+		/* ADR-0364: a data directory on a tmpfs is the same kind of
+		 * standing condition, carried by the same poll. */
+		const dataDirBanner = document.getElementById("data-dir-banner");
+
+		if (dataDirBanner)
+			dataDirBanner.hidden = !(health && health.data_dir_persistent === false);
 
 		/* Back after an absence: the daemon may have restarted into a
 		 * different build with a fresh uptime, so re-ask rather than keep

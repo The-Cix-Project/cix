@@ -267,6 +267,15 @@
 			Grant a group <code>identity:write</code> (<em>Services &rarr; LDAP &rarr; Grant Permissions</em>; every
 			admin group has it) and put an enabled user in it.
 		</div>
+		<!-- ADR-0364: the data partition did not mount and the data directory
+		     is a tmpfs this boot. Standing condition, so a banner, shown from
+		     the health poll that already runs. -->
+		<div id="data-dir-banner" class="auth-gating-banner" hidden>
+			<strong>This host's data directory is not persistent.</strong>
+			Its partition did not mount at boot, so logs, volumes with no disk and swap placed
+			there are in memory and are lost at the next reboot. See
+			<em>cixctl storage data-dir</em> for the reason.
+		</div>
 		<!-- #544: the host is gated and this page has no session, so every
 		     panel's read is refused and the background refresh is paused.
 		     Standing condition, so a banner; the login form is offered once

@@ -296,6 +296,13 @@ int datadir_write_json(struct json_writer *w, const char *base_dir, const char *
 		jw_str(w, entry);
 	else
 		jw_null(w);
+	jw_key(w, "persistent");
+	jw_bool(w, live->fault == NULL);
+	jw_key(w, "fault");
+	if (live->fault != NULL)
+		jw_str(w, live->fault);
+	else
+		jw_null(w);
 	jw_key(w, "filesystem");
 	if (have_vfs) {
 		jw_obj_open(w);

@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The data directory holds no boot state, and a volatile one says so (#249, ADR-0364 decisions 1 and 2)
+
+- **What changed:**
+  - **Decision 1:** `diskroles.json` and `storage_placement.json` live in `STATE_DIR` (`/config/state`), not the data directory. At start, `migrate_bootstrap_files_into_state_dir()` copies a box's existing ones across the filesystem boundary and removes the old ones, once. A copy that fails is read from the old path that boot, never dropped. It runs in `main()` once `/config` is mounted. The old call in `boot_init()` ran before that mount, and is gone.
+  - **Decision 2:** when the data partition cannot be mounted, the tmpfs that replaces it is no longer silent. The daemon logs `data directory not persistent: ...` once the log store opens. `GET /health` carries `data_dir_persistent: false`, and `GET /v1/system/data-dir` carries `persistent` and `fault`. The dashboard shows a banner from the health poll it already makes, and `cixctl storage data-dir` prints the fault.
+- **Why:** ADR-0364, accepted by the owner on 2026-10-29. The two files were kept out of `STATE_DIR` only because state-storage could move, which #251 ended. The tmpfs fallback let a host lose everything placed in its data directory at the next reboot with nothing saying so. Both are prerequisites for moving the data directory (decision 3).
+- **Verified:** pending.
+
 ### A container base with no definition is set aside at start (#664)
 
 - **What changed:** at start, after the definitions load and before autostart, every directory under `CONTAINERS_DIR` with no container definition and nothing in the registry is set aside into ADR-0341's delete queue (`containers_discard_orphan_bases()`), and the count is logged once. Since ADR-0360 a container's base holds only a userns container's pivot mountpoint, so such a directory is debris. The registry check spares a build that resumed at start.

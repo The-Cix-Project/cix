@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-10-29, for #249. The owner decided on 2026-09-14 that the data directory should be relocatable and API-driven, reusing ADR-0141's placement machinery. This ADR is that decision's design, written after measuring what the directory actually carries.
+Accepted by the owner on 2026-10-29 (proposed the same day), for #249. The owner decided on 2026-09-14 that the data directory should be relocatable and API-driven, reusing ADR-0141's placement machinery. This ADR is that decision's design, written after measuring what the directory actually carries.
 
 ## Context
 

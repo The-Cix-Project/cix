@@ -628,18 +628,18 @@ static void init_base_dir_paths(void)
 
 	snprintf(CONTAINERS_DIR, sizeof(CONTAINERS_DIR), "%s/containers", g_base_dir);
 	/*
-	 * Deliberately g_base_dir-relative, NOT STATE_DIR-relative (ADR-0141
-	 * Phase 2 correction) -- disk role assignments are bootstrap-level
-	 * data needed to even determine *where* STATE_DIR itself lives once
-	 * state-storage becomes a relocatable, disk-role-driven placement:
-	 * putting diskroles.json inside STATE_DIR would make "which disk is
-	 * state-storage on" depend on reading a file that might itself be on
-	 * that same disk, a real circular dependency caught before it ever
-	 * shipped as a working migration. STORAGE_PLACEMENT_PATH (below)
-	 * needs the same fixed treatment for the identical reason. */
-	snprintf(DISKROLE_STATE_PATH, sizeof(DISKROLE_STATE_PATH), "%s/diskroles.json", g_base_dir);
+	 * ADR-0364: in STATE_DIR. They used to be g_base_dir-relative
+	 * (ADR-0141 phase 2 correction) because state-storage was a
+	 * relocatable placement, and "which disk holds state" cannot be
+	 * read from a file on that disk. State-storage was retired in #251:
+	 * STATE_DIR is always on /config, mounted before either is read. So
+	 * the data directory holds no state the boot needs, which is what
+	 * lets it move (ADR-0364 decision 3).
+	 * migrate_bootstrap_files_into_state_dir() moves a box's existing
+	 * copies once. */
+	snprintf(DISKROLE_STATE_PATH, sizeof(DISKROLE_STATE_PATH), "%s/diskroles.json", STATE_DIR);
 	snprintf(STORAGE_PLACEMENT_PATH, sizeof(STORAGE_PLACEMENT_PATH), "%s/storage_placement.json",
-	         g_base_dir);
+	         STATE_DIR);
 	snprintf(SWAP_DIR, sizeof(SWAP_DIR), "%s/swap", g_base_dir);
 	snprintf(SWAP_FILE_PATH, sizeof(SWAP_FILE_PATH), "%s/swapfile", SWAP_DIR);
 	snprintf(SWAP_STATE_PATH, sizeof(SWAP_STATE_PATH), "%s/state.json", SWAP_DIR);
@@ -1040,13 +1040,10 @@ static void migrate_flat_layout_to_grouped(void)
 		"keys",                "resolv.conf",       "ntp.conf",             "ntp_servers.json",
 		"syslog_targets.json", "tls_throttle.json",
 		/*
-		 * "diskroles.json" deliberately NOT here (ADR-0141 Phase 2
-		 * correction) -- it stays a fixed g_base_dir child, never
-		 * STATE_DIR-relative; see DISKROLE_STATE_PATH's own comment in
-		 * init_base_dir_paths(). migrate_diskroles_out_of_state_dir()
-		 * below handles the one-time reverse move for any box that
-		 * already migrated it into STATE_DIR under the original,
-		 * since-corrected Phase 0 list.
+		 * "diskroles.json" is not here: it lives in STATE_DIR since
+		 * ADR-0364, and migrate_bootstrap_files_into_state_dir() moves
+		 * it there from g_base_dir, with storage_placement.json, as a
+		 * copy across filesystems that this rename-only list cannot do.
 		 */
 	};
 	static const char *const rebuildable_entries[] = { "images", "pkg", "artifacts", "iso" };
@@ -1059,31 +1056,70 @@ static void migrate_flat_layout_to_grouped(void)
 }
 
 /*
- * ADR-0141 Phase 2 correction, one-time and idempotent exactly like
- * migrate_flat_layout_to_grouped() above (same rename(2)-is-a-no-op-on-
- * ENOENT safety, safe to call unconditionally on every boot): moves
- * diskroles.json back OUT of STATE_DIR to its own fixed g_base_dir
- * location, for any box that already ran the original Phase 0 upgrade
- * (which incorrectly grouped it in). A no-op on a box that's never had
- * a STATE_DIR/diskroles.json at all -- a genuinely fresh install always
- * writes it straight to the fixed path via DISKROLE_STATE_PATH, nothing
- * to move. Must run before diskrole_init() ever reads DISKROLE_STATE_PATH,
- * same ordering discipline (and same two call sites -- inside boot_init()
- * and again in main() for the non-init-mode path) as its sibling.
+ * ADR-0364 decision 1, one-time and idempotent: moves diskroles.json and
+ * storage_placement.json from g_base_dir, where they lived until ADR-0364,
+ * into STATE_DIR. The data directory is usually another filesystem from
+ * /config, so this is a copy and then an unlink of the old file, not a
+ * rename. A copy already at the new path wins and the old one is stale.
+ *
+ * It runs in main() after boot_init() has mounted /config, and before
+ * diskrole_init() and storageplacement_init() read either file. That is
+ * before logstore_init(), so what it did is kept in g_bootstrap_move_note
+ * and logged when the log store opens (#132's reason, as #256 does).
  */
-static void migrate_diskroles_out_of_state_dir(void)
-{
-	char old_path[PATH_MAX];
-	struct stat st;
+static char g_bootstrap_move_note[512];
 
-	if (snprintf(old_path, sizeof(old_path), "%s/diskroles.json", STATE_DIR) >=
-	    (int)sizeof(old_path))
-		return;
-	if (lstat(old_path, &st) != 0)
-		return; /* nothing to migrate -- already fixed, or a fresh install */
-	if (rename(old_path, DISKROLE_STATE_PATH) != 0)
-		fprintf(stderr, "migrate_diskroles_out_of_state_dir: rename %s -> %s failed: %s\n",
-		        old_path, DISKROLE_STATE_PATH, strerror(errno));
+/* ADR-0364 decision 2: why the data directory is a tmpfs this boot, or
+ * empty when its partition mounted. Set in boot_init(), before the log
+ * store exists. */
+static char g_data_dir_fault[512];
+
+static void migrate_bootstrap_files_into_state_dir(void)
+{
+	static const char *const names[] = { "diskroles.json", "storage_placement.json" };
+	size_t i;
+	int moved = 0;
+
+	for (i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+		char old_path[PATH_MAX], new_path[PATH_MAX];
+		struct stat st;
+		char *buf = NULL;
+		size_t len = 0;
+
+		snprintf(old_path, sizeof(old_path), "%s/%s", g_base_dir, names[i]);
+		snprintf(new_path, sizeof(new_path), "%s/%s", STATE_DIR, names[i]);
+		if (strcmp(old_path, new_path) == 0 || lstat(old_path, &st) != 0)
+			continue; /* nothing at the old path: moved already, or a fresh install */
+		if (lstat(new_path, &st) != 0) {
+			if (persist_read_file(old_path, &buf, &len) != 0 ||
+			    persist_atomic_write(new_path, buf != NULL ? buf : "", len) != 0) {
+				/* Read the old copy this boot rather than lose every
+				 * role or placement; the next boot tries again. */
+				if (i == 0)
+					snprintf(DISKROLE_STATE_PATH, sizeof(DISKROLE_STATE_PATH), "%s",
+					         old_path);
+				else
+					snprintf(STORAGE_PLACEMENT_PATH, sizeof(STORAGE_PLACEMENT_PATH), "%s",
+					         old_path);
+				snprintf(g_bootstrap_move_note, sizeof(g_bootstrap_move_note),
+				         "could not move %s to %s (%s); read from the old path this boot, "
+				         "and tried again at the next (ADR-0364)",
+				         old_path, new_path, strerror(errno));
+				free(buf);
+				continue;
+			}
+			free(buf);
+			moved++;
+		}
+		if (unlink(old_path) != 0 && errno != ENOENT)
+			snprintf(g_bootstrap_move_note, sizeof(g_bootstrap_move_note),
+			         "moved %s, but could not remove the old copy (%s)", names[i],
+			         strerror(errno));
+	}
+	if (moved > 0 && g_bootstrap_move_note[0] == '\0')
+		snprintf(g_bootstrap_move_note, sizeof(g_bootstrap_move_note),
+		         "moved %d bootstrap state file(s) from %s into %s (ADR-0364)", moved,
+		         g_base_dir, STATE_DIR);
 }
 
 /*
@@ -2693,9 +2729,23 @@ static int boot_init(void)
 	 * production (the ADR's staged retirement), leaving one type
 	 * again. */
 	if (mount(CONTAINERS_DEVICE, g_base_dir, "btrfs", MS_NOSUID | MS_NODEV, NULL) != 0 &&
-	    mount(CONTAINERS_DEVICE, g_base_dir, "ext4", MS_NOSUID | MS_NODEV, NULL) != 0 &&
-	    mount_or_fail("tmpfs", g_base_dir, "tmpfs", MS_NOSUID | MS_NODEV) != 0)
-		return -1;
+	    mount(CONTAINERS_DEVICE, g_base_dir, "ext4", MS_NOSUID | MS_NODEV, NULL) != 0) {
+		/*
+		 * ADR-0364 decision 2: still a tmpfs, so the control plane comes
+		 * up and can be reached to fix it, but no longer silently --
+		 * everything placed in the data directory is in memory until the
+		 * next boot. Logged once the log store opens, and reported on
+		 * GET /health and GET /v1/system/data-dir.
+		 */
+		snprintf(g_data_dir_fault, sizeof(g_data_dir_fault),
+		         "the data partition (%s) could not be mounted as btrfs or ext4 (%s), so %s "
+		         "is a tmpfs this boot: logs, volumes with no disk, swap and anything else "
+		         "placed there are lost at the next reboot",
+		         CONTAINERS_DEVICE[0] != '\0' ? CONTAINERS_DEVICE : "cix-containers, not found",
+		         strerror(errno), g_base_dir);
+		if (mount_or_fail("tmpfs", g_base_dir, "tmpfs", MS_NOSUID | MS_NODEV) != 0)
+			return -1;
+	}
 	/*
 	 * ADR-0141 fix (found live, 192.168.15.95): must run here, not just
 	 * from main()'s own later call below boot_init()'s return -- the
@@ -2722,7 +2772,6 @@ static int boot_init(void)
 	 * function at all.
 	 */
 	migrate_flat_layout_to_grouped();
-	migrate_diskroles_out_of_state_dir();
 	/*
 	 * ADR-0076: the host's own outbound DNS resolver config.
 	 * RESOLV_CONF_PATH (STATE_DIR/resolv.conf) is real, persisted
@@ -2971,6 +3020,15 @@ static void handle_health(int fd)
 	 */
 	jw_key(&w, "auth_gating_active");
 	jw_bool(&w, hostauth_gating_active());
+	/*
+	 * ADR-0364 decision 2: false when the data partition could not be
+	 * mounted and the data directory is a tmpfs this boot. A separate
+	 * field for the reason auth_gating_active is: liveness and "will
+	 * this survive a reboot" are different questions, and the
+	 * dashboard's poll of this endpoint is what shows its banner.
+	 */
+	jw_key(&w, "data_dir_persistent");
+	jw_bool(&w, g_data_dir_fault[0] == '\0');
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -32960,6 +33018,7 @@ static int datadir_work(void *arg)
 		.containers_dir = CONTAINERS_DIR,
 		.swap_dir = SWAP_DIR,
 		.container_defined = datadir_container_defined,
+		.fault = g_data_dir_fault[0] != '\0' ? g_data_dir_fault : NULL,
 	};
 	int rc;
 
@@ -37968,7 +38027,7 @@ static int cixd_main(int argc, char **argv)
 	}
 
 	migrate_flat_layout_to_grouped();
-	migrate_diskroles_out_of_state_dir();
+	migrate_bootstrap_files_into_state_dir(); /* ADR-0364: /config is mounted now */
 
 	/*
 	 * ADR-0141 Phase 2: g_base_dir and DISKS_MOUNT_DIR only, first --
@@ -38377,6 +38436,12 @@ static int cixd_main(int argc, char **argv)
 	if (boot_subsystem_init(init_mode, "logstore", logstore_init(LOG_DIR, LOG_STATE_PATH)) != 0)
 		return 1;
 	log_degraded_placements(); /* #256: now that there is somewhere to say it */
+	/* ADR-0364: the same, for what boot did to the data directory. */
+	if (g_data_dir_fault[0] != '\0')
+		logstore_write("cixd", "error", "data directory not persistent: %s (ADR-0364)",
+		               g_data_dir_fault);
+	if (g_bootstrap_move_note[0] != '\0')
+		logstore_write("cixd", "info", "%s", g_bootstrap_move_note);
 	if (!g_ctype_is_utf8)
 		logstore_write("cixd", "error",
 		                "setlocale(LC_CTYPE, \"C.UTF-8\") failed -- this root has no "

@@ -46,6 +46,9 @@ struct datadir_live {
 	/* Whether a container of this name is defined, for the children of
 	 * containers/; NULL reports none as defined. */
 	int (*container_defined)(const char *name);
+	/* ADR-0364 decision 2: why the data directory is not persistent this
+	 * boot (its partition did not mount and it is a tmpfs), or NULL. */
+	const char *fault;
 };
 
 /*

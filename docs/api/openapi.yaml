@@ -83,6 +83,14 @@ paths:
                       credential. `status` stays "ok" either way: a fresh install has
                       no admin by design, and liveness and authentication are
                       different questions (#370).
+                  data_dir_persistent:
+                    type: boolean
+                    description: >
+                      False when the data partition could not be mounted at boot,
+                      so the data directory is a tmpfs and everything placed there
+                      (logs, volumes with no disk, swap) is lost at the next reboot.
+                      `GET /v1/system/data-dir` gives the reason. `status` stays
+                      "ok", as for `auth_gating_active` (ADR-0364).
 
   /config:
     get:
@@ -24643,7 +24651,7 @@ components:
 
     DataDirReport:
       type: object
-      required: [path, entry, filesystem, entries, entries_bytes, measured_at]
+      required: [path, entry, persistent, fault, filesystem, entries, entries_bytes, measured_at]
       properties:
         path:
           type: string
@@ -24652,6 +24660,16 @@ components:
           type: string
           nullable: true
           description: The entry listed one level down, or null for the data directory itself.
+        persistent:
+          type: boolean
+          description: >
+            False when the data partition could not be mounted at boot and
+            the data directory is a tmpfs: what is placed there is lost at
+            the next reboot (ADR-0364).
+        fault:
+          type: string
+          nullable: true
+          description: Why the data directory is not persistent, or null.
         filesystem:
           type: object
           nullable: true
