@@ -2445,6 +2445,21 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 345: cix-boot.efi is built by TCC, and a console gets its container's env (#656, #663, #662, ADR-0362, ADR-0363, 0.2.57-617 and 0.2.57-618)
+
+The UEFI boot manager was the last program in Cix's own code built with gcc. It is now built by the win64 cross target of this project's own tcc, which builds both compilers from one tree with every edit. A console session now gets the container's `env` rather than cixd's environment. And a sync in progress says its counts are the previous run's.
+
+**Measured on 192.168.15.95, 2026-10-28 and 2026-10-29:**
+
+- **The target, before the package:** `probe-tccefi@1-1` to `@5-1` built the pinned tinycc's x86_64-win32 compiler and linked cix-boot.c with it.
+  - The gaps were `memset`, `.reloc` and `.sbat`. `-Wl,-dynamicbase` emits `.reloc`. A `tccpe.c` section class keeps `.sbat` separate; objcopy placed `.sbat` outside the image.
+  - Signing worked: sbsign reported no gap between sections, and sbverify answered OK.
+  - Writing the code found what no probe could: `UINTN` was `unsigned long`, 32 bits on LLP64. It is `unsigned long long` now, with asserts.
+- **The boot tests:** compile probe 652 booted the tcc-built image through all six boot tests under OVMF. Its one failure was `test_lint` linting cix-boot.c as a Linux file, and test_lint now lints it as its own target. 653 passed the whole selftest.
+- **One compiler:** tcc 0.9.28rc-32 builds `tcc` and `x86_64-win32-tcc` (ADR-0363). Its build unpacked 0.9.28rc-31's published artifact and required the stripped native `tcc` to be byte-identical to it, and it was. `tcc-win64` is uninstalled.
+- **On the box:** 0.2.57-616 failed its selftest on test_pkg's 5 s daemon start ceiling, now 30 s. 617 shipped #663 and #662: a fresh console in vpn-1 printed `HOME=/var/lib/longwire PATH=/usr/bin:/bin`, and `longwire status` answered `"node":"up"`. 618 shipped #656, and `cixctl boot-manager --path=` installed its 14336-byte `BOOTX64.EFI` (sha256 fd6847d2…). A reboot came back through it, on 0.2.57-618 with 13 containers running.
+- **Open:** shim accepting the image under Secure Boot needs a Secure Boot OVMF (#647).
+
 ## Part 344: a session write is durable only where losing it is unsafe, and a volume's disk is checked and mounted (#659, #660, #661, ADR-0361, 0.2.57-615)
 
 Three fixes found while verifying 614. A login and a session's sliding refresh no longer fsync the session table, and dropping an expired session writes nothing (ADR-0361). A disk given a role is mounted at once when it already carries a filesystem. A volume is placed only on a mounted `volume-storage` disk, at create and at migrate.

@@ -14,7 +14,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - `cix-boot.c` provides `memset` and `memcpy`, as a freestanding program must.
   - `uefi.h`: `EFIAPI` is empty and `#error`s unless the target is win64. `UINTN` is `unsigned long long`, not `unsigned long`. Asserts pin `UINTN` and pointers at 8 bytes and `L""` characters at 2.
 - **Why:** the owner's decision of 2026-10-27 (#628), *"Make it TCC too"*. It was the one gcc-built program in Cix's own code. `UINTN` was 32 bits under the LLP64 win64 target, which would have shifted every UEFI table and failed only in firmware. The probes before ADR-0362 did not catch it, because none of their checks reads a structure layout.
-- **Verified:** pending.
+- **Verified:** 0.2.57-618 on 192.168.15.95. Compile probe 652 booted the tcc-built cix-boot.efi through all six boot tests (test_boot, test_boot_ab, test_boot_update, test_console_shell, test_console_pki_bootstrap, test_installer), and 653 passed the whole selftest on the merged tcc. tcc 0.9.28rc-32's build gated its native tcc byte-identical, stripped, to rc-31. On .95, `cixctl boot-manager --path=` installed the 14336-byte build (sha256 fd6847d2...), and a reboot came back on 0.2.57-618 through it with 13 containers running. Not verified: shim accepting it under Secure Boot (#647).
 
 ### A console session gets the container's env, and none of cixd's (#663)
 
