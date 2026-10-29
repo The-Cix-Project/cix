@@ -1228,53 +1228,40 @@ $(BUILD)/cix-install: image/src/cix-install.c image/src/dual_console.c image/src
 	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@
 
 #
-# cix-boot: the UEFI boot manager (ADR-0215). The one thing in this
-# repo not built with TCC, and not by preference -- UEFI uses the
-# Microsoft calling convention, and TCC implements no
-# __builtin_ms_va_list at all (ADR-0211 proved this directly while
-# trying to build gnu-efi).
+# cix-boot: the UEFI boot manager (ADR-0215), built by TCC like
+# everything else (ADR-0362). UEFI uses the Microsoft x64 calling
+# convention, and tcc's x86_64-win32 cross target (the tcc-win64
+# package) has that as its default and its own PE linker -- so this is
+# one compile-and-link to PE/COFF, with no ld and no ELF-to-PE step.
 #
-# Linked straight to PE/COFF with `ld -m i386pep`. No ELF-to-PE
-# conversion step, which is what systemd's sd-boot needs Python and
-# pyelftools for. --subsystem=10 is EFI_APPLICATION; --image-base is
-# set so no section lands at address zero.
+# -Wl,-subsystem=efiapp is EFI_APPLICATION (10). -image-base keeps any
+# section off address zero. -dynamicbase is what makes tccpe emit a
+# .reloc directory and clear "relocations stripped", so firmware may
+# load the image anywhere; -nxcompat marks it NX-compatible, which newer
+# shims check. .sbat stays its own section only because tcc-win64
+# carries a section class for it (probe-tccefi@2-1 and @5-1).
 #
-EFI_CC ?= /usr/bin/gcc
-EFI_LD ?= ld
-EFI_CFLAGS := -ffreestanding -fno-stack-protector -fno-strict-aliasing -fno-ident \
-              -fno-asynchronous-unwind-tables \
-              -fpic -fshort-wchar -mno-red-zone -Wall -Werror -Iinclude
+EFI_CC ?= /usr/bin/x86_64-win32-tcc
+EFI_CFLAGS := -nostdlib -Wall -Werror -Iinclude
+EFI_LDFLAGS := -Wl,-subsystem=efiapp -Wl,-image-base=0x10000 -Wl,-entry=efi_main \
+               -Wl,-dynamicbase -Wl,-nxcompat
 
 #
-# -s on the link is load-bearing for SECURE BOOT, not a size
-# optimisation, and it cost a full QEMU install round to find.
-#
-# ld appends a COFF symbol table AFTER the last section. Nothing maps
-# it, so the file is larger than the sum of its sections -- sbsign says
-# so out loud:
-#
-#   warning: data remaining[9216 vs 11422]: gaps between PE/COFF sections?
-#
-# Authenticode hashes a PE by walking its sections, and a signer and a
-# verifier that disagree about trailing bytes compute different hashes.
-# sbsign signed it happily and sbverify accepted it (both used the same
-# rules), while shim -- which is stricter, and is the one that matters --
-# refused the image on a real boot:
-#
-#   Verification failed: (0x1A) Security Violation
-#
-# Stripping removes the symbol table, the file becomes exactly its
-# sections, and every hasher agrees. -fno-asynchronous-unwind-tables
-# drops .eh_frame for the same reason it is pointless here: nothing
-# unwinds in an EFI application.
+# THE FILE MUST BE EXACTLY ITS SECTIONS, for Secure Boot. Authenticode
+# hashes a PE by walking its sections, and bytes after the last one make
+# a signer and a verifier disagree. The gcc build's ld appended a COFF
+# symbol table there: sbsign warned "data remaining[9216 vs 11422]",
+# sbsign and sbverify both accepted it, and shim refused it on a real
+# boot with "Verification failed: (0x1A) Security Violation" until
+# ld -s stripped it. tccpe writes a symbol table only for debug output
+# (-g), which is not passed here, and probe-tccefi@5-1 signed and
+# verified this image with no gap reported -- so never add -g.
 #
 $(BUILD)/cix-xorriso: image/src/cix-xorriso.c | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/cix-boot.efi: image/src/cix-boot.c include/uefi.h | $(BUILD)
-	$(EFI_CC) -c $(EFI_CFLAGS) image/src/cix-boot.c -o $(BUILD)/cix-boot.o
-	$(EFI_LD) -m i386pep --subsystem=10 -e efi_main --image-base=0x10000 -s \
-	          -o $@ $(BUILD)/cix-boot.o
+	$(EFI_CC) $(EFI_CFLAGS) -o $@ image/src/cix-boot.c $(EFI_LDFLAGS)
 
 #
 # cix-init: pid 1 in every container (ADR-0260). Freestanding -- no

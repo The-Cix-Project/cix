@@ -6,6 +6,12 @@ Accepted. Extends the Tier-3 TCC exception list established by
 [ADR-0170](0170-tcc-cgo-tier3-exception.md) (`gcc`, `kernel`, `openssl`,
 `glauth`, `gitea` already on it).
 
+Factual note, 2026-10-29: the finding about gnu-efi stands, since the native
+tcc implements no `__builtin_ms_va_list`. The conclusion drawn from it for an
+EFI application Cix writes does not: tcc's x86_64-win32 cross target has the
+Microsoft convention as its default, and `cix-boot.efi` is built with it
+([ADR-0362](0362-cix-boot-is-built-by-a-tcc-win64-cross-compiler.md)).
+
 ## Context
 
 Building an installer ISO on a Cix host needs `grub`, `xorriso`, `mtools`

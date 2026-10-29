@@ -49,6 +49,35 @@
  */
 #include "uefi.h"
 
+/*
+ * A freestanding program provides these two itself: the compiler emits
+ * calls to them for zero-initialised locals and structure copies, with
+ * no source line naming either (C11 4p6; gcc documents the same of its
+ * freestanding output). tcc does emit them for this file
+ * (probe-tccefi@1-1: "unresolved reference to 'memset'"). The loops
+ * are plain on purpose: an optimising compiler can turn a loop like this
+ * back into a call to itself unless built with -fno-builtin, and tcc
+ * does not optimise.
+ */
+void *memset(void *dst, int c, UINTN n)
+{
+	unsigned char *p = dst;
+
+	while (n--)
+		*p++ = (unsigned char)c;
+	return dst;
+}
+
+void *memcpy(void *dst, const void *src, UINTN n)
+{
+	unsigned char *p = dst;
+	const unsigned char *q = src;
+
+	while (n--)
+		*p++ = *q++;
+	return dst;
+}
+
 #define MAX_ENTRIES 32
 #define ENTRY_TEXT_MAX 4096
 #define CMDLINE_MAX 1024

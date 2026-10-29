@@ -8,7 +8,7 @@ The root `Makefile` is what the `cix` recipe runs inside its build container. `m
 
 - `cixd` and `cixctl`
 - `cix-init`, the freestanding PID 1 of every container ([ADR-0260](../adr/0260-a-container-declares-services-not-a-command.md))
-- the installer tools: `mkbootroot`, `mkinstalleriso`, `cix-install`, `cix-recover`, `mktoolchainimage`, `cix-xorriso`, and `cix-boot.efi` (built with gcc, because a PE/COFF EFI image needs the MS ABI, which TCC does not emit)
+- the installer tools: `mkbootroot`, `mkinstalleriso`, `cix-install`, `cix-recover`, `mktoolchainimage`, `cix-xorriso`, and `cix-boot.efi` (built by `x86_64-win32-tcc`, TCC's win64 cross target from the `tcc-win64` package, whose default calling convention is the Microsoft one a PE/COFF EFI image needs, [ADR-0362](../adr/0362-cix-boot-is-built-by-a-tcc-win64-cross-compiler.md))
 - one test binary per feature, each forking its own `cixd` against a scratch `--data-dir`
 
 There is no `make install`. The named targets beyond `all` and `clean`:
@@ -32,7 +32,7 @@ The rebuild is a [hostbuild](writing-recipes.md#the-hostbuild-variant) of the `c
 
 ### 1. Nothing to prepare for the build itself
 
-A hostbuild composes its build container from the recipe's own declared build tools ([ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md)), so there is no build image to create. The `cix` recipe declares what it uses — TCC, make, the headers, the libraries `cixd` links (`-lssl -lcrypto -larchive -lcurl`), quickjs for the dashboard syntax gate, gcc for `cix-boot.efi`, and the rest — and every declared tool must be installed in some image on the host, or the build fails naming it.
+A hostbuild composes its build container from the recipe's own declared build tools ([ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md)), so there is no build image to create. The `cix` recipe declares what it uses — TCC, make, the headers, the libraries `cixd` links (`-lssl -lcrypto -larchive -lcurl`), quickjs for the dashboard syntax gate, tcc-win64 for `cix-boot.efi`, gcc for the two tests that use it as a linter and as a deliberate foreign producer, and the rest — and every declared tool must be installed in some image on the host, or the build fails naming it.
 
 One optional image and one required one change what the assembled root contains. Both are ordinary images built with ordinary installs, found by fixed name when the root is assembled.
 

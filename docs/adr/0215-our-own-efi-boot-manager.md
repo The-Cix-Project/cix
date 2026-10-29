@@ -8,6 +8,11 @@ its counted A/B slot mechanism, its on-disk layout and its Boot Loader
 Specification entry format all stay exactly as they are. Only the
 program that reads them changes.
 
+Factual note, 2026-10-29: the toolchain below (gcc, and GNU ld with
+`-m i386pep`) is replaced by tcc's x86_64-win32 cross target and its own
+PE linker ([ADR-0362](0362-cix-boot-is-built-by-a-tcc-win64-cross-compiler.md)).
+The decision to have our own boot manager is unchanged.
+
 ## Context
 
 An installed Cix host boots UEFI, so something on the ESP has to choose

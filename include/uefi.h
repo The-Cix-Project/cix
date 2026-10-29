@@ -9,7 +9,8 @@
  * built for shim -- but because its value is its build machinery (crt0,
  * relocation handling, and an ELF-then-objcopy conversion whose
  * `efi-app-x86_64` target modern binutils no longer provides), and
- * linking PE directly with `ld -m i386pep` needs none of it. What is
+ * linking PE directly -- once with `ld -m i386pep`, now with tcc's own
+ * PE linker (ADR-0362) -- needs none of it. What is
  * left to take is structure definitions fixed by a published
  * specification, which is what this file is.
  *
@@ -21,9 +22,13 @@
  * binary that faults inside firmware with no diagnostic:
  *
  *   1. Every protocol function is EFIAPI. UEFI uses the Microsoft x64
- *      calling convention, not the System V one gcc defaults to on
- *      Linux. (This is also why TCC cannot compile any of this: it
- *      implements no __builtin_ms_va_list -- ADR-0211.)
+ *      calling convention, not the System V one a Linux compiler
+ *      defaults to. This file is compiled by tcc's x86_64-win32 cross
+ *      target (the tcc-win64 package, ADR-0362), whose DEFAULT
+ *      convention is the Microsoft one, so EFIAPI is empty and the
+ *      #error below refuses any compiler that is not that target. tcc
+ *      has no ms_abi attribute (measured, probe-tccefi@5-1), so the
+ *      attribute could not have done the work under it anyway.
  *
  *   2. Every structure's member ORDER and SIZE must match the spec
  *      exactly, including members we never call. Firmware hands us a
@@ -32,14 +37,20 @@
  *      void * placeholders and named, never omitted.
  */
 
-#define EFIAPI __attribute__((ms_abi))
+#ifndef _WIN64
+#error "cix-boot needs a compiler whose default calling convention is the Microsoft x64 one: tcc's x86_64-win32 target (EFI_CC, ADR-0362)"
+#endif
+#define EFIAPI
 
 /*
- * A UEFI wide string literal. gcc's -fshort-wchar makes L"..." 16-bit,
- * which is the right WIDTH, but its type is wchar_t (signed short) while
- * the spec's CHAR16 is unsigned -- so every literal needs a cast, and a
- * macro is better than scattering casts through the code.
+ * A UEFI wide string literal. On the win64 target L"..." is 16-bit,
+ * which is the right width, but its type is wchar_t while the spec's
+ * CHAR16 is unsigned short -- so every literal needs a cast, and a macro
+ * is better than scattering casts through the code. The assert keeps a
+ * compiler with 32-bit wide characters from producing UCS-4 strings the
+ * firmware would read as every other character.
  */
+_Static_assert(sizeof(L"x"[0]) == 2, "UEFI strings are 16-bit: L\"\" must be too");
 #define L16(s) ((CHAR16 *)L##s)
 
 typedef unsigned short CHAR16;
@@ -48,7 +59,17 @@ typedef unsigned short UINT16;
 typedef unsigned int UINT32;
 typedef unsigned long long UINT64;
 typedef long long INT64;
-typedef unsigned long UINTN;
+/*
+ * UINTN is the native width, 64 bits on x86-64, and NOT `unsigned long`:
+ * the win64 target is LLP64, where long is 32 bits. It was `unsigned
+ * long` while gcc built this for an LP64 target, and under the win64
+ * compiler every UINTN field would have shrunk and shifted every UEFI
+ * table after it (ADR-0362). The asserts make either mistake a compile
+ * error rather than a fault inside firmware.
+ */
+typedef unsigned long long UINTN;
+_Static_assert(sizeof(UINTN) == 8, "UINTN is the native width, 64 bits on x86-64");
+_Static_assert(sizeof(void *) == 8, "cix-boot is an x86-64 EFI application");
 typedef unsigned char BOOLEAN;
 typedef void *EFI_HANDLE;
 typedef void *EFI_EVENT;
