@@ -16,6 +16,7 @@
 #include "storageplacement.h"
 #include "diskrole.h"
 #include "persist.h"
+#include "treecopy.h"
 
 #include <errno.h>
 #include <unistd.h>
@@ -73,11 +74,23 @@ static void respond_volume_error(int fd, enum volume_error e)
 		              "host path when the container starts, so moving the data underneath it "
 		              "would leave it writing to the old location. Stop the container first");
 		return;
-	case VOLUME_ERR_COPY_FAILED:
-		respond_error(fd, 500, "Internal Server Error",
-		              "could not copy the volume's data to the new location -- nothing was moved "
-		              "and the volume still points at its original data");
+	case VOLUME_ERR_COPY_FAILED: {
+		/*
+		 * Say which entry failed and why. Without it this was a bare
+		 * 500 with nothing logged either: on 192.168.15.95,
+		 * 2026-10-29, moving jump-home to vda failed and nothing on the
+		 * box could say what the copy had refused.
+		 */
+		char msg[1024];
+
+		snprintf(msg, sizeof(msg),
+		         "could not copy the volume's data to the new location (%s) -- nothing was "
+		         "moved and the volume still points at its original data",
+		         treecopy_last_error());
+		logstore_write("cixd", "error", "volume copy failed: %s", msg);
+		respond_error(fd, 500, "Internal Server Error", msg);
 		return;
+	}
 	default:
 		respond_error(fd, 500, "Internal Server Error", "could not persist the volume");
 		return;

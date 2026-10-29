@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A failed volume copy says which entry it refused
+
+- **What changed:** `POST /v1/volumes/{name}/migrate`'s 500 now names the entry the copy stopped at and why, from `treecopy_last_error()`, and logs it. treecopy clears its recorded error at the start of each copy, so a reason is never left over from an earlier one. `volume_migrate()` no longer creates the target itself, since treecopy creates it with its parents and records that failure too.
+- **Why:** on 192.168.15.95 (0.2.57-624), moving `jump-home` to vda returned *"could not copy the volume's data to the new location"* with nothing logged, so the cause could not be established from the box.
+- **Verified:** pending the release.
+
 ### The data directory moves to a disk at the next boot (#249, ADR-0364 decision 3, stage b)
 
 - **What changed:**

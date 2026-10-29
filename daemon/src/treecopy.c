@@ -264,6 +264,7 @@ int treecopy_recursive_except(const char *src_root, const char *dst_root,
 	 * has never worked; it was invisible for as long as the only
 	 * report was the words "bulk copy failed".
 	 */
+	g_treecopy_error[0] = '\0'; /* this call's reason, never an earlier one's */
 	if (mkdir_p(dst_root) != 0) {
 		treecopy_fail("create destination root", dst_root);
 		return -1;

@@ -536,7 +536,7 @@ enum volume_error volume_migrate(const char *name, const char *disk_name)
 	/* Copy with the placement already flipped so new_path resolves,
 	 * but nothing persisted yet -- an in-memory field is trivially
 	 * restored, a written one is not. */
-	if (persist_mkdir_p(new_path) != 0 || treecopy_recursive(old_path, new_path) != 0) {
+	if (treecopy_recursive(old_path, new_path) != 0) { /* creates new_path, parents too */
 		snprintf(v->disk, sizeof(v->disk), "%s", old_disk);
 		return VOLUME_ERR_COPY_FAILED;
 	}
