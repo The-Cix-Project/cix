@@ -24644,6 +24644,7 @@ components:
             sharing extents are each charged in full.
         measured_at:
           type: integer
+          format: unix-seconds
           description: Unix time the report was made.
     DataDirEntry:
       type: object
