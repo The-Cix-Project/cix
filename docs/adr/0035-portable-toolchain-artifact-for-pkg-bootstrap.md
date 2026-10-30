@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-0365](0365-pkg-bootstrap-is-retired.md) (2026-10-30): the endpoint is retired, since nothing in the build path reads what it seeds.
 
 ## Context
 

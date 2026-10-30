@@ -500,14 +500,3 @@ void handle_hostauth_permissions_delete(int fd, const char *group)
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
-
-
-
-/*
- * Reaps bootstrap_fetch_start()'s own curl child. On a real, clean
- * exit, verifies the fetched artifact's checksum (pkg_run_capture_
- * sha256(), the exact same real check every recipe source already
- * gets, ADR-0036) before ever handing it to pkg_bootstrap_from_
- * toolchain() -- a corrupt or wrong-URL fetch must never get
- * unsquashfs'd into the build sandbox silently.
- */

@@ -128,7 +128,7 @@ static const struct budget g_budgets[] = {
 	 * install's image producer. A pidfd callback, the first category
 	 * above: EPOLLIN has already said the child exited. The production
 	 * itself, which held the loop up to 1.2 s, moved into that child. */
-	{ "daemon/src/main.c", 23, "pidfd callbacks + double-fork intermediates; 24 -> 23 when ADR-0360 removed migrate-storage and its event" },
+	{ "daemon/src/main.c", 21, "pidfd callbacks + double-fork intermediates; 24 -> 23 when ADR-0360 removed migrate-storage and its event, 23 -> 21 when ADR-0365 removed the toolchain fetch (its start's reap of a child whose pidfd failed, and its completion)" },
 	/* 10 -> 11 for ADR-0279's signature fetch: the artifact tier now
 	 * pulls <artifact>.minisig alongside the artifact and waits for
 	 * that curl. In budget for the same reason every other one in this
@@ -228,7 +228,7 @@ static const struct budget g_budgets[] = {
 	 * handle_pkg_unpack_event() on EPOLLIN, where the process is
 	 * already gone.
 	 */
-	{ "daemon/src/pkg.c", 10, "build helpers and fetch intermediates, plus #618's child_exit_waiter() (a waiter forked a moment ago and SIGKILLed when its pidfd cannot be opened, reaped at once as the producer beside it, image_version_fork(), already is -- ADR-0356 renamed it from buildenv_wait_for()), plus ADR-0305's `cbs explain` (a bounded parse of a local file, its pipe closed before the wait); #352 dropped one (pkg_run_capture_sha256(), no more forked sha256sum), #411 dropped another (tarball_has_common_top_dir(), no more forked tar -tf), #410 dropped three more (start_fetch_for()'s curl children, replaced by in-process curlfetch_perform())" },
+	{ "daemon/src/pkg.c", 9, "build helpers and fetch intermediates (ADR-0365 dropped one, the toolchain seed's unsquashfs), plus #618's child_exit_waiter() (a waiter forked a moment ago and SIGKILLed when its pidfd cannot be opened, reaped at once as the producer beside it, image_version_fork(), already is -- ADR-0356 renamed it from buildenv_wait_for()), plus ADR-0305's `cbs explain` (a bounded parse of a local file, its pipe closed before the wait); #352 dropped one (pkg_run_capture_sha256(), no more forked sha256sum), #411 dropped another (tarball_has_common_top_dir(), no more forked tar -tf), #410 dropped three more (start_fetch_for()'s curl children, replaced by in-process curlfetch_perform())" },
 	{ "daemon/src/diskpart.c", 4, "sfdisk/blkid, bounded external tools" },
 	{ "daemon/src/exec.c", 2, "namespace-join intermediates" },
 	{ "daemon/src/diskformat.c", 2, "mkfs intermediate" },
@@ -293,8 +293,11 @@ static const struct budget g_budgets[] = {
  * and its count did not change.
  * Then 54 -> 52 for ADR-0360: containerstoragemigrate.c and its
  * double-fork intermediate are gone, and with them main.c's reap of the
- * migration job (handle_container_storage_migrate_event()). */
-#define TOTAL_ALLOWED 52
+ * migration job (handle_container_storage_migrate_event()).
+ * Then 52 -> 49 for ADR-0365: the toolchain bootstrap is retired, and
+ * with it pkg.c's wait on its unsquashfs and main.c's two in the
+ * toolchain fetch. */
+#define TOTAL_ALLOWED 49
 
 static int is_comment(const char *line)
 {

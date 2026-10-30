@@ -380,10 +380,6 @@ char ISO_OUTPUT_PATH[PATH_MAX];
  * rather than inside one.
  */
 char BOOTROOT_DIR[PATH_MAX];
-/* POST /v1/pkg/bootstrap's own toolchain_url mode (ADR-0065) -- a
- * fixed scratch path for the curl'd artifact, same "one fixed spot,
- * overwritten each time" convention ISO_OUTPUT_PATH already uses. */
-char PKGBUILD_TOOLCHAIN_FETCH_PATH[PATH_MAX];
 /*
  * Issue #141: where POST /v1/system/update stages an image fetched by
  * URL. Exists because "image_path" alone made the endpoint unusable on
@@ -393,9 +389,8 @@ char PKGBUILD_TOOLCHAIN_FETCH_PATH[PATH_MAX];
  * updating the control plane could not be used to update the control
  * plane -- every deploy went through a hand-fed workaround instead.
  *
- * The daemon has always been able to do this: pkg bootstrap's own
- * toolchain_url fetch pulls 1.4 GB the same way. Update simply never
- * offered it.
+ * The daemon has always been able to do this: every recipe source is
+ * fetched host-side the same way. Update simply never offered it.
  */
 char SYSTEM_UPDATE_FETCH_PATH[PATH_MAX];
 /* POST /v1/system/boot-manager's url fetch: its own file, because an
@@ -585,8 +580,6 @@ static void compute_rebuildable_dir_relative_paths(void)
 	         "%s/system_update_image.squashfs", REBUILDABLE_DIR);
 	snprintf(BOOT_MANAGER_FETCH_PATH, sizeof(BOOT_MANAGER_FETCH_PATH), "%s/boot_manager.efi",
 	         REBUILDABLE_DIR);
-	snprintf(PKGBUILD_TOOLCHAIN_FETCH_PATH, sizeof(PKGBUILD_TOOLCHAIN_FETCH_PATH),
-	         "%s/bootstrap_toolchain.squashfs", PKG_DIR);
 }
 
 static void init_base_dir_paths(void)
@@ -1270,7 +1263,6 @@ enum conn_kind {
 	CONN_ARTIFACT_EXPORT,      /* issue #126: tar of an image's rootfs into the artifact dir */
 	CONN_ARTIFACT_PUSH,     /* issue #129: curl child publishing a fresh build to the artifact server */
 	CONN_ISO_PUBLISH,       /* ADR-0220: curl child publishing an installer ISO (or its signature) */
-	CONN_BOOTSTRAP_FETCH,   /* pkg/bootstrap's own toolchain_url curl fetch (ADR-0065) */
 	CONN_KERNEL_RELEASES_FETCH, /* kernel.org releases.json curl fetch (issue #65) */
 	CONN_PKG_SYNC_FETCH,    /* pkg sync's own repo-archive curl fetch (ADR-0121) */
 	CONN_DISK_FORMAT,       /* disk format+mount job (multi-disk management Phase C) */
@@ -1373,7 +1365,6 @@ static const char *const g_conn_kind_names[CONN_KIND_COUNT] = {
 	[CONN_ARTIFACT_EXPORT] = "artifact-export",
 	[CONN_ARTIFACT_PUSH] = "artifact-push",
 	[CONN_ISO_PUBLISH] = "iso-publish",
-	[CONN_BOOTSTRAP_FETCH] = "bootstrap-fetch",
 	[CONN_KERNEL_RELEASES_FETCH] = "kernel-releases-fetch",
 	[CONN_PKG_SYNC_FETCH] = "pkg-sync-fetch",
 	[CONN_DISK_FORMAT] = "disk-format",
@@ -1510,7 +1501,7 @@ struct conn {
 	int output_line_len;                    /* CONN_CONTAINER_OUTPUT only */
 	int service_index;                      /* CONN_CONTAINER_OUTPUT only: which service's pipe, -1 = cix-init's own stdio */
 	time_t escalate_started_at;             /* CONN_STOP_ESCALATE_TIMER only: the incarnation it was armed for */
-	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_BOOTSTRAP_FETCH / CONN_DISK_FORMAT / CONN_STORAGE_MIGRATE / CONN_CONSOLE_EXEC_REAP */
+	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_DISK_FORMAT / CONN_STORAGE_MIGRATE / CONN_CONSOLE_EXEC_REAP */
 	int pkg_chain_idx;                      /* CONN_PKG_FETCH / CONN_PKG_BUILD_OUTPUT / CONN_PKG_BUILD_LOG_WS -- ADR-0157 Phase 2: which g_chains[] slot this conn belongs to */
 	/* CONN_HELPER (ADR-0278): what to call when the helper exits, and
 	 * with what. The context is an opaque pointer the caller owns --
@@ -11888,8 +11879,8 @@ static int iso_disk_guid_derive(const char *version, char *out, size_t out_size)
  * at least 256. Caller (handle_system_iso_post()) is responsible for
  * the "already building" check -- kept there, not here, so it maps to
  * its own distinct 409 rather than this function's 400-shaped
- * "missing precondition" errors, mirroring respond_pkg_error()'s own
- * PKG_ERR_BUSY (409) vs. PKG_ERR_INVALID_TOOLCHAIN (400) split.
+ * "missing precondition" errors, the way respond_pkg_error() keeps
+ * PKG_ERR_BUSY (409) apart from a request's own 400s.
  */
 static int iso_build_start(const char *disk, const char *ip, const char *prefix,
                             const char *gateway, const char *interface, char *err_msg,
@@ -13020,57 +13011,8 @@ static void handle_iso_assemble_event(struct conn *cc)
 	free(cc);
 }
 
-/*
- * POST /v1/pkg/bootstrap's own toolchain_url mode (ADR-0065): closes a
- * real gap ADR-0031's own "the operator transfers it onto the box
- * out-of-band (scp)" assumption turned out to rest on -- a real,
- * freshly-installed Cix box has no SSH server and no general shell
- * at all (deliberately, ADR-0034), so there was never actually a way
- * to get a multi-hundred-MB toolchain artifact onto one over the
- * network. Reuses the exact host-side curl-fetch primitive pkg.c's own
- * recipe pkg_source already relies on (a plain fork+execve of curl,
- * never the daemon's own hand-rolled HTTP server) rather than
- * inventing a second fetch mechanism -- the only new code is fetching
- * into a fixed scratch path and, once it lands, handing off to the
- * exact same pkg_bootstrap_from_toolchain() the toolchain_path mode
- * already uses for staging.
- */
-enum bootstrap_fetch_state {
-	BOOTSTRAP_FETCH_NONE,
-	BOOTSTRAP_FETCH_FETCHING,
-	BOOTSTRAP_FETCH_READY,
-	BOOTSTRAP_FETCH_FAILED
-};
-static enum bootstrap_fetch_state g_bootstrap_fetch_state = BOOTSTRAP_FETCH_NONE;
-static char g_bootstrap_fetch_error[256];
-static char g_bootstrap_fetch_sha256_expected[PKG_SHA256_MAX];
-
-static void register_bootstrap_fetch_pidfd(pid_t pid, int pidfd)
-{
-	struct conn *cc;
-	struct cix_epoll_event ev;
-
-	cc = calloc(1, sizeof(*cc));
-	if (cc == NULL) {
-		perror("malloc (bootstrap fetch reactor conn)");
-		abort();
-	}
-	cc->kind = CONN_BOOTSTRAP_FETCH;
-	cc->fd = pidfd;
-	cc->pkg_fetch_pid = pid;
-
-	memset(&ev, 0, sizeof(ev));
-	ev.events = EPOLLIN;
-	ev.data.ptr = cc;
-	if (cix_epoll_ctl(g_epfd, EPOLL_CTL_ADD, cc->fd, &ev) != 0) {
-		perror("epoll_ctl ADD bootstrap fetch pidfd");
-		abort();
-	}
-}
-
-/* ADR-0121: same shape as register_bootstrap_fetch_pidfd() immediately
- * above, one epoll-tracked conn per in-flight pkg_sync_start() curl
- * child. */
+/* ADR-0121: one epoll-tracked conn per in-flight pkg_sync_start() curl
+ * child, the shape every other pidfd-tracked child here has. */
 static void register_pkg_sync_fetch_pidfd(pid_t pid, int pidfd)
 {
 	struct conn *cc;
@@ -13176,99 +13118,6 @@ static void handle_pkg_sync_fetch_event(struct conn *cc)
 		pkg_sync_completed(pkg_sync_extract_work(NULL));
 		start_queued_approval_writeback();
 	}
-}
-
-
-
-
-/*
- * Returns 0 and forks the fetch (state -> FETCHING) on success; -1
- * with err_msg filled otherwise (both url and sha256 are required --
- * unlike a recipe's own pkg_source, there is no "trust whatever
- * shows up" mode for something that gets unsquashfs'd wholesale into
- * the build sandbox). err_msg_size must be at least 256. Caller is
- * responsible for the "already fetching" check, same split as
- * iso_build_start()'s own doc comment explains.
- */
-/* Sidecar the child writes its curlfetch_perform() error to on failure
- * (#410) -- same reasoning as kernel_releases_fetch_err_path(). */
-static void bootstrap_fetch_err_path(char *out, size_t out_size)
-{
-	snprintf(out, out_size, "%s.err", PKGBUILD_TOOLCHAIN_FETCH_PATH);
-}
-
-static int bootstrap_fetch_start(const char *url, const char *sha256, char *err_msg,
-                                  size_t err_msg_size)
-{
-	static char out_path[PATH_MAX];
-	static char url_buf[PKG_URL_MAX];
-	char err_path[PATH_MAX];
-	pid_t pid;
-	int pidfd;
-
-	if (url == NULL || url[0] == '\0') {
-		snprintf(err_msg, err_msg_size, "toolchain_url is required");
-		return -1;
-	}
-	if (sha256 == NULL || strlen(sha256) != 64) {
-		snprintf(err_msg, err_msg_size, "toolchain_sha256 is required and must be a 64-char hex sha256");
-		return -1;
-	}
-
-	snprintf(out_path, sizeof(out_path), "%s", PKGBUILD_TOOLCHAIN_FETCH_PATH);
-	snprintf(url_buf, sizeof(url_buf), "%s", url);
-	bootstrap_fetch_err_path(err_path, sizeof(err_path));
-	unlink(err_path);
-
-	pid = fork();
-	if (pid < 0) {
-		snprintf(err_msg, err_msg_size, "fork failed: %s", strerror(errno));
-		return -1;
-	}
-	if (pid == 0) {
-		/* #285. Asynchronous (pidfd), so an unbounded fetch would
-		 * stall this job rather than the loop -- but a bootstrap
-		 * that never finishes and never fails is still a job nothing
-		 * can resolve. retry_count stays at 8: this is a 1.4 GB
-		 * toolchain over whatever link the operator has, and the
-		 * speed guard is what makes the retries safe rather than a
-		 * way to wait eight times forever. */
-		struct curlfetch_opts opts;
-		char curl_err[256];
-
-		memset(&opts, 0, sizeof(opts));
-		opts.url = url_buf;
-		opts.path = out_path;
-		opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
-		opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
-		opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
-		opts.retry_count = 8;
-		if (curlfetch_perform(&opts, NULL, curl_err, sizeof(curl_err)) != 0) {
-			int efd = open(err_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-
-			if (efd >= 0) {
-				ssize_t ignored = write(efd, curl_err, strlen(curl_err));
-
-				(void)ignored;
-				close(efd);
-			}
-			_exit(1);
-		}
-		_exit(0);
-	}
-
-	pidfd = sys_pidfd_open(pid, 0);
-	if (pidfd < 0) {
-		snprintf(err_msg, err_msg_size, "pidfd_open failed: %s", strerror(errno));
-		kill(pid, SIGKILL);
-		waitpid(pid, NULL, 0);
-		return -1;
-	}
-	register_bootstrap_fetch_pidfd(pid, pidfd);
-	snprintf(g_bootstrap_fetch_sha256_expected, sizeof(g_bootstrap_fetch_sha256_expected), "%s", sha256);
-	g_bootstrap_fetch_state = BOOTSTRAP_FETCH_FETCHING;
-	g_bootstrap_fetch_error[0] = '\0';
-	return 0;
 }
 
 static void handle_backup_config_get(int fd)
@@ -13480,75 +13329,6 @@ static void handle_backup_config_snapshot_now_post(int fd)
 	jw_free(&w);
 }
 
-static void handle_bootstrap_fetch_event(struct conn *cc)
-{
-	int status;
-	char sha_out[PKG_SHA256_MAX];
-
-	cix_epoll_ctl(g_epfd, EPOLL_CTL_DEL, cc->fd, NULL);
-	if (waitpid(cc->pkg_fetch_pid, &status, 0) != cc->pkg_fetch_pid || !WIFEXITED(status) ||
-	    WEXITSTATUS(status) != 0) {
-		char err_path[PATH_MAX];
-		char curl_err[256] = "";
-		int efd;
-
-		bootstrap_fetch_err_path(err_path, sizeof(err_path));
-		efd = open(err_path, O_RDONLY);
-		if (efd >= 0) {
-			ssize_t n = read(efd, curl_err, sizeof(curl_err) - 1);
-
-			curl_err[n > 0 ? n : 0] = '\0';
-			close(efd);
-			unlink(err_path);
-		}
-		g_bootstrap_fetch_state = BOOTSTRAP_FETCH_FAILED;
-		if (curl_err[0] != '\0')
-			snprintf(g_bootstrap_fetch_error, sizeof(g_bootstrap_fetch_error), "fetch failed: %s",
-			         curl_err);
-		else
-			snprintf(g_bootstrap_fetch_error, sizeof(g_bootstrap_fetch_error),
-			         "fetch failed (status 0x%x)", (unsigned)status);
-		fprintf(stderr, "bootstrap fetch: %s\n", g_bootstrap_fetch_error);
-		close(cc->fd);
-		free(cc);
-		return;
-	}
-	close(cc->fd);
-	free(cc);
-
-	if (pkg_run_capture_sha256(PKGBUILD_TOOLCHAIN_FETCH_PATH, sha_out, sizeof(sha_out)) != 0 ||
-	    strcasecmp(sha_out, g_bootstrap_fetch_sha256_expected) != 0) {
-		g_bootstrap_fetch_state = BOOTSTRAP_FETCH_FAILED;
-		snprintf(g_bootstrap_fetch_error, sizeof(g_bootstrap_fetch_error), "checksum mismatch");
-		fprintf(stderr, "bootstrap fetch: checksum mismatch\n");
-		return;
-	}
-
-	{
-		enum pkg_error perr = pkg_bootstrap_from_toolchain(PKGBUILD_TOOLCHAIN_FETCH_PATH);
-
-		if (perr != PKG_OK) {
-			const char *phrase;
-			char msg[200];
-
-			/* ADR-0356 added a refusal that has nothing to do with
-			 * the squashfs, so it is named in its own words. */
-			if (perr == PKG_ERR_IMAGE_PRODUCING)
-				pkg_error_describe(perr, &phrase, msg, sizeof(msg));
-			else
-				snprintf(msg, sizeof(msg), "invalid squashfs?");
-			g_bootstrap_fetch_state = BOOTSTRAP_FETCH_FAILED;
-			snprintf(g_bootstrap_fetch_error, sizeof(g_bootstrap_fetch_error),
-			         "fetched toolchain failed to stage (%s)", msg);
-			fprintf(stderr, "bootstrap fetch: staging failed\n");
-			return;
-		}
-	}
-
-	g_bootstrap_fetch_state = BOOTSTRAP_FETCH_READY;
-	fprintf(stderr, "bootstrap fetch: succeeded, toolchain staged\n");
-}
-
 /*
  * Multi-disk management Phase C: registers the async format+mount job
  * diskformat_start() (daemon/src/diskformat.c) already forked -- that
@@ -13582,8 +13362,7 @@ static void register_disk_format_pidfd(pid_t pid, int pidfd)
 /* Reaps diskformat_start()'s own child, hands the exit status straight
  * to diskformat_completed() -- no REST response is waiting on this
  * (the original POST already returned 202 long before this fires),
- * same shape as handle_iso_assemble_event()/handle_bootstrap_fetch_
- * event() above. */
+ * same shape as handle_iso_assemble_event() above. */
 static void handle_disk_format_event(struct conn *cc)
 {
 	int status;
@@ -22660,142 +22439,6 @@ static void respond_pkg_recipe_error(int fd, enum pkg_error err)
 	}
 }
 
-static const char *bootstrap_fetch_state_str(enum bootstrap_fetch_state s)
-{
-	switch (s) {
-	case BOOTSTRAP_FETCH_FETCHING:
-		return "fetching";
-	case BOOTSTRAP_FETCH_READY:
-		return "ready";
-	case BOOTSTRAP_FETCH_FAILED:
-		return "failed";
-	case BOOTSTRAP_FETCH_NONE:
-	default:
-		return "none";
-	}
-}
-
-static void write_bootstrap_fetch_status(struct json_writer *w)
-{
-	jw_obj_open(w);
-	jw_key(w, "state");
-	jw_str(w, bootstrap_fetch_state_str(g_bootstrap_fetch_state));
-	jw_key(w, "error");
-	if (g_bootstrap_fetch_state == BOOTSTRAP_FETCH_FAILED)
-		jw_str(w, g_bootstrap_fetch_error);
-	else
-		jw_null(w);
-	/*
-	 * Issue #17: "none" reads as "no bootstrap ever happened" but
-	 * actually only means "this daemon has never handled a
-	 * toolchain_url POST /pkg/bootstrap" -- the plain/toolchain_path
-	 * modes (the ones a normal `pkg install --name=tcc` or a real
-	 * gcc/dev build actually exercises) are synchronous and never
-	 * touch this state at all. Rather than a deeper fix (tracking
-	 * every bootstrap mode in one unified state, a real behavior
-	 * change with its own risk), this scope note ships instead --
-	 * always present, so `state:"none"` stops reading as a gap or an
-	 * error on a box that has genuinely bootstrapped successfully via
-	 * a different mode.
-	 */
-	jw_key(w, "scope");
-	jw_str(w, "tracks only the async toolchain_url fetch mode of POST /pkg/bootstrap; "
-	           "\"none\" does not mean no bootstrap has ever happened on this daemon");
-	jw_obj_close(w);
-}
-
-/* GET /v1/pkg/bootstrap (ADR-0065) -- polling for the toolchain_url
- * mode's own async fetch, the same shape GET /system/iso already
- * established. state is "none" until the first toolchain_url POST
- * this daemon has ever handled (the plain/toolchain_path modes below
- * are synchronous and never touch this state at all). */
-static void handle_pkg_bootstrap_get(int fd)
-{
-	struct json_writer w;
-
-	jw_init(&w);
-	write_bootstrap_fetch_status(&w);
-	respond_json(fd, 200, "OK", &w);
-	jw_free(&w);
-}
-
-/*
- * body/body_len optional: an empty body (the existing bare
- * `POST /v1/pkg/bootstrap` contract) keeps the live-copy fallback
- * unchanged. A JSON body with "toolchain_path" set switches to the
- * correct production path (pkg_bootstrap_from_toolchain()) instead --
- * a local path the operator has already scp'd a real toolchain
- * artifact to. Both of these stay exactly as they always were:
- * synchronous, 204 on success.
- *
- * A JSON body with "toolchain_url" (+ required "toolchain_sha256")
- * is the third mode ADR-0065 adds: the daemon fetches the artifact
- * itself, host-side, the same real curl primitive every recipe
- * source already uses -- closing the real gap the other two modes
- * both rest on (an operator "transferring it onto the box out-of-
- * band" assumes an SSH server a real, freshly-installed Cix box
- * simply doesn't have, ADR-0034). Async, 202, poll GET /pkg/bootstrap.
- */
-static void handle_pkg_bootstrap(int fd, const char *body, size_t body_len)
-{
-	enum pkg_error perr;
-	const char *toolchain_path = NULL;
-	const char *toolchain_url = NULL;
-	const char *toolchain_sha256 = NULL;
-	struct json_value *root = NULL;
-
-	if (body_len > 0) {
-		root = json_parse(body, body_len);
-		if (root == NULL) {
-			respond_error(fd, 400, "Bad Request", "invalid JSON body");
-			return;
-		}
-		toolchain_path = json_as_string(json_object_get(root, "toolchain_path"));
-		toolchain_url = json_as_string(json_object_get(root, "toolchain_url"));
-		toolchain_sha256 = json_as_string(json_object_get(root, "toolchain_sha256"));
-	}
-
-	if (toolchain_url != NULL && toolchain_url[0] != '\0') {
-		char err_msg[256];
-		struct json_writer w;
-
-		if (g_bootstrap_fetch_state == BOOTSTRAP_FETCH_FETCHING) {
-			if (root != NULL)
-				json_free(root);
-			respond_error(fd, 409, "Conflict", "a toolchain fetch is already in progress");
-			return;
-		}
-		if (bootstrap_fetch_start(toolchain_url, toolchain_sha256, err_msg, sizeof(err_msg)) != 0) {
-			if (root != NULL)
-				json_free(root);
-			respond_error(fd, 400, "Bad Request", err_msg);
-			return;
-		}
-		if (root != NULL)
-			json_free(root);
-
-		jw_init(&w);
-		write_bootstrap_fetch_status(&w);
-		respond_json(fd, 202, "Accepted", &w);
-		jw_free(&w);
-		return;
-	}
-
-	perr = (toolchain_path != NULL && toolchain_path[0] != '\0')
-	           ? pkg_bootstrap_from_toolchain(toolchain_path)
-	           : pkg_bootstrap_build_image();
-
-	if (root != NULL)
-		json_free(root);
-
-	if (perr != PKG_OK) {
-		respond_pkg_error(fd, perr);
-		return;
-	}
-	http_set_blocking(fd);
-	http_write_response(fd, 204, "No Content", "application/json", "", 0);
-}
-
 /*
  * ADR-0324: the recipe sources. Every refusal names its reason, which
  * pkgsource.c writes; the status says what kind of refusal it was.
@@ -28857,18 +28500,6 @@ static void op_exportPki(const struct api_ctx *ctx)
 static void op_importPki(const struct api_ctx *ctx)
 {
 	handle_pki_import(ctx->fd, ctx->req->body, ctx->req->body_len);
-}
-
-/* POST /v1/pkg/bootstrap */
-static void op_pkgBootstrap(const struct api_ctx *ctx)
-{
-	handle_pkg_bootstrap(ctx->fd, ctx->req->body, ctx->req->body_len);
-}
-
-/* GET /v1/pkg/bootstrap */
-static void op_getPkgBootstrapStatus(const struct api_ctx *ctx)
-{
-	handle_pkg_bootstrap_get(ctx->fd);
 }
 
 /* GET /v1/pkg/recipes */
@@ -38182,7 +37813,6 @@ static int cixd_main(int argc, char **argv)
 	const char *slot = NULL;
 	const char *test_update_image = NULL;
 	const char *test_update_kernel = NULL;
-	const char *test_bootstrap_toolchain = NULL;
 	int i;
 	struct sigaction sa;
 
@@ -38214,8 +37844,6 @@ static int cixd_main(int argc, char **argv)
 			test_update_image = argv[i] + 20;
 		else if (strncmp(argv[i], "--test-update-kernel=", 21) == 0)
 			test_update_kernel = argv[i] + 21;
-		else if (strncmp(argv[i], "--test-bootstrap-toolchain=", 27) == 0)
-			test_bootstrap_toolchain = argv[i] + 27;
 		else if (strncmp(argv[i], "--data-dir=", 11) == 0)
 			snprintf(g_base_dir, sizeof(g_base_dir), "%s", argv[i] + 11);
 		else if (strncmp(argv[i], "--disks-dir=", 12) == 0)
@@ -38699,33 +38327,6 @@ static int cixd_main(int argc, char **argv)
 		return 1;
 	if (boot_subsystem_init(init_mode, "pkg_build_config", pkg_build_config_init(PKG_BUILD_CONFIG_PATH)) != 0)
 		return 1;
-
-	/*
-	 * Test-only, same precedent as --test-update-image=: makes
-	 * pkg_bootstrap_from_toolchain() (ADR-0035) observable from the
-	 * serial console inside a real QEMU guest with a real toolchain
-	 * squashfs attached on a scratch partition, where test/test_
-	 * console_pkg_bootstrap.c has no other way to reach this code path
-	 * at all (host-to-guest HTTP being unavailable for a statically-
-	 * addressed guest under this project's own test harness). Placed
-	 * after pkg_init() specifically -- unlike --test-update-image=
-	 * above, this needs g_pkgbuild_rootfs already resolved. Prints a
-	 * concrete, checkable fact (a real toolchain binary's presence
-	 * afterward), not just the call's own return status -- proof
-	 * unsquashfs genuinely extracted real content, not just that the
-	 * function returned OK.
-	 */
-	if (test_bootstrap_toolchain != NULL) {
-		enum pkg_error perr = pkg_bootstrap_from_toolchain(test_bootstrap_toolchain);
-
-		if (perr == PKG_OK) {
-			printf("test-bootstrap-toolchain: status=ok gcc=%s\n",
-			       pkg_toolchain_has_gcc() ? "present" : "MISSING");
-		} else {
-			printf("test-bootstrap-toolchain: status=error(%d)\n", (int)perr);
-		}
-		fflush(stdout);
-	}
 
 	image_init(IMAGES_DIR);
 	/* ADR-0343: before anything can delete an image or collect a version.
@@ -39430,8 +39031,6 @@ static int cixd_main(int argc, char **argv)
 				handle_artifact_push_event(cc);
 			else if (cc->kind == CONN_ISO_PUBLISH)
 				handle_iso_publish_event(cc);
-			else if (cc->kind == CONN_BOOTSTRAP_FETCH)
-				handle_bootstrap_fetch_event(cc);
 			else if (cc->kind == CONN_KERNEL_RELEASES_FETCH)
 				handle_kernel_releases_fetch_event(cc);
 			else if (cc->kind == CONN_PKG_SYNC_FETCH)

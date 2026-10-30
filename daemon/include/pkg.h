@@ -353,7 +353,6 @@ enum pkg_error {
 	PKG_ERR_FULL,
 	PKG_ERR_SPAWN_FAILED,
 	PKG_ERR_PERSIST_FAILED,
-	PKG_ERR_INVALID_TOOLCHAIN, /* toolchain_path missing, unreadable, or not a regular file */
 	/*
 	 * Issue #213: pkg_cancel() found the entry, but it has no build in
 	 * flight. Its own code rather than reusing PKG_ERR_BUSY, which
@@ -408,15 +407,7 @@ enum pkg_error {
 	 * a time. Its own code rather than PKG_ERR_BUSY, which means every
 	 * job slot is taken -- a different cause with a different remedy.
 	 */
-	PKG_ERR_HOSTBUILD_RUNNING,
-	/*
-	 * ADR-0356: a helper child is producing a new version of this image
-	 * for an install or an uninstall, and one image has one producer at a
-	 * time. A toolchain bootstrap would produce one beside it; an install
-	 * and an uninstall wait instead (ADR-0357). Nothing was changed; it
-	 * can be asked again once that finishes.
-	 */
-	PKG_ERR_IMAGE_PRODUCING
+	PKG_ERR_HOSTBUILD_RUNNING
 };
 
 /*
@@ -463,61 +454,16 @@ void pkg_repoint(const char *pkg_dir, const char *installed_state_path, const ch
                   const char *artifacts_dir);
 
 /*
- * Stages a real build toolchain (gcc/make/ld/as/cc1/sh/tar/coreutils
- * and their real headers/libraries) from THIS HOST into the pkgbuild
- * image, by copying whole /usr/{include,lib,lib64,bin,libexec}
- * directories with the real `cp -a` (correct symlink/permission
- * handling; a hand-rolled copier would mishandle the many symlinks a
- * real toolchain install is built from) plus recreating this host's
- * own bin/lib/lib64/sbin -> usr/... compatibility symlinks. Verified
- * empirically (chroot compile+link+`make install DESTDIR=`) before
- * this was written. Idempotent -- skips a subdirectory already
- * staged. Not automatic at daemon startup (startup stays fast); an
- * explicit, PKI-CA-bootstrap-shaped one-time action instead.
- */
-enum pkg_error pkg_bootstrap_build_image(void);
-
-/*
- * The correct production path (Phase 20): imports a real, portable
- * toolchain artifact -- built once, elsewhere, by
- * image/src/mktoolchainimage.c on a real toolchain-having machine, then
- * scp'd onto this box -- via a real `unsquashfs -f -d` extraction into
- * the pkgbuild rootfs (userspace, no mount/loop-device needed). Does
- * not depend on this daemon's own live host having anything under its
- * own /usr at all, unlike pkg_bootstrap_build_image()'s live-copy
- * fallback above -- this is what actually works on a real minimal
- * install. toolchain_path must already exist as a readable regular
- * file (PKG_ERR_INVALID_TOOLCHAIN otherwise); the operator is
- * responsible for getting it onto the box first (scp), the same
- * "local path, not an HTTP upload" precedent /system/update's own
- * image_path/kernel_path already established -- a real toolchain
- * artifact is easily hundreds of MB, far past what this daemon's own
- * hand-rolled HTTP server should ever stream.
- */
-enum pkg_error pkg_bootstrap_from_toolchain(const char *toolchain_path);
-
-/*
  * Real sha256 of a real on-disk file, computed in-process against the
  * already-linked libcrypto (EVP_sha256(), #352 -- no forked sha256sum
- * any more) -- exported so main.c's own bootstrap-fetch mechanism
- * (ADR-0065: fetching the toolchain artifact itself over HTTP, not
- * just importing an already-local one) can verify a freshly curl'd
- * artifact the same way pkg_fetch_completed() already verifies every
+ * any more) -- exported so every file the daemon verifies against a
+ * declared checksum is hashed the way pkg_fetch_completed() hashes a
  * recipe source, one real implementation, not a second copy of it.
  * out_size must be at least 65 (64 hex chars + NUL); returns 0 with
  * out null-terminated on success, -1 on any failure (open, read,
  * digest).
  */
 int pkg_run_capture_sha256(const char *path, char *out, size_t out_size);
-
-/*
- * Test-only concrete-fact check (daemon/src/main.c's own
- * --test-bootstrap-toolchain= self-test): does the pkgbuild rootfs
- * genuinely have gcc after a bootstrap call, not just "did the call
- * return OK" -- g_pkgbuild_rootfs itself is private to pkg.c. Returns
- * 1 if present, 0 otherwise.
- */
-int pkg_toolchain_has_gcc(void);
 
 /*
  * Issue #40: folds a pre-existing flat <images_dir>/pkgbuild/rootfs
@@ -1658,7 +1604,7 @@ void pkg_approval_writeback_write_json(struct json_writer *w);
  * PKG_ERR_BUSY if a sync is already running, PKG_ERR_NOT_FOUND if no
  * repo is configured. out_pid/out_pidfd are registered with epoll by
  * the caller exactly like every other async pkg.c job (pkg_install_
- * start(), pkg_bootstrap_from_toolchain(), ...).
+ * start(), ...).
  */
 /*
  * Issue #59: arms a one-shot re-fetch of a single name@version for the

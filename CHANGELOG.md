@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### `POST /v1/pkg/bootstrap` is retired (#628, ADR-0365)
+
+- **What changed:** `POST` and `GET /v1/pkg/bootstrap` are removed, with `cixctl pkg bootstrap` and `pkg bootstrap-status`. So is everything that existed only for them: `pkg_bootstrap_from_toolchain()` and its unsquashfs seed, the `toolchain_url` fetch and its connection kind, `--test-bootstrap-toolchain=`, `pkg_toolchain_has_gcc()`, `PKG_ERR_INVALID_TOOLCHAIN` and `PKG_ERR_IMAGE_PRODUCING`, `test_console_pkg_bootstrap`, `mktoolchainimage`, and the test fixture's `test_image_fixture_stage_toolchain()`, which copied the build host's own `/usr`. The gates move with it: `test_apigen` to 353 operations, `test_blocking_waits` to 49 waits, `test_curl_guards` to 11 fetch sites.
+- **Why:** the build sandbox it seeds has been read by no build since ADR-0199 composed build environments from declared tools. Its one reader was a status line after the test flag. The owner chose retirement over gating its QEMU test, 2026-10-30.
+- **Verified:** pending the release.
+
 ### The retired Secure Boot certificate is filed as retired, and image/keys holds nothing committed (#628)
 
 - **What changed:** `image/keys/cix-signing.crt` is now `docs/keys/cix-secureboot-2026-08.crt`, listed as retired, and its DER copy `image/keys/cix-signing.cer` is removed. `image/keys/` is gitignored whole: it is the local place for a hand build's pair, which must be the media host's own. `installing.md` names `docs/keys/cix-secureboot.crt` and `cixctl signing-keys` as where the current certificate and key are. `releasekey.c`'s comments no longer say docs/keys holds a PGP block.

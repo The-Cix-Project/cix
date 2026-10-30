@@ -163,11 +163,13 @@ int main(void)
 	 * Then 11 for ADR-0323's gitea-tags refresh (refresh_one_gitea()
 	 * in pkg.c, one bounded GET of a tags listing per package), then 12
 	 * for its rung-4 authentication (authenticate_one_gitea(), the
-	 * release archive fetched host-side and hashed).
+	 * release archive fetched host-side and hashed). Then 11, when
+	 * ADR-0365 retired the toolchain bootstrap and with it
+	 * bootstrap_fetch_start() in main.c.
 	 */
-	if (sites != 12) {
+	if (sites != 11) {
 		fprintf(stderr,
-		        "FAIL: found %d curlfetch_perform() call sites, expected 12 -- if a call site "
+		        "FAIL: found %d curlfetch_perform() call sites, expected 11 -- if a call site "
 		        "was genuinely added or removed, update this number deliberately; a silently "
 		        "different count is how an unguarded fetch hides\n",
 		        sites);

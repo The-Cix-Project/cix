@@ -7036,8 +7036,7 @@ paths:
       summary: Status of the most recent (or currently running) format+mount job for this disk
       description: >
         Only one format job may be in flight at this daemon at a time
-        (the same v1 single-job constraint ISO assembly and pkg
-        bootstrap's toolchain_url fetch already have).
+        (the same v1 single-job constraint ISO assembly has).
         Reports `{"state":"none"}` if no job has ever run for this
         specific disk_name this daemon lifetime -- including when a
         job ran/is running for a *different* disk, since a status check
@@ -10799,113 +10798,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /pkg/bootstrap:
-    post:
-      summary: >
-        Stages a real build toolchain (gcc/make/ld/as/cc1/sh/tar and their real headers
-        and shared libraries) into the sandboxed build image. No body (or an empty one):
-        refused with 400 since issue #168 -- it used to copy this daemon's own host's
-        /usr live, which on a real host is another operating system's files, and on a
-        real minimal install was an empty, non-functional toolchain. toolchain_path: imports a
-        real, portable artifact (built once, elsewhere, with image/src/mktoolchainimage.c)
-        via a local path the operator has already transferred it to (e.g. scp), the same
-        "local path, not an upload" precedent /system/update's image_path/kernel_path
-        already established. toolchain_url (+ required toolchain_sha256): the daemon
-        fetches the artifact itself, host-side, the same real curl primitive every
-        recipe's declared sources already use (ADR-0065) -- closes a real gap the
-        toolchain_path mode rests on: a genuinely fresh, minimal Cix install has no SSH
-        server and no general shell at all (ADR-0034), so "the operator transfers it
-        onto the box" was never actually possible without this. The
-        toolchain_path mode stays synchronous (204 on success, unchanged); toolchain_url
-        is async (202, poll GET /pkg/bootstrap) since a real network fetch of a real,
-        large artifact cannot block this daemon's single-threaded event loop. All modes
-        are idempotent -- safe to call again. Not automatic at daemon startup; an
-        explicit, one-time action.
-      operationId: pkgBootstrap
-      x-cix-invalidates: [getPkgBootstrapStatus, getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg]
-      x-cix-permission: packages:write
-      x-cix-expose: [cli, web]
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                toolchain_path:
-                  type: string
-                  title: Toolchain path
-                  description: >
-                    A toolchain squashfs already on this host, by path.
-                    Leaving every field here blank is refused (#168):
-                    the daemon no longer copies a toolchain live from
-                    its own filesystem. Build a portable artifact with
-                    mktoolchainimage, put it on the box, and name it
-                    here.
-                toolchain_url:
-                  type: string
-                  title: Toolchain URL
-                  format: uri
-                  description: >
-                    Where the daemon fetches the toolchain squashfs
-                    from itself, host-side (ADR-0065). Requires
-                    toolchain_sha256.
-                toolchain_sha256:
-                  type: string
-                  title: Toolchain sha256
-                  pattern: '^[0-9a-f]{64}$'
-                  description: >
-                    What the fetched artifact must hash to before it is
-                    ever staged. Required alongside toolchain_url.
-      responses:
-        "204":
-          description: Build toolchain image staged (or already was) -- toolchain_path mode only
-        "202":
-          description: toolchain_url fetch started -- poll GET /pkg/bootstrap
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/PkgBootstrapStatus"
-        "400":
-          description: No body or neither field set (#168), toolchain_path given but missing/unreadable/not a regular file, or toolchain_url given without a valid 64-char toolchain_sha256
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "409":
-          description: >
-            A toolchain_url fetch is already in progress, or the build sandbox
-            image is producing a new version for an install (ADR-0356); nothing
-            was changed
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "500":
-          description: Staging failed
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-    get:
-      summary: Status of the most recent toolchain_url fetch (ADR-0065)
-      description: >
-        Polling endpoint for POST /pkg/bootstrap's own toolchain_url mode -- the exact
-        shape GET /system/iso already established for its own fire-and-forget job. state
-        is "none" until the first toolchain_url POST this daemon has ever handled; the
-        no-body/toolchain_path modes are synchronous and never touch this state at all.
-      operationId: getPkgBootstrapStatus
-      x-cix-read: state
-      x-cix-permission: packages:read
-      x-cix-expose: [cli]
-      responses:
-        "200":
-          description: Current bootstrap-fetch status
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/PkgBootstrapStatus"
-
   /pkg/rebuilds:
     get:
       summary: Image rebuilds this host has queued but not yet started (issue #236)
@@ -11863,7 +11755,7 @@ paths:
 
         Returns 202 immediately; poll the GET below.
       operationId: exportPkgArtifact
-      x-cix-invalidates: [listBuildEnvironments, getPkgBootstrapStatus, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg]
+      x-cix-invalidates: [listBuildEnvironments, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg]
       x-cix-permission: packages:write
       x-cix-expose: [cli]
       parameters:
@@ -12010,7 +11902,7 @@ paths:
         (correctly) refused to route an operation the spec did not
         declare. Exactly the drift that ADR exists to make impossible.
       operationId: publishPkgArtifact
-      x-cix-invalidates: [listBuildEnvironments, getPkgBootstrapStatus, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg]
+      x-cix-invalidates: [listBuildEnvironments, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg]
       x-cix-permission: packages:write
       x-cix-expose: [cli]
       parameters:
@@ -13221,7 +13113,7 @@ paths:
         A body naming only `pinned` changes only the hold; the channel
         and depth stay as they were, inherited or not.
       operationId: setPkgSourcePolicy
-      x-cix-invalidates: [listBuildEnvironments, getPkgBootstrapStatus, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg]
+      x-cix-invalidates: [listBuildEnvironments, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg]
       x-cix-permission: packages:write
       x-cix-expose: [cli]
       parameters:
@@ -13269,7 +13161,7 @@ paths:
         that does not matter. Only the channel and depth go back to the
         default; a hold (`pinned`) is kept, and is lifted by the PUT.
       operationId: clearPkgSourcePolicy
-      x-cix-invalidates: [listBuildEnvironments, getPkgBootstrapStatus, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg]
+      x-cix-invalidates: [listBuildEnvironments, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg]
       x-cix-permission: packages:write
       x-cix-expose: [cli]
       parameters:
@@ -13319,7 +13211,7 @@ paths:
         the verifier can use (RSA). Installing the same fingerprint again
         replaces the key.
       operationId: addPkgUpstreamKey
-      x-cix-invalidates: [listBuildEnvironments, getPkgBootstrapStatus, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg]
+      x-cix-invalidates: [listBuildEnvironments, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg]
       x-cix-permission: packages:write
       x-cix-expose: [cli]
       parameters:
@@ -13363,7 +13255,7 @@ paths:
         A release that names this key is no longer authenticated, and the
         package stays where it is until a key is installed again.
       operationId: removePkgUpstreamKey
-      x-cix-invalidates: [listBuildEnvironments, getPkgBootstrapStatus, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg]
+      x-cix-invalidates: [listBuildEnvironments, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg]
       x-cix-permission: packages:write
       x-cix-expose: [cli]
       parameters:
@@ -14077,7 +13969,7 @@ paths:
         image, so there is nothing to unlink and no new image version is
         produced.
       operationId: deletePkg
-      x-cix-invalidates: [listBuildEnvironments, getPkgBootstrapStatus, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg, listImages, getImage, listSoftware]
+      x-cix-invalidates: [listBuildEnvironments, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg, listImages, getImage, listSoftware]
       x-cix-permission: packages:write
       x-cix-expose: [cli, web]
       parameters:
@@ -22666,33 +22558,6 @@ components:
             The private TLD this site's names notionally live under.
             Defaults to "internal" (IANA-reserved for exactly this
             use, RFC 9476) but is a real, settable value.
-
-    PkgBootstrapStatus:
-      type: object
-      required: [state, error, scope]
-      properties:
-        state:
-          type: string
-          enum: [none, fetching, ready, failed]
-          description: >
-            "none" until the first toolchain_url POST /pkg/bootstrap
-            this daemon has ever handled. Only one fetch is ever in
-            flight -- a POST while state is "fetching" gets 409, not
-            a second job.
-        error:
-          type: string
-          nullable: true
-          description: Non-null only when state is "failed" (curl failure, checksum mismatch, or staging failure).
-        scope:
-          type: string
-          description: >
-            Issue #17 -- a fixed, always-present clarifying note that
-            "none" does not mean no bootstrap has ever happened on this
-            daemon, only that this specific async toolchain_url fetch
-            mode has never run; the ordinary no-body/toolchain_path
-            modes (what a plain `pkg install --name=tcc` or a real
-            gcc/dev build actually exercises) are synchronous and never
-            touch this state at all.
 
     IsoPublishedList:
       type: object

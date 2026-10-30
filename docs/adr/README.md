@@ -39,7 +39,7 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0032](0032-per-slot-kernel-updates.md) | Per-slot kernel files, extending POST /system/update to cover bzImage | Accepted |
 | [0033](0033-platform-state-backup-restore.md) | Platform state backup/restore -- configuration only, not workload data, never PKI | Accepted; the never-returned CA key rule superseded by ADR-0281; `pkg_recipes` narrowed to the recipes no source owns by ADR-0351 |
 | [0034](0034-console-login-via-supervised-cixctl.md) | Console login via a cixd-supervised cixctl, not a general shell | Accepted |
-| [0035](0035-portable-toolchain-artifact-for-pkg-bootstrap.md) | Portable toolchain artifact for pkg bootstrap, not just a live-host copy | Accepted |
+| [0035](0035-portable-toolchain-artifact-for-pkg-bootstrap.md) | Portable toolchain artifact for pkg bootstrap, not just a live-host copy | Superseded by 0365 |
 | [0036](0036-multi-source-package-recipes.md) | Multi-source package recipes | Accepted; staging superseded by ADR-0329 |
 | [0037](0037-network-gateway-optional.md) | A network's host-owned gateway becomes optional, default flips to gateway-less | Accepted |
 | [0038](0038-vlan-and-physical-nic-bridge-attachment.md) | VLAN via 802.1q sub-interfaces, physical NIC attachment via the existing rtnl_link_set_master | Accepted |
@@ -69,7 +69,7 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0062](0062-ext4-project-disk-quotas.md) | Disk quotas: real ext4 project-quota enforcement, permanent project-id assignment | Accepted |
 | [0063](0063-iso-self-build-toolchain.md) | ISO self-build: a real, from-source GRUB2/xorriso/mtools/sbsigntools toolchain | Accepted |
 | [0064](0064-rest-driven-iso-assembly.md) | REST-driven ISO assembly: closing the API-First Mandate gap ADR-0063 left open | Accepted; transport half superseded by ADR-0212, isotools aggregator by ADR-0358 |
-| [0065](0065-pkg-bootstrap-url-fetch.md) | pkg bootstrap URL-fetch: closing a real gap in ADR-0031's own "operator scp's it" assumption | Accepted |
+| [0065](0065-pkg-bootstrap-url-fetch.md) | pkg bootstrap URL-fetch: closing a real gap in ADR-0031's own "operator scp's it" assumption | Superseded by 0365 |
 | [0066](0066-kernel-routing-table-diagnostic.md) | A real kernel routing-table diagnostic: closing the last blind spot in "the daemon is the only way to inspect a running box" | Accepted |
 | [0067](0067-network-address-field-rename.md) | Rename a network's `gateway`/`has_gateway` field to `address`/`has_address` | Accepted |
 | [0068](0068-dedicated-daemon-bind-ip.md) | A dedicated daemon bind IP, decoupled from the management network's own address | Superseded by ADR-0287 |
@@ -369,3 +369,4 @@ See [0000-adr-process.md](0000-adr-process.md) for what an ADR is for and how it
 | [0362](0362-cix-boot-is-built-by-a-tcc-win64-cross-compiler.md) | **Accepted** (2026-10-28, #656). cix-boot.efi is built by a TCC win64 cross compiler: a `tcc-win64` package builds tinycc's `x86_64-win32` target from the source `tcc` pins, with a `.sbat` section class in `tccpe.c`. `cix-boot.c` provides `memset`/`memcpy`, and the Makefile drops gcc and `ld`. objcopy was measured and rejected. |
 | [0363](0363-the-win64-cross-target-is-part-of-the-tcc-package.md) | **Accepted** (2026-10-29, #656). The win64 cross target is part of the tcc package: `tcc` builds `tcc` and `x86_64-win32-tcc` from one tree with every edit, the native compiler gated byte-identical (stripped) to 0.9.28rc-31, and `tcc-win64` is retired. Supersedes decision 1 of ADR-0362. |
 | [0364](0364-the-data-directory-is-a-placement.md) | **Accepted** (2026-10-29, #249). The data directory is a placement: its two bootstrap state files move to `STATE_DIR` (the reason they could not is gone since #251), an unmountable data partition is a reported fault instead of a silent tmpfs, and `data-storage` moves the rest at the next boot, before anything runs, freeing `cix-containers`. Written from `GET /v1/system/data-dir`: 0.13 GiB carried after #664. |
+| [0365](0365-pkg-bootstrap-is-retired.md) | **Accepted** (2026-10-30, #628). `POST`/`GET /v1/pkg/bootstrap` are retired, with their CLI commands, the `toolchain_url` fetch, `--test-bootstrap-toolchain=`, `test_console_pkg_bootstrap` and `mktoolchainimage`: the build sandbox they seed is read by no build since ADR-0199 composed environments from declared tools. Supersedes 0035 and 0065. |

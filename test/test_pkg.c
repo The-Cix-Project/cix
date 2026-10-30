@@ -1,6 +1,6 @@
 /*
  * Phase 10 parts 1-2 end-to-end test: proves the package manager
- * (POST /v1/pkg/bootstrap, POST /v1/pkg/install, GET /v1/pkg[/{name}],
+ * (POST /v1/pkg/install, GET /v1/pkg[/{name}],
  * DELETE /v1/pkg/{name} -- daemon/src/pkg.c) over real HTTP, with a
  * real fetch -> checksum verify -> isolated container build -> merge
  * into the shared base image as the actual payoff, not a mocked

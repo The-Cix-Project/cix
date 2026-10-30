@@ -8,10 +8,11 @@
  * Two source files implement this header. test_image_fixture.c is linked
  * into cixd, mkbootroot and mkinstalleriso, so it runs no program at all.
  * test_image_fixture_host.c holds the functions that fork one (`cp -a`,
- * `sha256sum`) and is linked only by tests and mktoolchainimage:
- * test_image_fixture_copy_dir_recursive(), _stage_toolchain(),
- * _seed_floor_packages(), _clear_floor_cache() and test_floor_install
- * (#554).
+ * `sha256sum`) and is linked only by tests:
+ * test_image_fixture_copy_dir_recursive(), _seed_floor_packages(),
+ * _clear_floor_cache() and test_floor_install (#554).
+ * _stage_toolchain(), which copied the build host's own /usr, went
+ * with mktoolchainimage, its last caller (ADR-0365).
  */
 
 /*
@@ -128,33 +129,6 @@ int test_image_fixture_copy_dir_recursive(const char *src_dir, const char *dst_d
 int test_image_fixture_stage_closure(const char *image_root, const char *binary_path,
                                      const char *const *search_dirs);
 
-
-/*
- * Stages a full package-build toolchain at image_root: this build
- * host's own /usr/{include,lib,lib64,bin,libexec} (wholesale, real
- * `cp -a` -- correct symlink/permission handling a hand-rolled copier
- * would get wrong), the bin/lib/lib64/sbin -> usr/... compatibility
- * symlinks a merged-/usr host needs, targeted extras found by an
- * actual package build failing (not guessed at -- /etc/alternatives,
- * /usr/share/{bison,autoconf,perl}, /usr/local/go), standard /dev
- * nodes, and a writable/sticky /tmp -- everything a real ./configure
- * && make && make install sequence needs, run inside an isolated,
- * network-less build container. Shared by two consumers: cixd's
- * own POST /v1/pkg/bootstrap (a live copy from whatever host cixd
- * happens to be running on -- fine for dev/test convenience, silently
- * empty on a real minimal install) and image/src/mktoolchainimage.c
- * (builds one real, portable, durable squashfs artifact from this
- * exact same content, meant to be imported via `pkg bootstrap
- * --toolchain=PATH` instead of relying on the live host at all) --
- * one source of truth for "what a toolchain needs," not two copies
- * drifting apart. Idempotent (safe to call repeatedly against the
- * same image_root, and tolerant of anything genuinely absent on this
- * particular build host -- not every host has every extra). Returns
- * 0, or -1 (with perror on the failing path) otherwise.
- */
-int test_image_fixture_stage_toolchain(const char *image_root);
-
-
 /*
  * Creates a fresh, unique directory under /tmp (via mkdtemp(), same
  * "/tmp/cix_test_<name>_XXXXXX" convention test_pki.c/
@@ -212,7 +186,7 @@ int test_container_tree_path(const char *data_dir, const char *name, const char 
  * it lives here rather than as a near-duplicate helper in each test
  * file (test_pkg.c/test_images.c). A plain text scan for the
  * "current_version":"..." field, not a real JSON parse -- this file
- * is linked into image/src/mkbootroot.c and image/src/mktoolchainimage.c
+ * is linked into image/src/mkbootroot.c and image/src/mkinstalleriso.c
  * too (see the Makefile), neither of which links daemon/src/json.c,
  * so pulling in a real JSON parser here would ripple into their own
  * build rules for a lookup this simple. image_dir is an image's own

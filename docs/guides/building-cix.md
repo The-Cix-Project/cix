@@ -8,7 +8,7 @@ The root `Makefile` is what the `cix` recipe runs inside its build container. `m
 
 - `cixd` and `cixctl`
 - `cix-init`, the freestanding PID 1 of every container ([ADR-0260](../adr/0260-a-container-declares-services-not-a-command.md))
-- the installer tools: `mkbootroot`, `mkinstalleriso`, `cix-install`, `cix-recover`, `mktoolchainimage`, `cix-xorriso`, and `cix-boot.efi` (built by `x86_64-win32-tcc`, TCC's win64 cross target, which the `tcc` package builds beside the native compiler, whose default calling convention is the Microsoft one a PE/COFF EFI image needs, [ADR-0362](../adr/0362-cix-boot-is-built-by-a-tcc-win64-cross-compiler.md), [ADR-0363](../adr/0363-the-win64-cross-target-is-part-of-the-tcc-package.md))
+- the installer tools: `mkbootroot`, `mkinstalleriso`, `cix-install`, `cix-recover`, `cix-xorriso`, and `cix-boot.efi` (built by `x86_64-win32-tcc`, TCC's win64 cross target, which the `tcc` package builds beside the native compiler, whose default calling convention is the Microsoft one a PE/COFF EFI image needs, [ADR-0362](../adr/0362-cix-boot-is-built-by-a-tcc-win64-cross-compiler.md), [ADR-0363](../adr/0363-the-win64-cross-target-is-part-of-the-tcc-package.md))
 - one test binary per feature, each forking its own `cixd` against a scratch `--data-dir`
 
 There is no `make install`. The named targets beyond `all` and `clean`:

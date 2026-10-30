@@ -1,6 +1,5 @@
 #include "libdirs.h"
 #include "pkg.h"
-#include "squashfsimg.h"
 #include "nsswitch.h"
 #include "curlfetch.h"
 #include "osrelease.h"
@@ -74,8 +73,6 @@ extern char **environ;
  * curl, so the reported error does not claim a curl status that never
  * happened. Chosen outside curl's own range of documented codes. */
 #define PKG_FETCH_EXIT_PRECONDITION 91
-
-#define PKG_UNSQUASHFS_BIN "/usr/bin/unsquashfs"
 
 /*
  * Ceiling on one `cbs explain --json` document (ADR-0305).
@@ -5799,10 +5796,10 @@ static int image_version_commit(const char *image, const char *new_version)
 	return 0;
 }
 
-/* Both halves at once, for the callers that still produce in the daemon
- * itself: the toolchain bootstrap, and the build sandbox's one-time
- * migration at start. The bootstrap refuses while a child is producing
- * the same image (ADR-0356). */
+/* Both halves at once, for the one caller that still produces in the
+ * daemon itself: the build sandbox's one-time migration at start, which
+ * runs before any chain can be producing (ADR-0356). The toolchain
+ * bootstrap was the other, until ADR-0365. */
 static int image_produce_new_version(const char *image,
                                       int (*mutate)(const char *staging_rootfs, void *ctx),
                                       void *ctx, const char *extra_identity)
@@ -7273,176 +7270,6 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 }
 
 /*
- * Live-copy fallback: stages a toolchain by copying from whatever host
- * cixd itself happens to be running on. Fine for dev/test convenience
- * (this build sandbox has a real toolchain); silently produces an empty,
- * non-functional pkgbuild rootfs on a real minimal install, which has
- * none of this under its own /usr -- confirmed live (a real `pkg
- * install` on a fresh install has nothing to build with). The correct
- * production path is pkg_bootstrap_from_toolchain() below, importing a
- * real, portable artifact instead -- this fallback stays for the dev/
- * test case where reaching into the live host genuinely works, and so
- * the existing bare `POST /v1/pkg/bootstrap` (no body) keeps behaving
- * exactly as it always has.
- */
-/* image_produce_new_version()'s mutate() for the dev/test seed. */
-enum pkg_error pkg_bootstrap_build_image(void)
-{
-	/*
-	 * Issue #168: refused, permanently.
-	 *
-	 * This used to copy the build host's whole /usr/{include,lib,
-	 * lib64,bin,libexec} into an image. On any real host that is
-	 * everything installed on it -- the image it produced held
-	 * rustup, cargo, chromium, node, go, erlang, qemu, sudo and
-	 * several gcc trees, 88,798 entries of which 93% belonged to no
-	 * package in its manifest.
-	 *
-	 * It cannot be narrowed into correctness, because copying another
-	 * operating system's files is the thing that is wrong, not the
-	 * amount copied. Everything Cix ships is built on a Cix host with
-	 * Cix's own toolchain; a live copy of whatever this machine
-	 * happens to have installed is the opposite of that.
-	 *
-	 * Nothing needs it any more either. Build environments are
-	 * composed from a recipe's declared tools (ADR-0199), and a fresh
-	 * box gets its first packages from checksum-verified artifacts
-	 * built by a Cix host -- which needs no build environment at all
-	 * (the cache-hit path). The remaining honest seed is
-	 * pkg_bootstrap_from_toolchain(), an explicit, checksummed
-	 * artifact the operator names.
-	 */
-	return PKG_ERR_INVALID_TOOLCHAIN;
-}
-
-struct toolchain_seed_ctx {
-	const char *toolchain_path;
-};
-
-/*
- * -no-xattrs: the build sandbox is build tooling, not something needing
- * POSIX capabilities/ACLs preserved on its own binaries -- confirmed
- * directly that without this, unsquashfs exits nonzero on a destination
- * filesystem that cannot store xattrs (e.g. tmpfs, boot_init()'s own
- * containers-partition fallback) even though the extraction fully
- * succeeds; the tool's own diagnostic names this exact flag as the fix.
- *
- * -no-exit-code is the general form of that same problem, and the
- * reason this call does not simply use run_subprocess()'s "any nonzero
- * is failure" rule. unsquashfs documents three distinct exit codes:
- *
- *   0  extracted OK
- *   1  FATAL -- corruption or I/O error; it aborted partway
- *   2  NON-FATAL -- "unsquashfs continued and did not abort"; e.g. it
- *      could not write permissions, or the output filesystem does not
- *      support something in the archive
- *
- * Treating 2 as failure throws away a complete, correct extraction.
- * That is not hypothetical: a real bootstrap on a freshly installed
- * host failed with "fetched toolchain failed to stage (invalid
- * squashfs?)" on a toolchain image that extracts perfectly -- verified
- * by running this exact binary, with these exact flags, against the
- * same archive, which exits 0 in one environment and 2 in another while
- * producing the same tree. The -no-xattrs comment above had already
- * observed this behaviour once; only the xattr instance of it got
- * fixed.
- *
- * So the exit status is inspected here rather than delegated: 1 stays
- * fatal, 2 is accepted and said out loud, so a real degradation is
- * visible in the log instead of either failing the boot or passing
- * silently.
- */
-static int toolchain_seed_mutate(const char *staging_rootfs, void *ctx_v)
-{
-	struct toolchain_seed_ctx *ctx = ctx_v;
-	char *argv[] = { (char *)PKG_UNSQUASHFS_BIN, "-f", "-no-xattrs", "-d",
-		          (char *)staging_rootfs, (char *)ctx->toolchain_path, NULL };
-	pid_t pid;
-	int status;
-
-	pid = fork();
-	if (pid < 0) {
-		logstore_write("cixd", "error", "toolchain seed: fork failed: %s", strerror(errno));
-		return -1;
-	}
-	if (pid == 0) {
-		execve(PKG_UNSQUASHFS_BIN, argv, environ);
-		_exit(127);
-	}
-	if (waitpid(pid, &status, 0) != pid) {
-		logstore_write("cixd", "error", "toolchain seed: waitpid failed: %s", strerror(errno));
-		return -1;
-	}
-	if (!WIFEXITED(status)) {
-		logstore_write("cixd", "error", "toolchain seed: unsquashfs did not exit normally");
-		return -1;
-	}
-	switch (WEXITSTATUS(status)) {
-	case 0:
-		return 0;
-	case 2:
-		logstore_write("cixd", "info",
-		                "toolchain seed: unsquashfs reported non-fatal errors (exit 2) -- the "
-		                "extraction completed and is being kept; some permissions or "
-		                "attributes could not be reproduced on this filesystem");
-		return 0;
-	case 127:
-		logstore_write("cixd", "error",
-		                "toolchain seed: could not execute %s (missing binary or bad path?)",
-		                PKG_UNSQUASHFS_BIN);
-		return -1;
-	default:
-		logstore_write("cixd", "error",
-		                "toolchain seed: unsquashfs failed fatally (exit %d) -- the archive is "
-		                "corrupt or unreadable",
-		                WEXITSTATUS(status));
-		return -1;
-	}
-}
-
-enum pkg_error pkg_bootstrap_from_toolchain(const char *toolchain_path)
-{
-	/*
-	 * -no-xattrs: the pkgbuild rootfs is build tooling, not something
-	 * needing POSIX capabilities/ACLs preserved on its own binaries --
-	 * confirmed directly that without this, unsquashfs exits nonzero
-	 * (PKG_ERR_SPAWN_FAILED) on a destination filesystem that can't
-	 * store xattrs (e.g. tmpfs, boot_init()'s own containers-partition
-	 * fallback) even though the actual extraction fully succeeds; the
-	 * tool's own diagnostic message names this exact flag as the fix.
-	 */
-	struct toolchain_seed_ctx seed_ctx;
-
-	/*
-	 * Real, on-disk squashfs magic check via squashfs_image_check()
-	 * (squashfsimg.h) -- which is where the open()+read() this used to
-	 * carry inline now lives, along with the reasoning this comment
-	 * used to hold: it is deliberately not stat()+S_ISREG, because a
-	 * squashfs image's bytes are equally valid backing a regular file
-	 * (the real, intended operator usage -- scp'd onto a real
-	 * filesystem path) or a raw block device, which is what
-	 * test_boot_update.c's --test-update-image= relies on.
-	 *
-	 * This comment named do_system_update()'s copy as its precedent,
-	 * which is exactly the shape "No Parallel Implementations"
-	 * forbids; a third copy in the ISO builder was not this check at
-	 * all, and shipped the bug (#481).
-	 */
-	if (squashfs_image_check(toolchain_path) != 1)
-		return PKG_ERR_INVALID_TOOLCHAIN;
-	/* ADR-0356: the same rule an install and an uninstall keep, for the same reason. */
-	if (image_has_producer(PKG_BUILD_SANDBOX_IMAGE))
-		return PKG_ERR_IMAGE_PRODUCING;
-
-	seed_ctx.toolchain_path = toolchain_path;
-	if (image_produce_new_version(PKG_BUILD_SANDBOX_IMAGE, toolchain_seed_mutate, &seed_ctx,
-	                               toolchain_path) != 0)
-		return PKG_ERR_SPAWN_FAILED;
-
-	return PKG_OK;
-}
-
-/*
  * Issue #40, one-time migration. Before the sandbox was a real image it
  * lived at a flat <images_dir>/pkgbuild/rootfs, grown by every install.
  * Simply resolving the image instead would silently DISCARD all of that
@@ -7461,25 +7288,6 @@ enum pkg_error pkg_bootstrap_from_toolchain(const char *toolchain_path)
  * because the content finally has versions to inspect and roll back to.
  */
 static void pkg_migrate_flat_sandbox(const char *images_dir);
-
-/*
- * Set only when a flat sandbox exists that could NOT be migrated. While
- * it is set, builds keep using it exactly as they always did.
- *
- * This exists because the first version of this change did not have it,
- * and the consequence was immediate and total on the real box: the
- * migration failed, builds silently switched to the image's own
- * declared content, and the very next install died on `sed: command not
- * found` -- sed being one of the many packages that had accreted into
- * the flat sandbox and was never in the image's manifest. Which is,
- * precisely, the thing this whole issue is about; it simply bit the
- * migration first.
- *
- * So a failed migration must not change what builds run against. It
- * degrades to the old behaviour and says so, rather than proceeding
- * with content that is missing most of what recipes depend on.
- */
-static char g_flat_sandbox_fallback[PATH_MAX];
 
 struct sandbox_migrate_ctx {
 	const char *flat_rootfs;
@@ -7525,12 +7333,11 @@ static void pkg_migrate_flat_sandbox(const char *images_dir)
 	ctx.flat_rootfs = flat;
 	if (image_produce_new_version(PKG_BUILD_SANDBOX_IMAGE, sandbox_migrate_mutate, &ctx,
 	                               "migrate:flat-pkgbuild-rootfs") != 0) {
-		snprintf(g_flat_sandbox_fallback, sizeof(g_flat_sandbox_fallback), "%s", flat);
+		/* Kept where it is, not deleted. No build reads it: a build's
+		 * environment is composed from its declared tools (ADR-0199). */
 		logstore_write("cixd", "error",
-		               "pkg: could not migrate the flat build sandbox at %s into %s -- keeping "
-		               "it, and builds keep using it, exactly as before. The image's own "
-		               "content is NOT a substitute: it lacks everything that only ever "
-		               "accreted here (issue #40)",
+		               "pkg: could not migrate the flat build sandbox at %s into %s -- left in "
+		               "place, unread (issue #40)",
 		               flat, PKG_BUILD_SANDBOX_IMAGE);
 		return;
 	}
@@ -8315,34 +8122,6 @@ static void buildenv_compose_failed_cleanup(int chain_idx, const char *env_image
 			return;
 	}
 	image_delete(env_image);
-}
-
-static int pkg_build_sandbox_rootfs(char *out, size_t out_size)
-{
-	char version[IMAGE_VERSION_MAX];
-
-	/* An un-migrated flat sandbox wins: it is what builds have always
-	 * run against, and the image's own content is not equivalent. */
-	if (g_flat_sandbox_fallback[0] != '\0') {
-		snprintf(out, out_size, "%s", g_flat_sandbox_fallback);
-		return 0;
-	}
-	if (image_current_version(PKG_BUILD_SANDBOX_IMAGE, version, sizeof(version)) != IMAGE_OK)
-		return -1;
-	image_version_rootfs_path(PKG_BUILD_SANDBOX_IMAGE, version, out, out_size);
-	return 0;
-}
-
-int pkg_toolchain_has_gcc(void)
-{
-	char rootfs[PATH_MAX];
-	char gcc_path[PATH_MAX];
-	struct stat st;
-
-	if (pkg_build_sandbox_rootfs(rootfs, sizeof(rootfs)) != 0)
-		return 0;
-	snprintf(gcc_path, sizeof(gcc_path), "%s/usr/bin/gcc", rootfs);
-	return stat(gcc_path, &st) == 0;
 }
 
 int pkg_recipe_seed_source_offers(const char *source)
@@ -23786,10 +23565,6 @@ int pkg_error_describe(enum pkg_error err, const char **phrase, char *msg, size_
 		*phrase = "Conflict";
 		snprintf(msg, msg_size, "no build is in flight for that package and image");
 		return 409;
-	case PKG_ERR_INVALID_TOOLCHAIN:
-		*phrase = "Bad Request";
-		snprintf(msg, msg_size, "toolchain_path missing, unreadable, or not a regular file");
-		return 400;
 	case PKG_ERR_BUILD_MEMORY_OVER_CEILING:
 		*phrase = "Conflict";
 		snprintf(msg, msg_size,
@@ -23803,13 +23578,6 @@ int pkg_error_describe(enum pkg_error err, const char **phrase, char *msg, size_
 		         "a hostbuild is already running -- only one at a time, because two "
 		         "concurrent hostbuilds have panic-rebooted a host (#362); wait for it to "
 		         "finish, or cancel it with POST /v1/pkg/cancel");
-		return 409;
-	case PKG_ERR_IMAGE_PRODUCING:
-		*phrase = "Conflict";
-		snprintf(msg, msg_size,
-		         "this image is producing a new version for an install or an uninstall, and "
-		         "one image produces one version at a time (ADR-0356); nothing was changed -- "
-		         "ask again once that job has finished");
 		return 409;
 	case PKG_ERR_SPAWN_FAILED:
 	case PKG_ERR_PERSIST_FAILED:

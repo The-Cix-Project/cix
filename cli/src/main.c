@@ -347,16 +347,6 @@ static const char USAGE_TEXT[] =
 	        "  pipeline approvals | approve GATE TARGET | revoke GATE TARGET  -- what the\n"
 	        "               publish/roll/deploy gates hold, let one through, or take an\n"
 	        "               unused approval back (ADR-0273, #381)\n"
-	        "  pkg bootstrap [--toolchain=PATH]  -- stages a package-build toolchain into the\n"
-	        "               pkgbuild image; no --toolchain= copies live from this daemon's own\n"
-	        "               host (dev/test convenience, empty on a real minimal install);\n"
-	        "               --toolchain=PATH imports a real, portable artifact already scp'd\n"
-	        "               onto this box (build one with image/src/mktoolchainimage.c)\n"
-	        "  pkg bootstrap --toolchain-url=URL --toolchain-sha256=SHA256 [--wait]  -- the\n"
-	        "               daemon fetches the artifact itself, host-side (ADR-0065) -- for a\n"
-	        "               real minimal install with no SSH server and no other way to get a\n"
-	        "               real toolchain onto the box; async, 202, poll with bootstrap-status\n"
-	        "  pkg bootstrap-status  -- state/error of the most recent toolchain_url fetch\n"
 	        "  pkg recipes  -- lists every published (name,version) recipe (ADR-0107)\n"
 	        "  pkg rebuilds  -- image rebuilds this host has queued but not started.\n"
 	        "               Publishing a recipe queues one for every image tracking that\n"
@@ -6905,7 +6895,7 @@ static void fmt_ping(const struct json_value *v)
 }
 
 /* Polls GET /v1/system/ping until state leaves "pending" -- same
- * shape as poll_bootstrap_fetch()/poll_hostbuild()/poll_iso(); the
+ * shape as poll_hostbuild()/poll_iso(); the
  * server side itself is bounded to a fixed ~2s timeout, so this loop
  * always terminates. */
 static int poll_ping(const struct cix_client *c, struct cix_response *out)
@@ -15047,49 +15037,6 @@ static int cmd_pki(const struct cix_client *c, int json_mode, int argc, char **a
 	return 2;
 }
 
-static void fmt_bootstrapped(const struct json_value *v)
-{
-	(void)v;
-	printf("bootstrapped\n");
-}
-
-static void fmt_bootstrap_fetch_status(const struct json_value *v)
-{
-	const char *state = json_str_field(v, "state");
-	const char *error = json_str_field(v, "error");
-	const char *scope = json_str_field(v, "scope");
-
-	printf("state=%s", state != NULL ? state : "?");
-	if (error != NULL)
-		printf(" error=%s", error);
-	printf("\n");
-	/* Issue #17: "none" reads as "no bootstrap ever happened" but only
-	 * means this daemon never handled a toolchain_url POST -- surface
-	 * the daemon's own scope note so that misreading doesn't recur. */
-	if (state != NULL && strcmp(state, "none") == 0 && scope != NULL)
-		printf("(%s)\n", scope);
-}
-
-/* Polls GET /v1/pkg/bootstrap until state leaves "fetching" -- --wait's
- * own loop for the toolchain_url mode, the same shape poll_hostbuild()/
- * poll_iso() already established. */
-static int poll_bootstrap_fetch(const struct cix_client *c, struct cix_response *out)
-{
-	for (;;) {
-		const char *state;
-
-		if (cix_client_request(c, CIX_API_getPkgBootstrapStatus_METHOD, CIX_API_getPkgBootstrapStatus, NULL, out) != 0) {
-			fprintf(stderr, "cixctl: could not reach daemon\n");
-			return -1;
-		}
-		state = json_str_field(out->json, "state");
-		if (state == NULL || strcmp(state, "fetching") != 0)
-			return 0;
-		cix_response_free(out);
-		usleep(500000);
-	}
-}
-
 static void fmt_pkg_recipe_line(const struct json_value *v)
 {
 	const char *name = json_str_field(v, "name");
@@ -15157,95 +15104,6 @@ static void fmt_pkg_list(const struct json_value *v)
 		return;
 	for (i = 0; i < packages->u.array.count; i++)
 		fmt_pkg_line(packages->u.array.items[i]);
-}
-
-static int cmd_pkg_bootstrap_status(const struct cix_client *c, int json_mode)
-{
-	struct cix_response r;
-
-	if (cix_client_request(c, CIX_API_getPkgBootstrapStatus_METHOD, CIX_API_getPkgBootstrapStatus, NULL, &r) != 0) {
-		fprintf(stderr, "cixctl: could not reach daemon\n");
-		return 1;
-	}
-	return emit(&r, json_mode, fmt_bootstrap_fetch_status);
-}
-
-static int cmd_pkg_bootstrap(const struct cix_client *c, int json_mode, int argc, char **argv)
-{
-	const char *toolchain = NULL;
-	const char *toolchain_url = NULL;
-	const char *toolchain_sha256 = NULL;
-	int wait = 0;
-	int i;
-	struct cix_response r;
-
-	for (i = 0; i < argc; i++) {
-		if (strncmp(argv[i], "--toolchain=", 12) == 0)
-			toolchain = argv[i] + 12;
-		else if (strncmp(argv[i], "--toolchain-url=", 16) == 0)
-			toolchain_url = argv[i] + 16;
-		else if (strncmp(argv[i], "--toolchain-sha256=", 19) == 0)
-			toolchain_sha256 = argv[i] + 19;
-		else if (strcmp(argv[i], "--wait") == 0)
-			wait = 1;
-		else {
-			fprintf(stderr, "cixctl: unknown pkg bootstrap option '%s'\n", argv[i]);
-			return 2;
-		}
-	}
-
-	if (toolchain_url != NULL) {
-		struct json_writer w;
-
-		jw_init(&w);
-		jw_obj_open(&w);
-		jw_key(&w, "toolchain_url");
-		jw_str(&w, toolchain_url);
-		if (toolchain_sha256 != NULL) {
-			jw_key(&w, "toolchain_sha256");
-			jw_str(&w, toolchain_sha256);
-		}
-		jw_obj_close(&w);
-		w.buf[w.len] = '\0';
-
-		if (cix_client_request(c, CIX_API_pkgBootstrap_METHOD, CIX_API_pkgBootstrap, w.buf, &r) != 0) {
-			jw_free(&w);
-			fprintf(stderr, "cixctl: could not reach daemon\n");
-			return 1;
-		}
-		jw_free(&w);
-		if (r.status < 200 || r.status >= 300 || !wait)
-			return emit(&r, json_mode, fmt_bootstrap_fetch_status);
-		cix_response_free(&r);
-
-		if (poll_bootstrap_fetch(c, &r) != 0)
-			return 1;
-		return emit(&r, json_mode, fmt_bootstrap_fetch_status);
-	}
-
-	if (toolchain == NULL) {
-		if (cix_client_request(c, CIX_API_pkgBootstrap_METHOD, CIX_API_pkgBootstrap, NULL, &r) != 0) {
-			fprintf(stderr, "cixctl: could not reach daemon\n");
-			return 1;
-		}
-	} else {
-		struct json_writer w;
-
-		jw_init(&w);
-		jw_obj_open(&w);
-		jw_key(&w, "toolchain_path");
-		jw_str(&w, toolchain);
-		jw_obj_close(&w);
-		w.buf[w.len] = '\0';
-
-		if (cix_client_request(c, CIX_API_pkgBootstrap_METHOD, CIX_API_pkgBootstrap, w.buf, &r) != 0) {
-			jw_free(&w);
-			fprintf(stderr, "cixctl: could not reach daemon\n");
-			return 1;
-		}
-		jw_free(&w);
-	}
-	return emit(&r, json_mode, fmt_bootstrapped);
 }
 
 /* ADR-0324: the recipe sources, one line each. */
@@ -18804,10 +18662,7 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl pkg bootstrap [--toolchain=PATH]\n"
-		                "       cixctl pkg bootstrap --toolchain-url=URL --toolchain-sha256=SHA256 [--wait]\n"
-		                "       cixctl pkg bootstrap-status\n"
-		                "       cixctl pkg recipes\n"
+		fprintf(stderr, "usage: cixctl pkg recipes\n"
 		                "       cixctl pkg recipe add --name=NAME --file=PATH [--source=NAME]\n"
 		                "       cixctl pkg recipe commit --name=NAME --file=PATH [--source=NAME] [--wait]\n"
 		                "       cixctl pkg recipe revise --name=NAME --version=VERSION --url=URL --sha256=HEX\n"
@@ -18854,10 +18709,6 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		return 2;
 	}
 	sub = argv[0];
-	if (strcmp(sub, "bootstrap") == 0)
-		return cmd_pkg_bootstrap(c, json_mode, argc - 1, argv + 1);
-	if (strcmp(sub, "bootstrap-status") == 0)
-		return cmd_pkg_bootstrap_status(c, json_mode);
 	if (strcmp(sub, "recipes") == 0)
 		return cmd_pkg_recipes(c, json_mode);
 	if (strcmp(sub, "recipe") == 0)

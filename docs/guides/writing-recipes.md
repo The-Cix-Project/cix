@@ -583,8 +583,6 @@ Two consequences for you:
 
 Every install targets one image's rootfs. The build itself runs in a build *container* composed from the recipe's build requirements ([ADR-0199](../adr/0199-recipes-declare-their-build-tools.md)), the same way for an ordinary install and a hostbuild ([ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md)); the result is then merged into the target image, or kept as a host artifact for a hostbuild. A target image must already exist — `cixctl image create --name=NAME` makes one, and an install naming an image that does not exist is refused (#500). An install that names no image goes to `base`.
 
-`POST /pkg/bootstrap` stages a toolchain into the shared, sandboxed build image — see [`docs/api/README.md`](../api/README.md#package-manager-source-based-asynchronous-installs). It plays no part in a composed build environment, which holds the declared packages and nothing else.
-
 ## A complete, real worked example
 
 `bash@5.2.37-6.cbs` in cix-recipes, with its header comment removed and its changelog shortened:

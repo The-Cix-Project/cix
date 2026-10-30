@@ -1355,14 +1355,6 @@ static const char *const n_pkg_artifact_export_flags[] = {
 	NULL
 };
 
-static const char *const n_pkg_bootstrap_flags[] = {
-	"--toolchain-sha256=",
-	"--toolchain-url=",
-	"--toolchain=",
-	"--wait",
-	NULL
-};
-
 static const char *const n_pkg_build_log_flags[] = {
 	"--image=",
 	"--name=",
@@ -1560,8 +1552,6 @@ static const char *const n_pkg_sync_flags[] = {
 static const struct cli_node n_pkg_subs[] = {
 	{ "artifact-export", n_pkg_artifact_export_flags, NULL },
 	{ "artifact-publish", NULL, NULL },
-	{ "bootstrap", n_pkg_bootstrap_flags, NULL },
-	{ "bootstrap-status", NULL, NULL },
 	{ "build-log", n_pkg_build_log_flags, NULL },
 	{ "build-logs", n_pkg_build_logs_flags, NULL },
 	{ "buildenv", NULL, n_pkg_buildenv_subs },
