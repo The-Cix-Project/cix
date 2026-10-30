@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The platform's own partitions are btrfs, with no ext4 fallback (#161)
+
+- **What changed:** cixd mounts the data directory and `/config` as btrfs only. The move's two ends are btrfs too. The installer's check for an existing CA, and cix-recover's search for its config, read `cix-config` as btrfs only. The installer ISO no longer stages `mkfs.ext4`, and cix-install's uncalled `mkfs_ext4()` is gone. ext4 stays where the owner kept it: a choice when formatting an attached data disk, so the control-plane root still carries `mkfs.ext4`.
+- **Why:** the owner's decision of 2026-10-27 on #161, that the platform's own storage is btrfs (ADR-0360). The installer has formatted both partitions btrfs since 2026-08-28 (e1a97ec4), before the first 0.2.57 tag, and 192.168.15.95 measures btrfs on vdb4 and vdb5.
+- **Verified:** pending the release.
+
 ### `POST /v1/pkg/bootstrap` is retired (#628, ADR-0365)
 
 - **What changed:** `POST` and `GET /v1/pkg/bootstrap` are removed, with `cixctl pkg bootstrap` and `pkg bootstrap-status`. So is everything that existed only for them: `pkg_bootstrap_from_toolchain()` and its unsquashfs seed, the `toolchain_url` fetch and its connection kind, `--test-bootstrap-toolchain=`, `pkg_toolchain_has_gcc()`, `PKG_ERR_INVALID_TOOLCHAIN` and `PKG_ERR_IMAGE_PRODUCING`, `test_console_pkg_bootstrap`, `mktoolchainimage`, and the test fixture's `test_image_fixture_stage_toolchain()`, which copied the build host's own `/usr`. The gates move with it: `test_apigen` to 353 operations, `test_blocking_waits` to 49 waits, `test_curl_guards` to 11 fetch sites.

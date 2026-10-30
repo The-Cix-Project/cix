@@ -2647,25 +2647,21 @@ static int data_disk_device(const char *disk, const char *uuid, char *dev_path, 
 }
 
 /*
- * Mounts a data-directory filesystem at `at`. btrfs, and for
- * cix-containers (ext4_ok) ext4 too: ADR-0207 phase 4 made btrfs the
- * install default for that partition and ext4 is what a not-yet-migrated
- * box still has. Tried in that order -- mount(2) needs the type named,
- * and probing the superblock would be a second copy of what the
- * kernel's own refusal already says. A placed disk is btrfs only, which
- * the move request requires.
+ * Mounts a data-directory filesystem at `at`: btrfs, the one type a data
+ * directory has. The installer has formatted cix-containers btrfs since
+ * 2026-08-28 (#161, ADR-0207 phase 4), every 0.2.57 install postdates
+ * that, and 192.168.15.95 measures btrfs; the ext4 fallback that served
+ * a not-yet-migrated box went with the owner's decision of 2026-10-27
+ * that the platform's own storage is btrfs (ADR-0360). A placed disk is
+ * btrfs too, which the move request requires.
  */
-static int mount_data_fs(const char *dev, const char *at, int ext4_ok)
+static int mount_data_fs(const char *dev, const char *at)
 {
 	if (dev[0] == '\0') {
 		errno = ENODEV;
 		return -1;
 	}
-	if (mount(dev, at, "btrfs", MS_NOSUID | MS_NODEV, NULL) == 0)
-		return 0;
-	if (ext4_ok && mount(dev, at, "ext4", MS_NOSUID | MS_NODEV, NULL) == 0)
-		return 0;
-	return -1;
+	return mount(dev, at, "btrfs", MS_NOSUID | MS_NODEV, NULL);
 }
 
 /*
@@ -2679,8 +2675,8 @@ static int mount_data_fs(const char *dev, const char *at, int ext4_ok)
  * attempt, under /mnt itself, failed there with EROFS (192.168.15.95,
  * 2026-10-30). A leading dot keeps them apart from every disk's name.
  */
-static int data_dir_copy(const char *src_dev, int src_ext4, const char *tgt_dev, int tgt_ext4,
-                         char *reason, size_t reason_size)
+static int data_dir_copy(const char *src_dev, const char *tgt_dev, char *reason,
+                         size_t reason_size)
 {
 	char src_mnt[PATH_MAX], tgt_mnt[PATH_MAX];
 	int rc;
@@ -2692,14 +2688,14 @@ static int data_dir_copy(const char *src_dev, int src_ext4, const char *tgt_dev,
 		         strerror(errno));
 		return -1;
 	}
-	if (mount_data_fs(src_dev, src_mnt, src_ext4) != 0) {
+	if (mount_data_fs(src_dev, src_mnt) != 0) {
 		snprintf(reason, reason_size, "the source %s could not be mounted (%s)", src_dev,
 		         strerror(errno));
 		return -1;
 	}
-	if (mount_data_fs(tgt_dev, tgt_mnt, tgt_ext4) != 0) {
-		snprintf(reason, reason_size, "the target %s could not be mounted as %s (%s)", tgt_dev,
-		         tgt_ext4 ? "btrfs or ext4" : "btrfs", strerror(errno));
+	if (mount_data_fs(tgt_dev, tgt_mnt) != 0) {
+		snprintf(reason, reason_size, "the target %s could not be mounted as btrfs (%s)", tgt_dev,
+		         strerror(errno));
 		umount2(src_mnt, 0);
 		return -1;
 	}
@@ -2737,18 +2733,18 @@ static int mount_data_dir(void)
 {
 	const char *disk, *pending_disk;
 	char src_dev[PATH_MAX], placed_dev[PATH_MAX], tgt_dev[PATH_MAX], why[512];
-	int src_ext4 = 1;
+	int src_placed = 0; /* the source is a placed disk, not cix-containers */
 
 	snprintf(src_dev, sizeof(src_dev), "%s", CONTAINERS_DEVICE);
 	if (storageplacement_init(STORAGE_PLACEMENT_PATH) != 0)
-		return mount_data_fs(src_dev, g_base_dir, 1); /* main() reports the record */
+		return mount_data_fs(src_dev, g_base_dir); /* main() reports the record */
 
 	disk = storageplacement_get(STORAGE_KIND_DATA);
 	if (disk != NULL) {
 		if (data_disk_device(disk, storageplacement_get_uuid(STORAGE_KIND_DATA), placed_dev,
 		                     sizeof(placed_dev), why, sizeof(why)) == 0) {
 			snprintf(src_dev, sizeof(src_dev), "%s", placed_dev);
-			src_ext4 = 0;
+			src_placed = 1;
 		} else {
 			placement_degraded(STORAGE_KIND_DATA, "%s", why);
 		}
@@ -2756,7 +2752,7 @@ static int mount_data_dir(void)
 
 	if (storageplacement_get_pending(STORAGE_KIND_DATA, &pending_disk)) {
 		char target_name[DISKROLE_DISK_NAME_MAX];
-		int tgt_ext4 = 0, moved = 0, mounted = 0;
+		int moved = 0, mounted = 0;
 
 		/* Copied: finish_move() below clears the pending record. */
 		snprintf(target_name, sizeof(target_name), "%s",
@@ -2764,7 +2760,6 @@ static int mount_data_dir(void)
 		why[0] = '\0';
 		if (pending_disk == NULL) {
 			snprintf(tgt_dev, sizeof(tgt_dev), "%s", CONTAINERS_DEVICE);
-			tgt_ext4 = 1;
 			if (tgt_dev[0] == '\0')
 				snprintf(why, sizeof(why), "no partition labelled cix-containers is present");
 		} else {
@@ -2775,8 +2770,8 @@ static int mount_data_dir(void)
 			if (strcmp(tgt_dev, src_dev) == 0) {
 				moved = 1;
 				snprintf(why, sizeof(why), "the data directory was already on %s", tgt_dev);
-			} else if (data_dir_copy(src_dev, src_ext4, tgt_dev, tgt_ext4, why, sizeof(why)) == 0) {
-				if (mount_data_fs(tgt_dev, g_base_dir, tgt_ext4) == 0) {
+			} else if (data_dir_copy(src_dev, tgt_dev, why, sizeof(why)) == 0) {
+				if (mount_data_fs(tgt_dev, g_base_dir) == 0) {
 					moved = 1;
 					mounted = 1;
 				} else {
@@ -2810,23 +2805,20 @@ static int mount_data_dir(void)
 		}
 		if (mounted)
 			return 0;
-		if (moved) {
-			/* Already there: mount it as the source below. */
-			snprintf(src_dev, sizeof(src_dev), "%s", tgt_dev);
-			src_ext4 = tgt_ext4;
-		}
+		/* moved without mounted means the target was the source already,
+		 * so the source below is the right thing to mount. */
 	}
 
-	if (mount_data_fs(src_dev, g_base_dir, src_ext4) == 0) {
-		if (!src_ext4)
+	if (mount_data_fs(src_dev, g_base_dir) == 0) {
+		if (src_placed)
 			fprintf(stderr, "cix: the data directory is %s (ADR-0364)\n", src_dev);
 		return 0;
 	}
-	if (src_ext4)
+	if (!src_placed)
 		return -1;
 	placement_degraded(STORAGE_KIND_DATA, "data-storage's disk %s could not be mounted (%s)",
 	                   src_dev, strerror(errno));
-	return mount_data_fs(CONTAINERS_DEVICE, g_base_dir, 1);
+	return mount_data_fs(CONTAINERS_DEVICE, g_base_dir);
 }
 
 /*
@@ -2956,8 +2948,7 @@ static int boot_init(void)
 	 * Left mounted (not unmounted here): bootstrap_management_network()
 	 * reads net.conf from it later in main().
 	 */
-	if (mount(CONFIG_DEVICE, CONFIG_DIR, "btrfs", 0, NULL) != 0)
-		mount(CONFIG_DEVICE, CONFIG_DIR, "ext4", 0, NULL);
+	mount(CONFIG_DEVICE, CONFIG_DIR, "btrfs", 0, NULL); /* btrfs since 2026-08-28 (#161) */
 	/*
 	 * A tmpfs for the mountpoints of attached disks, so nothing writes
 	 * them to the root slot.
@@ -2993,7 +2984,7 @@ static int boot_init(void)
 		 * GET /health and GET /v1/system/data-dir.
 		 */
 		snprintf(g_data_dir_fault, sizeof(g_data_dir_fault),
-		         "the data partition (%s) could not be mounted as btrfs or ext4 (%s), so %s "
+		         "the data partition (%s) could not be mounted as btrfs (%s), so %s "
 		         "is a tmpfs this boot: logs, volumes with no disk, swap and anything else "
 		         "placed there are lost at the next reboot",
 		         CONTAINERS_DEVICE[0] != '\0' ? CONTAINERS_DEVICE : "cix-containers, not found",

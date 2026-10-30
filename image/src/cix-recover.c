@@ -154,8 +154,7 @@ static int mount_state_partition(char *config_path, size_t config_path_size)
 		dual_printf("%s is %s\n", candidates[i].label, device);
 		if (ensure_dir(candidates[i].mount) != 0)
 			return -1;
-		if (mount(device, candidates[i].mount, "btrfs", 0, NULL) != 0 &&
-		    mount(device, candidates[i].mount, "ext4", 0, NULL) != 0)
+		if (mount(device, candidates[i].mount, "btrfs", 0, NULL) != 0)
 			continue;
 		if (snprintf(config_path, config_path_size, "%s/%s", candidates[i].mount,
 		             HOSTAUTH_CONFIG_REL_PATH) >= (int)config_path_size) {

@@ -45,7 +45,6 @@ extern char **environ;
 
 #define SFDISK_BIN "/usr/sbin/sfdisk"
 #define MKFS_VFAT_BIN "/usr/sbin/mkfs.vfat"
-#define MKFS_EXT4_BIN "/usr/sbin/mkfs.ext4"
 #define MKFS_BTRFS_BIN "/usr/sbin/mkfs.btrfs"
 #define MOKUTIL_BIN "/usr/bin/mokutil"
 
@@ -485,36 +484,6 @@ static int mkfs_vfat(const char *device)
 	char *argv[] = { (char *)MKFS_VFAT_BIN, "-n", "ESP", (char *)device, NULL };
 
 	return run_subprocess(MKFS_VFAT_BIN, argv);
-}
-
-/*
- * with_quota enables ext4's real project-quota feature at mkfs time
- * (Part 4, bare-metal-readiness plan, ADR-0062) -- "-O quota -E
- * quotatype=prjquota" bakes the hidden quota inode and RO_COMPAT_QUOTA
- * feature bit directly into the filesystem, which the kernel then
- * honors automatically on every mount with no mount-time option
- * needed at all ("grpquota|noquota|quota|usrquota" are real, but
- * ignored no-ops on ext4's own mount(8) man page -- confirmed, not
- * assumed -- this is the modern journaled-quota-via-feature-bit
- * mechanism, not the legacy mount-option-driven one). Only the
- * containers partition needs this -- the ESP and cix-config
- * partitions never hold container overlay data, so quota tracking on
- * them would be real, unexercised scope.
- */
-static int mkfs_ext4(const char *device, const char *label, int with_quota)
-{
-	if (with_quota) {
-		char *argv[] = { (char *)MKFS_EXT4_BIN, "-q", "-F", "-L", (char *)label,
-			          "-O", "quota", "-E", "quotatype=prjquota", (char *)device, NULL };
-
-		return run_subprocess(MKFS_EXT4_BIN, argv);
-	}
-	{
-		char *argv[] = { (char *)MKFS_EXT4_BIN, "-q", "-F", "-L", (char *)label,
-			          (char *)device, NULL };
-
-		return run_subprocess(MKFS_EXT4_BIN, argv);
-	}
 }
 
 /*
@@ -1236,13 +1205,11 @@ static int config_partition_has_pki(const char *config_dev)
 
 	if (mkdir(CONFIG_MOUNT, 0755) != 0 && errno != EEXIST)
 		return 0;
-	if (mount(config_dev, CONFIG_MOUNT, "btrfs", MS_RDONLY, NULL) != 0) {
-		/* ext4 only because a box installed before cix-config became
-		 * btrfs still has one, and that is exactly the install whose CA
-		 * is most worth not destroying. */
-		if (mount(config_dev, CONFIG_MOUNT, "ext4", MS_RDONLY, NULL) != 0)
-			return 0;
-	}
+	/* btrfs only: cix-config has been btrfs since 2026-08-28 (#161), and
+	 * the ext4 fallback for an older install went with the owner's
+	 * decision of 2026-10-27 that the platform's own storage is btrfs. */
+	if (mount(config_dev, CONFIG_MOUNT, "btrfs", MS_RDONLY, NULL) != 0)
+		return 0;
 	found = stat(CONFIG_MOUNT "/state/pki/ca.key", &st) == 0 && st.st_size > 0;
 	umount(CONFIG_MOUNT);
 	return found;

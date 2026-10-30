@@ -1195,12 +1195,13 @@ int main(int argc, char **argv)
 	if (ensure_dir_under(stage_dir, "usr/sbin") != 0)
 		return 1;
 	/*
-	 * mkfs.fat comes out of the tools root; sfdisk,
-	 * mkfs.ext4 and mkfs.btrfs come off this host. The split is not
-	 * arbitrary -- it follows what a Cix control-plane root actually
-	 * contains, which is exactly the set mkbootroot.c stages, which is
-	 * in turn exactly the set cixd itself shells out to (sfdisk for
-	 * diskpart, mkfs.ext4/mkfs.btrfs for diskformat).
+	 * mkfs.fat comes out of the tools root; sfdisk and mkfs.btrfs come
+	 * off this host. The split is not arbitrary -- it follows what a
+	 * Cix control-plane root actually contains, which is exactly the
+	 * set mkbootroot.c stages, which is in turn what cixd itself shells
+	 * out to (sfdisk for diskpart, mkfs.btrfs for diskformat; the root
+	 * carries mkfs.ext4 too, for a data disk, but the installer formats
+	 * nothing ext4 since #161).
 	 *
 	 * cixd never formats FAT -- only the installer does, for the ESP --
 	 * so mkfs.fat has no reason to be in that root and is not in it.
@@ -1228,25 +1229,10 @@ int main(int argc, char **argv)
 	snprintf(dst, sizeof(dst), "%s/usr/sbin/sfdisk", stage_dir);
 	if (test_image_fixture_copy_file("/usr/sbin/sfdisk", dst) != 0)
 		return 1;
-	/*
-	 * Read as mkfs.ext4, not mke2fs. They are the same binary on a
-	 * Debian box (mkfs.ext4 is a link to mke2fs, which switches
-	 * behaviour on argv[0]), which is why reading either name worked
-	 * there and hid the difference. A Cix control-plane root has only
-	 * the mkfs.ext4 name, because that is the name
-	 * DISKFORMAT_MKFS_EXT4_BIN uses and mkbootroot stages exactly the
-	 * _BIN macros -- so mke2fs was a guaranteed miss on a real host.
-	 * It is also the name this tool stages it under, so the two ends
-	 * now agree.
-	 */
-	snprintf(dst, sizeof(dst), "%s/usr/sbin/mkfs.ext4", stage_dir);
-	if (test_image_fixture_copy_file("/usr/sbin/mkfs.ext4", dst) != 0)
-		return 1;
-	/* ADR-0207 phase 4: btrfs is the install default for the platform
-	 * partitions -- cix-install.c's mkfs_btrfs() calls this. ext4
-	 * stays staged through the transition (the tolerant boot mounts
-	 * accept either), retiring only once btrfs has run production on
-	 * .95 -- the staged retirement the ADR specifies. */
+	/* ADR-0207 phase 4: the platform partitions are btrfs --
+	 * cix-install.c's mkfs_btrfs() calls this. mkfs.ext4 is not staged:
+	 * the installer formats nothing ext4 since #161 retired it from the
+	 * platform's own storage (2026-10-30). */
 	snprintf(dst, sizeof(dst), "%s/usr/sbin/mkfs.btrfs", stage_dir);
 	if (test_image_fixture_copy_file("/usr/sbin/mkfs.btrfs", dst) != 0)
 		return 1;
@@ -1298,7 +1284,7 @@ int main(int argc, char **argv)
 		const char *artifact_dirs[sizeof(host_dir_rel) / sizeof(host_dir_rel[0]) + 1];
 		size_t bi;
 		static const char *const host_bins[] = {
-			"/usr/sbin/sfdisk", "/usr/sbin/mkfs.ext4", "/usr/sbin/mkfs.btrfs", NULL,
+			"/usr/sbin/sfdisk", "/usr/sbin/mkfs.btrfs", NULL,
 		};
 		char staged[PATH_MAX];
 
