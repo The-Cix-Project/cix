@@ -10,7 +10,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** `POST` and `GET /v1/pkg/bootstrap` are removed, with `cixctl pkg bootstrap` and `pkg bootstrap-status`. So is everything that existed only for them: `pkg_bootstrap_from_toolchain()` and its unsquashfs seed, the `toolchain_url` fetch and its connection kind, `--test-bootstrap-toolchain=`, `pkg_toolchain_has_gcc()`, `PKG_ERR_INVALID_TOOLCHAIN` and `PKG_ERR_IMAGE_PRODUCING`, `test_console_pkg_bootstrap`, `mktoolchainimage`, and the test fixture's `test_image_fixture_stage_toolchain()`, which copied the build host's own `/usr`. The gates move with it: `test_apigen` to 353 operations, `test_blocking_waits` to 49 waits, `test_curl_guards` to 11 fetch sites.
 - **Why:** the build sandbox it seeds has been read by no build since ADR-0199 composed build environments from declared tools. Its one reader was a status line after the test flag. The owner chose retirement over gating its QEMU test, 2026-10-30.
-- **Verified:** pending the release.
+- **Verified:** 0.2.57-631 on 192.168.15.95 (compile probe 668; 667 failed only `test_blocking_waits`' `image_produce_new_version(` budget, lowered from 3 to 2 in 755d2920). `GET` and `POST /v1/pkg/bootstrap` answer 404, `cixctl pkg bootstrap` is an unknown subcommand, and all 13 containers came back running.
 
 ### The retired Secure Boot certificate is filed as retired, and image/keys holds nothing committed (#628)
 
