@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The retired Secure Boot certificate is filed as retired, and image/keys holds nothing committed (#628)
+
+- **What changed:** `image/keys/cix-signing.crt` is now `docs/keys/cix-secureboot-2026-08.crt`, listed as retired, and its DER copy `image/keys/cix-signing.cer` is removed. `image/keys/` is gitignored whole: it is the local place for a hand build's pair, which must be the media host's own. `installing.md` names `docs/keys/cix-secureboot.crt` and `cixctl signing-keys` as where the current certificate and key are. `releasekey.c`'s comments no longer say docs/keys holds a PGP block.
+- **Why:** measured 2026-10-30. `docs/keys/cix-secureboot.crt` hashes to `d63f94…` over its DER bytes, the fingerprint 192.168.15.95 reports for the pair it signs with. `image/keys/cix-signing.{crt,cer}` hash to `87d4c9…`, a certificate committed on 2026-08-25, before the 2026-09-06 rotation, which the guides still presented as current. No code read it. Owner's decision: retire it into docs/keys.
+
 ### The kernel.org key has one home, and the brand guide's API paths are the contract's (#628)
 
 - **What changed:** `docs/keys/kernel.org-autosigner.asc` is removed. Nothing read it after ADR-0326, the copy differed from the live one, and the live key is cix-recipes `recipes/keys/kernel@B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1.asc`. `docs/keys/README.md` says where upstream keys live instead. The brand guide's illustrative API paths read `/v1/...` rather than `/api/v1/...`.

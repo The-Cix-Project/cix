@@ -11,6 +11,7 @@ is ever kept here, or anywhere else in this repository.
 | [`cix-release-2026-09.pub`](cix-release-2026-09.pub) | Installer ISOs published to the artifact cache, from 2026-09-06 onward. Key id `0b19db46b2b6db6c` | **Current** — held by the one host that cuts release media ([ADR-0220](../adr/0220-a-separate-release-signing-key.md)) |
 | [`cix-release.pub`](cix-release.pub) | Installer ISOs published **before** 2026-09-06 | **Retired** — kept, never deleted; see below |
 | [`cix-secureboot.crt`](cix-secureboot.crt) | The EFI binaries on installer media (shim/GRUB/kernel), and the MOK certificate an operator enrolls to boot them. `CN = Cix Secure Boot Signing`, SHA-256 fingerprint `D6:3F:94:CA:B7:DD:72:FF:2E:56:D3:FB:67:5D:08:FC:83:EC:68:DC:E2:FF:D7:D5:77:ED:D4:02:B8:CC:93:75` | Current |
+| [`cix-secureboot-2026-08.crt`](cix-secureboot-2026-08.crt) | The EFI binaries on installer media built before the 2026-09-06 rotation, and the MOK certificate installs of that time enrolled. SHA-256 fingerprint `87:D4:C9:86:6B:80:ED:AD:08:08:6E:42:BC:80:88:1F:F1:31:F7:11:A7:1E:47:43:7C:DC:FB:BE:A8:5E:9E:E0` | **Retired** — kept so that what it signed stays checkable. It sat in `image/keys/cix-signing.crt` until 2026-10-30, where the guides still pointed at it as current (#628) |
 
 ### Why the release key was rotated on 2026-09-06
 

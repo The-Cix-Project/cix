@@ -6,7 +6,7 @@ build/
 build-inputs/
 core
 core.*
-image/keys/*.key
+image/keys/
 .claude/
 backups/
 

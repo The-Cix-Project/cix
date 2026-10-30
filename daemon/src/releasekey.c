@@ -330,8 +330,8 @@ static int read_public_key_file(const char *path, unsigned char out_id[RELEASEKE
 	if (!got)
 		return -1;
 	/* 2 + 8 + 32. Anything else is not a minisign Ed25519 public key,
-	 * which is how a .crt or a PGP block in the same directory is
-	 * skipped rather than misread -- docs/keys/ holds all three. */
+	 * which is how a .crt, or any other key, in the same directory is
+	 * skipped rather than misread -- docs/keys/ holds certificates too. */
 	if (n != 2 + RELEASEKEY_ID_LEN + ED25519_PUB_LEN || blob[0] != 'E' || blob[1] != 'd')
 		return -1;
 	memcpy(out_id, blob + 2, RELEASEKEY_ID_LEN);
@@ -508,8 +508,8 @@ int releasekey_trust_adopt(const char *src_dir, const char *dst_dir)
 			continue;
 		if ((size_t)snprintf(src, sizeof(src), "%s/%s", src_dir, ent->d_name) >= sizeof(src))
 			continue;
-		/* By parse, not by filename: docs/keys/ also carries a
-		 * certificate and a PGP block, and neither belongs here. */
+		/* By parse, not by filename: docs/keys/ also carries
+		 * certificates, which do not belong here. */
 		if (read_public_key_file(src, id, pub) != 0)
 			continue;
 		if ((size_t)snprintf(dst, sizeof(dst), "%s/%s", dst_dir, ent->d_name) >= sizeof(dst))

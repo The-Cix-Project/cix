@@ -4,7 +4,7 @@ Building and using the installer ISO — from a set of already-built binaries (`
 
 ## One-time: the Cix Secure Boot signing key
 
-`image/keys/cix-signing.{crt,cer}` (the public cert, PEM and DER) are committed; `image/keys/cix-signing.key` (the private key) is gitignored and must exist locally before building the ISO by hand. Generate it once, and keep it — every machine that has enrolled it (see [Secure Boot](#secure-boot) below) needs the *same* key for future installs to keep working. A host that builds ISOs itself (`cixctl iso build`) uses the pair installed with `cixctl signing-keys set` ([ADR-0212](../adr/0212-signing-keys-over-rest.md)):
+The current certificate is published as [`docs/keys/cix-secureboot.crt`](../keys/README.md); its private key is held by the one host that cuts media, installed with `cixctl signing-keys set` ([ADR-0212](../adr/0212-signing-keys-over-rest.md)), and `cixctl iso build` signs with that pair. Nothing in `image/keys/` is committed: it is the local place for the pair a hand build below uses, and it must be the *same* pair as that host's, since every machine that has enrolled the certificate (see [Secure Boot](#secure-boot) below) needs the same key for future installs to keep working. Until 2026-10-30 this directory held a committed certificate that the 2026-09-06 rotation had retired (#628); it is now `docs/keys/cix-secureboot-2026-08.crt`. A new pair, made only when the key itself is replaced, comes from:
 
 ```sh
 openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 7300 \
