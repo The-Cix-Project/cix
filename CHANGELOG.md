@@ -23,7 +23,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** cixd runs `cbs build` with `--output-dir /build/artifacts` instead of `--output /build/artifact.cixpkg`, and harvests the entry's own artifact from that directory by cbs's canonical name, `name-version-release-arch.cixpkg`. The directory is created empty, host-side, next to `finalize.sh`. A resumed build therefore never finds a previous attempt's artifact, and a build environment needs no `mkdir`. Every recipe is still single-output, so each build writes one artifact under the name cixd caches it by.
 - **Why:** ADR-0367 decision 3. cbs refuses `--output FILE` for a recipe that declares outputs (cix-build-system ADR-0038). One build path for every recipe means outputs need no second path later.
-- **Verified:** pending the release.
+- **Verified:** 0.2.57-634 on 192.168.15.95 (compile probe 671). The first package the 634 daemon built, compile probe 672, logged `built into /build/artifacts`, was harvested from it and installed.
 
 ### The build engine is cbs v0.1.122, in the build images and the test floor (#378, ADR-0367 step 1)
 
