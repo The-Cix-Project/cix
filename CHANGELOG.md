@@ -13,7 +13,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - Each placement shows `degraded` with its reason, as a warning.
   - A third section shows the data directory's placement, a pending move (*"Moves to vdb6 at the next boot"*), and the last move's outcome and reason. It offers the move to a `data-storage` disk, or back to cix-containers with no disk. `getDataStorage` and `migrateDataStorage` are exposed to the web.
 - **Why:** on 192.168.15.95, 2026-10-30, the page said *"Rebuildable storage: default OS-disk placement"* while rebuildable storage was on sda, which is the page looking fine while being wrong.
-- **Verified:** pending the release.
+- **Verified:** 0.2.57-630 on 192.168.15.95 (compile probe 666), screenshotted with the local Chromium: the page reads *"Rebuildable storage: sda"*, and the data directory section reads *"Data directory: the cix-containers partition"* and *"Last move: moved 2026-10-30T01:06:04.000Z"*, with a "Move at next boot" form. The degraded warning and a pending move were not exercised on the page: no placement on .95 is degraded, and no move is pending.
 
 ### The data-directory move's log line, report and refusals say the right thing (#249, ADR-0364)
 
