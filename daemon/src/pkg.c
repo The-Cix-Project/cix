@@ -4290,6 +4290,60 @@ static int cbs_output_artifact_rel(const char *name, const char *version, char *
 	                pkg_host_arch()) >= (int)out_size ? -1 : 0;
 }
 
+static void pkg_cache_save_from_file(const char *name, const char *version, const char *format,
+                                      const char *src_path);
+static void pkg_artifact_push_enqueue(const char *name, const char *version);
+
+/*
+ * ADR-0367 decision 3: every other package one build produced, cached
+ * and queued for publish under its own name, beside the one this
+ * entry asked for. One build action is one set of artifacts, so an
+ * install of a sibling later is a cache hit rather than the same
+ * build again -- for cixctl, a full cix build with its selftest.
+ *
+ * A sibling's file name is `<package>-<version>-<arch>.cixpkg` with
+ * this build's version and arch, so the package name is what is left;
+ * a name that is not a valid package name is not one of ours.
+ */
+static void cache_sibling_outputs(const char *build_tree, const struct pkg_entry *e)
+{
+	char dir[PATH_MAX], suffix[PKG_VERSION_MAX + 64];
+	DIR *d;
+	struct dirent *de;
+	size_t slen;
+
+	if ((size_t)snprintf(dir, sizeof(dir), "%s/%s", build_tree, PKG_CBS_ARTIFACT_DIR_REL) >=
+	        sizeof(dir) ||
+	    (size_t)snprintf(suffix, sizeof(suffix), "-%s-%s.cixpkg", e->version, pkg_host_arch()) >=
+	        sizeof(suffix))
+		return;
+	slen = strlen(suffix);
+	d = opendir(dir);
+	if (d == NULL)
+		return;
+	while ((de = readdir(d)) != NULL) {
+		char pkg[PKG_NAME_MAX], path[PATH_MAX];
+		size_t len = strlen(de->d_name);
+
+		if (len <= slen || strcmp(de->d_name + len - slen, suffix) != 0 ||
+		    len - slen >= sizeof(pkg))
+			continue;
+		memcpy(pkg, de->d_name, len - slen);
+		pkg[len - slen] = '\0';
+		if (strcmp(pkg, e->name) == 0 || !pkg_name_is_valid(pkg))
+			continue;
+		if ((size_t)snprintf(path, sizeof(path), "%s/%s", dir, de->d_name) >= sizeof(path))
+			continue;
+		pkg_cache_save_from_file(pkg, e->version, PKG_ARTIFACT_FORMAT_CIXPKG, path);
+		pkg_artifact_push_enqueue(pkg, e->version);
+		logstore_write("cixd", "info",
+		               "pkg %s@%s: the same build produced %s@%s, cached and queued for publish "
+		               "(ADR-0367)",
+		               e->name, e->version, pkg, e->version);
+	}
+	closedir(d);
+}
+
 /*
  * Stages an empty PKG_CBS_ARTIFACT_DIR in a build tree, host-side,
  * where finalize.sh is staged: a build environment holds only the
@@ -15550,6 +15604,7 @@ static int install_after_produce(int chain_idx, struct pkg_entry *e)
 			else
 				pkg_cache_save_from_file(e->name, e->version, e->artifact_format,
 				                          produced);
+			cache_sibling_outputs(build_tree, e);
 		} else {
 			/*
 			 * Unreachable, and said so rather than served. A

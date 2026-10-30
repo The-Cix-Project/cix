@@ -37,6 +37,14 @@ cbs v0.1.107 has no `--output-dir`. It arrived in v0.1.119.
     5. The `cix` recipe declares `output "cixctl"`, built by a daemon from step 4. Never in the same release as the daemon that first understands outputs, which could not harvest what it built.
     6. The agent image and container (ADR-0366).
 
+## Decision 5 as built (2026-10-30, before the recipe changed)
+
+The `cix` package lays its files out flat (`cixd`, `cixctl`, `mkbootroot` at the artifact's root), because it is a hostbuild artifact that assembly reads directly. A `cixctl` package meant for a workload image needs `usr/bin/cixctl` instead. So the recipe installs the binary twice from the one build. `cixctl` stays at the root in the main package, and `usr/bin/cixctl` is claimed by `output "cixctl"`.
+
+Assembly is therefore unchanged, and step 4 of decision 6 is not needed: the hostbuild's main artifact stays complete for the root, as it always was. The two copies are the same bytes from the same compile, so they cannot drift.
+
+What step 4 was for moves into step 3: the build caches and publishes every artifact it produced (`cache_sibling_outputs()`). An install of `cixctl` is then a cache hit on the hostbuild's own output, not a second full cix build with its selftest.
+
 ## Alternatives considered
 
 - **Keep `--output FILE` for single-output recipes, `--output-dir` for the rest.** Two build paths, the shape One Source of Truth forbids. ADR-0038 also calls `--output` the legacy form.

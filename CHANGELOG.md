@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A build caches and publishes every package it produced (#378, ADR-0367)
+
+- **What changed:** after the requested package's artifact, `cache_sibling_outputs()` caches each other `<package>-<version>-<arch>.cixpkg` the build wrote, and queues it for publish under its own name. After the publish, its approval is written into the recipe that builds it.
+- **Why:** an install of a recipe's output is then a cache hit on what the build already made. For `cixctl`, the alternative is a whole cix build, selftest included, for one binary. ADR-0367 records the as-built decision 5 alongside: the `cix` recipe keeps `cixctl` at its artifact root for assembly, and gives the `cixctl` output its own `usr/bin/cixctl`, so assembly needs no change.
+- **Verified:** pending the release.
+
 ### A recipe's outputs install as packages (#378, ADR-0367 step 3)
 
 - **What changed:**
