@@ -14,7 +14,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - `--events-fd` was checked after cbs had dup'd stderr into the lowest free number (cbs#302).
 
   `probe-buildfds@1-1` measured the first.
-- **Verified:** pending the release.
+- **Verified:** 0.2.57-633 on 192.168.15.95 (compile probe 670, its floor on v0.1.122), booted on slot a with all 13 containers running. The root's engine moved, as cixd logged at start: `CPDL engine changed (cbs 0.1.107 ... -> cbs 0.1.122 ...): re-derived 2044 identities, 0 failed`. cix-builder built `cbs@v0.1.122-1` through its own gate, and cix-hosttools took the same artifact from the cache.
 
 ### The platform's own partitions are btrfs, with no ext4 fallback (#161)
 
