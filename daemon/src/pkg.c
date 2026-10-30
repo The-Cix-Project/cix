@@ -4105,7 +4105,14 @@ static const char *pkg_host_arch(void);
 #define PKG_CBS_CACHE_DIR "/" PKG_CBS_CACHE_REL
 
 /*
- * Where CBS writes the artifact it packages (ADR-0307 clause 2).
+ * Where CBS writes the artifacts it packages (ADR-0307 clause 2): a
+ * directory, `--output-dir`, for every build (ADR-0367 decision 3). A
+ * recipe may declare outputs (cbs v0.1.119, cix-build-system ADR-0038)
+ * and then one build writes one artifact per package, each under its
+ * canonical name, name-version-release-arch.cixpkg
+ * (cbs_output_artifact_rel()). `--output FILE` names one file and cbs
+ * refuses it for such a recipe, so there is one build path, never a
+ * single-output case beside a multi-output one.
  *
  * Beside recipe.cbs and finalize.sh in /build, and deliberately NOT
  * inside the workspace: `--staged W` owns W entirely -- src, build,
@@ -4121,14 +4128,47 @@ static const char *pkg_host_arch(void);
  * and published a package with zero files and a state of
  * "installed".
  */
-#define PKG_CBS_ARTIFACT_REL "build/artifact.cixpkg"
-#define PKG_CBS_ARTIFACT "/" PKG_CBS_ARTIFACT_REL
+#define PKG_CBS_ARTIFACT_DIR_REL "build/artifacts"
+#define PKG_CBS_ARTIFACT_DIR "/" PKG_CBS_ARTIFACT_DIR_REL
+
+/*
+ * One package's artifact within PKG_CBS_ARTIFACT_DIR_REL, relative to
+ * the build tree. cixd's version already carries the release
+ * ("0.2.57-633"), so cbs's name-version-release-arch is
+ * name-<version>-arch here. 0, or -1 when it does not fit.
+ */
+static int cbs_output_artifact_rel(const char *name, const char *version, char *out,
+                                   size_t out_size)
+{
+	return snprintf(out, out_size, "%s/%s-%s-%s.cixpkg", PKG_CBS_ARTIFACT_DIR_REL, name, version,
+	                pkg_host_arch()) >= (int)out_size ? -1 : 0;
+}
+
+/*
+ * Stages an empty PKG_CBS_ARTIFACT_DIR in a build tree, host-side,
+ * where finalize.sh is staged: a build environment holds only the
+ * recipe's declared tools, so it may have no mkdir, and a resumed
+ * build must not find a previous attempt's artifacts there. The
+ * removal is a few unlinks at most -- the directory only ever holds
+ * .cixpkg files, never a tree -- so it is not the on-loop tree delete
+ * ADR-0341 sends through the discard queue.
+ */
+static int prepare_artifact_dir(const char *tree)
+{
+	char path[PATH_MAX];
+
+	if ((size_t)snprintf(path, sizeof(path), "%s/%s", tree, PKG_CBS_ARTIFACT_DIR_REL) >=
+	    sizeof(path))
+		return -1;
+	persist_remove_tree(path);
+	return persist_mkdir_p(path);
+}
 
 /*
  * #388, #489 (ADR-0275): where cbs writes its JSONL build event stream
  * (`--events-file`, cbs v0.1.107, cix-build-system#282), and where cixd
  * reads it, host-side, under the build overlay's upper directory -- one
- * string with both roots, like PKG_CBS_ARTIFACT above.
+ * string with both roots, like PKG_CBS_ARTIFACT_DIR above.
  *
  * A file and not `--events-fd`, which was the dependency recorded on
  * #282: cix-init marks every descriptor from 3 up close-on-exec before
@@ -4176,8 +4216,8 @@ static const char *pkg_host_arch(void);
  * progress against the recipe's declared phases.
  *
  * See PKG_CBS_WORKSPACE for why the cache is pre-filled and why the
- * finalize policy is CBS's own --finalize-command, PKG_CBS_ARTIFACT for
- * where --output writes, and PKG_CBS_EVENTS for --events-file: the
+ * finalize policy is CBS's own --finalize-command, PKG_CBS_ARTIFACT_DIR for
+ * where --output-dir writes, and PKG_CBS_EVENTS for --events-file: the
  * operator's log keeps the human reporter, and the phases come from the
  * file (#388, #489).
  */
@@ -4185,9 +4225,9 @@ static void pkg_cbs_build_command(int chain_idx, struct pkg_entry *e, unsigned d
 {
 	snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd),
 	         "set -e; cbs build /build/recipe.cbs --arch %s --staged %s --cache %s "
-	         "--output %s --finalize-command /build/finalize.sh --events human "
+	         "--output-dir %s --finalize-command /build/finalize.sh --events human "
 	         "--events-file %s%s",
-	         pkg_host_arch(), PKG_CBS_WORKSPACE, PKG_CBS_CACHE_DIR, PKG_CBS_ARTIFACT,
+	         pkg_host_arch(), PKG_CBS_WORKSPACE, PKG_CBS_CACHE_DIR, PKG_CBS_ARTIFACT_DIR,
 	         PKG_CBS_EVENTS,
 	         g_chains[chain_idx].hostbuild_extra_config_symbols[0] != '\0'
 	                 ? " --input " PKG_CBS_KMOD_EXTRA_INPUT
@@ -11682,6 +11722,9 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				 * that could not be given it does not run. */
 				prep_step = "write finalize.sh";
 				prep_errno = errno;
+			} else if (prepare_artifact_dir(e->build_tree) != 0) {
+				prep_step = "create the artifact directory";
+				prep_errno = errno;
 			}
 
 			if (prep_step != NULL) {
@@ -12530,6 +12573,8 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	/* ADR-0251: staged wherever recipe.sh is, so the two cannot
 	 * disagree about whether the policy ran. */
 	if (write_finalize_script(e->build_tree) != 0)
+		return PKG_ERR_PERSIST_FAILED;
+	if (prepare_artifact_dir(e->build_tree) != 0)
 		return PKG_ERR_PERSIST_FAILED;
 	if (cix_btrfs_subvol_delete_or_rmtree(dest_dir) != 0)
 		return PKG_ERR_PERSIST_FAILED;
@@ -15276,10 +15321,14 @@ static int install_after_produce(int chain_idx, struct pkg_entry *e)
 		 * publish and by `cbs build` itself.
 		 */
 		if (strcmp(e->artifact_format, PKG_ARTIFACT_FORMAT_CIXPKG) == 0) {
-			char produced[PATH_MAX];
+			char produced[PATH_MAX], rel[PATH_MAX];
 			struct stat pst;
 
-			snprintf(produced, sizeof(produced), "%s/%s", build_tree, PKG_CBS_ARTIFACT_REL);
+			/* ADR-0367: the build wrote every package's artifact
+			 * into one directory; this is the one this entry is. */
+			if (cbs_output_artifact_rel(e->name, e->version, rel, sizeof(rel)) != 0)
+				rel[0] = '\0';
+			snprintf(produced, sizeof(produced), "%s/%s", build_tree, rel);
 			/*
 			 * Said out loud, because pkg_cache_save_from_file()
 			 * returns silently on a missing source and the next
@@ -15287,14 +15336,15 @@ static int install_after_produce(int chain_idx, struct pkg_entry *e)
 			 * reporting "no artifact in the local cache" -- a
 			 * true statement about a cause two steps away. A
 			 * build that succeeded and produced no artifact
-			 * means cbs did not honour --output, which is worth
-			 * naming where it happened.
+			 * means cbs did not write the name cixd expects into
+			 * --output-dir, which is worth naming where it
+			 * happened.
 			 */
-			if (stat(produced, &pst) != 0)
+			if (rel[0] == '\0' || stat(produced, &pst) != 0)
 				logstore_write("cixd", "error",
 				                "pkg %s@%s: the build succeeded but wrote no artifact at "
-				                "%s -- nothing to cache or publish (ADR-0307)",
-				                e->name, e->version, PKG_CBS_ARTIFACT);
+				                "/%s -- nothing to cache or publish (ADR-0307)",
+				                e->name, e->version, rel);
 			else
 				pkg_cache_save_from_file(e->name, e->version, e->artifact_format,
 				                          produced);

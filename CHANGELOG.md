@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A build writes into an artifact directory (#378, ADR-0367 step 2)
+
+- **What changed:** cixd runs `cbs build` with `--output-dir /build/artifacts` instead of `--output /build/artifact.cixpkg`, and harvests the entry's own artifact from that directory by cbs's canonical name, `name-version-release-arch.cixpkg`. The directory is created empty, host-side, next to `finalize.sh`. A resumed build therefore never finds a previous attempt's artifact, and a build environment needs no `mkdir`. Every recipe is still single-output, so each build writes one artifact under the name cixd caches it by.
+- **Why:** ADR-0367 decision 3. cbs refuses `--output FILE` for a recipe that declares outputs (cix-build-system ADR-0038). One build path for every recipe means outputs need no second path later.
+- **Verified:** pending the release.
+
 ### The build engine is cbs v0.1.122, in the build images and the test floor (#378, ADR-0367 step 1)
 
 - **What changed:** cix-builder and cix-hosttools roll to `cbs@v0.1.122-1`. The ADR-0209 test floor moves with them: the fixture's floor list, the release recipe's `cbs` artifact (URL, sha256, staged name), and its corpus pin, which moves to cix-recipes `9758fb69`, the first commit holding that version's approval. The host root takes it at this release's assembly, from cix-hosttools.
