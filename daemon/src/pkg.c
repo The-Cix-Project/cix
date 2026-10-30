@@ -424,6 +424,14 @@ static void pkg_job_set_state(struct pkg_entry *e, enum pkg_state s)
 
 struct pkg_recipe {
 	char name[PKG_NAME_MAX];
+	/*
+	 * ADR-0367: the recipe that builds this package. The same as name
+	 * for a recipe's own package; the recipe's name when this view is
+	 * one of its outputs (parse_recipe_for()). The store, the build and
+	 * the approval write-back are the recipe's; the artifact, the cache
+	 * entry and the install are the package's.
+	 */
+	char recipe_name[PKG_NAME_MAX];
 	char version[PKG_VERSION_MAX];
 	/*
 	 * The two halves `version` above is the join of (ADR-0305):
@@ -2961,7 +2969,7 @@ static int append_words(char *dst, size_t cap, const char *words)
  * A name appearing in both roles is harmless -- buildenv_add_tool()
  * dedups by name, and a recipe's own pin still wins the slot.
  */
-static int parse_cbs_recipe(const char *path, struct pkg_recipe *out)
+static int parse_cbs_recipe(const char *path, const char *want, struct pkg_recipe *out)
 {
 	char explain_path[PATH_MAX];
 	char err[256];
@@ -2987,6 +2995,7 @@ static int parse_cbs_recipe(const char *path, struct pkg_recipe *out)
 	}
 
 	snprintf(out->name, sizeof(out->name), "%s", cbs_explain_name(ex));
+	snprintf(out->recipe_name, sizeof(out->recipe_name), "%s", out->name);
 	if (cbs_explain_version(ex, out->version, sizeof(out->version)) != 0) {
 		logstore_write("cixd", "error", "pkg: %s: version and release do not fit a version string",
 		               explain_path);
@@ -3201,6 +3210,40 @@ static int parse_cbs_recipe(const char *path, struct pkg_recipe *out)
 		return -1;
 	}
 
+	/*
+	 * ADR-0367: the view of one of the recipe's outputs. The sources,
+	 * the build and its tools are the recipe's, shared; the name, the
+	 * runtime requirements and the approval are the output's own. An
+	 * output's approval is its own metadata line,
+	 * "artifact_sha256.<output>" (decision 4), because one line names
+	 * one byte sequence (ADR-0307 clause 5).
+	 */
+	if (want != NULL && strcmp(want, out->name) != 0) {
+		int oi = cbs_explain_output_find(ex, want);
+		char key[PKG_NAME_MAX + 32];
+
+		if (oi < 0) {
+			logstore_write("cixd", "error", "pkg: %s builds %s, which declares no output %s",
+			               path, out->name, want);
+			cbs_explain_free(ex);
+			return -1;
+		}
+		snprintf(out->name, sizeof(out->name), "%s", want);
+		out->replaces[0] = '\0';
+		out->artifact_sha256[0] = '\0';
+		snprintf(key, sizeof(key), "artifact_sha256.%s", want);
+		if (cbs_explain_output_requires(ex, oi, "runtime", "package", out->depends,
+		                                sizeof(out->depends)) != 0 ||
+		    cbs_explain_metadata(ex, key, out->artifact_sha256,
+		                         sizeof(out->artifact_sha256)) != 0) {
+			logstore_write("cixd", "error",
+			               "pkg: %s: output %s's runtime requirements or approval do not fit",
+			               explain_path, want);
+			cbs_explain_free(ex);
+			return -1;
+		}
+	}
+
 	cbs_explain_free(ex);
 	return 0;
 }
@@ -3213,17 +3256,27 @@ static int parse_cbs_recipe(const char *path, struct pkg_recipe *out)
  * reader, so nothing in this file can resolve, build, install or
  * publish one, and every caller that resolves a path gets -1 for it.
  */
-static int parse_recipe(const char *path, struct pkg_recipe *out)
+static int parse_recipe_for(const char *path, const char *want, struct pkg_recipe *out)
 {
 	if (!recipe_path_is_cbs(path))
 		return -1;
 	memset(out, 0, sizeof(*out));
-	if (parse_cbs_recipe(path, out) != 0)
+	if (parse_cbs_recipe(path, want, out) != 0)
 		return -1;
 	substitute_repo_token(out);
 	if (!pkg_name_is_valid(out->name))
 		return -1;
 	return 0;
+}
+
+/*
+ * The recipe's own package. parse_recipe_for() with the name a caller
+ * resolved through find_recipe_path() gives that package's view, which
+ * for an output is not the recipe's own (ADR-0367).
+ */
+static int parse_recipe(const char *path, struct pkg_recipe *out)
+{
+	return parse_recipe_for(path, NULL, out);
 }
 
 /*
@@ -3307,12 +3360,105 @@ int pkg_recipe_file_in(const char *version_dir, char *out_path, size_t out_path_
  * doesn't exist).
  */
 static int find_recipe_path(const char *name, const char *version, char *out_path,
+                             size_t out_path_size);
+
+/*
+ * ADR-0367 decision 2: the recipe whose current version declares an
+ * output named name. 1 with recipe filled, 0 when none does.
+ *
+ * Read from the store, not kept beside it: the derived explain.json
+ * beside each recipe already says what it builds, so a separate index
+ * would be a second copy to keep in step with every publish, sync and
+ * removal. It is asked only for a name no recipe is named, so ordinary
+ * resolution never pays for the walk; the publish-time refusal
+ * (decision 2's one-name-one-recipe) is what keeps the answer unique.
+ */
+static int output_owner(const char *name, char *recipe, size_t recipe_size)
+{
+	DIR *d = opendir(g_recipes_dir);
+	struct dirent *de;
+	int found = 0;
+
+	if (d == NULL)
+		return 0;
+	while (!found && (de = readdir(d)) != NULL) {
+		char path[PATH_MAX], explain_path[PATH_MAX], err[128];
+		char *buf = NULL;
+		size_t len = 0;
+		struct cbs_explain *ex;
+
+		if (de->d_name[0] == '.' || strcmp(de->d_name, name) == 0)
+			continue;
+		if (find_recipe_path(de->d_name, NULL, path, sizeof(path)) != 0)
+			continue;
+		cbs_explain_path(path, explain_path, sizeof(explain_path));
+		if (persist_read_file(explain_path, &buf, &len) != 0 || buf == NULL)
+			continue;
+		ex = cbs_explain_parse(buf, len, err, sizeof(err));
+		free(buf);
+		if (ex == NULL)
+			continue;
+		if (cbs_explain_output_find(ex, name) >= 0) {
+			snprintf(recipe, recipe_size, "%s", de->d_name);
+			found = 1;
+		}
+		cbs_explain_free(ex);
+	}
+	closedir(d);
+	return found;
+}
+
+/*
+ * ADR-0367: the names of the outputs recipe_path declares -- never its
+ * main package -- from the explain.json derived beside it. Returns how
+ * many were written to names, at most max.
+ */
+#define PKG_RECIPE_OUTPUTS_MAX 8
+static int recipe_outputs(const char *recipe_path, char names[][PKG_NAME_MAX], int max)
+{
+	char explain_path[PATH_MAX], err[128];
+	char *buf = NULL;
+	size_t len = 0;
+	struct cbs_explain *ex;
+	int i, n = 0;
+
+	cbs_explain_path(recipe_path, explain_path, sizeof(explain_path));
+	if (persist_read_file(explain_path, &buf, &len) != 0 || buf == NULL)
+		return 0;
+	ex = cbs_explain_parse(buf, len, err, sizeof(err));
+	free(buf);
+	if (ex == NULL)
+		return 0;
+	for (i = 0; i < cbs_explain_output_count(ex) && n < max; i++) {
+		int is_main = 0;
+		const char *o = cbs_explain_output_name(ex, i, &is_main);
+
+		if (o != NULL && !is_main)
+			snprintf(names[n++], PKG_NAME_MAX, "%s", o);
+	}
+	cbs_explain_free(ex);
+	return n;
+}
+
+static int find_recipe_path(const char *name, const char *version, char *out_path,
                              size_t out_path_size)
 {
 	char name_dir[PATH_MAX];
 	char version_dir[PATH_MAX];
+	char owner[PKG_NAME_MAX];
+	struct stat nst;
 
 	snprintf(name_dir, sizeof(name_dir), "%s/%s", g_recipes_dir, name);
+	/*
+	 * ADR-0367: a name no recipe is named may be another recipe's
+	 * output. Its file is that recipe's, resolved by that recipe's own
+	 * rules (its policy, its versions); the caller asks for the
+	 * output's view with parse_recipe_for().
+	 */
+	if (stat(name_dir, &nst) != 0 && output_owner(name, owner, sizeof(owner))) {
+		name = owner;
+		snprintf(name_dir, sizeof(name_dir), "%s/%s", g_recipes_dir, name);
+	}
 
 	if (version != NULL && version[0] != '\0') {
 		snprintf(version_dir, sizeof(version_dir), "%s/%s", name_dir, version);
@@ -3410,7 +3556,7 @@ int pkg_recipe_upstream(const char *name, char *out, size_t out_size)
 		return -1;
 	if (find_recipe_path(name, NULL, recipe_path, sizeof(recipe_path)) != 0)
 		return -1;
-	if (parse_recipe(recipe_path, &recipe) != 0)
+	if (parse_recipe_for(recipe_path, name, &recipe) != 0)
 		return -1;
 	snprintf(out, out_size, "%s", recipe.upstream);
 	return 0;
@@ -6244,7 +6390,7 @@ static int recipe_latest_version(const char *name, char *out_version, size_t out
 
 	if (find_recipe_path(name, NULL, recipe_path, sizeof(recipe_path)) != 0)
 		return -1;
-	if (parse_recipe(recipe_path, &recipe) != 0)
+	if (parse_recipe_for(recipe_path, name, &recipe) != 0)
 		return -1;
 	snprintf(out_version, out_size, "%s", recipe.version);
 
@@ -8270,7 +8416,7 @@ enum pkg_error pkg_recipe_get(const char *name, const char *version, struct json
 		return PKG_ERR_INVALID_NAME;
 
 	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0 ||
-	    parse_recipe(recipe_path, &r) != 0 || strcmp(r.name, name) != 0)
+	    parse_recipe_for(recipe_path, name, &r) != 0 || strcmp(r.name, name) != 0)
 		return PKG_ERR_NOT_FOUND;
 	if (persist_read_file(recipe_path, &content, &content_len) != 0 || content == NULL)
 		return PKG_ERR_PERSIST_FAILED;
@@ -9234,7 +9380,8 @@ struct recipe_check {
 };
 
 static int cbs_metadata_insert_point(const char *text, size_t *out_off);
-static void approve_cbs_artifact(const char *recipe_path, const char *name, const char *version,
+static void approve_cbs_artifact(const char *recipe_path, const char *key, const char *name,
+                                 const char *version,
                                  const char *sha);
 
 /* What a sync learned from publishing one recipe it carries (ADR-0324). */
@@ -9289,7 +9436,7 @@ static enum pkg_error recipe_cbs_refresh(const char *name, const char *version,
 	}
 	pkg_announce_recipes();
 	if (keep)
-		approve_cbs_artifact(recipe_path, name, version, stored_sha);
+		approve_cbs_artifact(recipe_path, "artifact_sha256", name, version, stored_sha);
 	logstore_write("cixd", "info", "pkg: recipe %s@%s refreshed from git (%s); nothing rebuilds",
 	               name, version,
 	               incoming_sha[0] != '\0' && stored_sha[0] == '\0'
@@ -9512,6 +9659,61 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 			free(redacted);
 			free(explain_json);
 			return PKG_ERR_INVALID_RECIPE;
+		}
+		/*
+		 * ADR-0367 decision 2: a package name is offered by one recipe,
+		 * as its main package or as an output. An output named like
+		 * another recipe, or already another recipe's output, or this
+		 * recipe named like another's output, is refused here, before
+		 * anything is stored, because resolution has no rule for
+		 * choosing between two -- and a list order or a newest-wins
+		 * would be one, silently.
+		 */
+		{
+			char owner[PKG_NAME_MAX], other_dir[PATH_MAX];
+			struct stat ost;
+			int oi;
+
+			g_recipe_add_err[0] = '\0';
+			for (oi = 0; oi < cbs_explain_output_count(ex) && g_recipe_add_err[0] == '\0';
+			     oi++) {
+				int is_main = 0;
+				const char *o = cbs_explain_output_name(ex, oi, &is_main);
+
+				if (o == NULL || is_main)
+					continue;
+				snprintf(other_dir, sizeof(other_dir), "%s/%s", g_recipes_dir, o);
+				if (stat(other_dir, &ost) == 0)
+					snprintf(g_recipe_add_err, sizeof(g_recipe_add_err),
+					         "its output %s is the name of recipe %s: one name is one "
+					         "package (ADR-0367)",
+					         o, o);
+				else if (output_owner(o, owner, sizeof(owner)) &&
+				         strcmp(owner, parsed.name) != 0)
+					snprintf(g_recipe_add_err, sizeof(g_recipe_add_err),
+					         "its output %s is already an output of recipe %s: one name is "
+					         "one package (ADR-0367)",
+					         o, owner);
+			}
+			/* Only a name's first publish walks the store: once it is a
+			 * recipe, an output claiming it later is refused by that
+			 * output's own publish (the stat() above). */
+			snprintf(other_dir, sizeof(other_dir), "%s/%s", g_recipes_dir, parsed.name);
+			if (g_recipe_add_err[0] == '\0' && stat(other_dir, &ost) != 0 &&
+			    output_owner(parsed.name, owner, sizeof(owner)))
+				snprintf(g_recipe_add_err, sizeof(g_recipe_add_err),
+				         "%s is already an output of recipe %s: one name is one package "
+				         "(ADR-0367)",
+				         parsed.name, owner);
+			if (g_recipe_add_err[0] != '\0') {
+				logstore_write("cixd", "error", "pkg: recipe %s rejected: %s", name,
+				               g_recipe_add_err);
+				cbs_explain_free(ex);
+				unlink(staging_path);
+				free(redacted);
+				free(explain_json);
+				return PKG_ERR_INVALID_RECIPE;
+			}
 		}
 		cbs_explain_free(ex);
 		if (strcmp(parsed.name, name) != 0) {
@@ -9857,7 +10059,7 @@ static int resolve_chain(const char *name, const char *version, const char *imag
 	}
 
 	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0 ||
-	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0) {
+	    parse_recipe_for(recipe_path, name, &recipe) != 0 || strcmp(recipe.name, name) != 0) {
 		snprintf(err_out, err_out_size, "unknown dependency '%s' (no recipe)", name);
 		return -1;
 	}
@@ -10007,7 +10209,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 
 	if (find_recipe_path(name, current_fetch_effective_version(chain_idx), recipe_path,
 	                      sizeof(recipe_path)) != 0 ||
-	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
+	    parse_recipe_for(recipe_path, name, &recipe) != 0 || strcmp(recipe.name, name) != 0)
 		return PKG_ERR_INVALID_RECIPE;
 
 	/* ADR-0122/ADR-0289: computed fresh for every queue entry (never
@@ -10724,7 +10926,7 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
 		         trigger);
 
 	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0 ||
-	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
+	    parse_recipe_for(recipe_path, name, &recipe) != 0 || strcmp(recipe.name, name) != 0)
 		return PKG_ERR_INVALID_RECIPE;
 
 	snprintf(g_chains[chain_idx].image, sizeof(g_chains[chain_idx].image), "%s", normalize_image(image));
@@ -10811,7 +11013,7 @@ enum pkg_error pkg_hostbuild_start(const char *name, const char *version,
 	chain_idx = chain_alloc();
 
 	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0 ||
-	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
+	    parse_recipe_for(recipe_path, name, &recipe) != 0 || strcmp(recipe.name, name) != 0)
 		return PKG_ERR_INVALID_RECIPE;
 	/*
 	 * pkg_depends is CARRIED here, never resolved (#465).
@@ -12069,7 +12271,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	}
 
 	if (fetched_recipe_path(chain_idx, e->name, recipe_path, sizeof(recipe_path)) != 0 ||
-	    parse_recipe(recipe_path, &recipe) != 0) {
+	    parse_recipe_for(recipe_path, e->name, &recipe) != 0) {
 		pkg_fail(e, is_final_upgrade, PIPELINE_AUTHOR, "recipe became unreadable mid-install");
 		chain_release(chain_idx);
 		return 0;
@@ -12358,7 +12560,7 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 	}
 
 	if (fetched_recipe_path(chain_idx, e->name, recipe_path, sizeof(recipe_path)) != 0 ||
-	    parse_recipe(recipe_path, &recipe) != 0) {
+	    parse_recipe_for(recipe_path, e->name, &recipe) != 0) {
 		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 		         "the recipe became unreadable while its build environment was composed");
 		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
@@ -12433,7 +12635,7 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
 	}
 
 	if (fetched_recipe_path(chain_idx, e->name, recipe_path, sizeof(recipe_path)) != 0 ||
-	    parse_recipe(recipe_path, &recipe) != 0) {
+	    parse_recipe_for(recipe_path, e->name, &recipe) != 0) {
 		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
 		         "the recipe became unreadable while its artifact was unpacked");
 		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
@@ -12544,7 +12746,7 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 		return PKG_ERR_BUSY;
 
 	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0 ||
-	    parse_recipe(recipe_path, &recipe) != 0 || strcmp(recipe.name, name) != 0)
+	    parse_recipe_for(recipe_path, name, &recipe) != 0 || strcmp(recipe.name, name) != 0)
 		return PKG_ERR_INVALID_RECIPE;
 
 	/*
@@ -17362,7 +17564,10 @@ enum pkg_error pkg_recipe_revise_start(const char *name, const char *version, co
 	char set_version[PKG_VERSION_MAX + 16], set_url[PKG_URL_MAX + 32];
 	char set_sha[PKG_SHA256_MAX + 32], set_changelog[PKG_CHANGELOG_MAX + 32];
 	char changelog[PKG_CHANGELOG_MAX], old_upstream[PKG_VERSION_MAX];
-	char *argv[16];
+	char *argv[16 + 2 * PKG_RECIPE_OUTPUTS_MAX];
+	char outs[PKG_RECIPE_OUTPUTS_MAX][PKG_NAME_MAX];
+	char unset_out[PKG_RECIPE_OUTPUTS_MAX][PKG_NAME_MAX + 32];
+	int out_n, oi;
 	struct pkg_recipe recipe;
 	char *revised;
 	size_t revised_len = 0, i;
@@ -17448,6 +17653,18 @@ enum pkg_error pkg_recipe_revise_start(const char *name, const char *version, co
 	if (parse_recipe(path, &recipe) == 0 && recipe.artifact_sha256[0] != '\0') {
 		argv[n++] = (char *)"--unset";
 		argv[n++] = (char *)"metadata.artifact_sha256";
+	}
+	/* ADR-0367: each output's approval names one build's bytes too, so
+	 * none is carried into the next revision either (ADR-0307 clause 5). */
+	out_n = recipe_outputs(path, outs, PKG_RECIPE_OUTPUTS_MAX);
+	for (oi = 0; oi < out_n; oi++) {
+		struct pkg_recipe ov;
+
+		if (parse_recipe_for(path, outs[oi], &ov) != 0 || ov.artifact_sha256[0] == '\0')
+			continue;
+		snprintf(unset_out[oi], sizeof(unset_out[oi]), "metadata.artifact_sha256.%s", outs[oi]);
+		argv[n++] = (char *)"--unset";
+		argv[n++] = unset_out[oi];
 	}
 	argv[n] = NULL;
 
@@ -20947,7 +21164,7 @@ enum pkg_error pkg_hostbuild_package_info(const char *name, const char *version,
 
 	memset(&recipe, 0, sizeof(recipe));
 	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) == 0 &&
-	    parse_recipe(recipe_path, &recipe) == 0) {
+	    parse_recipe_for(recipe_path, name, &recipe) == 0) {
 		snprintf(bare, sizeof(bare), "%s", recipe.bare_version);
 		release = recipe.release;
 	} else {
@@ -21150,7 +21367,7 @@ static enum pkg_error seed_choose(const char *name, struct seed_choice *out, cha
 		cached = pkg_artifact_cache_has(name, version);
 		memset(&recipe, 0, sizeof(recipe));
 		approved = (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) == 0 &&
-		            parse_recipe(recipe_path, &recipe) == 0 && recipe.artifact_sha256[0] != '\0');
+		            parse_recipe_for(recipe_path, name, &recipe) == 0 && recipe.artifact_sha256[0] != '\0');
 		if (!cached && !approved) {
 			/*
 			 * The NEWEST unusable version is what a refusal names,
@@ -22035,7 +22252,8 @@ static int cbs_metadata_insert_point(const char *text, size_t *out_off)
 	}
 }
 
-static void approve_cbs_artifact(const char *recipe_path, const char *name, const char *version,
+static void approve_cbs_artifact(const char *recipe_path, const char *key, const char *name,
+                                  const char *version,
                                   const char *sha)
 {
 	char explain_path[PATH_MAX];
@@ -22050,7 +22268,7 @@ static void approve_cbs_artifact(const char *recipe_path, const char *name, cons
 	char *stored = NULL, *updated = NULL, *old_json = NULL, *new_json = NULL;
 	size_t stored_len = 0, old_len = 0, new_len = 0, insert_off = 0;
 	struct json_value *old_root = NULL, *new_root = NULL;
-	char line[PKG_SHA256_MAX + 64];
+	char line[PKG_SHA256_MAX + PKG_NAME_MAX + 64];
 	size_t line_len;
 	int ok = 0;
 
@@ -22074,8 +22292,7 @@ static void approve_cbs_artifact(const char *recipe_path, const char *name, cons
 	old_root = json_parse(old_json, old_len);
 	if (old_root == NULL)
 		goto done;
-	if (json_as_string(json_object_get(json_object_get(old_root, "metadata"),
-	                                    "artifact_sha256")) != NULL)
+	if (json_as_string(json_object_get(json_object_get(old_root, "metadata"), key)) != NULL)
 		goto done; /* approved already -- never a replacement (ADR-0107) */
 
 	if (cbs_metadata_insert_point(stored, &insert_off) != 0) {
@@ -22083,12 +22300,12 @@ static void approve_cbs_artifact(const char *recipe_path, const char *name, cons
 		               "pkg: %s@%s published, but its recipe has no `metadata {` block on a "
 		               "line of its own, so this daemon will not write the approval and the "
 		               "package rebuilds from source on every install. Add to the recipe, "
-		               "after `requires`:  metadata {  \"artifact_sha256\" \"%s\"  }  (#492)",
-		               name, version, sha);
+		               "after `requires`:  metadata {  \"%s\" \"%s\"  }  (#492)",
+		               name, version, key, sha);
 		goto done;
 	}
 
-	line_len = (size_t)snprintf(line, sizeof(line), "        \"artifact_sha256\" \"%s\"\n", sha);
+	line_len = (size_t)snprintf(line, sizeof(line), "        \"%s\" \"%s\"\n", key, sha);
 	updated = malloc(stored_len + line_len + 1);
 	if (updated == NULL)
 		goto done;
@@ -22136,7 +22353,7 @@ static void approve_cbs_artifact(const char *recipe_path, const char *name, cons
 	 * protects against.
 	 */
 	if (json_as_string(json_object_get(json_object_get(new_root, "metadata"),
-	                                    "artifact_sha256")) == NULL) {
+	                                    key)) == NULL) {
 		logstore_write("cixd", "warn",
 		               "pkg: %s@%s: the approval did not reach the recipe's metadata block "
 		               "-- recipe left untouched (#492)",
@@ -22144,7 +22361,7 @@ static void approve_cbs_artifact(const char *recipe_path, const char *name, cons
 		goto done;
 	}
 
-	if (jsondiff_equal_ignoring(old_root, new_root, "artifact_sha256") != 1) {
+	if (jsondiff_equal_ignoring(old_root, new_root, key) != 1) {
 		logstore_write("cixd", "warn",
 		               "pkg: %s@%s: writing its approval changed more than the approval "
 		               "-- recipe left untouched (#492)",
@@ -22198,19 +22415,26 @@ done:
 static void approve_published_artifact(const char *name, const char *version)
 {
 	char artifact[PATH_MAX], cbs_path[PATH_MAX];
-	char sha[65];
-	struct stat st;
+	char sha[65], key[PKG_NAME_MAX + 32];
+	struct pkg_recipe r;
 
 	(void)cache_artifact_path_existing(name, version, artifact, sizeof(artifact));
 	if (pkg_run_capture_sha256(artifact, sha, sizeof(sha)) != 0)
 		return; /* the artifact is gone from the cache -- nothing to approve */
-	/* The recipe is CPDL; there is no other kind (cix#569). */
-	if ((size_t)snprintf(cbs_path, sizeof(cbs_path), "%s/%s/%s/%s", g_recipes_dir, name, version,
-	                     PKG_RECIPE_CBS_FILE) >= sizeof(cbs_path) ||
-	    stat(cbs_path, &st) != 0)
+	/*
+	 * The recipe is CPDL; there is no other kind (cix#569). An output's
+	 * approval goes into the recipe that builds it, under its own key
+	 * (ADR-0367 decision 4), and git learns it through that recipe.
+	 */
+	if (find_recipe_path(name, version, cbs_path, sizeof(cbs_path)) != 0 ||
+	    parse_recipe_for(cbs_path, name, &r) != 0)
 		return;
-	approve_cbs_artifact(cbs_path, name, version, sha);
-	writeback_after_approval(name, version); /* ADR-0324: git learns it too */
+	if (strcmp(r.recipe_name, name) == 0)
+		snprintf(key, sizeof(key), "artifact_sha256");
+	else
+		snprintf(key, sizeof(key), "artifact_sha256.%s", name);
+	approve_cbs_artifact(cbs_path, key, name, version, sha);
+	writeback_after_approval(r.recipe_name, version); /* ADR-0324: git learns it too */
 }
 
 /* What the push that just ended means, said once; a failure a later try

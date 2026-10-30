@@ -142,6 +142,25 @@ int cbs_explain_requires(const struct cbs_explain *ex, const char *role, const c
                           char *out, size_t out_size);
 
 /*
+ * ADR-0367: the recipe's outputs (cbs v0.1.119, cix-build-system
+ * ADR-0038). `outputs` lists every package one build emits, the main
+ * package first with "main": true. A document derived by an older
+ * engine has no `outputs`, which reads as count 0 and no output found.
+ *
+ * cbs_explain_output_find(): the index of the OUTPUT named name, never
+ * the main package; -1 when the recipe declares no such output.
+ * cbs_explain_output_name(): the name at index, with *is_main set when
+ * is_main is not NULL; NULL out of range.
+ * cbs_explain_output_requires(): cbs_explain_requires() for one
+ * output's own `requires`.
+ */
+int cbs_explain_output_find(const struct cbs_explain *ex, const char *name);
+int cbs_explain_output_count(const struct cbs_explain *ex);
+const char *cbs_explain_output_name(const struct cbs_explain *ex, int index, int *is_main);
+int cbs_explain_output_requires(const struct cbs_explain *ex, int index, const char *role,
+                                const char *kind, char *out, size_t out_size);
+
+/*
  * The artifact format the recipe declares (ADR-0307): "cixpkg" or
  * "tar.gz", CPDL's only two legal values, exactly one of which every
  * package must declare (cix-build-system `src/validate.c:698`).

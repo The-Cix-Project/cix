@@ -586,9 +586,67 @@ static void test_declared_format(void)
 	cbs_explain_free(ex);
 }
 
+/*
+ * ADR-0367: a recipe's outputs, in the shape cbs v0.1.122's explain
+ * writes (src/main.c, "outputs": main package first, "main": true).
+ * The main package is never found as an output, an output's requires
+ * are its own, and a document from an engine with no `outputs` reads
+ * as none.
+ */
+static void test_outputs(void)
+{
+	static const char *const OUTS =
+	    "{\"name\":\"cix\",\"version\":\"0.2.57\",\"release\":635,\"format\":\"cixpkg\","
+	    "\"requires\":{\"runtime\":{\"package\":[\"glibc\",\"curl\"]}},"
+	    "\"outputs\":["
+	    "{\"name\":\"cix\",\"main\":true,\"files\":[],"
+	    "\"requires\":{\"runtime\":{\"package\":[\"glibc\",\"curl\"]}}},"
+	    "{\"name\":\"cixctl\",\"main\":false,"
+	    "\"files\":[{\"pattern\":\"usr/bin/cixctl\",\"glob\":false}],"
+	    "\"requires\":{\"runtime\":{\"package\":[\"glibc\"]}}}],"
+	    "\"sources\":[{\"name\":\"cix\",\"urls\":[\"https://e/c.tar.gz\"],\"sha256\":\"aa\"}]}";
+	static const char *const OLD =
+	    "{\"name\":\"p\",\"version\":\"1\",\"release\":1,\"format\":\"cixpkg\","
+	    "\"sources\":[{\"name\":\"p\",\"urls\":[\"https://e/p.tar.gz\"],\"sha256\":\"aa\"}]}";
+	char err[256], deps[128];
+	struct cbs_explain *ex;
+	int is_main = -1, i;
+
+	ex = cbs_explain_parse(OUTS, strlen(OUTS), err, sizeof(err));
+	if (ex == NULL) {
+		fail("a document with outputs failed to parse");
+		return;
+	}
+	expect_int("outputs listed, main first", cbs_explain_output_count(ex), 2);
+	expect_str("output 0 is the package", cbs_explain_output_name(ex, 0, &is_main), "cix");
+	expect_int("output 0 is the main one", is_main, 1);
+	expect_int("the main package is never found as an output",
+	           cbs_explain_output_find(ex, "cix"), -1);
+	i = cbs_explain_output_find(ex, "cixctl");
+	expect_int("the cixctl output is found", i, 1);
+	expect_str("output 1's name", cbs_explain_output_name(ex, i, &is_main), "cixctl");
+	expect_int("output 1 is not the main one", is_main, 0);
+	expect_int("an output's runtime requires read",
+	           cbs_explain_output_requires(ex, i, "runtime", "package", deps, sizeof(deps)), 0);
+	expect_str("an output's requires are its own", deps, "glibc");
+	expect_int("no such output", cbs_explain_output_find(ex, "nosuch"), -1);
+	expect_int("out of range", cbs_explain_output_name(ex, 9, NULL) == NULL, 1);
+	cbs_explain_free(ex);
+
+	ex = cbs_explain_parse(OLD, strlen(OLD), err, sizeof(err));
+	if (ex == NULL) {
+		fail("a document with no outputs failed to parse");
+		return;
+	}
+	expect_int("an older engine's document lists no outputs", cbs_explain_output_count(ex), 0);
+	expect_int("and finds none", cbs_explain_output_find(ex, "cixctl"), -1);
+	cbs_explain_free(ex);
+}
+
 int main(void)
 {
 	printf("=== CBS recipe identity (ADR-0305) ===\n");
+	test_outputs();
 	test_happy_path();
 	test_release_and_runtime();
 	test_legacy_capability_count();

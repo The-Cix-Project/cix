@@ -6,6 +6,19 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A recipe's outputs install as packages (#378, ADR-0367 step 3)
+
+- **What changed:**
+  - A name no recipe has can be another recipe's `output`. `find_recipe_path()` resolves it to that recipe, through `output_owner()`, which reads each recipe's derived `explain.json` instead of keeping a separate index.
+  - `parse_recipe_for()` gives the output's own view: its name, its runtime requirements, and its own approval, `metadata "artifact_sha256.<output>"`. Every call site that resolves a package by name asks for that view.
+  - A build installs the output's artifact from the artifact directory by the output's name.
+  - After a publish, the approval write-back writes the output's line into the recipe that builds it, and git learns it through that recipe. Deriving a new revision unsets every output's approval, as it does the main one.
+  - A publish is refused when one of its outputs is named like another recipe or is already another recipe's output, and when the recipe is named like another recipe's output. Only a name's first publish walks the store.
+  - `cbsrecipe` reads `explain`'s `outputs` (cbs v0.1.119); `test_cbsrecipe` covers it.
+- **Why:** ADR-0367 decisions 1, 2 and 4. No recipe declares an output yet, so nothing visible changes. The cix recipe's `output "cixctl"` comes in a later release, once assembly can take cixctl from it.
+- **Not yet:** a build that produces several artifacts caches only the one it was asked for.
+- **Verified:** pending the release.
+
 ### A build writes into an artifact directory (#378, ADR-0367 step 2)
 
 - **What changed:** cixd runs `cbs build` with `--output-dir /build/artifacts` instead of `--output /build/artifact.cixpkg`, and harvests the entry's own artifact from that directory by cbs's canonical name, `name-version-release-arch.cixpkg`. The directory is created empty, host-side, next to `finalize.sh`. A resumed build therefore never finds a previous attempt's artifact, and a build environment needs no `mkdir`. Every recipe is still single-output, so each build writes one artifact under the name cixd caches it by.

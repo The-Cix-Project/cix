@@ -219,20 +219,20 @@ int cbs_explain_source(const struct cbs_explain *ex, int index, char *url, size_
 	return 0;
 }
 
-int cbs_explain_requires(const struct cbs_explain *ex, const char *role, const char *kind,
-                          char *out, size_t out_size)
+/* One `requires` object's role/kind list: the package's own, or one
+ * output's (ADR-0038 gives an output the same shape). */
+static int requires_from(const struct json_value *requires_obj, const char *role,
+                         const char *kind, char *out, size_t out_size)
 {
-	const struct json_value *requires_obj;
 	const struct json_value *group;
 	const struct json_value *items;
 	size_t i;
 	size_t off = 0;
 
-	if (ex == NULL || out == NULL || out_size == 0)
+	if (out == NULL || out_size == 0)
 		return -1;
 	out[0] = '\0';
 
-	requires_obj = json_object_get(ex->root, "requires");
 	if (requires_obj == NULL || requires_obj->type != JSON_OBJECT)
 		return 0; /* declares no dependencies at all */
 	group = json_object_get(requires_obj, role);
@@ -256,6 +256,75 @@ int cbs_explain_requires(const struct cbs_explain *ex, const char *role, const c
 		off += (size_t)n;
 	}
 	return 0;
+}
+
+int cbs_explain_requires(const struct cbs_explain *ex, const char *role, const char *kind,
+                          char *out, size_t out_size)
+{
+	if (ex == NULL)
+		return -1;
+	return requires_from(json_object_get(ex->root, "requires"), role, kind, out, out_size);
+}
+
+/* The outputs array (cbs v0.1.119, ADR-0038), or NULL when the engine
+ * that derived the document predates it. */
+static const struct json_value *outputs_of(const struct cbs_explain *ex)
+{
+	const struct json_value *v = ex != NULL ? json_object_get(ex->root, "outputs") : NULL;
+
+	return v != NULL && v->type == JSON_ARRAY ? v : NULL;
+}
+
+int cbs_explain_output_find(const struct cbs_explain *ex, const char *name)
+{
+	const struct json_value *outs = outputs_of(ex);
+	size_t i;
+
+	if (outs == NULL || name == NULL)
+		return -1;
+	for (i = 0; i < outs->u.array.count; i++) {
+		const struct json_value *o = outs->u.array.items[i];
+		const struct json_value *main = json_object_get(o, "main");
+		const char *n = json_as_string(json_object_get(o, "name"));
+
+		if (main != NULL && main->type == JSON_BOOL && main->u.boolean)
+			continue; /* the package itself, never an output */
+		if (n != NULL && strcmp(n, name) == 0)
+			return (int)i;
+	}
+	return -1;
+}
+
+int cbs_explain_output_count(const struct cbs_explain *ex)
+{
+	const struct json_value *outs = outputs_of(ex);
+
+	return outs != NULL ? (int)outs->u.array.count : 0;
+}
+
+const char *cbs_explain_output_name(const struct cbs_explain *ex, int index, int *is_main)
+{
+	const struct json_value *outs = outputs_of(ex);
+	const struct json_value *o, *main;
+
+	if (outs == NULL || index < 0 || (size_t)index >= outs->u.array.count)
+		return NULL;
+	o = outs->u.array.items[index];
+	main = json_object_get(o, "main");
+	if (is_main != NULL)
+		*is_main = main != NULL && main->type == JSON_BOOL && main->u.boolean;
+	return json_as_string(json_object_get(o, "name"));
+}
+
+int cbs_explain_output_requires(const struct cbs_explain *ex, int index, const char *role,
+                                const char *kind, char *out, size_t out_size)
+{
+	const struct json_value *outs = outputs_of(ex);
+
+	if (outs == NULL || index < 0 || (size_t)index >= outs->u.array.count)
+		return -1;
+	return requires_from(json_object_get(outs->u.array.items[index], "requires"), role, kind,
+	                     out, out_size);
 }
 
 int cbs_explain_replaces(const struct cbs_explain *ex, char *out, size_t out_size)
