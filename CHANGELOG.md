@@ -13,7 +13,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - A `logs.replaced-<time>` a move set aside reports as the log store's, not in use, rather than `unknown`.
   - The refusals to remove a role from, unmount or format an active placement's disk name rebuildable-storage, log-storage and data-storage. They named the retired state-storage, and not data-storage.
 - **Why:** each was seen in the stage-b and stage-c run on 192.168.15.95 (ROADMAP Part 349).
-- **Verified:** pending the release.
+- **Verified:** 0.2.57-629 on 192.168.15.95 (compile probe 665). `cixctl storage data-dir` reports `logs.replaced-1793322364` as `log-store`, not in use, live at `/var/lib/cix/logs`, and removing sda's role is refused with the corrected text. The log line is reached only by a successful move request and was not exercised live.
 
 ### A data-directory move mounts its ends in a tmpfs (#249, ADR-0364)
 
