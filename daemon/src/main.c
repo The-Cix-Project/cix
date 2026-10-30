@@ -21767,7 +21767,7 @@ static void handle_disk_format_post(int fd, const char *disk_name, const char *b
 	if (is_active_storage_singleton_placement(disk_name)) {
 		json_free(root);
 		respond_error(fd, 409, "Conflict",
-		              "this disk is the active state-storage, log-storage, or rebuildable-storage "
+		              "this disk is the active rebuildable-storage, log-storage or data-storage "
 		              "placement, the configured backup-config disk, or the current swap placement "
 		              "(issue #28) -- formatting it would destroy live data; migrate away first");
 		return;
@@ -22030,10 +22030,12 @@ static void handle_data_storage_migrate_post(int fd, const char *body, size_t bo
 		respond_error(fd, 500, "Internal Server Error", "could not record the move");
 		return;
 	}
-	json_free(root);
+	/* Before json_free(): disk points into the parsed body. Logged after
+	 * it, on 0.2.57-628, the line read "will move to |#\t3". */
 	logstore_write("cixd", "info",
 	               "the data directory will move to %s at the next boot (ADR-0364)",
 	               disk != NULL ? disk : "cix-containers");
+	json_free(root);
 	respond_placement(fd, STORAGE_KIND_DATA, 202, "Accepted");
 }
 

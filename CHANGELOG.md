@@ -6,11 +6,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The data-directory move's log line, report and refusals say the right thing (#249, ADR-0364)
+
+- **What changed:**
+  - The move request logs its target before freeing the request body. On 628 it logged after, and the line read *"will move to |#\t3"*.
+  - A `logs.replaced-<time>` a move set aside reports as the log store's, not in use, rather than `unknown`.
+  - The refusals to remove a role from, unmount or format an active placement's disk name rebuildable-storage, log-storage and data-storage. They named the retired state-storage, and not data-storage.
+- **Why:** each was seen in the stage-b and stage-c run on 192.168.15.95 (ROADMAP Part 349).
+- **Verified:** pending the release.
+
 ### A data-directory move mounts its ends in a tmpfs (#249, ADR-0364)
 
 - **What changed:** the boot's move mounts its two ends at `/mnt/cix/.data-move/{source,target}`, inside the disk mountpoints' tmpfs, which `boot_init()` now mounts before the data directory rather than after it. The tmpfs comment no longer claims the root slot is mounted read-write.
 - **Why:** the first move on 192.168.15.95 (0.2.57-627) failed at the next boot with *"could not create /mnt/cix-data-move/source and /mnt/cix-data-move/target: Read-only file system"*. The root slot is read-only. The failure path did what ADR-0364 asks of it: the data directory stayed on cix-containers, `last_move` reported `failed` with that reason, the pending move was cleared, and all 13 containers came back.
-- **Verified:** pending the release.
+- **Verified:** 0.2.57-628 on 192.168.15.95 (compile probe 664). The move to vdb6 succeeded at the next boot, and the move back on the boot after that; ROADMAP Part 349 has the measurements.
 
 ### A copied tree keeps its owners, its directory modes and its sockets
 
@@ -31,7 +40,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - At the next boot, `mount_data_dir()` mounts both ends beside each other under `/mnt/cix-data-move`, and `datadir_move()` carries the log store, setting aside a target's own `logs/` rather than merging into it. Then the target is mounted as the data directory. The source is never written. The new placement, the cleared pending move and the outcome are one record write, so a failed move stays on the source and is not retried by itself.
   - `GET /v1/system/data-storage` reports `pending` and `last_move` (outcome, reason, time), and `cixctl storage data` prints them, along with `degraded`, which it did not print before for any placement.
 - **Why:** ADR-0364 decision 3, the owner's "Go ahead" of 2026-10-29. Rebuildable storage joined the preconditions when this was built: on its default placement it lives in the data directory, and a move that carried only the log store would boot with an empty image store.
-- **Verified:** pending the release and a move on 192.168.15.95.
+- **Verified:** 0.2.57-625 to 0.2.57-628 on 192.168.15.95: the 409 naming `jump-home` on 625, a failed move that stayed on the source on 627, and on 628 a move to vdb6 and back. ROADMAP Part 349.
 
 ### The data directory is a placement kind, read before it is mounted (#249, ADR-0364 decision 3, stage a)
 

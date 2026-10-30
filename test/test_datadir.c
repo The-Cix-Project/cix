@@ -291,6 +291,27 @@ int main(void)
 		check(stat(probe, &st) != 0, "the two histories are not merged");
 		snprintf(probe, sizeof(probe), "%s/logs/segment", tgt);
 		check(stat(probe, &st) == 0, "the carried log store is the source's");
+		{
+			struct datadir_live tl;
+			struct json_writer tw;
+			struct json_value *tdoc;
+			const struct json_value *te;
+			char tlogs[4096 + 64];
+
+			memset(&tl, 0, sizeof(tl));
+			snprintf(tlogs, sizeof(tlogs), "%s/logs", tgt);
+			tl.log_dir = tlogs;
+			jw_init(&tw);
+			check(datadir_write_json(&tw, tgt, NULL, &tl, 1) == 0, "report on the moved-to tree");
+			tdoc = json_parse(tw.buf, tw.len);
+			te = tdoc != NULL ? entry_named(json_object_get(tdoc, "entries"), "logs.replaced-77")
+			                  : NULL;
+			check(te != NULL && strcmp(str_of(json_object_get(te, "owner")), "log-store") == 0 &&
+			              !bool_field(te, "in_use"),
+			      "a set-aside log store is the log store's, and not in use");
+			json_free(tdoc);
+			jw_free(&tw);
+		}
 
 		/* The log store is placed elsewhere: nothing to carry. */
 		snprintf(tgt, sizeof(tgt), "%s/target-nologs", base);

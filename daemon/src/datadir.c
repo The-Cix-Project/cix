@@ -114,7 +114,10 @@ static int walk_cb(const char *path, const struct stat *sb, int typeflag, struct
 static const char *owner_of(const char *name, const struct datadir_live *live, const char **live_path)
 {
 	*live_path = NULL;
-	if (strcmp(name, "logs") == 0) {
+	/* A logs.replaced-<time> is a log store a data-directory move set
+	 * aside (ADR-0364, datadir_move()): the log store's, never its live
+	 * tree, so it reports not in use with where the store lives now. */
+	if (strcmp(name, "logs") == 0 || strncmp(name, "logs.replaced-", 14) == 0) {
 		*live_path = live->log_dir;
 		return "log-store";
 	}

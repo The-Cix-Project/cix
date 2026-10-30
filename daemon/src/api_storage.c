@@ -347,7 +347,7 @@ void handle_diskrole_delete(int fd, const char *disk_name)
 
 	if (is_active_storage_singleton_placement(disk_name)) {
 		respond_error(fd, 409, "Conflict",
-		              "this disk is the active state-storage, log-storage, or rebuildable-storage "
+		              "this disk is the active rebuildable-storage, log-storage or data-storage "
 		              "placement, the configured backup-config disk, or the current swap placement "
 		              "(issue #28) -- migrate away first (POST .../migrate to a different disk or "
 		              "disk: null, PUT /v1/system/backup-config with a different disk/null, or "
@@ -456,7 +456,7 @@ void handle_disk_unmount_post(int fd, const char *disk_name, const char *body, s
 
 	if (is_active_storage_singleton_placement(disk_name)) {
 		respond_error(fd, 409, "Conflict",
-		              "this disk is the active state-storage, log-storage, or rebuildable-storage "
+		              "this disk is the active rebuildable-storage, log-storage or data-storage "
 		              "placement, the configured backup-config disk, or the current swap placement -- "
 		              "unmounting it would break whatever currently relies on it; migrate away first");
 		return;

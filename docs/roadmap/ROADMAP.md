@@ -2445,6 +2445,20 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 349: the data directory moves to a disk and back (#249, ADR-0364 decision 3, 0.2.57-624 to 0.2.57-628)
+
+ADR-0364's third decision makes the data directory a placement, `data-storage`, beside rebuildable, log and swap. `POST /v1/system/data-storage/migrate` (`cixctl storage data migrate [--disk=NAME]`) records a move for the next boot. The boot mounts both ends in the disk mountpoints' tmpfs, carries the log store, and mounts the winner as the data directory. The source is never written, and the outcome is `last_move` on `GET /v1/system/data-storage`. cix-containers is then an ordinary partition. Two defects in shared code were found on the way: a copied tree lost every owner and directory mode, and a volume copy's failure said nothing.
+
+**Measured on 192.168.15.95, 2026-10-29 and 30:**
+
+- **624:** `/config` mounted before the data directory, with no placement recorded. `GET /v1/system/data-storage` was `{"disk":null,"degraded":false}`, and every placement and all 13 containers were as before.
+- **625:** the request refused with a 409 naming `jump-home`, the one volume with no disk. Moving it to vda failed with a bare 500.
+- **626:** the 500 named `osakka/.screen/152.byobu`, a screen socket. Reading the copy showed it also gave every entry to root and every directory 0755.
+- **627:** `jump-home` moved to vda, and jump came back running and ready with sshd up. The first data move then failed at boot (EROFS: the root slot is read-only). It stayed on cix-containers with the reason in `last_move`, and all 13 containers came back. That is the failure path working.
+- **628:** the move to a 4 GiB btrfs vdb6 succeeded: `/var/lib/cix` was vdb6, the log history came across, and all 13 containers ran. The move back succeeded on the next boot, and vdb5's own `logs/` was set aside as `logs.replaced-1793322364`. A role removal on the active data disk was refused with a 409. vdb6 was then deleted, and vdb's free space was back to exactly 15939 MiB.
+
+Not exercised live: a placed data disk that is absent at boot (the degraded branch), and a move on a host whose log store is placed elsewhere. `test_datadir` covers what the move carries and sets aside.
+
 ## Part 348: the data directory holds no boot state, and a volatile one says so (#249, ADR-0364 decisions 1 and 2, 0.2.57-623)
 
 ADR-0364, accepted by the owner on 2026-10-29, makes the data directory a placement. Its first two decisions shipped together. The disk-role and placement files moved to `/config/state`: their reason for staying out of it ended with #251. A data partition that does not mount now falls back to a tmpfs that is logged, reported on `/health` and the data-dir report, and shown as a dashboard banner, instead of silently.
