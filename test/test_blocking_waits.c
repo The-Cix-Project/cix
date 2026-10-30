@@ -588,9 +588,9 @@ static const char *const g_update_calls[] = {
 static const struct call_budget g_produce_budgets[] = {
 	{ "pkg.c", "image_version_build(", 3,
 	  "the definition, image_produce_new_version(), and image_version_fork()'s child" },
-	{ "pkg.c", "image_produce_new_version(", 3,
-	  "the definition; the toolchain bootstrap and the sandbox migration at start, which "
-	  "produce cix-builder. The bootstrap refuses while a child is producing the same image" },
+	{ "pkg.c", "image_produce_new_version(", 2,
+	  "the definition, and the sandbox migration at start, which produces cix-builder "
+	  "before any chain runs. The toolchain bootstrap was a third until ADR-0365" },
 	{ "pkg.c", "image_version_fork(", 4,
 	  "the definition, a build environment's composer, an install's producer and an "
 	  "uninstall's (ADR-0357)" },
