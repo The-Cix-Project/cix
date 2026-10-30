@@ -20,21 +20,15 @@ Not a scheduled rotation and not a compromise: **the private half was lost.** 19
 
 The lesson is the one this directory's design already assumed and the operational practice did not follow: a public key in git survives anything that happens to a host, and a private key that exists in exactly one place is one reinstall from gone.
 
-**Keys Cix verifies against** — upstream publishers' keys, pinned here so
-this platform can check what it downloads ([ADR-0254](../adr/0254-upstream-checksums-are-verified-not-computed.md)).
-
-| File | Fingerprint | What it verifies |
-|---|---|---|
-| [`kernel.org-autosigner.asc`](kernel.org-autosigner.asc) | `B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1` | kernel.org's `sha256sums.asc`, so a kernel recipe's source `sha256` quotes a checksum **kernel.org signed** rather than one this platform computed over its own download |
-
-The file is not the trust anchor; **the fingerprint is**. `pgpverify.c`
-recomputes the fingerprint from the key material and refuses anything
-that does not match the pinned value, so a substituted key file fails
-rather than being believed. That is why the fingerprint is written out
-above in full: it is the part a human checked, out of band, against
-kernel.org's own published signature page. Replacing the file without
-changing that fingerprint changes nothing; changing the fingerprint is a
-trust decision and needs the same out-of-band check again.
+**Keys Cix verifies against** — upstream publishers' keys — do not live
+here. They travel in the signed recipe catalogue, as
+`recipes/keys/<package>@<FINGERPRINT>.asc` in the source that owns the
+package, and a host adopts one only when the key's own fingerprint is
+its name ([ADR-0326](../adr/0326-upstream-keys-travel-in-the-signed-catalogue.md)).
+kernel.org's autosigner key is `recipes/keys/kernel@B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1.asc`
+in cix-recipes. A copy of it was kept here as `kernel.org-autosigner.asc`
+until 2026-10-30, read by nothing after ADR-0326, and removed at the
+owner's decision (#628) so that one key has one home.
 
 ## Verifying an installer ISO
 

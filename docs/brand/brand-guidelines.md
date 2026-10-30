@@ -483,7 +483,7 @@ CANONICAL CAPABILITY MAP
 
 ILLUSTRATIVE PATTERN
 
-> /api/v1/container — /api/v1/network — /api/v1/hardware — /api/v1/dns — /api/v1/pki
+> /v1/container — /v1/network — /v1/hardware — /v1/dns — /v1/pki
 
 > API CAVEAT — Exact API paths must follow the implemented contract. The brand rule is terminological consistency, not forcing a cosmetic URL pattern onto an architecture that needs different semantics.
 

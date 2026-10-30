@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The kernel.org key has one home, and the brand guide's API paths are the contract's (#628)
+
+- **What changed:** `docs/keys/kernel.org-autosigner.asc` is removed. Nothing read it after ADR-0326, the copy differed from the live one, and the live key is cix-recipes `recipes/keys/kernel@B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1.asc`. `docs/keys/README.md` says where upstream keys live instead. The brand guide's illustrative API paths read `/v1/...` rather than `/api/v1/...`.
+- **Why:** the owner's decisions on two of #628's open items, 2026-10-30.
+
 ### The dashboard's Placement page reads its placements, and shows the data directory's (#665)
 
 - **What changed:**
