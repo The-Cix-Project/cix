@@ -10540,8 +10540,10 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 			snprintf(g_bootroot_assembly_refused, sizeof(g_bootroot_assembly_refused),
 			         "no cix hostbuild is installed, so there is no cixctl package of the "
 			         "same build to take /bin/cixctl from (ADR-0367)");
-		else if (!pkg_artifact_cache_path("cixctl", cix_version, cixctl_artifact,
-		                                  sizeof(cixctl_artifact)))
+		else if (pkg_artifact_cache_has("cixctl", cix_version))
+			pkg_artifact_cache_path("cixctl", cix_version, cixctl_artifact,
+			                        sizeof(cixctl_artifact));
+		else
 			snprintf(g_bootroot_assembly_refused, sizeof(g_bootroot_assembly_refused),
 			         "cixctl@%s, the client the cix@%s build produced, is not in the local "
 			         "cache; the root takes /bin/cixctl from it (ADR-0367)",

@@ -623,13 +623,6 @@ enum pkg_error pkg_hostbuild_package_info(const char *name, const char *version,
                                            long long *out_release);
 int pkg_artifact_cache_has(const char *name, const char *version);
 
-/*
- * ADR-0367: where name@version's artifact is in the local cache. 1 with
- * out filled when it is there, 0 otherwise (out still names the path
- * looked for).
- */
-int pkg_artifact_cache_path(const char *name, const char *version, char *out, size_t out_size);
-
 /* The version of name installed in image, or -1 when it is not
  * installed there. */
 int pkg_installed_version(const char *name, const char *image, char *out, size_t out_size);

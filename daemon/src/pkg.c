@@ -21805,11 +21805,6 @@ int pkg_artifact_cache_has(const char *name, const char *version)
 	return cache_artifact_path_existing(name, version, path, sizeof(path));
 }
 
-int pkg_artifact_cache_path(const char *name, const char *version, char *out, size_t out_size)
-{
-	return cache_artifact_path_existing(name, version, out, out_size);
-}
-
 int pkg_installed_version(const char *name, const char *image, char *out, size_t out_size)
 {
 	const struct pkg_entry *e = pkg_find(name, image);
