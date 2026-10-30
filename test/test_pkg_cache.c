@@ -299,15 +299,34 @@ static int publish_cpdl_recipe(const struct cix_client *c, const char *name, con
  * and `metadata { "artifact_sha256" }` naming the .cixpkg the fixture
  * serves. Published through the API, so the daemon derives its
  * identity with `cbs explain` exactly as for any other recipe.
+ *
+ * With output non-NULL the recipe also declares that output, claiming
+ * usr/bin/<output>, with its own approval line
+ * (`"artifact_sha256.<output>"`, ADR-0367 decision 4).
  */
 static int publish_approved_recipe(const struct cix_client *c, const char *name,
-                                   const char *artifact_sha256)
+                                   const char *artifact_sha256, const char *output,
+                                   const char *output_sha256)
 {
 	char content[2048];
+	char output_block[256] = "";
+	char output_approval[160] = "";
 	struct json_writer w;
 	struct cix_response r;
 	int ok;
 
+	if (output != NULL) {
+		snprintf(output_block, sizeof(output_block),
+		         "    output \"%s\" {\n"
+		         "        files {\n"
+		         "            \"usr/bin/%s\"\n"
+		         "        }\n"
+		         "    }\n"
+		         "\n",
+		         output, output);
+		snprintf(output_approval, sizeof(output_approval),
+		         "        \"artifact_sha256.%s\" \"%s\"\n", output, output_sha256);
+	}
 	snprintf(content, sizeof(content),
 	         "package \"%s\" {\n"
 	         "    version \"1.0\"\n"
@@ -327,8 +346,10 @@ static int publish_approved_recipe(const struct cix_client *c, const char *name,
 	         "        }\n"
 	         "    }\n"
 	         "\n"
+	         "%s"
 	         "    metadata {\n"
 	         "        \"artifact_sha256\" \"%s\"\n"
+	         "%s"
 	         "    }\n"
 	         "\n"
 	         "    build {\n"
@@ -341,7 +362,7 @@ static int publish_approved_recipe(const struct cix_client *c, const char *name,
 	         "    }\n"
 	         "}\n",
 	         name, name, test_http_src("/nonexistent/source.tar"), artifact_sha256,
-	         artifact_sha256, name);
+	         output_block, artifact_sha256, output_approval, name);
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -804,8 +825,8 @@ int main(void)
 		char artifact_stage_dir[PATH_MAX];
 		char artifact_bin_dir[PATH_MAX];
 		char artifact_c[PATH_MAX], artifact_bin[PATH_MAX];
-		char artifact_pkg[PATH_MAX], cix_pkg[PATH_MAX];
-		char artifact_sha[128], cix_sha[128];
+		char artifact_pkg[PATH_MAX], cix_pkg[PATH_MAX], cixctl_pkg[PATH_MAX];
+		char artifact_sha[128], cix_sha[128], cixctl_sha[128];
 		int ok = 1;
 
 		snprintf(artifact_stage_dir, sizeof(artifact_stage_dir), "%s/artifact-serve", scratch_dir);
@@ -878,7 +899,7 @@ int main(void)
 				cix_response_free(&r);
 			}
 
-			CHECK(publish_approved_recipe(&client, "artifacttest", artifact_sha) == 0,
+			CHECK(publish_approved_recipe(&client, "artifacttest", artifact_sha, NULL, NULL) == 0,
 			      "publish artifacttest (unfetchable source, approved artifact)");
 
 			memset(&r, 0, sizeof(r));
@@ -945,8 +966,22 @@ int main(void)
 				          compute_file_sha256(cix_pkg, cix_sha, sizeof(cix_sha)) == 0,
 				      "package the cix artifact under its own name");
 
-				CHECK(publish_approved_recipe(&client, "cix", cix_sha) == 0,
-				      "publish a cix recipe served only by the artifact tier");
+				/* ADR-0367: the root takes /bin/cixctl from the cixctl
+				 * package the same cix build produced, so the recipe
+				 * declares that output, and a repository copy of cix
+				 * counts only when the cixctl copy comes with it. The
+				 * same tree serves; only the name and approval matter. */
+				snprintf(cixctl_pkg, sizeof(cixctl_pkg), "%s/cixctl-1.0-1-%s.cixpkg",
+				         artifact_stage_dir, host_arch());
+				CHECK(run_cmd("cbs package '%s/stage' --name cixctl --version 1.0 --release 1 "
+				              "--arch %s --output '%s' >/dev/null",
+				              artifact_stage_dir, host_arch(), cixctl_pkg) == 0 &&
+				          compute_file_sha256(cixctl_pkg, cixctl_sha, sizeof(cixctl_sha)) == 0,
+				      "package the cixctl output's artifact under its own name");
+
+				CHECK(publish_approved_recipe(&client, "cix", cix_sha, "cixctl", cixctl_sha) == 0,
+				      "publish a cix recipe, with its cixctl output, served only by the "
+				      "artifact tier");
 
 				memset(&r, 0, sizeof(r));
 				CHECK(cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
@@ -969,6 +1004,16 @@ int main(void)
 				CHECK(gen_after > gen_before,
 				      "a cache-hit cix hostbuild still triggers the bootroot assembly "
 				      "(started_generation advanced past its pre-install value)");
+
+				memset(&r, 0, sizeof(r));
+				CHECK(cix_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 &&
+				              r.status == 200 && r.json != NULL &&
+				              cache_json_long(r.json, "entry_count") == 3,
+				      "the cixctl sibling came from the repository with cix and was cached "
+				      "(artifacttest, cix, cixctl)");
+				if (r.status == 200 && r.body != NULL && strstr(r.body, "\"cixctl\"") == NULL)
+					fprintf(stderr, "  cache listing: %s\n", r.body);
+				cix_response_free(&r);
 			}
 
 			stop_http_server(http_pid);

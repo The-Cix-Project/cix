@@ -1959,6 +1959,15 @@ static int g_port;
 static long g_bootroot_assembly_started;
 static long g_bootroot_assembly_completed;
 static int g_bootroot_assembly_running;
+/*
+ * ADR-0367: why the last assembly asked for was refused before any
+ * child existed -- a root needs its own build's cixctl package, and a
+ * hostbuild that left none behind cannot be assembled from. Empty once
+ * an assembly forks. Reported as `refused` by GET /system/assembly, so
+ * a deploy waiting on completed_generation sees why it will not move
+ * rather than only a log line.
+ */
+static char g_bootroot_assembly_refused[320];
 
 /*
  * cix#568: which kernel releases an assembled root's modules are for,
@@ -10495,6 +10504,8 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 	char mkbootroot_bin[PATH_MAX];
 	char cixd_bin[PATH_MAX];
 	char cixctl_bin[PATH_MAX];
+	char cixctl_artifact[PATH_MAX] = "";
+	char cixctl_out_dir[PATH_MAX];
 	char web_dir[PATH_MAX];
 	char out_squashfs[PATH_MAX];
 	char stage_dir[PATH_MAX];
@@ -10510,8 +10521,40 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 
 	snprintf(mkbootroot_bin, sizeof(mkbootroot_bin), "%s/mkbootroot", artifact_dir);
 	snprintf(cixd_bin, sizeof(cixd_bin), "%s/cixd", artifact_dir);
-	snprintf(cixctl_bin, sizeof(cixctl_bin), "%s/cixctl", artifact_dir);
 	snprintf(web_dir, sizeof(web_dir), "%s/web", artifact_dir);
+	/*
+	 * ADR-0367 decision 5: /bin/cixctl comes from the `cixctl` output of
+	 * the same cix build -- the `cixctl` package, cached beside `cix` by
+	 * cache_sibling_outputs() -- and the `cix` package does not carry
+	 * it. Same version as the cix hostbuild, so the root's client and
+	 * daemon are always one build. Extracted in the child below, off the
+	 * loop. No fallback to a copy in `cix`: a root assembled without its
+	 * own build's client is refused, and the reason names the artifact.
+	 */
+	{
+		char cix_version[PKG_VERSION_MAX];
+
+		g_bootroot_assembly_refused[0] = '\0';
+		if (pkg_installed_version("cix", PKG_HOSTBUILD_IMAGE, cix_version,
+		                          sizeof(cix_version)) != 0)
+			snprintf(g_bootroot_assembly_refused, sizeof(g_bootroot_assembly_refused),
+			         "no cix hostbuild is installed, so there is no cixctl package of the "
+			         "same build to take /bin/cixctl from (ADR-0367)");
+		else if (!pkg_artifact_cache_path("cixctl", cix_version, cixctl_artifact,
+		                                  sizeof(cixctl_artifact)))
+			snprintf(g_bootroot_assembly_refused, sizeof(g_bootroot_assembly_refused),
+			         "cixctl@%s, the client the cix@%s build produced, is not in the local "
+			         "cache; the root takes /bin/cixctl from it (ADR-0367)",
+			         cix_version, cix_version);
+		if (g_bootroot_assembly_refused[0] != '\0') {
+			logstore_write("cixd", "error", "cix bootroot assembly: not started -- %s",
+			               g_bootroot_assembly_refused);
+			events_announce(EV_getSystemAssembly); /* ADR-0339 */
+			return;
+		}
+	}
+	snprintf(cixctl_out_dir, sizeof(cixctl_out_dir), "%s/cixctl", BOOTROOT_DIR);
+	snprintf(cixctl_bin, sizeof(cixctl_bin), "%s/usr/bin/cixctl", cixctl_out_dir);
 	/*
 	 * BOOTROOT_DIR, not artifact_dir (#178). These are build OUTPUT:
 	 * the artifact directory is tarred wholesale when the package is
@@ -10724,9 +10767,29 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 		return;
 	}
 	if (pid == 0) {
+		pid_t xp;
+		int xstatus = 0;
+
 		if (output_pipe[1] >= 0) {
 			dup2(output_pipe[1], STDOUT_FILENO);
 			dup2(output_pipe[1], STDERR_FILENO);
+		}
+		/* ADR-0367: the cixctl output, unpacked where cixctl_bin points.
+		 * `cbs extract` refuses an existing destination (#233), so the
+		 * previous assembly's copy goes first. In this child, never on
+		 * the loop; the wait is the child's own. */
+		persist_remove_tree(cixctl_out_dir);
+		xp = fork();
+		if (xp == 0) {
+			execl(PKG_CBS_BIN, "cbs", "extract", cixctl_artifact, "--into", cixctl_out_dir,
+			      (char *)NULL);
+			_exit(127);
+		}
+		if (xp < 0 || waitpid(xp, &xstatus, 0) != xp || !WIFEXITED(xstatus) ||
+		    WEXITSTATUS(xstatus) != 0 || access(cixctl_bin, X_OK) != 0) {
+			fprintf(stderr, "cix bootroot assembly: could not unpack %s to %s (ADR-0367)\n",
+			        cixctl_artifact, cixctl_bin);
+			_exit(1);
 		}
 		execve(mkbootroot_bin, argv, environ);
 		perror("child: execve mkbootroot");
@@ -10743,6 +10806,7 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 	 * "attempted, then failed" rather than silently never happening).
 	 */
 	g_bootroot_assembly_started++;
+	g_bootroot_assembly_refused[0] = '\0';
 	g_bootroot_assembly_running = 1;
 	events_announce(EV_getSystemAssembly); /* ADR-0339 */
 
@@ -10844,7 +10908,8 @@ static void hostroll_assemble(void)
 		spawn_cix_bootroot_assembly(artifact_dir);
 	}
 	if (!g_bootroot_assembly_running) {
-		hostroll_stop("error", "the root assembly could not start%s%s", "", "");
+		hostroll_stop("error", "the root assembly could not start%s%s",
+		              g_bootroot_assembly_refused[0] != '\0' ? ": " : "", g_bootroot_assembly_refused);
 		return;
 	}
 	g_hostroll.step = HOSTROLL_ASSEMBLE;
@@ -27359,6 +27424,11 @@ static void op_getSystemAssembly(const struct api_ctx *ctx)
 	jw_int(&w, g_bootroot_assembly_started);
 	jw_key(&w, "completed_generation");
 	jw_int(&w, g_bootroot_assembly_completed);
+	jw_key(&w, "refused");
+	if (g_bootroot_assembly_refused[0] != '\0')
+		jw_str(&w, g_bootroot_assembly_refused);
+	else
+		jw_null(&w);
 	/*
 	 * Reported whether or not the file exists yet: its absence is a
 	 * normal state (no assembly has run this boot), and a client that
@@ -27468,6 +27538,10 @@ static void op_postSystemAssembly(const struct api_ctx *ctx)
 	 * start", because spawn_cix_bootroot_assembly() sets it only after
 	 * a fork that succeeded and logs the failure itself otherwise.
 	 */
+	if (!g_bootroot_assembly_running && g_bootroot_assembly_refused[0] != '\0') {
+		respond_error(ctx->fd, 409, "Conflict", g_bootroot_assembly_refused);
+		return;
+	}
 	if (!g_bootroot_assembly_running) {
 		respond_error(ctx->fd, 500, "Internal Server Error",
 		              "assembly could not be started -- see GET /v1/system/logs");

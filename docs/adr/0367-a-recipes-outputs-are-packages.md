@@ -37,13 +37,14 @@ cbs v0.1.107 has no `--output-dir`. It arrived in v0.1.119.
     5. The `cix` recipe declares `output "cixctl"`, built by a daemon from step 4. Never in the same release as the daemon that first understands outputs, which could not harvest what it built.
     6. The agent image and container (ADR-0366).
 
-## Decision 5 as built (2026-10-30, before the recipe changed)
+## Decision 5, held (2026-10-30)
 
-The `cix` package lays its files out flat (`cixd`, `cixctl`, `mkbootroot` at the artifact's root), because it is a hostbuild artifact that assembly reads directly. A `cixctl` package meant for a workload image needs `usr/bin/cixctl` instead. So the recipe installs the binary twice from the one build. `cixctl` stays at the root in the main package, and `usr/bin/cixctl` is claimed by `output "cixctl"`.
+For one release (0.2.57-636) this section recorded a different decision 5: the `cix` recipe would install the binary twice, `cixctl` flat in the main package for assembly and `usr/bin/cixctl` in the output, so that assembly need not change. The owner asked why there were two copies of one binary. There is no good answer: two paths carrying the same bytes is the parallel this project's maxims forbid, and it hid that an install's cache hit could skip the build without bringing its siblings. It was withdrawn before any recipe used it. Decision 5 stands as written, and is built as follows.
 
-Assembly is therefore unchanged, and step 4 of decision 6 is not needed: the hostbuild's main artifact stays complete for the root, as it always was. The two copies are the same bytes from the same compile, so they cannot drift.
-
-What step 4 was for moves into step 3: the build caches and publishes every artifact it produced (`cache_sibling_outputs()`). An install of `cixctl` is then a cache hit on the hostbuild's own output, not a second full cix build with its selftest.
+- **The `cix` package does not carry cixctl.** The recipe installs it once, at `usr/bin/cixctl`, and `output "cixctl"` claims it.
+- **A build caches every sibling it produced** (`cache_sibling_outputs()`), a hostbuild included: the hostbuild's own package goes to `ARTIFACTS_DIR` as before, and the others go into the local cache and are pushed.
+- **Assembly takes `/bin/cixctl` from the `cixctl` package at the installed `cix` hostbuild's version**, unpacked by `cbs extract` in the assembly's own child. When that package is not in the local cache the assembly is refused before it starts, and the reason is reported as `refused` by `GET /system/assembly`, as a `409` by `POST /system/assembly`, and by the host roll. There is no fallback.
+- **A hit for a main package stands in for the build, so it brings every output the build would have made.** A local cache hit for a recipe's main package counts only when every output is cached at that version too. A repository copy counts only when every output comes from the same repository with it, each verified against its own approval (`metadata "artifact_sha256.<output>"`) or a trusted signature, through the one fetch-and-verify helper. Otherwise all of them are discarded and the next repository, then the source, is tried. A hit for an output needs nothing else: nothing relies on the rest, and requiring the main package would send `pkg install cixctl` back to a whole cix build, because a hostbuild's own package is never in the local cache.
 
 ## Alternatives considered
 

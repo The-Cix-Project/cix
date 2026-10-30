@@ -128,7 +128,7 @@ static const struct budget g_budgets[] = {
 	 * install's image producer. A pidfd callback, the first category
 	 * above: EPOLLIN has already said the child exited. The production
 	 * itself, which held the loop up to 1.2 s, moved into that child. */
-	{ "daemon/src/main.c", 21, "pidfd callbacks + double-fork intermediates; 24 -> 23 when ADR-0360 removed migrate-storage and its event, 23 -> 21 when ADR-0365 removed the toolchain fetch (its start's reap of a child whose pidfd failed, and its completion)" },
+	{ "daemon/src/main.c", 22, "pidfd callbacks + double-fork intermediates; 24 -> 23 when ADR-0360 removed migrate-storage and its event, 23 -> 21 when ADR-0365 removed the toolchain fetch (its start's reap of a child whose pidfd failed, and its completion), 21 -> 22 for ADR-0367: the root assembly's child waits for its own `cbs extract` of the cixctl package before it execs mkbootroot, a wait the daemon never makes" },
 	/* 10 -> 11 for ADR-0279's signature fetch: the artifact tier now
 	 * pulls <artifact>.minisig alongside the artifact and waits for
 	 * that curl. In budget for the same reason every other one in this
@@ -296,8 +296,10 @@ static const struct budget g_budgets[] = {
  * migration job (handle_container_storage_migrate_event()).
  * Then 52 -> 49 for ADR-0365: the toolchain bootstrap is retired, and
  * with it pkg.c's wait on its unsquashfs and main.c's two in the
- * toolchain fetch. */
-#define TOTAL_ALLOWED 49
+ * toolchain fetch.
+ * Then 49 -> 50 for ADR-0367: the root assembly's child waits for its
+ * `cbs extract` of the cixctl package; it runs in that child. */
+#define TOTAL_ALLOWED 50
 
 static int is_comment(const char *line)
 {

@@ -9110,6 +9110,9 @@ static void fmt_assembly(const struct json_value *v)
 	       (long)json_as_number(json_object_get(v, "started_generation")));
 	printf("completed_generation: %ld\n",
 	       (long)json_as_number(json_object_get(v, "completed_generation")));
+	/* ADR-0367: why the last assembly asked for never started. */
+	if (json_str_field(v, "refused") != NULL)
+		printf("refused:              %s\n", json_str_field(v, "refused"));
 	printf("image_path:           %s\n", image_path != NULL ? image_path : "-");
 	/*
 	 * The generation counters are this daemon's memory of what it has
@@ -16682,7 +16685,8 @@ static int poll_hostbuild(const struct cix_client *c, const char *name, struct c
  */
 static int get_bootroot_assembly_generation(const struct cix_client *c, long *out_completed,
                                              int *out_running, char *out_image_path,
-                                             size_t out_image_path_size)
+                                             size_t out_image_path_size, char *out_refused,
+                                             size_t out_refused_size)
 {
 	struct cix_response r;
 	const struct json_value *jrunning;
@@ -16701,6 +16705,12 @@ static int get_bootroot_assembly_generation(const struct cix_client *c, long *ou
 	*out_completed = (long)json_as_number(json_object_get(r.json, "completed_generation"));
 	jrunning = json_object_get(r.json, "running");
 	*out_running = jrunning != NULL && jrunning->type == JSON_BOOL && jrunning->u.boolean;
+	/* ADR-0367: why an assembly asked for never started, if it did not. */
+	if (out_refused != NULL) {
+		const char *refused = json_as_string(json_object_get(r.json, "refused"));
+
+		snprintf(out_refused, out_refused_size, "%s", refused != NULL ? refused : "");
+	}
 	/*
 	 * The daemon reports where it put the assembled image (#178). This
 	 * client used to compose that path itself from the artifact
@@ -16738,12 +16748,18 @@ static int wait_for_fresh_bootroot_assembly(const struct cix_client *c, long bas
 	for (;;) {
 		long completed;
 		int running;
+		char refused[320];
 
 		if (get_bootroot_assembly_generation(c, &completed, &running, out_image_path,
-		                                     out_image_path_size) != 0)
+		                                     out_image_path_size, refused,
+		                                     sizeof(refused)) != 0)
 			return -1;
 		if (completed > baseline_completed)
 			return 0;
+		if (!running && refused[0] != '\0') {
+			fprintf(stderr, "cixctl: cix bootroot assembly was refused: %s\n", refused);
+			return -1;
+		}
 		if (!running) {
 			fprintf(stderr,
 			        "cixctl: cix bootroot assembly did not produce a fresh artifact "
@@ -16810,7 +16826,7 @@ static int cmd_pkg_hostbuild(const struct cix_client *c, int json_mode, int argc
 		int running;
 
 		if (get_bootroot_assembly_generation(c, &bootroot_baseline_completed, &running,
-		                                     NULL, 0) != 0)
+		                                     NULL, 0, NULL, 0) != 0)
 			return 1;
 	}
 

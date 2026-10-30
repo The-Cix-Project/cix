@@ -1088,6 +1088,18 @@ paths:
                       client cannot tell apart from "no assembly has
                       ever run here". `image_mtime` is the freshness
                       answer that outlives a restart (#481).
+                  refused:
+                    type: string
+                    nullable: true
+                    description: >
+                      Why the last assembly asked for was refused before
+                      it started, or null. A root takes /bin/cixctl from
+                      the `cixctl` package the same cix build produced
+                      (ADR-0367), so a hostbuild that left none in the
+                      local cache cannot be assembled from, and
+                      `completed_generation` will not move. Cleared when
+                      an assembly starts; held in memory like the
+                      counters.
                   image_path:
                     type: string
                     nullable: true
@@ -1184,7 +1196,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: An assembly is already running.
+          description: >
+            An assembly is already running, or the assembly was refused
+            because the `cixctl` package the installed cix hostbuild
+            produced is not in the local cache (ADR-0367); the error
+            names which, and GET /system/assembly reports the refusal as
+            `refused`.
           content:
             application/json:
               schema:

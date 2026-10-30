@@ -6,10 +6,19 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Assembly takes cixctl from the cixctl package, and a main package's hit brings its outputs (#378, ADR-0367 steps 3-4)
+
+- **What changed:**
+  - A hostbuild caches and pushes the other packages its build produced, as an ordinary install already did.
+  - The control-plane root's `/bin/cixctl` comes from the `cixctl` package at the installed `cix` hostbuild's version, unpacked by `cbs extract` in the assembly's child. Without it the assembly is refused, and `GET /system/assembly` reports why as `refused`; `POST /system/assembly` answers `409` with the same sentence, and the host roll stops naming it.
+  - A local cache hit for a recipe's main package counts only when every output is cached too. A repository copy of it counts only when every output comes from the same repository, each verified on its own approval or a trusted signature. A hit for an output needs only itself. The repository fetch-and-verify is now one helper, `repo_artifact_fetch()`, used for every artifact.
+- **Why:** ADR-0367 decision 5, held. The previous release noted a shortcut in which the `cix` package kept a second copy of cixctl for assembly. The owner asked why there were two copies, and there was no good reason. A hit also stands in for the build, so a hit that skipped the build without bringing the build's other packages would have left them missing.
+- **Verified:** pending the release.
+
 ### A build caches and publishes every package it produced (#378, ADR-0367)
 
 - **What changed:** after the requested package's artifact, `cache_sibling_outputs()` caches each other `<package>-<version>-<arch>.cixpkg` the build wrote, and queues it for publish under its own name. After the publish, its approval is written into the recipe that builds it.
-- **Why:** an install of a recipe's output is then a cache hit on what the build already made. For `cixctl`, the alternative is a whole cix build, selftest included, for one binary. ADR-0367 records the as-built decision 5 alongside: the `cix` recipe keeps `cixctl` at its artifact root for assembly, and gives the `cixctl` output its own `usr/bin/cixctl`, so assembly needs no change.
+- **Why:** an install of a recipe's output is then a cache hit on what the build already made. For `cixctl`, the alternative is a whole cix build, selftest included, for one binary. (Released with a note in ADR-0367 that the `cix` recipe would carry cixctl twice; that was withdrawn in the next release.)
 - **Verified:** pending the release.
 
 ### A recipe's outputs install as packages (#378, ADR-0367 step 3)

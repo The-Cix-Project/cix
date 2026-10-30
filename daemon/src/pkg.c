@@ -3440,6 +3440,24 @@ static int recipe_outputs(const char *recipe_path, char names[][PKG_NAME_MAX], i
 	return n;
 }
 
+/*
+ * ADR-0367: the packages a cache or repository hit for r must bring
+ * with it -- every output of r's recipe when r is its main package,
+ * and none when r is itself an output. A hit for the main package
+ * skips the build that would have made the outputs, and the root's
+ * cixctl is one of them; a hit for an output skips nothing anyone
+ * else relies on, and requiring the main package there would send
+ * `pkg install cixctl` back to a whole cix build, since a hostbuild's
+ * own package is never in the local cache.
+ */
+static int recipe_siblings(const char *recipe_path, const struct pkg_recipe *r,
+                           char names[][PKG_NAME_MAX], int max)
+{
+	if (strcmp(r->recipe_name, r->name) != 0)
+		return 0;
+	return recipe_outputs(recipe_path, names, max);
+}
+
 static int find_recipe_path(const char *name, const char *version, char *out_path,
                              size_t out_path_size)
 {
@@ -10241,6 +10259,219 @@ static void artifact_sentinel_path(int chain_idx, const char *name, const char *
                                    const char *format, char *out, size_t out_size);
 
 /*
+ * One artifact the repository tier asks for: a package at the version
+ * being installed, and the approval its recipe carries for it (empty
+ * when it has none, and a signature is then the only way in).
+ */
+struct artifact_want {
+	char name[PKG_NAME_MAX];
+	char version[PKG_VERSION_MAX];
+	char format[PKG_ARTIFACT_FORMAT_MAX];
+	char approval[PKG_SHA256_MAX];
+};
+
+static void artifact_want_from(struct artifact_want *w, const struct pkg_recipe *r)
+{
+	snprintf(w->name, sizeof(w->name), "%s", r->name);
+	snprintf(w->version, sizeof(w->version), "%s", r->version);
+	snprintf(w->format, sizeof(w->format), "%s", r->artifact_format);
+	snprintf(w->approval, sizeof(w->approval), "%s", r->artifact_sha256);
+}
+
+static void unlink_artifact_sentinel(int chain_idx, const struct artifact_want *w)
+{
+	char path[PATH_MAX];
+
+	artifact_sentinel_path(chain_idx, w->name, w->version, w->format, path, sizeof(path));
+	if (path[0] != '\0')
+		unlink(path);
+}
+
+/*
+ * ADR-0122/ADR-0279/ADR-0324: one repository's copy of w, fetched to
+ * its artifact sentinel and kept there only when it passes w's
+ * checksum or, with none, a signature this host trusts. Returns 1 when
+ * the verified file is in place; otherwise the file is gone and a
+ * refusal is noted in note_path. Runs in start_fetch_for()'s child.
+ */
+static int repo_artifact_fetch(const struct pkg_repository *repo, int chain_idx,
+                               const struct artifact_want *w, const char *note_path)
+{
+	char artifact_url[768];
+	char artifact_header[320];
+	char artifact_path[PATH_MAX];
+	/*
+	 * Both initialised because the mismatch-note check below
+	 * reuses them after a short-circuited && chain: if
+	 * waitpid() failed, `status` was never written; if curl
+	 * succeeded but pkg_run_capture_sha256() failed, `sha_out`
+	 * was never written. Reading either then is stack garbage
+	 * -- found by review (Fable's audit of #149), not by a
+	 * failure, which is exactly why it gets fixed now rather
+	 * than after it writes a garbage "cache served ..." note.
+	 */
+	char sha_out[128] = "";
+	int sha_ok = 0;
+	int sig_ok = 0;
+
+	pkg_artifact_build_request(repo, w->name, w->version, w->format,
+	                            artifact_url, sizeof(artifact_url), artifact_header,
+	                            sizeof(artifact_header));
+	artifact_sentinel_path(chain_idx, w->name, w->version, w->format,
+	                        artifact_path, sizeof(artifact_path));
+	unlink(artifact_path);
+
+	/* No inner fork any more (#410): this whole function
+	 * already runs inside start_fetch_for()'s own forked
+	 * child, and curlfetch_perform() is a synchronous library
+	 * call, not a subprocess needing its own fork+waitpid. */
+	{
+		struct curlfetch_opts opts;
+
+		memset(&opts, 0, sizeof(opts));
+		opts.url = artifact_url;
+		opts.path = artifact_path;
+		opts.header1 = artifact_header[0] != '\0' ? artifact_header : NULL;
+		opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
+		opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
+		opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
+		if (curlfetch_perform(&opts, NULL, NULL, 0) == 0)
+			sha_ok = pkg_run_capture_sha256(artifact_path, sha_out, sizeof(sha_out)) == 0;
+	}
+
+	/*
+	 * The signature gate (ADR-0279).
+	 *
+	 * Fetched only once the artifact is here and hashed:
+	 * there is nothing to verify otherwise, and the digest is
+	 * half of what the trusted comment has to agree with.
+	 *
+	 * The comment is compared against a string built here
+	 * rather than parsed, and compared in FULL. A signature
+	 * whose comment does not say exactly which package,
+	 * revision and bytes it approves is not an approval of
+	 * this artifact -- it is an approval of something, and
+	 * accepting it on the strength of the key alone is how a
+	 * genuine glibc@2.44-16 artifact gets installed as
+	 * 2.44-17. minisign's global signature covers the comment,
+	 * so agreeing with it means the signer said this.
+	 */
+	if (sha_ok && releasekey_trust_count(g_trusted_keys_dir) > 0) {
+		char sig_path[PATH_MAX];
+		char sig_url[832];
+		char comment[PKG_NAME_MAX + PKG_VERSION_MAX + 96];
+		char want[PKG_NAME_MAX + PKG_VERSION_MAX + 96];
+		struct curlfetch_opts sig_opts;
+
+		snprintf(sig_path, sizeof(sig_path), "%s.minisig", artifact_path);
+		snprintf(sig_url, sizeof(sig_url), "%s.minisig", artifact_url);
+		unlink(sig_path);
+
+		memset(&sig_opts, 0, sizeof(sig_opts));
+		sig_opts.url = sig_url;
+		sig_opts.path = sig_path;
+		sig_opts.header1 = artifact_header[0] != '\0' ? artifact_header : NULL;
+		sig_opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
+		sig_opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
+		sig_opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
+		if (curlfetch_perform(&sig_opts, NULL, NULL, 0) == 0 &&
+		    releasekey_verify_file(artifact_path, sig_path, g_trusted_keys_dir, comment,
+		                            sizeof(comment)) == RELEASEKEY_OK) {
+			snprintf(want, sizeof(want), "cix pkg %s@%s sha256=%s", w->name,
+			          w->version, sha_out);
+			if (strcmp(comment, want) == 0)
+				sig_ok = 1;
+		}
+		unlink(sig_path);
+	}
+
+	/*
+	 * Where both approvals exist, both must agree. A recipe
+	 * with a checksum keeps exactly the behaviour ADR-0122
+	 * gave it -- 624 artifacts are published unsigned and must
+	 * stay installable -- and a recipe without one now has a
+	 * way in at all, which is the cold-box case #306 and #403
+	 * are both about.
+	 */
+	if (w->approval[0] != '\0') {
+		if (sha_ok && strcasecmp(sha_out, w->approval) == 0)
+			return 1; /* verified -- pkg_fetch_completed() stages from this file */
+	} else if (sig_ok) {
+		return 1;
+	}
+	/*
+	 * Issue #149: an artifact that downloaded fine but failed
+	 * its checksum is a different situation from one that was
+	 * simply absent, and it is worth saying so.
+	 *
+	 * "Absent" is ordinary -- most packages have no published
+	 * artifact. A MISMATCH means the cache is serving
+	 * different bytes than the recipe approves, which in
+	 * practice means the recipe's pkg_artifact_sha256 was
+	 * edited in place on an already-published version and can
+	 * never take effect (#145). The install then silently
+	 * falls back to source and fails with whatever that path
+	 * fails with -- on a host without a working resolver, a
+	 * DNS error that says nothing about checksums. That
+	 * misdirection cost a real debugging cycle across 14
+	 * recipes.
+	 *
+	 * Written to the fetch note so it surfaces whether or not
+	 * the source fallback goes on to succeed: a mismatch is
+	 * worth knowing about even when the install works.
+	 */
+	if (sha_ok) {
+		int nfd;
+
+		nfd = open(note_path, O_WRONLY | O_CREAT | O_APPEND, 0600);
+		if (nfd >= 0) {
+			char note[640];
+			int n;
+
+			/*
+			 * Two different disappointments, and they need
+			 * different sentences. A checksum mismatch means
+			 * the cache is serving bytes this recipe does not
+			 * approve. A signature that did not verify means
+			 * this host cannot establish that Cix published
+			 * them at all -- and for a recipe with no checksum
+			 * that is the ONLY gate, so saying "failed
+			 * checksum" there would name a field the recipe
+			 * does not have (ADR-0279).
+			 */
+			if (w->approval[0] != '\0')
+				n = snprintf(note, sizeof(note),
+				              "repository %s served %s@%s with the wrong checksum "
+				              "(recipe approves %.16s..., it served %.16s...) -- "
+				              "not used; the next repository, then the source, is "
+				              "tried. If this recipe version is already "
+				              "published, an edited pkg_artifact_sha256 cannot "
+				              "take effect: bump pkg_version instead\n",
+				              repo->name, w->name, w->version,
+				              w->approval, sha_out);
+			else
+				n = snprintf(note, sizeof(note),
+				              "repository %s served %s@%s with a signature that "
+				              "did not verify against this host's trusted keys -- "
+				              "not used; the next repository, then the source, is "
+				              "tried. Either it was published unsigned, or by a "
+				              "key this host does not trust: `cixctl pkg sync` "
+				              "adopts the keys a trusted source publishes in "
+				              "docs/keys/\n",
+				              repo->name, w->name, w->version);
+			if (n > 0) {
+				ssize_t written = write(nfd, note, (size_t)n);
+
+				(void)written;
+			}
+			close(nfd);
+		}
+	}
+	unlink(artifact_path); /* not found / wrong checksum -- discard */
+	return 0;
+}
+
+/*
  * Starts the fetch for a single package already known to have a valid
  * recipe (resolve_chain() already checked). Shared by pkg_install_start()
  * (the first queue entry) and pkg_build_completed() (chaining into the
@@ -10258,6 +10489,11 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	int i, slot = -1;
 	int is_upgrade;
 	int cache_hit;
+	struct artifact_want main_want;
+	struct artifact_want sib[PKG_RECIPE_OUTPUTS_MAX];
+	char sib_names[PKG_RECIPE_OUTPUTS_MAX][PKG_NAME_MAX];
+	static struct pkg_recipe sib_recipe; /* static: the struct is large; the loop is one thread */
+	int sib_n, si;
 	pid_t pid;
 	int pidfd;
 
@@ -10265,6 +10501,19 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	                      sizeof(recipe_path)) != 0 ||
 	    parse_recipe_for(recipe_path, name, &recipe) != 0 || strcmp(recipe.name, name) != 0)
 		return PKG_ERR_INVALID_RECIPE;
+
+	/*
+	 * ADR-0367: what the build would make beside this package, each
+	 * with its own approval. A hit -- local or from a repository --
+	 * stands in for that build, so it must bring all of them.
+	 */
+	artifact_want_from(&main_want, &recipe);
+	sib_n = recipe_siblings(recipe_path, &recipe, sib_names, PKG_RECIPE_OUTPUTS_MAX);
+	for (si = 0; si < sib_n; si++) {
+		if (parse_recipe_for(recipe_path, sib_names[si], &sib_recipe) != 0)
+			return PKG_ERR_INVALID_RECIPE;
+		artifact_want_from(&sib[si], &sib_recipe);
+	}
 
 	/* ADR-0122/ADR-0289: computed fresh for every queue entry (never
 	 * left stale from a prior one). The local cache is consulted for a
@@ -10278,9 +10527,9 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	 * fetched artifact into the local cache (pkg_cache_save_from_file(),
 	 * further down), so the local cache legitimately holds hostbuild
 	 * packages -- and reusing those bytes lets a re-hostbuild skip a
-	 * re-download. A hostbuild that BUILDS still never writes the local
-	 * cache (its harvest branch writes nothing to it -- only the
-	 * ordinary-install branch does), so a hit here only ever comes from
+	 * re-download. A hostbuild that BUILDS still never writes its own
+	 * package to the local cache (its harvest branch caches only the
+	 * siblings the same build produced, ADR-0367), so a hit here only ever comes from
 	 * a prior fetch, whose bytes are that same version and therefore
 	 * the same artifact. Held in a local here (rather than written
 	 * straight to e->cache_hit) since e isn't resolved/settled until
@@ -10289,6 +10538,8 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	 * reads this same local via its own fork()-inherited copy, not
 	 * e->cache_hit, for the identical reason. */
 	cache_hit = pkg_cache_has(recipe.name, recipe.version);
+	for (si = 0; cache_hit && si < sib_n; si++)
+		cache_hit = pkg_cache_has(sib[si].name, sib[si].version);
 
 	e = pkg_find(name, g_chains[chain_idx].image);
 	is_upgrade = (e != NULL && e->state == PKG_STATE_INSTALLED);
@@ -10482,177 +10733,25 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			unlink(note_path);
 			for (ri = 0; ri < pkgrepo_count(); ri++) {
 				const struct pkg_repository *repo = pkgrepo_at(ri);
-				char artifact_url[768];
-				char artifact_header[320];
-				char artifact_path[PATH_MAX];
-				/*
-				 * Both initialised because the mismatch-note check below
-				 * reuses them after a short-circuited && chain: if
-				 * waitpid() failed, `status` was never written; if curl
-				 * succeeded but pkg_run_capture_sha256() failed, `sha_out`
-				 * was never written. Reading either then is stack garbage
-				 * -- found by review (Fable's audit of #149), not by a
-				 * failure, which is exactly why it gets fixed now rather
-				 * than after it writes a garbage "cache served ..." note.
-				 */
-				char sha_out[128] = "";
-				int sha_ok = 0;
-				int sig_ok = 0;
-
-				pkg_artifact_build_request(repo, recipe.name, recipe.version, recipe.artifact_format,
-				                            artifact_url, sizeof(artifact_url), artifact_header,
-				                            sizeof(artifact_header));
-				artifact_sentinel_path(chain_idx, recipe.name, recipe.version, recipe.artifact_format,
-				                        artifact_path, sizeof(artifact_path));
-				unlink(artifact_path);
-
-				/* No inner fork any more (#410): this whole function
-				 * already runs inside start_fetch_for()'s own forked
-				 * child, and curlfetch_perform() is a synchronous library
-				 * call, not a subprocess needing its own fork+waitpid. */
-				{
-					struct curlfetch_opts opts;
-
-					memset(&opts, 0, sizeof(opts));
-					opts.url = artifact_url;
-					opts.path = artifact_path;
-					opts.header1 = artifact_header[0] != '\0' ? artifact_header : NULL;
-					opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
-					opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
-					opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
-					if (curlfetch_perform(&opts, NULL, NULL, 0) == 0)
-						sha_ok = pkg_run_capture_sha256(artifact_path, sha_out, sizeof(sha_out)) == 0;
-				}
 
 				/*
-				 * The signature gate (ADR-0279).
-				 *
-				 * Fetched only once the artifact is here and hashed:
-				 * there is nothing to verify otherwise, and the digest is
-				 * half of what the trusted comment has to agree with.
-				 *
-				 * The comment is compared against a string built here
-				 * rather than parsed, and compared in FULL. A signature
-				 * whose comment does not say exactly which package,
-				 * revision and bytes it approves is not an approval of
-				 * this artifact -- it is an approval of something, and
-				 * accepting it on the strength of the key alone is how a
-				 * genuine glibc@2.44-16 artifact gets installed as
-				 * 2.44-17. minisign's global signature covers the comment,
-				 * so agreeing with it means the signer said this.
+				 * ADR-0367: a copy of this package skips the build, so
+				 * it is used only when every sibling that build would
+				 * have made comes from the same repository with it,
+				 * each verified against its own approval. Otherwise
+				 * all of them are discarded and the next repository,
+				 * then the source, is tried.
 				 */
-				if (sha_ok && releasekey_trust_count(g_trusted_keys_dir) > 0) {
-					char sig_path[PATH_MAX];
-					char sig_url[832];
-					char comment[PKG_NAME_MAX + PKG_VERSION_MAX + 96];
-					char want[PKG_NAME_MAX + PKG_VERSION_MAX + 96];
-					struct curlfetch_opts sig_opts;
-
-					snprintf(sig_path, sizeof(sig_path), "%s.minisig", artifact_path);
-					snprintf(sig_url, sizeof(sig_url), "%s.minisig", artifact_url);
-					unlink(sig_path);
-
-					memset(&sig_opts, 0, sizeof(sig_opts));
-					sig_opts.url = sig_url;
-					sig_opts.path = sig_path;
-					sig_opts.header1 = artifact_header[0] != '\0' ? artifact_header : NULL;
-					sig_opts.connect_timeout = PKG_CURL_CONNECT_TIMEOUT_SECS;
-					sig_opts.low_speed_limit = PKG_CURL_LOW_SPEED_LIMIT;
-					sig_opts.low_speed_time = PKG_CURL_LOW_SPEED_TIME_SECS;
-					if (curlfetch_perform(&sig_opts, NULL, NULL, 0) == 0 &&
-					    releasekey_verify_file(artifact_path, sig_path, g_trusted_keys_dir, comment,
-					                            sizeof(comment)) == RELEASEKEY_OK) {
-						snprintf(want, sizeof(want), "cix pkg %s@%s sha256=%s", recipe.name,
-						          recipe.version, sha_out);
-						if (strcmp(comment, want) == 0)
-							sig_ok = 1;
-					}
-					unlink(sig_path);
+				if (repo_artifact_fetch(repo, chain_idx, &main_want, note_path)) {
+					for (si = 0; si < sib_n; si++)
+						if (!repo_artifact_fetch(repo, chain_idx, &sib[si], note_path))
+							break;
+					if (si == sib_n)
+						_exit(0); /* verified -- pkg_fetch_completed() stages from these */
+					while (si-- > 0)
+						unlink_artifact_sentinel(chain_idx, &sib[si]);
+					unlink_artifact_sentinel(chain_idx, &main_want);
 				}
-
-				/*
-				 * Where both approvals exist, both must agree. A recipe
-				 * with a checksum keeps exactly the behaviour ADR-0122
-				 * gave it -- 624 artifacts are published unsigned and must
-				 * stay installable -- and a recipe without one now has a
-				 * way in at all, which is the cold-box case #306 and #403
-				 * are both about.
-				 */
-				if (recipe.artifact_sha256[0] != '\0') {
-					if (sha_ok && strcasecmp(sha_out, recipe.artifact_sha256) == 0)
-						_exit(0); /* verified -- pkg_fetch_completed() stages from this file */
-				} else if (sig_ok) {
-					_exit(0);
-				}
-				/*
-				 * Issue #149: an artifact that downloaded fine but failed
-				 * its checksum is a different situation from one that was
-				 * simply absent, and it is worth saying so.
-				 *
-				 * "Absent" is ordinary -- most packages have no published
-				 * artifact. A MISMATCH means the cache is serving
-				 * different bytes than the recipe approves, which in
-				 * practice means the recipe's pkg_artifact_sha256 was
-				 * edited in place on an already-published version and can
-				 * never take effect (#145). The install then silently
-				 * falls back to source and fails with whatever that path
-				 * fails with -- on a host without a working resolver, a
-				 * DNS error that says nothing about checksums. That
-				 * misdirection cost a real debugging cycle across 14
-				 * recipes.
-				 *
-				 * Written to the fetch note so it surfaces whether or not
-				 * the source fallback goes on to succeed: a mismatch is
-				 * worth knowing about even when the install works.
-				 */
-				if (sha_ok) {
-					int nfd;
-
-					nfd = open(note_path, O_WRONLY | O_CREAT | O_APPEND, 0600);
-					if (nfd >= 0) {
-						char note[640];
-						int n;
-
-						/*
-						 * Two different disappointments, and they need
-						 * different sentences. A checksum mismatch means
-						 * the cache is serving bytes this recipe does not
-						 * approve. A signature that did not verify means
-						 * this host cannot establish that Cix published
-						 * them at all -- and for a recipe with no checksum
-						 * that is the ONLY gate, so saying "failed
-						 * checksum" there would name a field the recipe
-						 * does not have (ADR-0279).
-						 */
-						if (recipe.artifact_sha256[0] != '\0')
-							n = snprintf(note, sizeof(note),
-							              "repository %s served %s@%s with the wrong checksum "
-							              "(recipe approves %.16s..., it served %.16s...) -- "
-							              "not used; the next repository, then the source, is "
-							              "tried. If this recipe version is already "
-							              "published, an edited pkg_artifact_sha256 cannot "
-							              "take effect: bump pkg_version instead\n",
-							              repo->name, recipe.name, recipe.version,
-							              recipe.artifact_sha256, sha_out);
-						else
-							n = snprintf(note, sizeof(note),
-							              "repository %s served %s@%s with a signature that "
-							              "did not verify against this host's trusted keys -- "
-							              "not used; the next repository, then the source, is "
-							              "tried. Either it was published unsigned, or by a "
-							              "key this host does not trust: `cixctl pkg sync` "
-							              "adopts the keys a trusted source publishes in "
-							              "docs/keys/\n",
-							              repo->name, recipe.name, recipe.version);
-						if (n > 0) {
-							ssize_t written = write(nfd, note, (size_t)n);
-
-							(void)written;
-						}
-						close(nfd);
-					}
-				}
-				unlink(artifact_path); /* not found / wrong checksum -- discard, fall through */
 			}
 		}
 
@@ -12347,8 +12446,23 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		artifact_sentinel_path(chain_idx, e->name, recipe.version, recipe.artifact_format,
 		                        artifact_sentinel, sizeof(artifact_sentinel));
 		if (stat(artifact_sentinel, &st) == 0 && S_ISREG(st.st_mode)) {
+			char sib_names[PKG_RECIPE_OUTPUTS_MAX][PKG_NAME_MAX];
+			int si, sib_n;
+
 			pkg_cache_save_from_file(e->name, recipe.version, recipe.artifact_format,
 			                          artifact_sentinel);
+			/* ADR-0367: the child kept this copy only because every
+			 * sibling came with it, each verified; they are cached
+			 * the same way. */
+			sib_n = recipe_siblings(recipe_path, &recipe, sib_names, PKG_RECIPE_OUTPUTS_MAX);
+			for (si = 0; si < sib_n; si++) {
+				artifact_sentinel_path(chain_idx, sib_names[si], recipe.version,
+				                        recipe.artifact_format, artifact_sentinel,
+				                        sizeof(artifact_sentinel));
+				if (stat(artifact_sentinel, &st) == 0 && S_ISREG(st.st_mode))
+					pkg_cache_save_from_file(sib_names[si], recipe.version,
+					                          recipe.artifact_format, artifact_sentinel);
+			}
 			e->cache_hit = 1;
 		}
 	}
@@ -16497,6 +16611,12 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		if (!e->cache_hit) {
 			e->export_wanted = 1;
 			pkg_artifact_push_enqueue(e->name, e->version);
+			/* ADR-0367: the build's other outputs are ordinary
+			 * packages, cached and published as they came out of
+			 * cbs; only the hostbuild's own package is exported
+			 * from its installed tree. Before install_finish(), so
+			 * a cix assembly started there finds its cixctl. */
+			cache_sibling_outputs(build_tree, e);
 		}
 	} else {
 		/*
@@ -21683,6 +21803,20 @@ int pkg_artifact_cache_has(const char *name, const char *version)
 	char path[PATH_MAX];
 
 	return cache_artifact_path_existing(name, version, path, sizeof(path));
+}
+
+int pkg_artifact_cache_path(const char *name, const char *version, char *out, size_t out_size)
+{
+	return cache_artifact_path_existing(name, version, out, out_size);
+}
+
+int pkg_installed_version(const char *name, const char *image, char *out, size_t out_size)
+{
+	const struct pkg_entry *e = pkg_find(name, image);
+
+	if (e == NULL || e->state != PKG_STATE_INSTALLED || e->version[0] == '\0')
+		return -1;
+	return snprintf(out, out_size, "%s", e->version) >= (int)out_size ? -1 : 0;
 }
 
 /*
