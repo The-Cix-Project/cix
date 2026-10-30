@@ -10,7 +10,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** cixd mounts the data directory and `/config` as btrfs only. The move's two ends are btrfs too. The installer's check for an existing CA, and cix-recover's search for its config, read `cix-config` as btrfs only. The installer ISO no longer stages `mkfs.ext4`, and cix-install's uncalled `mkfs_ext4()` is gone. ext4 stays where the owner kept it: a choice when formatting an attached data disk, so the control-plane root still carries `mkfs.ext4`.
 - **Why:** the owner's decision of 2026-10-27 on #161, that the platform's own storage is btrfs (ADR-0360). The installer has formatted both partitions btrfs since 2026-08-28 (e1a97ec4), before the first 0.2.57 tag, and 192.168.15.95 measures btrfs on vdb4 and vdb5.
-- **Verified:** pending the release.
+- **Verified:** 0.2.57-632 on 192.168.15.95 (compile probe 669), booted on slot b: `/config` (vdb4) and `/var/lib/cix` (vdb5) mounted btrfs-only, `/health` reports the data directory persistent, and all 13 containers came back running. The installer and cix-recover paths are exercised by the boot tests in the probe, not live.
 
 ### `POST /v1/pkg/bootstrap` is retired (#628, ADR-0365)
 
