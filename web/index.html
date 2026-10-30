@@ -782,8 +782,9 @@
 <div class="tab-panel" data-tab="storage-placement" hidden>
 			<div class="view-list">
 				<p class="hint">Which disk holds each platform-level concern. Each target must already carry
-					the matching role and be mounted &mdash; assign roles on a disk's own page. Both
-					migrations below are live, with no downtime, and run in independent job slots.</p>
+					the matching role &mdash; assign roles on a disk's own page. Log and rebuildable
+					storage move live, with no downtime, in independent job slots; the data directory
+					moves at the next boot.</p>
 
 				<h3>Log storage placement</h3>
 				<p class="hint" id="ls-current">Log storage: unknown</p>
@@ -798,6 +799,16 @@
 				<form id="rs-migrate-form"></form>
 				<p class="hint">Images, installed packages, build artifacts and staged ISOs (ADR-0141) &mdash;
 					regenerable from recipes and sources, unlike state or logs.</p>
+
+				<h3>Data directory placement</h3>
+				<p class="hint" id="ds-current">Data directory: unknown</p>
+				<p class="hint" id="ds-move-status" hidden></p>
+				<form id="ds-migrate-form"></form>
+				<p class="hint">The daemon's data directory (ADR-0364): container pivots, the log store when
+					it is not placed elsewhere, and anything else not given a disk of its own. It moves
+					at the next boot, carrying the log store, onto a btrfs disk with the data-storage
+					role, or back to the cix-containers partition with no disk. Rebuildable storage,
+					every volume and an enabled swap file must already be on disks of their own.</p>
 
 				<h3>Backup and swap</h3>
 				<p class="hint">Two more placements live beside what they place, and are linked rather than

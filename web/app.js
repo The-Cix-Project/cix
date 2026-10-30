@@ -92,6 +92,7 @@ const cache = {
 	logStorageMigrate: { state: "none" },
 	rebuildableStorage: { disk: null },
 	rebuildableStorageMigrate: { state: "none" },
+	dataStorage: { disk: null },
 	backupConfig: { disk: null, enabled: false },
 	backupStatus: { state: "never" },
 	dnsRecords: [],
@@ -7280,35 +7281,75 @@ const STORAGE_KINDS = {
 	               statusCacheKey: "rebuildableStorageMigrate", currentId: "rs-current",
 	               statusId: "rs-migrate-status", formId: "rs-migrate-form",
 	               label: "Rebuildable storage", role: "rebuildable-storage" },
+	/* ADR-0364: the data directory moves at the next boot, so it has no
+	 * job-status read; its pending move and last move are on the
+	 * placement itself, and statusId shows them. */
+	data: { showPath: CIX_API.getDataStorage, migrateStatusPath: null,
+	        migrateOp: "migrateDataStorage", cacheKey: "dataStorage", statusCacheKey: null,
+	        currentId: "ds-current", statusId: "ds-move-status", formId: "ds-migrate-form",
+	        label: "Data directory", role: "data-storage",
+	        defaultLabel: "the cix-containers partition" },
 };
 
+/*
+ * #665: the Placement page's reads. Nothing ever called these, so the
+ * page showed its cache defaults -- on 192.168.15.95, 2026-10-30, it
+ * said rebuildable storage was on the default placement while it was on
+ * sda.
+ */
 async function refreshStoragePlacement(kind) {
 	const k = STORAGE_KINDS[kind];
 
 	cache[k.cacheKey] = await apiRequest("GET", k.showPath());
-	if (onPageOf("storage"))
+	if (onPageOf("storage-placement"))
 		renderStoragePlacement(kind);
 }
 
 async function refreshStoragePlacementMigrate(kind) {
 	const k = STORAGE_KINDS[kind];
 
-	if (!onPageOf("storage"))
+	if (!onPageOf("storage-placement"))
 		return;
 	try {
 		cache[k.statusCacheKey] = await apiRequest("GET", k.migrateStatusPath());
 	} catch (e) {
 		/* Transient -- next poll tick tries again. */
 	}
-	if (onPageOf("storage"))
+	if (onPageOf("storage-placement"))
 		renderStoragePlacement(kind);
+}
+
+async function refreshStoragePlacements() {
+	for (const kind of Object.keys(STORAGE_KINDS)) {
+		await refreshStoragePlacement(kind);
+		if (STORAGE_KINDS[kind].migrateStatusPath)
+			await refreshStoragePlacementMigrate(kind);
+	}
+}
+
+/* "Moves to sdc at the next boot" / "Last move: failed -- reason". */
+function bootMoveText(k, p) {
+	const parts = [];
+
+	if (p.pending)
+		parts.push("Moves to " + (p.pending.disk || k.defaultLabel) + " at the next boot.");
+	if (p.last_move)
+		parts.push("Last move: " + p.last_move.outcome + " " + new Date(p.last_move.at * 1000).toISOString() +
+		           (p.last_move.reason ? " -- " + p.last_move.reason : ""));
+	return parts.join(" ");
 }
 
 function renderStoragePlacement(kind) {
 	const k = STORAGE_KINDS[kind];
 	const current = document.getElementById(k.currentId);
+	const p = cache[k.cacheKey];
 
-	current.textContent = k.label + ": " + (cache[k.cacheKey].disk || "default OS-disk placement");
+	/* degraded (#256): configured is not in use this boot, and saying
+	 * only the configured disk would be the page looking fine while
+	 * being wrong. */
+	current.textContent = k.label + ": " + (p.disk || k.defaultLabel || "default OS-disk placement") +
+		(p.degraded ? " -- DEGRADED, on the default this boot: " + (p.degraded_reason || "") : "");
+	current.classList.toggle("warning", !!p.degraded);
 
 	/* The disks carrying this kind's role; the blank sends null, the
 	 * default OS-disk placement -- "" is refused (#592: the form now
@@ -7317,15 +7358,29 @@ function renderStoragePlacement(kind) {
 		choices: { disk: (cache.storage || [])
 			.filter((d) => { const r = storageRoleFor(d.name); return !d.protected && r !== null && r.role === k.role; })
 			.map((d) => ({ value: d.name, label: d.name + (d.model ? " (" + d.model + ")" : "") })) },
-		submit: "Migrate", failed: "Failed to start " + k.label.toLowerCase() + " migration",
-		saved: k.label + " migration started",
+		submit: k.migrateStatusPath ? "Migrate" : "Move at next boot",
+		failed: "Failed to start " + k.label.toLowerCase() + " migration",
+		saved: k.migrateStatusPath ? k.label + " migration started"
+		                           : k.label + " moves at the next boot",
 		after: (body, result) => {
-			cache[k.statusCacheKey] = result;
+			if (k.statusCacheKey)
+				cache[k.statusCacheKey] = result;
+			else
+				cache[k.cacheKey] = result; /* the move answers with the placement */
 			renderStoragePlacement(kind);
 		},
 	});
 
 	const statusP = document.getElementById(k.statusId);
+
+	if (!k.migrateStatusPath) {
+		const text = bootMoveText(k, p);
+
+		statusP.hidden = text === "";
+		statusP.textContent = text;
+		return;
+	}
+
 	const m = cache[k.statusCacheKey];
 
 	if (!m || m.state === "none") {
@@ -7341,8 +7396,8 @@ function renderStoragePlacement(kind) {
 }
 
 function renderAllStoragePlacements() {
-	renderStoragePlacement("logs");
-	renderStoragePlacement("rebuildable");
+	for (const kind of Object.keys(STORAGE_KINDS))
+		renderStoragePlacement(kind);
 }
 
 
@@ -15194,6 +15249,7 @@ const VIEW_REFRESHERS = {
 	"rolling-restart": [refreshRollingConfig],
 	"tls-throttle": [refreshTlsThrottleConfig, refreshTlsThrottleStatus],
 	backup: [refreshBackupConfig, refreshBackupStatus],
+	"storage-placement": [refreshDisks, refreshDiskRoles, refreshStoragePlacements],
 	schedules: [refreshSchedules, refreshScheduleActions],
 	iso: [refreshIso],
 	volumes: [refreshVolumeCache],

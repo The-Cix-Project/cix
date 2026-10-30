@@ -3795,7 +3795,7 @@ paths:
       operationId: getDataStorage
       x-cix-read: state
       x-cix-permission: storage:read
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       responses:
         "200":
           description: Current data-directory placement
@@ -3824,7 +3824,7 @@ paths:
       operationId: migrateDataStorage
       x-cix-invalidates: [getDataStorage]
       x-cix-permission: storage:write
-      x-cix-expose: [cli]
+      x-cix-expose: [cli, web]
       requestBody:
         required: true
         content:

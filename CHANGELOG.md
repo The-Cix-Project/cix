@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The dashboard's Placement page reads its placements, and shows the data directory's (#665)
+
+- **What changed:**
+  - Storage > Placement now fetches each placement when it opens and whenever one changes. Nothing ever called its reads before, so it showed its cache defaults, and the migrate status read was gated on the wrong page.
+  - Each placement shows `degraded` with its reason, as a warning.
+  - A third section shows the data directory's placement, a pending move (*"Moves to vdb6 at the next boot"*), and the last move's outcome and reason. It offers the move to a `data-storage` disk, or back to cix-containers with no disk. `getDataStorage` and `migrateDataStorage` are exposed to the web.
+- **Why:** on 192.168.15.95, 2026-10-30, the page said *"Rebuildable storage: default OS-disk placement"* while rebuildable storage was on sda, which is the page looking fine while being wrong.
+- **Verified:** pending the release.
+
 ### The data-directory move's log line, report and refusals say the right thing (#249, ADR-0364)
 
 - **What changed:**
