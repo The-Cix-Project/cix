@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The build engine is cbs v0.1.122, in the build images and the test floor (#378, ADR-0367 step 1)
+
+- **What changed:** cix-builder and cix-hosttools roll to `cbs@v0.1.122-1`. The ADR-0209 test floor moves with them: the fixture's floor list, the release recipe's `cbs` artifact (URL, sha256, staged name), and its corpus pin, which moves to cix-recipes `9758fb69`, the first commit holding that version's approval. The host root takes it at this release's assembly, from cix-hosttools.
+- **Why:** ADR-0367's first step. A multi-output build needs `--output-dir`, which v0.1.107 lacks (it arrived in v0.1.119), and cixd can use it only once every cbs that builds for it has it. Two cbs defects were found building v0.1.120 here, both fixed by the cbs maintainer and both in v0.1.122:
+  - a recipe command inherited cbs's own descriptors, the events file among them (cbs#301);
+  - `--events-fd` was checked after cbs had dup'd stderr into the lowest free number (cbs#302).
+
+  `probe-buildfds@1-1` measured the first.
+- **Verified:** pending the release.
+
 ### The platform's own partitions are btrfs, with no ext4 fallback (#161)
 
 - **What changed:** cixd mounts the data directory and `/config` as btrfs only. The move's two ends are btrfs too. The installer's check for an existing CA, and cix-recover's search for its config, read `cix-config` as btrfs only. The installer ISO no longer stages `mkfs.ext4`, and cix-install's uncalled `mkfs_ext4()` is gone. ext4 stays where the owner kept it: a choice when formatting an attached data disk, so the control-plane root still carries `mkfs.ext4`.
