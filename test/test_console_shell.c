@@ -138,7 +138,18 @@ int main(void)
 	 * which this test never does) plus a trailing >/# for auth state. */
 	struct qemu_scripted_input console_script[] = {
 		{ "cix.internal> ", "exit\n" },
-		{ "cix.internal> ", "health\n" },
+		/*
+		 * The restarted shell's banner, not its prompt. The line editor
+		 * redraws the line on every key it echoes -- "cix.internal> e",
+		 * "cix.internal> ex", ... -- so waiting for the prompt matched the
+		 * first shell's own echo of "exit" and sent "health" to the shell
+		 * that was exiting, which read it with "exit" and discarded it.
+		 * Measured in the cix 0.2.57-636 release selftest: the restarted
+		 * banner and prompt arrived and "health" never did. The banner is
+		 * printed only by a shell that has started, and nothing flushes
+		 * the console's input, so the line waits for that shell's reader.
+		 */
+		{ "\"help\", or \"exit\".", "health\n" },
 	};
 
 	if (mkdtemp(workdir) == NULL) {
