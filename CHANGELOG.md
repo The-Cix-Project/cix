@@ -6,11 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A data-directory move mounts its ends in a tmpfs (#249, ADR-0364)
+
+- **What changed:** the boot's move mounts its two ends at `/mnt/cix/.data-move/{source,target}`, inside the disk mountpoints' tmpfs, which `boot_init()` now mounts before the data directory rather than after it. The tmpfs comment no longer claims the root slot is mounted read-write.
+- **Why:** the first move on 192.168.15.95 (0.2.57-627) failed at the next boot with *"could not create /mnt/cix-data-move/source and /mnt/cix-data-move/target: Read-only file system"*. The root slot is read-only. The failure path did what ADR-0364 asks of it: the data directory stayed on cix-containers, `last_move` reported `failed` with that reason, the pending move was cleared, and all 13 containers came back.
+- **Verified:** pending the release.
+
 ### A copied tree keeps its owners, its directory modes and its sockets
 
 - **What changed:** `treecopy_recursive()`, the copy behind every storage migration, volume move, volume backup and restore, and the installer's seed, gives every entry its source's owner and mode through one helper, `apply_owner_and_mode()`. It recreates a socket as a socket node, as it already did a FIFO or a device node. Before this, every entry came out owned by the daemon and every directory 0755, and a socket failed the whole copy.
 - **Why:** moving `jump-home` on 192.168.15.95 failed on a screen socket (entry below). Reading the copy to fix that showed the larger defect: the move would have handed a home whose files belong to a userns-mapped uid to root, and opened its 0700 `~/.ssh` to 0755. The image-store migration copies image rootfs the same way.
-- **Verified:** pending the release; `test_treecopy` checks a 0700 directory, a socket and, as root, a file owned by uid 101000.
+- **Verified:** 0.2.57-627 on 192.168.15.95 (compile probe 663, where `test_treecopy` checks a 0700 directory, a socket and, as root, a file owned by uid 101000). `jump-home` then moved to vda, and jump came back running and ready with sshd up.
 
 ### A failed volume copy says which entry it refused
 

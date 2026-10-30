@@ -2677,46 +2677,49 @@ static int mount_data_fs(const char *dev, const char *at, int ext4_ok)
 	return -1;
 }
 
-/* Where a move mounts its two ends; the root slot is mounted rw. */
-#define DATA_MOVE_SOURCE_MNT "/mnt/cix-data-move/source"
-#define DATA_MOVE_TARGET_MNT "/mnt/cix-data-move/target"
-
 /*
  * Makes a pending move's copy: both ends mounted beside each other,
  * never at g_base_dir, so whichever wins is mounted there afterwards
  * and a failure leaves nothing to undo. datadir_move() decides what is
  * carried. 0, or -1 with the reason.
+ *
+ * The two mountpoints are in the disk mountpoints' tmpfs, which
+ * boot_init() mounts first: the root slot is read-only, and the first
+ * attempt, under /mnt itself, failed there with EROFS (192.168.15.95,
+ * 2026-10-30). A leading dot keeps them apart from every disk's name.
  */
 static int data_dir_copy(const char *src_dev, int src_ext4, const char *tgt_dev, int tgt_ext4,
                          char *reason, size_t reason_size)
 {
+	char src_mnt[PATH_MAX], tgt_mnt[PATH_MAX];
 	int rc;
 
-	if (persist_mkdir_p(DATA_MOVE_SOURCE_MNT) != 0 || persist_mkdir_p(DATA_MOVE_TARGET_MNT) != 0) {
-		snprintf(reason, reason_size, "could not create %s and %s: %s", DATA_MOVE_SOURCE_MNT,
-		         DATA_MOVE_TARGET_MNT, strerror(errno));
+	snprintf(src_mnt, sizeof(src_mnt), "%s/.data-move/source", DISKS_MOUNT_DIR);
+	snprintf(tgt_mnt, sizeof(tgt_mnt), "%s/.data-move/target", DISKS_MOUNT_DIR);
+	if (persist_mkdir_p(src_mnt) != 0 || persist_mkdir_p(tgt_mnt) != 0) {
+		snprintf(reason, reason_size, "could not create %s and %s: %s", src_mnt, tgt_mnt,
+		         strerror(errno));
 		return -1;
 	}
-	if (mount_data_fs(src_dev, DATA_MOVE_SOURCE_MNT, src_ext4) != 0) {
+	if (mount_data_fs(src_dev, src_mnt, src_ext4) != 0) {
 		snprintf(reason, reason_size, "the source %s could not be mounted (%s)", src_dev,
 		         strerror(errno));
 		return -1;
 	}
-	if (mount_data_fs(tgt_dev, DATA_MOVE_TARGET_MNT, tgt_ext4) != 0) {
+	if (mount_data_fs(tgt_dev, tgt_mnt, tgt_ext4) != 0) {
 		snprintf(reason, reason_size, "the target %s could not be mounted as %s (%s)", tgt_dev,
 		         tgt_ext4 ? "btrfs or ext4" : "btrfs", strerror(errno));
-		umount2(DATA_MOVE_SOURCE_MNT, 0);
+		umount2(src_mnt, 0);
 		return -1;
 	}
-	rc = datadir_move(DATA_MOVE_SOURCE_MNT, DATA_MOVE_TARGET_MNT,
-	                  storageplacement_get(STORAGE_KIND_LOG) == NULL, (long long)time(NULL), reason,
-	                  reason_size);
-	if (umount2(DATA_MOVE_TARGET_MNT, 0) != 0 && rc == 0) {
+	rc = datadir_move(src_mnt, tgt_mnt, storageplacement_get(STORAGE_KIND_LOG) == NULL,
+	                  (long long)time(NULL), reason, reason_size);
+	if (umount2(tgt_mnt, 0) != 0 && rc == 0) {
 		snprintf(reason, reason_size, "could not unmount the target after the copy (%s)",
 		         strerror(errno));
 		rc = -1;
 	}
-	umount2(DATA_MOVE_SOURCE_MNT, 0);
+	umount2(src_mnt, 0);
 	return rc;
 }
 
@@ -2964,6 +2967,30 @@ static int boot_init(void)
 	 */
 	if (mount(CONFIG_DEVICE, CONFIG_DIR, "btrfs", 0, NULL) != 0)
 		mount(CONFIG_DEVICE, CONFIG_DIR, "ext4", 0, NULL);
+	/*
+	 * A tmpfs for the mountpoints of attached disks, so nothing writes
+	 * them to the root slot.
+	 *
+	 * A mountpoint is pure runtime state: it exists to have a
+	 * filesystem grafted onto it and is meaningless across a reboot,
+	 * and the root slot is read-only: measured on 192.168.15.95,
+	 * 2026-10-30, where mkdir under /mnt failed with EROFS at this
+	 * point in the boot. (This comment used to say the loader entry
+	 * mounts the slot rw.)
+	 *
+	 * Mounted before the data directory, because a data-directory move
+	 * (ADR-0364) mounts its two ends beneath it.
+	 *
+	 * Deliberately non-fatal, like the CONFIG_DEVICE mount above: if
+	 * this fails the daemon still starts. A disk mountpoint is not
+	 * worth refusing a boot over; a pending move then fails and says
+	 * so.
+	 */
+	if (mount("tmpfs", DISKS_MOUNT_DIR, "tmpfs", MS_NOSUID | MS_NODEV, "mode=0755") != 0)
+		fprintf(stderr,
+		        "boot_init: tmpfs for %s unavailable (%s) -- disk mountpoints will be "
+		        "ordinary directories on the root slot\n",
+		        DISKS_MOUNT_DIR, strerror(errno));
 	/* The data directory: cix-containers, or the disk it is placed on,
 	 * after making any move the last boot recorded (ADR-0364). */
 	if (mount_data_dir() != 0) {
@@ -3100,28 +3127,6 @@ static int boot_init(void)
 	}
 	if (mount_or_fail(ESP_DEVICE, ESP_DIR, "vfat", MS_NOSUID | MS_NODEV | MS_NOEXEC) != 0)
 		return -1;
-
-	/*
-	 * A tmpfs for the mountpoints of attached disks, so nothing writes
-	 * them to the root slot.
-	 *
-	 * A mountpoint is pure runtime state: it exists to have a
-	 * filesystem grafted onto it and is meaningless across a reboot.
-	 * Writing those directories onto the root would work today --
-	 * cix-install's loader entry mounts the slot `rw` -- and would be
-	 * wrong the day the A/B roots become genuinely read-only, which is
-	 * the design they exist to serve. A tmpfs is correct under both.
-	 *
-	 * Deliberately non-fatal, like the CONFIG_DEVICE mount above: if
-	 * this fails the daemon still starts and persist_mkdir_p() creates
-	 * an ordinary directory instead. A disk mountpoint is not worth
-	 * refusing a boot over.
-	 */
-	if (mount("tmpfs", DISKS_MOUNT_DIR, "tmpfs", MS_NOSUID | MS_NODEV, "mode=0755") != 0)
-		fprintf(stderr,
-		        "boot_init: tmpfs for %s unavailable (%s) -- disk mountpoints will be "
-		        "ordinary directories on the root slot\n",
-		        DISKS_MOUNT_DIR, strerror(errno));
 
 	/*
 	 * A fresh kernel boot brings lo up as a device but leaves it
