@@ -346,12 +346,12 @@ static int publish_approved_recipe(const struct cix_client *c, const char *name,
 	         "        }\n"
 	         "    }\n"
 	         "\n"
-	         "%s"
 	         "    metadata {\n"
 	         "        \"artifact_sha256\" \"%s\"\n"
 	         "%s"
 	         "    }\n"
 	         "\n"
+	         "%s"
 	         "    build {\n"
 	         "        run \"true\" {\n"
 	         "        }\n"
@@ -362,7 +362,7 @@ static int publish_approved_recipe(const struct cix_client *c, const char *name,
 	         "    }\n"
 	         "}\n",
 	         name, name, test_http_src("/nonexistent/source.tar"), artifact_sha256,
-	         output_block, artifact_sha256, output_approval, name);
+	         artifact_sha256, output_approval, output_block, name);
 
 	jw_init(&w);
 	jw_obj_open(&w);
