@@ -131,15 +131,15 @@ int cbs_progress_feed(struct cbs_build_progress *p, const char *line, size_t len
 		return -1;
 	}
 	/*
-	 * `sequence` is deliberately not used. cbs documents it as rising
-	 * within a build, and it does not: commands run in a phase-local
-	 * COPY of the execution context (cbs v0.1.107 src/runtime.c:258,
-	 * `CbsExecutionContext local = *context;`), whose counter advances
-	 * and is never carried back, so a phase's phase-end can carry a
-	 * lower number than the commands inside it. Measured on
-	 * 192.168.15.95, 2026-10-20: dropping "older" events lost every
-	 * phase-end. Each line is read exactly once anyway -- the reader
-	 * keeps a byte offset -- so order is the file's.
+	 * `sequence` is not used, and does not need to be: each line is read
+	 * exactly once -- the reader keeps a byte offset -- so order is the
+	 * file's. It was unusable up to cbs v0.1.116, when commands ran in a
+	 * phase-local COPY of the execution context (v0.1.107
+	 * src/runtime.c:258) and a phase-end could carry a lower number than
+	 * the commands inside it; measured on 192.168.15.95, 2026-10-20,
+	 * dropping "older" events lost every phase-end. v0.1.117 made the
+	 * counter the build's (cix#666), so it is now a usable gap detector
+	 * should one ever be wanted.
 	 */
 	type = str_field(root, "type");
 	phase = cbs_phase_from_name(str_field(root, "phase"));
@@ -168,6 +168,17 @@ int cbs_progress_feed(struct cbs_build_progress *p, const char *line, size_t len
 			snprintf(p->failed_log, sizeof(p->failed_log), "%s", p->last_log);
 			snprintf(p->failed_message, sizeof(p->failed_message), "%s",
 			         str_field(root, "message"));
+			/* #666: how it ended. Both fields arrived together in cbs
+			 * v0.1.118; an older engine sends neither. */
+			{
+				const struct json_value *xs = json_object_get(root, "exit_status");
+				const struct json_value *sg = json_object_get(root, "signal");
+
+				p->failed_end_known = xs != NULL && xs->type == JSON_NUMBER &&
+				                      sg != NULL && sg->type == JSON_NUMBER;
+				p->failed_exit_status = p->failed_end_known ? (int)json_as_number(xs) : 0;
+				p->failed_signal = p->failed_end_known ? (int)json_as_number(sg) : 0;
+			}
 			p->changed = 1;
 		}
 	} else if (strcmp(type, "build-end") == 0) {

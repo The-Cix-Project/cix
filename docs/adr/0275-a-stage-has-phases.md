@@ -280,6 +280,15 @@ path, which lies inside the build container, and with no exit code.
 cix-build-system#297 asks cbs to carry the exit code and signal, and
 cix-build-system#298 records the repeating sequence numbers.
 
+> **Both answered, 2026-10-31 (cix#666).** cbs v0.1.117 made `sequence`
+> the build's own counter, and v0.1.118 added `exit_status` (the
+> command's own code, -1 when it did not exit) and `signal` (what killed
+> it, 0 when nothing did) to `command-end`. cixd still orders events by
+> file position, which needs no counter. It now reports the two fields
+> on `failed_command`, and cixctl prints how the command ended beside
+> the package's error: `command killed by signal 9` reads as an
+> out-of-memory kill where `command exited 1` reads as a recipe failing.
+
 **The plan is the explain document's.** `cbs explain --json` already
 runs once per published version and its output is stored beside the
 recipe. `parse_cbs_recipe()` reads its `phases` into the recipe, so the

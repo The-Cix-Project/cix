@@ -9,7 +9,9 @@
  * are the ones src/plan.c (phase-begin, phase-end) and src/exec.c
  * (command-begin, command-end) emit; command-end's status is 0 or 1 --
  * whether the exit matched what the recipe expected -- never the exit
- * code (exec.c, command_event_status).
+ * code (exec.c, command_event_status). From v0.1.118 command-end also
+ * carries `exit_status` and `signal` (cix#666), which these v0.1.107
+ * lines do not; test_command_end_how() feeds the newer shape.
  *
  * Pure: literal lines in, answers out. It is in SELFTESTS so a parsing
  * regression costs seconds rather than a floor run.
@@ -159,8 +161,47 @@ static void test_check_fails(void)
 		fail("the failed command's log is not the one its command-begin named");
 	if (strcmp(p.failed_message, "command failed") != 0)
 		fail("the failed command's message was not kept");
+	/* These records are v0.1.107's, with no exit_status or signal, so
+	 * how the command ended is unknown rather than a made-up 0. */
+	if (p.failed_end_known)
+		fail("a command-end without exit_status/signal claimed to know how it ended");
 	expect_state("check fails", &p, CBS_PHASE_CHECK, CBS_PHASE_FAILED);
 	expect_state("check fails", &p, CBS_PHASE_FINALIZE, CBS_PHASE_BLOCKED);
+}
+
+/*
+ * #666: from cbs v0.1.118 command-end carries `exit_status` (the
+ * command's own code, -1 when it did not exit) and `signal` (what killed
+ * it, 0 when nothing did). A build step killed by signal 9 -- the
+ * out-of-memory kill under a memory-limited build -- must say so.
+ */
+static void test_command_end_how(void)
+{
+	static const char killed[] =
+	    "{\"version\":1,\"type\":\"command-end\",\"sequence\":7,\"phase\":\"build\","
+	    "\"command\":\"make\",\"arguments\":\"\",\"log_path\":\"\",\"message\":\"command "
+	    "failed\",\"status\":1,\"exit_status\":-1,\"signal\":9,\"duration_ms\":30}";
+	static const char exited[] =
+	    "{\"version\":1,\"type\":\"command-end\",\"sequence\":7,\"phase\":\"build\","
+	    "\"command\":\"cc\",\"arguments\":\"\",\"log_path\":\"\",\"message\":\"command "
+	    "failed\",\"status\":1,\"exit_status\":2,\"signal\":0,\"duration_ms\":30}";
+	struct cbs_build_progress p;
+
+	cbs_progress_init(&p, BIT(CBS_PHASE_BUILD));
+	cbs_progress_feed(&p, killed, strlen(killed));
+	if (!p.failed_end_known || p.failed_exit_status != -1 || p.failed_signal != 9) {
+		fprintf(stderr, "  FAIL: a command killed by signal 9 read known=%d exit=%d signal=%d\n",
+		        p.failed_end_known, p.failed_exit_status, p.failed_signal);
+		g_failures++;
+	}
+
+	cbs_progress_init(&p, BIT(CBS_PHASE_BUILD));
+	cbs_progress_feed(&p, exited, strlen(exited));
+	if (!p.failed_end_known || p.failed_exit_status != 2 || p.failed_signal != 0) {
+		fprintf(stderr, "  FAIL: a command that exited 2 read known=%d exit=%d signal=%d\n",
+		        p.failed_end_known, p.failed_exit_status, p.failed_signal);
+		g_failures++;
+	}
 }
 
 static void test_finalize_fails(void)
@@ -236,6 +277,7 @@ int main(void)
 	test_success();
 	test_check_fails();
 	test_finalize_fails();
+	test_command_end_how();
 	test_killed_and_cancelled();
 	test_sequence_and_garbage();
 

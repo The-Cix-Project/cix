@@ -53,10 +53,18 @@ struct cbs_build_progress {
 	int current;                       /* the running phase, or -1 */
 	int failed;                        /* the phase that failed, or -1 */
 	/* The command that failed, as cbs named it: the program, then its
-	 * arguments. cbs reports only that a command did not exit with the
-	 * status its recipe expected (command-end's status is 0 or 1), never
-	 * the exit code itself, so none is kept. */
+	 * arguments. command-end's `status` says only whether the command
+	 * met its recipe's expectation (0 or 1). */
 	char failed_command[CBS_EVENTS_COMMAND_MAX];
+	/*
+	 * How it ended, from command-end's `exit_status` and `signal` (cbs
+	 * v0.1.118, #666): its own exit code, or -1 when it did not exit,
+	 * and the signal that killed it, or 0. Meaningful only when
+	 * failed_end_known is set; an older cbs sends neither field.
+	 */
+	int failed_exit_status;
+	int failed_signal;
+	int failed_end_known;
 	/* cbs's per-command log, a path INSIDE the build container. It exists
 	 * only while that container does (keep_on_failure keeps it). */
 	char failed_log[CBS_EVENTS_LOG_MAX];

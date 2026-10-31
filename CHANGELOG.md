@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A failed build says how its command ended: exit code or signal (#666, #489)
+
+- **What changed:** `failed_command` on a package entry gains `exit_status` (the command's own code, or -1 when it did not exit) and `signal` (what killed it, or 0), read from cbs's `command-end` event. They are `null` when the engine did not report them, and always `null` on a run record, which does not keep them. `cixctl pkg ls` appends `(command killed by signal N)` or `(command exited N)` to a failed package's error. `test_cbsevents` covers a command killed by signal 9, one that exited 2, and an older record that carries neither.
+- **Why:** cbs's `status` says only whether a command met its recipe's expectation, so a compiler exiting 1 and a build step the kernel killed for memory read the same. cbs v0.1.118 added both fields (cix-build-system#297), and every build on 192.168.15.95 runs v0.1.122. The comments that said cbs never reports the exit code, and that its sequence numbers repeat, are corrected (v0.1.117 fixed the latter).
+- **Verified:** pending the release.
+
 ### An output's approval carried forward is refused, as the main package's is (#668)
 
 - **What changed:** the #525 publish check now covers every artifact a recipe approves. For the main package's `artifact_sha256` and each output's `artifact_sha256.<output>`, read from the incoming recipe's explain, a publish is refused when another version of the recipe already declares the same value under the same key. The refusal names the key and the other version. `test_pkg` publishes a revision with an output approval, then a copy carrying it forward, and asserts the second is refused naming `artifact_sha256.multiout-tool`.

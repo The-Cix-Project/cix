@@ -20283,12 +20283,13 @@ components:
         failed_command:
           type: object
           nullable: true
-          required: [command, log_path, message]
+          required: [command, log_path, message, exit_status, signal]
           description: >
             #489: the command this run's build failed in, as on
             PkgEntry.failed_command. Its log_path names a file inside a
             build container that is normally gone by the time a run is
-            read; message is not kept on the run and is always null.
+            read; message, exit_status and signal are not kept on the
+            run and are always null.
           properties:
             command:
               type: string
@@ -20297,6 +20298,12 @@ components:
               nullable: true
             message:
               type: string
+              nullable: true
+            exit_status:
+              type: integer
+              nullable: true
+            signal:
+              type: integer
               nullable: true
         stage:
           type: string
@@ -24318,7 +24325,7 @@ components:
         failed_command:
           type: object
           nullable: true
-          required: [command, log_path, message]
+          required: [command, log_path, message, exit_status, signal]
           description: >
             #489: the command the build failed in, under the same rule
             as `phase`. Null when no command failed -- a failure in
@@ -24340,10 +24347,25 @@ components:
               type: string
               nullable: true
               description: >
-                cbs's own word for the failure. cbs reports only that a
-                command did not exit as its recipe expected, never the
-                exit code itself, so no exit code is given
-                (cix-build-system#297 asks for it).
+                cbs's own word for the failure: that the command did not
+                end as its recipe expected. How it ended is in
+                exit_status and signal.
+            exit_status:
+              type: integer
+              nullable: true
+              description: >
+                The command's own exit code, or -1 when it did not exit
+                (it was killed). From cbs's command-end event since cbs
+                v0.1.118 (cix-build-system#297, cix#666); null when the
+                engine did not report it.
+            signal:
+              type: integer
+              nullable: true
+              description: >
+                The signal that killed the command, or 0 when it exited
+                by itself. 9 with a memory-limited build is usually the
+                kernel's out-of-memory kill. Null when the engine did not
+                report it.
         current_phase:
           type: string
           nullable: true

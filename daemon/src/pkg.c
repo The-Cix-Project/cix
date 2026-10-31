@@ -6670,10 +6670,14 @@ static void phases_write_json(struct json_writer *w, const enum cbs_phase_state 
 	jw_arr_close(w);
 }
 
-/* #489: the command a build failed in, as {"command","log_path","message"},
- * or null. log_path is inside the build container. */
+/* #489: the command a build failed in, as {"command","log_path","message",
+ * "exit_status","signal"}, or null. log_path is inside the build
+ * container. exit_status is the command's own code, or -1 when it did
+ * not exit; signal is what killed it, or 0; both null when the engine
+ * did not say (cbs before v0.1.118, #666). */
 static void failed_command_write_json(struct json_writer *w, const char *command,
-                                      const char *log_path, const char *message)
+                                      const char *log_path, const char *message, int end_known,
+                                      int exit_status, int signal_no)
 {
 	if (command == NULL || command[0] == '\0') {
 		jw_null(w);
@@ -6690,6 +6694,16 @@ static void failed_command_write_json(struct json_writer *w, const char *command
 	jw_key(w, "message");
 	if (message != NULL && message[0] != '\0')
 		jw_str(w, message);
+	else
+		jw_null(w);
+	jw_key(w, "exit_status");
+	if (end_known)
+		jw_int(w, exit_status);
+	else
+		jw_null(w);
+	jw_key(w, "signal");
+	if (end_known)
+		jw_int(w, signal_no);
 	else
 		jw_null(w);
 	jw_obj_close(w);
@@ -6814,7 +6828,8 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 		jw_key(w, "failed_command");
 		if (build_failed)
 			failed_command_write_json(w, e->progress.failed_command, e->progress.failed_log,
-			                          e->progress.failed_message);
+			                          e->progress.failed_message, e->progress.failed_end_known,
+			                          e->progress.failed_exit_status, e->progress.failed_signal);
 		else
 			jw_null(w);
 	}
@@ -14428,7 +14443,7 @@ void pkg_runs_write_json(struct json_writer *w, const char *name, const char *im
 			jw_null(w);
 		jw_key(w, "failed_command");
 		if (r->phases_known)
-			failed_command_write_json(w, r->failed_command, r->failed_log, NULL);
+			failed_command_write_json(w, r->failed_command, r->failed_log, NULL, 0, 0, 0);
 		else
 			jw_null(w);
 		/*

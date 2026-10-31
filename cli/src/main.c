@@ -15092,10 +15092,26 @@ static void fmt_pkg_line(const struct json_value *v)
 	else
 		snprintf(state_shown, sizeof(state_shown), "%s", state != NULL ? state : "-");
 
-	printf("%-24s %-16s %-12s %-16s %-14s %s\n", name,
+	/* #666: how the failed command ended, when the engine said -- a
+	 * signal 9 under a memory-limited build reads very differently from
+	 * a compiler exiting 1. */
+	char ended[48] = "";
+	{
+		const struct json_value *fc = json_object_get(v, "failed_command");
+		const struct json_value *sg = fc != NULL ? json_object_get(fc, "signal") : NULL;
+		const struct json_value *xs = fc != NULL ? json_object_get(fc, "exit_status") : NULL;
+
+		if (sg != NULL && sg->type == JSON_NUMBER && json_as_number(sg) > 0)
+			snprintf(ended, sizeof(ended), " (command killed by signal %ld)",
+			         (long)json_as_number(sg));
+		else if (xs != NULL && xs->type == JSON_NUMBER && json_as_number(xs) >= 0)
+			snprintf(ended, sizeof(ended), " (command exited %ld)", (long)json_as_number(xs));
+	}
+
+	printf("%-24s %-16s %-12s %-16s %-14s %s%s\n", name,
 	       image != NULL && image[0] != '\0' ? image : "-", version, state_shown,
 	       available != NULL && available[0] != '\0' ? available : "-",
-	       error != NULL && error[0] != '\0' ? error : "-");
+	       error != NULL && error[0] != '\0' ? error : "-", ended);
 }
 
 static void fmt_pkg_list(const struct json_value *v)
