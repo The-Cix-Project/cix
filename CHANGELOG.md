@@ -10,7 +10,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** when cixd compares two copies of one recipe version (the sync against the store, and the approval write-back against git), it now treats every approval line, `"artifact_sha256"` and each `"artifact_sha256.<output>"`, as an approval rather than as content. Two copies holding different bytes for the same artifact are divergent. A refresh from git keeps every approval the host holds and git lacks. The write-back sends the host's text when it holds an approval git lacks, and not while git holds one the host lacks.
 - **Why:** on 192.168.15.95, after 0.2.57-639 built `cix` and `cixctl` from one recipe, the write-back refused its own second approval: `approval write-back of cix@0.2.57-639 to cix-recipes: not written -- git's copy is not this version's text without an approval, a real divergence for an operator`. The sync counted the same recipe as `divergent=1`. Both had read the `cixctl` approval line as a content difference.
-- **Verified:** pending the release.
+- **Verified:** on 192.168.15.95, 2026-10-31, 0.2.57-640 (compile probe 678 green). After the deploy, `pkg sync` reported `divergent=0` (it was 1) and the write-back `written=2 not_written=0`. Git's `cix@0.2.57-639` and `cix@0.2.57-640` then carried both approvals, `artifact_sha256` and `artifact_sha256.cixctl`. 640's cix hostbuild was the first harvested from its own artifact: `cix@__hostbuild` lists no cixctl file.
 
 ### An install takes its own artifact, not the build's whole dest (#378, ADR-0367)
 
