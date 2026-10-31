@@ -2460,7 +2460,9 @@ ADR-0367 lets one recipe build several packages from one source, using cbs v0.1.
 - **640:** comparisons and the approval write-back count every approval line. After the deploy, a sync reported `divergent=0` (it was 1), and the write-back wrote both cix versions' second approvals (`written=2 not_written=0`). This cix hostbuild was the first harvested from its own artifact: `cix@__hostbuild` lists no cixctl file. The host booted 640 on kernel 7.3.1, which the 03:00 host roll had built and deployed an hour earlier.
 - **The agent workstation (ADR-0366):** the `agent` image (39 packages, no compiler, build tool or node) converged from its recipe, with `cixctl` from the cache carrying only `usr/bin/cixctl`. `agent-1` runs on `services` at 192.168.150.120 with sshd and nslcd ready.
 
-Not exercised live yet: a repository hit that brings an output with it (`test_pkg_cache` covers it), and Claude Code's own install inside agent-1, which needs an operator's LDAP login.
+- **Claude Code in agent-1:** installed with the official installer as the LDAP user `claude`, and `claude --version` printed 2.1.314. It needed `curl` 8.21.0-7, whose CA bundle is explicit (cix#589), in `agent@1.0.1` and `jumpbox@2.9.10`, and `sed`, in `agent@1.0.2`.
+
+Not exercised live yet: a repository hit that brings an output with it (`test_pkg_cache` covers it).
 
 ## Part 349: the data directory moves to a disk and back (#249, ADR-0364 decision 3, 0.2.57-624 to 0.2.57-628)
 

@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The agent workstation runs Claude Code (#378, ADR-0366)
+
+- **What changed:** the `agent` image (cix-recipes `agent@1.0.0` to `1.0.2`) and the `agent-1` deployment are live on 192.168.15.95. agent-1 runs on `services` at 192.168.150.120, with jump's LDAP and sshd access model, its home on the `agent-home` volume, and no compiler, build tool or node. Claude Code installs into the operator's home with the official installer.
+- **Two image fixes found by installing it:**
+  - `curl` 8.21.0-6, pinned by jumpbox and copied into agent, has no compiled-in CA bundle. curl fell back to OpenSSL's `/usr/lib/ssl`, which holds no certificates, so every HTTPS fetch failed with `unable to get local issuer certificate`; the same request with `--cacert /etc/ssl/certs/ca-certificates.crt` answered 302. `curl` 8.21.0-7 (cix#589) names the bundle at build time, and `agent@1.0.1` and `jumpbox@2.9.10` take it.
+  - The installer normalises its manifest with `sed`, which neither recipe declared. Without it the installer reported `Platform linux-x64 not found in manifest`. `agent@1.0.2` declares `sed`.
+- **Verified:** on 192.168.15.95, 2026-10-31. As the LDAP user `claude`, over agent-1's login console through `cixctl container console`, `curl -fsSL https://claude.ai/install.sh | bash` installed Claude Code 2.1.314, and `claude --version` printed `2.1.314 (Claude Code)`. The install is 285 MB under `~/.local/share/claude`, with the launcher at `~/.local/bin/claude`. Each LDAP user installs into their own home. Signing in to Anthropic is the operator's step.
+
 ### A recipe's comparison and write-back count every approval line (#378, ADR-0367 decision 4)
 
 - **What changed:** when cixd compares two copies of one recipe version (the sync against the store, and the approval write-back against git), it now treats every approval line, `"artifact_sha256"` and each `"artifact_sha256.<output>"`, as an approval rather than as content. Two copies holding different bytes for the same artifact are divergent. A refresh from git keeps every approval the host holds and git lacks. The write-back sends the host's text when it holds an approval git lacks, and not while git holds one the host lacks.
