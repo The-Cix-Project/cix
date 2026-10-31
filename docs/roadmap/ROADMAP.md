@@ -2445,6 +2445,21 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 350: a recipe's outputs are packages, and cixctl is one (#378, ADR-0367, 0.2.57-633 to 0.2.57-639)
+
+ADR-0367 lets one recipe build several packages from one source, using cbs v0.1.119's `output` blocks. The cix recipe's first output is `cixctl`, so a workload image (ADR-0366's agent image, next) can install the client without taking the whole platform. Each output is an ordinary package with its own approval line. A build caches and publishes every package it produced. An install takes the entry's own artifact, unpacked, never the build's whole dest. A cache or repository hit for a main package counts only when every output comes with it. The control-plane root takes `/bin/cixctl` from the `cixctl` package of the same cix build, and is refused, visibly, when that package is absent.
+
+**Measured on 192.168.15.95, 2026-10-30 and 31:**
+
+- **633:** cbs v0.1.122 in cix-builder, cix-hosttools, the host root and the test floor. v0.1.120 and v0.1.121 failed their own gate on Cix (cbs#301, cbs#302).
+- **634, 635:** builds write with `--output-dir`, and an output resolves and installs as a package. Nothing visible changed, since no recipe declared an output.
+- **636:** failed its release selftest on a `test_console_shell` race (the second command went to the exiting shell) and was never deployed. Its ADR text described a shortcut, cixctl installed twice. The owner asked why there were two copies, and it was withdrawn.
+- **637:** deployed. Assembly takes cixctl from the `cixctl` package.
+- **638:** fixed an install that took cbs's whole dest; compile probe 677 green, the new multi-output case included. Its hostbuild was refused live, because its recipe declared no output: `refused: cixctl@0.2.57-638, the client the cix@0.2.57-638 build produced, is not in the local cache`.
+- **639:** the same code, with `output "cixctl"` in the recipe, built by the 637 daemon. `cixctl@0.2.57-639` was cached, published, signed and approved. The assembly extracted `/bin/cixctl` from it, and the host booted 639 with all 13 containers running.
+
+Not exercised live yet: a repository hit that brings an output with it (`test_pkg_cache` covers it), and a cix hostbuild harvested from its own artifact. The next cix hostbuild is the first, because 639's was built by the 637 daemon.
+
 ## Part 349: the data directory moves to a disk and back (#249, ADR-0364 decision 3, 0.2.57-624 to 0.2.57-628)
 
 ADR-0364's third decision makes the data directory a placement, `data-storage`, beside rebuildable, log and swap. `POST /v1/system/data-storage/migrate` (`cixctl storage data migrate [--disk=NAME]`) records a move for the next boot. The boot mounts both ends in the disk mountpoints' tmpfs, carries the log store, and mounts the winner as the data directory. The source is never written, and the outcome is `last_move` on `GET /v1/system/data-storage`. cix-containers is then an ordinary partition. Two defects in shared code were found on the way: a copied tree lost every owner and directory mode, and a volume copy's failure said nothing.

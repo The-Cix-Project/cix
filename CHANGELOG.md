@@ -10,7 +10,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** after `cbs build`, the build command runs `cbs extract` on the entry's own artifact into `build/installed`, and the install and the hostbuild harvest take their files from there. A cache hit unpacks into the same tree. `PKG_DESTDIR` still names cbs's dest. A resumed build sets aside a previous attempt's install tree through ADR-0341's queue, since `cbs extract` refuses an existing destination. `test_pkg` gains a recipe with one output: its main package must not install the output's file, and the output, installed from the cache, must install only its own.
 - **Why:** once a recipe declares outputs, cbs's dest holds every package the build made. Installing from it gave the main package its outputs' files too: `cix` would have carried `usr/bin/cixctl` beside the `cixctl` package, which is the duplicate ADR-0367 decision 5 rules out. Installing from the artifact also means what is installed is exactly what is cached and published, for every recipe.
-- **Verified:** pending the release.
+- **Verified:** compile probe 0.2.57-677 (8fbbfa16), selftest green, the new `test_pkg` multi-output case included. Live on 192.168.15.95 as 0.2.57-639, the same commit, since 2026-10-31. The cix hostbuild that deployed it was built by the 637 daemon, so its own artifact directory still carries `usr/bin/cixctl`; the next cix hostbuild is the first harvested from its own artifact.
 
 ### Assembly takes cixctl from the cixctl package, and a main package's hit brings its outputs (#378, ADR-0367 steps 3-4)
 
@@ -20,13 +20,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - A local cache hit for a recipe's main package counts only when every output is cached too. A repository copy of it counts only when every output comes from the same repository, each verified on its own approval or a trusted signature. A hit for an output needs only itself. The repository fetch-and-verify is now one helper, `repo_artifact_fetch()`, used for every artifact.
   - `test_console_shell` waits for the restarted shell's banner before it sends `health`. Waiting for the prompt matched the line editor's redraw of the first shell's own `exit` echo, so `health` went to the exiting shell and was lost. That failed the 0.2.57-636 release selftest.
 - **Why:** ADR-0367 decision 5, held. The previous release noted a shortcut in which the `cix` package kept a second copy of cixctl for assembly. The owner asked why there were two copies, and there was no good reason. A hit also stands in for the build, so a hit that skipped the build without bringing the build's other packages would have left them missing.
-- **Verified:** pending the release.
+- **Verified:** on 192.168.15.95, 2026-10-31. 0.2.57-637 deployed (slot b), compile probe 676 green. The 638 hostbuild, whose recipe declared no output, was refused live: `assembly status` reported `refused: cixctl@0.2.57-638, the client the cix@0.2.57-638 build produced, is not in the local cache; the root takes /bin/cixctl from it (ADR-0367)`, and 638 was never deployed. 0.2.57-639, the same code with `output "cixctl"` in the recipe, was built by the 637 daemon: `cixctl@0.2.57-639` was cached, published, signed and approved, the assembly log shows `extracted /mnt/cix/sda/rebuildable/bootroot/cixctl`, and the host booted 639 (slot a) with all 13 containers running.
 
 ### A build caches and publishes every package it produced (#378, ADR-0367)
 
 - **What changed:** after the requested package's artifact, `cache_sibling_outputs()` caches each other `<package>-<version>-<arch>.cixpkg` the build wrote, and queues it for publish under its own name. After the publish, its approval is written into the recipe that builds it.
 - **Why:** an install of a recipe's output is then a cache hit on what the build already made. For `cixctl`, the alternative is a whole cix build, selftest included, for one binary. (Released with a note in ADR-0367 that the `cix` recipe would carry cixctl twice; that was withdrawn in the next release.)
-- **Verified:** pending the release.
+- **Verified:** never deployed alone (0.2.57-636 failed its release selftest on the `test_console_shell` race). Its code shipped in 637, and on 639 the cix hostbuild cached and published `cixctl@0.2.57-639` beside itself.
 
 ### A recipe's outputs install as packages (#378, ADR-0367 step 3)
 
@@ -39,7 +39,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - `cbsrecipe` reads `explain`'s `outputs` (cbs v0.1.119); `test_cbsrecipe` covers it.
 - **Why:** ADR-0367 decisions 1, 2 and 4. No recipe declares an output yet, so nothing visible changes. The cix recipe's `output "cixctl"` comes in a later release, once assembly can take cixctl from it.
 - **Not yet:** a build that produces several artifacts caches only the one it was asked for.
-- **Verified:** pending the release.
+- **Verified:** live since 0.2.57-635. On 639 the box accepted the cix recipe's `output "cixctl"` at publish and wrote `artifact_sha256.cixctl` back after the push.
 
 ### A build writes into an artifact directory (#378, ADR-0367 step 2)
 
