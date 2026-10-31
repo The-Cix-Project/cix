@@ -10,13 +10,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** the version lookup behind every package's `available_version`, the rolling drain and `update-all` (`recipe_latest_version()`) now resolves an output to the recipe that builds it, and caches that owner, so the store walk runs once per name. A name no recipe builds is cached too, keyed on the store directory, so an installed package whose recipe is gone costs a stat rather than a walk. Publishing a recipe now queues rolling rebuilds for images that follow its outputs, as it does for its main package. `test_pkg`'s multi-output case publishes a newer recipe and asserts the output reports it as available.
 - **Why:** on 192.168.15.95 at 0.2.57-641, `cixctl` in the `agent` image stayed at 0.2.57-640 with no update candidate. The lookup looked for a recipe directory named `cixctl`, which does not exist, so the output never rolled.
-- **Verified:** pending the release.
+- **Verified:** on 192.168.15.95, 2026-10-31, 0.2.57-642 (compile probe 680 green, the new rolling check included). After the reboot, `cixctl` in the `agent` image rolled from 0.2.57-640 to 0.2.57-642 with no operator action.
 
 ### cixctl takes its server from CIXCTL_HOST and CIXCTL_PORT (#667)
 
 - **What changed:** when `--host=` or `--port=` is not given, cixctl reads `CIXCTL_HOST` and `CIXCTL_PORT` before falling back to `127.0.0.1:80`. A flag still wins. A `CIXCTL_PORT` that is not a port from 1 to 65535 is refused with exit 2 rather than replaced by the default.
 - **Why:** inside agent-1 the API is at 192.168.15.95:80, so every command needed both flags. A deployment can now set the server once, in `/etc/profile`, for every user and for anything those users start, such as Claude Code's shell.
-- **Verified:** pending the release.
+- **Verified:** on 192.168.15.95, 2026-10-31, shipped in 0.2.57-641 and reaching agent-1 with 642's `cixctl`. agent-1 was re-applied from deployment 1.1.0, whose `/etc/profile` exports both variables. A login shell there showed `env=192.168.15.95:80`, and a plain `cixctl health` answered `ok` with no flags.
 
 ### The agent workstation runs Claude Code (#378, ADR-0366)
 
