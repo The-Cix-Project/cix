@@ -20798,8 +20798,8 @@ static int run_shell(const struct cix_client *client, int json_mode)
 
 int main(int argc, char **argv)
 {
-	const char *host = DEFAULT_HOST;
-	int port = DEFAULT_PORT;
+	const char *host = NULL; /* NULL: CIXCTL_HOST, then DEFAULT_HOST (#667) */
+	int port = -1;           /* -1: CIXCTL_PORT, then DEFAULT_PORT */
 	int json_mode = 0;
 	int i = 1;
 	int rc;
@@ -20823,6 +20823,34 @@ int main(int argc, char **argv)
 			return 2;
 		}
 		i++;
+	}
+
+	/*
+	 * #667: the server's defaults come from the environment when a flag
+	 * did not name them, so a container whose API is elsewhere -- agent-1,
+	 * whose /etc/profile exports both (ADR-0366) -- needs neither flag on
+	 * every command. A flag still wins, and a malformed port is refused
+	 * rather than quietly replaced by the default.
+	 */
+	if (host == NULL) {
+		const char *env = getenv("CIXCTL_HOST");
+
+		host = env != NULL && env[0] != '\0' ? env : DEFAULT_HOST;
+	}
+	if (port < 0) {
+		const char *env = getenv("CIXCTL_PORT");
+		char *end = NULL;
+		long v;
+
+		port = DEFAULT_PORT;
+		if (env != NULL && env[0] != '\0') {
+			v = strtol(env, &end, 10);
+			if (end == env || *end != '\0' || v < 1 || v > 65535) {
+				fprintf(stderr, "cixctl: CIXCTL_PORT=%s is not a port (1-65535)\n", env);
+				return 2;
+			}
+			port = (int)v;
+		}
 	}
 
 	cix_client_init(&client, host, port);

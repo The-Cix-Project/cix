@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cixctl takes its server from CIXCTL_HOST and CIXCTL_PORT (#667)
+
+- **What changed:** when `--host=` or `--port=` is not given, cixctl reads `CIXCTL_HOST` and `CIXCTL_PORT` before falling back to `127.0.0.1:80`. A flag still wins. A `CIXCTL_PORT` that is not a port from 1 to 65535 is refused with exit 2 rather than replaced by the default.
+- **Why:** inside agent-1 the API is at 192.168.15.95:80, so every command needed both flags. A deployment can now set the server once, in `/etc/profile`, for every user and for anything those users start, such as Claude Code's shell.
+- **Verified:** pending the release.
+
 ### The agent workstation runs Claude Code (#378, ADR-0366)
 
 - **What changed:** the `agent` image (cix-recipes `agent@1.0.0` to `1.0.2`) and the `agent-1` deployment are live on 192.168.15.95. agent-1 runs on `services` at 192.168.150.120, with jump's LDAP and sshd access model, its home on the `agent-home` volume, and no compiler, build tool or node. Claude Code installs into the operator's home with the official installer.
