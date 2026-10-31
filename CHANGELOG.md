@@ -10,7 +10,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** the #525 publish check now covers every artifact a recipe approves. For the main package's `artifact_sha256` and each output's `artifact_sha256.<output>`, read from the incoming recipe's explain, a publish is refused when another version of the recipe already declares the same value under the same key. The refusal names the key and the other version. `test_pkg` publishes a revision with an output approval, then a copy carrying it forward, and asserts the second is refused naming `artifact_sha256.multiout-tool`.
 - **Why:** an approval names one byte sequence from one build (ADR-0307 clause 5), and a revision derived by copying the previous one carries every approval line with it. The check read only the main key, so an output's approval copied forward would have been published and then refused what its own build produced.
-- **Verified:** pending the release.
+- **Verified:** compile probe 0.2.57-682, selftest green, the new `test_pkg` case included. Live on 192.168.15.95 as 0.2.57-644 since 2026-10-31.
 
 ### A sync-applied image recipe installs its new rolling entries by itself (#669)
 
