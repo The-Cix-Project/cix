@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted by the owner on 2026-10-30, for #378, with decision 4 blocked on cix-build-system#299. Decision 3 records the owner's decision of 2026-09-14 on the same issue.
+Accepted by the owner on 2026-10-30, for #378. Decision 4 was blocked on cix-build-system#299 and is unblocked since 0.2.57-639; see the amendment at the end, which also drops node. Decision 3 records the owner's decision of 2026-09-14 on the same issue.
 
 ## Context
 
@@ -35,3 +35,12 @@ Read on 2026-10-30:
 - #378 is blocked on cix-build-system#299, then on cixd learning to install a named output of a recipe.
 - The agent's reach is the API's. Whatever cannot be done from `agent-1` through `cixctl` and REST is a product gap, filed as found.
 - `services` must route to the host's API and to the internet for the agent to work. This is the site gateway's concern (Cix builds no NAT), measured before the container is made.
+
+## Amendment (2026-10-31): no node, and cixctl is a package
+
+Two facts changed after acceptance, and the decisions follow them. Neither reverses what the owner decided, so this is recorded here instead of in a superseding ADR.
+
+- **The image carries no `node`.** Its Context said the agent CLIs need it. Claude Code's own documentation, read on 2026-10-31 at code.claude.com/docs/en/setup, says otherwise. The recommended install is a native binary (`curl -fsSL https://claude.ai/install.sh | bash`) placed under `~/.local/share/claude/versions/` with a launcher at `~/.local/bin/claude`, and *"The installed `claude` binary does not itself invoke Node."* The npm package only delivers the same binary. On glibc it lists no runtime library beyond the system's, and it bundles ripgrep. This matters beyond package count: the node recipe requires `gcc` at run time for `libstdc++.so.6`, so carrying node would have put a compiler into the image decision 2 says has none. The binary lands in the operator's home, which decision 3 already puts on the volume, and it updates itself there. Each release publishes a GPG-signed `manifest.json` of SHA256 checksums for whoever wants to check a binary by hand.
+- **Decision 4 is unblocked.** ADR-0367 shipped, and since 0.2.57-639 the `cix` recipe builds a `cixctl` package beside itself.
+
+So the image is jump's access model and toolkit, plus `cixctl`.
