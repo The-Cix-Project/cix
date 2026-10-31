@@ -6440,6 +6440,15 @@ static int image_version_fork(const char *image,
 
 struct recipe_cache_entry {
 	char name[PKG_NAME_MAX];
+	/*
+	 * ADR-0367: the recipe directory the version is read from -- name
+	 * itself, or the recipe whose output name is. An output has no
+	 * directory of its own, so the owner's is the one whose mtime moves
+	 * when a new version is published, and the walk that finds the
+	 * owner (output_owner()) runs once per name rather than on every
+	 * read of every package's JSON.
+	 */
+	char owner[PKG_NAME_MAX];
 	time_t dir_mtime;
 	off_t dir_size;
 	char version[PKG_VERSION_MAX];
@@ -6452,20 +6461,17 @@ static unsigned long g_recipe_cache_clock;
 
 /*
  * Fills out_version with the pkg_version= of the recipe that would be
- * resolved for this name. Returns 0 on success, -1 if there is no
- * usable recipe.
+ * resolved for this name -- for a recipe's output, its recipe's
+ * (ADR-0367), so an output rolls when its recipe does. Returns 0 on
+ * success, -1 if there is no usable recipe.
  */
 static int recipe_latest_version(const char *name, char *out_version, size_t out_size)
 {
-	char name_dir[PATH_MAX], recipe_path[PATH_MAX];
+	char name_dir[PATH_MAX], recipe_path[PATH_MAX], owner[PKG_NAME_MAX];
 	struct pkg_recipe recipe;
 	struct stat dst;
 	struct recipe_cache_entry *slot = NULL, *oldest = NULL;
 	int i;
-
-	snprintf(name_dir, sizeof(name_dir), "%s/%s", g_recipes_dir, name);
-	if (stat(name_dir, &dst) != 0)
-		return -1;
 
 	for (i = 0; i < RECIPE_CACHE_SLOTS; i++) {
 		struct recipe_cache_entry *e = &g_recipe_cache[i];
@@ -6482,10 +6488,55 @@ static int recipe_latest_version(const char *name, char *out_version, size_t out
 		}
 	}
 
+	/*
+	 * A name no recipe builds is remembered too, with an empty owner and
+	 * the store directory's own mtime: a new recipe name moves it.
+	 * Without this, an installed package whose recipe is gone would walk
+	 * the whole store on every read of the package list.
+	 */
+	if (slot != NULL && slot->owner[0] == '\0') {
+		if (stat(g_recipes_dir, &dst) == 0 && slot->dir_mtime == dst.st_mtime &&
+		    slot->dir_size == dst.st_size)
+			return -1;
+	}
+
+	snprintf(owner, sizeof(owner), "%s",
+	         slot != NULL && slot->owner[0] != '\0' ? slot->owner : name);
+	snprintf(name_dir, sizeof(name_dir), "%s/%s", g_recipes_dir, owner);
+	if (stat(name_dir, &dst) != 0) {
+		/* Not a recipe of its own, or a cached owner that went away:
+		 * the walk decides whose output it is now, if anyone's. */
+		snprintf(name_dir, sizeof(name_dir), "%s/%s", g_recipes_dir, name);
+		if (stat(name_dir, &dst) == 0) {
+			snprintf(owner, sizeof(owner), "%s", name);
+		} else {
+			if (!output_owner(name, owner, sizeof(owner))) {
+				struct stat rst;
+
+				if (slot == NULL)
+					slot = oldest;
+				if (slot != NULL && stat(g_recipes_dir, &rst) == 0) {
+					snprintf(slot->name, sizeof(slot->name), "%s", name);
+					slot->owner[0] = '\0';
+					slot->dir_mtime = rst.st_mtime;
+					slot->dir_size = rst.st_size;
+					slot->version[0] = '\0';
+					slot->used = ++g_recipe_cache_clock;
+					slot->in_use = 1;
+				}
+				return -1;
+			}
+			snprintf(name_dir, sizeof(name_dir), "%s/%s", g_recipes_dir, owner);
+			if (stat(name_dir, &dst) != 0)
+				return -1;
+		}
+	}
+
 	/* Both mtime and size: a directory whose entry count changes but
 	 * whose mtime granularity hides it is exactly the case a
 	 * same-second publish would produce. */
-	if (slot != NULL && slot->dir_mtime == dst.st_mtime && slot->dir_size == dst.st_size) {
+	if (slot != NULL && strcmp(slot->owner, owner) == 0 && slot->dir_mtime == dst.st_mtime &&
+	    slot->dir_size == dst.st_size) {
 		slot->used = ++g_recipe_cache_clock;
 		snprintf(out_version, out_size, "%s", slot->version);
 		return 0;
@@ -6501,6 +6552,7 @@ static int recipe_latest_version(const char *name, char *out_version, size_t out
 		slot = oldest;
 	if (slot != NULL) {
 		snprintf(slot->name, sizeof(slot->name), "%s", name);
+		snprintf(slot->owner, sizeof(slot->owner), "%s", owner);
 		slot->dir_mtime = dst.st_mtime;
 		slot->dir_size = dst.st_size;
 		snprintf(slot->version, sizeof(slot->version), "%s", recipe.version);
@@ -10069,6 +10121,15 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 	}
 	pkg_announce_recipes();
 	queue_rolling_rebuilds_for(parsed.name, parsed.version);
+	/* ADR-0367: an image following one of this recipe's outputs rolls
+	 * with it too, cixctl in the agent image being the first. */
+	{
+		char outs[PKG_RECIPE_OUTPUTS_MAX][PKG_NAME_MAX];
+		int oi, on = recipe_outputs(recipe_path, outs, PKG_RECIPE_OUTPUTS_MAX);
+
+		for (oi = 0; oi < on; oi++)
+			queue_rolling_rebuilds_for(outs[oi], parsed.version);
+	}
 	return PKG_OK;
 }
 

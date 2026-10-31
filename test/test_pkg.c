@@ -7445,6 +7445,37 @@ skip_resume:
 			                "usr/bin/multiout-tool\n");
 			ok = 0;
 		}
+		/*
+		 * An output rolls with its recipe: a newer multiout makes
+		 * multiout-tool report it as available. On 192.168.15.95 at
+		 * 0.2.57-641, cixctl in the agent image showed no candidate for
+		 * the cix release beside it, because the version lookup looked
+		 * for a recipe directory named after the output.
+		 */
+		if (stage_ok) {
+			char sha2[65];
+			char tarball2[PATH_MAX];
+			const char *avail = NULL;
+
+			if (stage_fixture_tarball(scratch_dir, "multiout", "1.1", tarball2,
+			                          sizeof(tarball2), sha2, sizeof(sha2)) != 0 ||
+			    write_multiout_recipe(&client, "multiout", "1.1", tarball2, sha2) != 0) {
+				fprintf(stderr, "FAIL: ADR-0367 could not publish multiout 1.1\n");
+				ok = 0;
+			} else {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/multiout-tool", NULL, &r) == 0 &&
+				    r.status == 200 && r.json != NULL)
+					avail = json_str_field(r.json, "available_version");
+				if (avail == NULL || !str_eq(avail, "1.1-1")) {
+					fprintf(stderr, "FAIL: ADR-0367 multiout-tool reports available_version "
+					                "%s after multiout 1.1 was published, want 1.1-1\n",
+					        avail != NULL ? avail : "(none)");
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
+		}
 	}
 
 	/*

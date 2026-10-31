@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A recipe's output rolls with its recipe (#378, ADR-0367)
+
+- **What changed:** the version lookup behind every package's `available_version`, the rolling drain and `update-all` (`recipe_latest_version()`) now resolves an output to the recipe that builds it, and caches that owner, so the store walk runs once per name. A name no recipe builds is cached too, keyed on the store directory, so an installed package whose recipe is gone costs a stat rather than a walk. Publishing a recipe now queues rolling rebuilds for images that follow its outputs, as it does for its main package. `test_pkg`'s multi-output case publishes a newer recipe and asserts the output reports it as available.
+- **Why:** on 192.168.15.95 at 0.2.57-641, `cixctl` in the `agent` image stayed at 0.2.57-640 with no update candidate. The lookup looked for a recipe directory named `cixctl`, which does not exist, so the output never rolled.
+- **Verified:** pending the release.
+
 ### cixctl takes its server from CIXCTL_HOST and CIXCTL_PORT (#667)
 
 - **What changed:** when `--host=` or `--port=` is not given, cixctl reads `CIXCTL_HOST` and `CIXCTL_PORT` before falling back to `127.0.0.1:80`. A flag still wins. A `CIXCTL_PORT` that is not a port from 1 to 65535 is refused with exit 2 rather than replaced by the default.
