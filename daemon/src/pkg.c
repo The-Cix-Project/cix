@@ -8715,6 +8715,11 @@ void pkg_image_forgotten(const char *image)
  * (ADR-0320): otherwise pinning means "never move",
  * so being behind the latest recipe is the intended state, not drift to
  * repair. Same rule queue_rolling_rebuilds_for() applies on publish.
+ *
+ * A rolling entry is queued when it is installed behind its recipe, and,
+ * under `apply: converge`, when the image does not hold it at all (#669).
+ * This also runs after every sync, and is what starts a converge the
+ * sync's helper child declared: that child's own enqueue dies with it.
  */
 void pkg_rebuild_queue_rederive(void)
 {
@@ -8753,8 +8758,24 @@ void pkg_rebuild_queue_rederive(void)
 			}
 			if (entries[j].mode != IMAGE_PKG_ROLLING)
 				continue;
-			if (e == NULL || !pkg_entry_drift(e, NULL, 0))
+			/*
+			 * #669: a rolling entry the image does not hold at all is
+			 * as far behind as an entry can be, and under `apply:
+			 * converge` it is drift to repair, as a missing pin is
+			 * above. This skipped it: hibr, newly declared rolling in
+			 * agent@1.0.4, was applied in the sync child and then sat
+			 * uninstalled for eleven minutes, while sed and less,
+			 * declared pinned the same way, had been queued.
+			 */
+			if (e == NULL || e->state != PKG_STATE_INSTALLED) {
+				struct image_policy policy;
+
+				imagepolicy_get(image_names[i], &policy);
+				if (policy.apply != IMAGE_POLICY_APPLY_CONVERGE)
+					continue;
+			} else if (!pkg_entry_drift(e, NULL, 0)) {
 				continue;
+			}
 			rebuild_queue_enqueue(image_names[i]);
 			queued_count++;
 			break;

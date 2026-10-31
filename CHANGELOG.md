@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A sync-applied image recipe installs its new rolling entries by itself (#669)
+
+- **What changed:** after every sync, the daemon re-derives the rebuild queue from what each image holds. That pass now queues an image whose `apply: converge` manifest declares a rolling package it does not hold, as it already did for a missing pin. `test_pkg_sync` gains the case: a followed, converging image whose synced recipe declares one rolling entry must start converging with no further request.
+- **Why:** a `recipe: follow` image applies a synced recipe in the sync's helper child, so the child's own enqueue dies with it, and the parent's re-derivation is what starts the converge. That re-derivation skipped a rolling entry the image did not hold at all. On 192.168.15.95, 2026-10-31, hibr, newly declared rolling in `agent@1.0.4`, sat uninstalled for eleven minutes after `applied its recipe -- 34 entries declared, converging`. sed and less, declared pinned the same way earlier, had installed.
+- **Verified:** pending the release.
+
 ### A recipe's output rolls with its recipe (#378, ADR-0367)
 
 - **What changed:** the version lookup behind every package's `available_version`, the rolling drain and `update-all` (`recipe_latest_version()`) now resolves an output to the recipe that builds it, and caches that owner, so the store walk runs once per name. A name no recipe builds is cached too, keyed on the store directory, so an installed package whose recipe is gone costs a stat rather than a walk. Publishing a recipe now queues rolling rebuilds for images that follow its outputs, as it does for its main package. `test_pkg`'s multi-output case publishes a newer recipe and asserts the output reports it as available.

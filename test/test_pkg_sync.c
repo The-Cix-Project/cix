@@ -226,7 +226,7 @@ static int stage_fixture_archive(const char *scratch_dir)
 	if (f == NULL)
 		return -1;
 	fprintf(f, "{\"image\": \"synctest-image\", \"version\": \"1.0.0\", \"packages\": "
-	           "[{\"package\": \"synctest\", \"mode\": \"pinned\", \"version\": \"1.0-1\"}]}\n");
+	           "[{\"package\": \"synctest\", \"mode\": \"rolling\", \"version\": \"1.0-1\"}]}\n");
 	fclose(f);
 
 	snprintf(archive_dir, sizeof(archive_dir), "%s/api/v1/repos/testowner/testrepo/archive",
@@ -391,6 +391,27 @@ int main(void)
 	      "PUT /v1/pkg/sources/test (ref of the staged fixture archive)");
 	cix_response_free(&r);
 
+	/*
+	 * #669: the image the staged recipe describes exists before the
+	 * sync, following its recipe and converging, so the sync applies
+	 * the recipe -- in its helper child, whose own enqueue dies with
+	 * it -- and the daemon's re-derivation afterwards must queue the
+	 * converge. The staged entry is ROLLING and not installed, the case
+	 * the re-derivation skipped.
+	 */
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "POST", "/v1/images", "{\"name\":\"synctest-image\"}",
+	                         &r) == 0 &&
+	              r.status == 201,
+	      "POST /v1/images synctest-image");
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "PUT", "/v1/images/synctest-image/policy",
+	                         "{\"recipe\":\"follow\",\"apply\":\"converge\"}", &r) == 0 &&
+	              r.status == 200,
+	      "PUT /v1/images/synctest-image/policy follow/converge");
+	cix_response_free(&r);
+
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/pkg/sync", NULL, &r) == 0 && r.status == 202,
 	      "POST /v1/pkg/sync accepted (202)");
@@ -435,6 +456,26 @@ int main(void)
 		      "synced image recipe picked the higher of the two staged versions (1.0.0)");
 	}
 	cix_response_free(&r);
+
+	/* #669: the converge started by itself. The install cannot succeed
+	 * (the fixture's source is unfetchable); its entry existing is what
+	 * shows the image was queued. */
+	{
+		int k, exists = 0;
+
+		for (k = 0; k < 60 && !exists; k++) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/synctest@synctest-image", NULL,
+			                       &r) == 0 &&
+			    r.status == 200)
+				exists = 1;
+			cix_response_free(&r);
+			if (!exists)
+				usleep(500000);
+		}
+		CHECK(exists, "a sync-applied recipe's rolling, uninstalled entry starts converging "
+		              "with no further request (#669)");
+	}
 
 	/* --- scenario 5: re-sync is additive/merge, not destructive -- the
 	 * same recipe is skipped as a duplicate, not re-added or rejected. */
