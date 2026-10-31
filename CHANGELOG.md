@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A recipe's comparison and write-back count every approval line (#378, ADR-0367 decision 4)
+
+- **What changed:** when cixd compares two copies of one recipe version (the sync against the store, and the approval write-back against git), it now treats every approval line, `"artifact_sha256"` and each `"artifact_sha256.<output>"`, as an approval rather than as content. Two copies holding different bytes for the same artifact are divergent. A refresh from git keeps every approval the host holds and git lacks. The write-back sends the host's text when it holds an approval git lacks, and not while git holds one the host lacks.
+- **Why:** on 192.168.15.95, after 0.2.57-639 built `cix` and `cixctl` from one recipe, the write-back refused its own second approval: `approval write-back of cix@0.2.57-639 to cix-recipes: not written -- git's copy is not this version's text without an approval, a real divergence for an operator`. The sync counted the same recipe as `divergent=1`. Both had read the `cixctl` approval line as a content difference.
+- **Verified:** pending the release.
+
 ### An install takes its own artifact, not the build's whole dest (#378, ADR-0367)
 
 - **What changed:** after `cbs build`, the build command runs `cbs extract` on the entry's own artifact into `build/installed`, and the install and the hostbuild harvest take their files from there. A cache hit unpacks into the same tree. `PKG_DESTDIR` still names cbs's dest. A resumed build sets aside a previous attempt's install tree through ADR-0341's queue, since `cbs extract` refuses an existing destination. `test_pkg` gains a recipe with one output: its main package must not install the output's file, and the output, installed from the cache, must install only its own.

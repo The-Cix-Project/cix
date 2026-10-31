@@ -9367,17 +9367,46 @@ static enum pkg_error recipe_persist_failed(const char *what)
  */
 enum cbs_relation { CBS_SAME, CBS_COMMENTS, CBS_DIVERGENT };
 
-/* Sets *hex to the value of an approval line. */
-static int cbs_approval_line(const char *line, size_t len, const char **hex, size_t *hex_len)
+/*
+ * A recipe's approval lines (ADR-0367 decision 4): the main package's
+ * `"artifact_sha256"`, key "", and each output's
+ * `"artifact_sha256.<output>"`, key <output>. One build writes one line
+ * per artifact it produced, so every comparison of two copies of a
+ * recipe sets all of them aside, never only the main one: an output's
+ * line read as content made a copy that differed only by it look
+ * divergent, and the write-back of cix@0.2.57-639 refused itself so.
+ */
+struct cbs_approvals {
+	int n;
+	char key[PKG_RECIPE_OUTPUTS_MAX + 1][PKG_NAME_MAX];
+	char sha[PKG_RECIPE_OUTPUTS_MAX + 1][PKG_SHA256_MAX];
+};
+
+/* Sets *key ("" for the main package's) and *hex to an approval line's. */
+static int cbs_approval_line(const char *line, size_t len, const char **key, size_t *key_len,
+                             const char **hex, size_t *hex_len)
 {
-	static const char key[] = "\"artifact_sha256\"";
+	static const char prefix[] = "\"artifact_sha256";
 	const char *p = line, *end = line + len, *q;
 
 	while (p < end && (*p == ' ' || *p == '\t'))
 		p++;
-	if ((size_t)(end - p) < sizeof(key) - 1 || memcmp(p, key, sizeof(key) - 1) != 0)
+	if ((size_t)(end - p) < sizeof(prefix) - 1 || memcmp(p, prefix, sizeof(prefix) - 1) != 0)
 		return 0;
-	p += sizeof(key) - 1;
+	p += sizeof(prefix) - 1;
+	*key = p;
+	*key_len = 0;
+	if (p < end && *p == '.') {
+		*key = ++p;
+		while (p < end && *p != '"')
+			p++;
+		*key_len = (size_t)(p - *key);
+		if (*key_len == 0)
+			return 0;
+	}
+	if (p == end || *p != '"')
+		return 0;
+	p++;
 	while (p < end && (*p == ' ' || *p == '\t'))
 		p++;
 	if (p == end || *p != '"')
@@ -9388,6 +9417,42 @@ static int cbs_approval_line(const char *line, size_t len, const char **hex, siz
 	*hex = p + 1;
 	*hex_len = (size_t)(q - p - 1);
 	return 1;
+}
+
+/* key's approval in set, or NULL. */
+static const char *cbs_approval_of(const struct cbs_approvals *set, const char *key)
+{
+	int i;
+
+	for (i = 0; i < set->n; i++)
+		if (strcmp(set->key[i], key) == 0)
+			return set->sha[i];
+	return NULL;
+}
+
+/* 1 when some key in `a` is missing from `b`. */
+static int cbs_approvals_missing(const struct cbs_approvals *a, const struct cbs_approvals *b)
+{
+	int i;
+
+	for (i = 0; i < a->n; i++)
+		if (cbs_approval_of(b, a->key[i]) == NULL)
+			return 1;
+	return 0;
+}
+
+/* 1 when a key both hold names different bytes on each side. */
+static int cbs_approvals_conflict(const struct cbs_approvals *a, const struct cbs_approvals *b)
+{
+	int i;
+
+	for (i = 0; i < a->n; i++) {
+		const char *other = cbs_approval_of(b, a->key[i]);
+
+		if (other != NULL && strcmp(other, a->sha[i]) != 0)
+			return 1;
+	}
+	return 0;
 }
 
 static int cbs_line_is_cosmetic(const char *line, size_t len)
@@ -9401,16 +9466,20 @@ static int cbs_line_is_cosmetic(const char *line, size_t len)
 
 /*
  * One pass over both texts, approval lines (and, when `loose`, comment
- * and blank lines) set aside; the first approval value on each side is
- * copied out. 1 when what remains is identical.
+ * and blank lines) set aside; each side's approvals are collected into
+ * its set, the first value of a key winning. 1 when what remains is
+ * identical.
  */
-static int cbs_lines_equal(const char *a, const char *b, int loose, char *a_sha, char *b_sha)
+static int cbs_lines_equal(const char *a, const char *b, int loose, struct cbs_approvals *a_set,
+                           struct cbs_approvals *b_set)
 {
+	a_set->n = 0;
+	b_set->n = 0;
 	for (;;) {
-		const char *nl, *hex;
-		size_t len, hex_len;
+		const char *nl, *key, *hex;
+		size_t len, key_len, hex_len;
 		const char **side[2] = { &a, &b };
-		char *sha[2] = { a_sha, b_sha };
+		struct cbs_approvals *set[2] = { a_set, b_set };
 		const char *anl, *bnl;
 		size_t alen, blen;
 		int k;
@@ -9419,9 +9488,20 @@ static int cbs_lines_equal(const char *a, const char *b, int loose, char *a_sha,
 			while (**side[k] != '\0') {
 				nl = strchr(*side[k], '\n');
 				len = nl != NULL ? (size_t)(nl - *side[k]) : strlen(*side[k]);
-				if (cbs_approval_line(*side[k], len, &hex, &hex_len)) {
-					if (sha[k][0] == '\0' && hex_len < PKG_SHA256_MAX)
-						snprintf(sha[k], PKG_SHA256_MAX, "%.*s", (int)hex_len, hex);
+				if (cbs_approval_line(*side[k], len, &key, &key_len, &hex, &hex_len)) {
+					char kbuf[PKG_NAME_MAX];
+					struct cbs_approvals *s = set[k];
+
+					if (key_len < sizeof(kbuf) && hex_len < PKG_SHA256_MAX) {
+						snprintf(kbuf, sizeof(kbuf), "%.*s", (int)key_len, key);
+						if (cbs_approval_of(s, kbuf) == NULL &&
+						    s->n < PKG_RECIPE_OUTPUTS_MAX + 1) {
+							snprintf(s->key[s->n], PKG_NAME_MAX, "%s", kbuf);
+							snprintf(s->sha[s->n], PKG_SHA256_MAX, "%.*s", (int)hex_len,
+							         hex);
+							s->n++;
+						}
+					}
 				} else if (!loose || !cbs_line_is_cosmetic(*side[k], len)) {
 					break;
 				}
@@ -9442,32 +9522,29 @@ static int cbs_lines_equal(const char *a, const char *b, int loose, char *a_sha,
 
 /*
  * The relation of `incoming` to the build.cbs at recipe_path, and each
- * side's approval ("" when it has none). DIVERGENT when the stored copy
- * cannot be read.
+ * side's approvals (empty sets when none). DIVERGENT when the stored
+ * copy cannot be read, and when the two name different bytes for one
+ * artifact.
  */
 static enum cbs_relation recipe_cbs_relation(const char *recipe_path, const char *incoming,
-                                             char *stored_sha, char *incoming_sha)
+                                             struct cbs_approvals *stored_set,
+                                             struct cbs_approvals *incoming_set)
 {
 	char *stored = NULL;
 	size_t stored_len = 0;
 	enum cbs_relation rel = CBS_DIVERGENT;
 
-	stored_sha[0] = '\0';
-	incoming_sha[0] = '\0';
+	stored_set->n = 0;
+	incoming_set->n = 0;
 	if (incoming == NULL || persist_read_file(recipe_path, &stored, &stored_len) != 0 ||
 	    stored == NULL)
 		return CBS_DIVERGENT;
 	redact_repo_token(stored, stored_len + 1);
-	if (cbs_lines_equal(stored, incoming, 0, stored_sha, incoming_sha)) {
+	if (cbs_lines_equal(stored, incoming, 0, stored_set, incoming_set))
 		rel = CBS_SAME;
-	} else {
-		stored_sha[0] = '\0';
-		incoming_sha[0] = '\0';
-		if (cbs_lines_equal(stored, incoming, 1, stored_sha, incoming_sha))
-			rel = CBS_COMMENTS;
-	}
-	if (rel != CBS_DIVERGENT && stored_sha[0] != '\0' && incoming_sha[0] != '\0' &&
-	    strcmp(stored_sha, incoming_sha) != 0)
+	else if (cbs_lines_equal(stored, incoming, 1, stored_set, incoming_set))
+		rel = CBS_COMMENTS;
+	if (rel != CBS_DIVERGENT && cbs_approvals_conflict(stored_set, incoming_set))
 		rel = CBS_DIVERGENT;
 	free(stored);
 	return rel;
@@ -9508,19 +9585,21 @@ struct sync_outcome {
 static enum pkg_error recipe_cbs_refresh(const char *name, const char *version,
                                          const char *recipe_path, const char *staging_path,
                                          const char *explain_json, const char *incoming,
-                                         const char *stored_sha, const char *incoming_sha)
+                                         const struct cbs_approvals *stored_set,
+                                         const struct cbs_approvals *incoming_set)
 {
 	char explain_path[PATH_MAX];
 	size_t off;
-	int keep = stored_sha[0] != '\0' && incoming_sha[0] == '\0';
+	int keep = cbs_approvals_missing(stored_set, incoming_set);
+	int i;
 
 	if (keep && cbs_metadata_insert_point(incoming, &off) != 0) {
 		unlink(staging_path);
 		logstore_write("cixd", "warn",
 		               "pkg: recipe %s@%s differs from git only in comments, but git's copy has "
-		               "no `metadata {` line to carry this host's approval %.12s, so it was not "
+		               "no `metadata {` line to carry this host's approval, so it was not "
 		               "refreshed (ADR-0324)",
-		               name, version, stored_sha);
+		               name, version);
 		return PKG_ERR_DIVERGENT;
 	}
 	cbs_explain_path(recipe_path, explain_path, sizeof(explain_path));
@@ -9538,11 +9617,24 @@ static enum pkg_error recipe_cbs_refresh(const char *name, const char *version,
 		return recipe_persist_failed("move the refreshed recipe into place");
 	}
 	pkg_announce_recipes();
-	if (keep)
-		approve_cbs_artifact(recipe_path, "artifact_sha256", name, version, stored_sha);
+	/* Every approval this host held and git's copy lacked, the main
+	 * package's and each output's (ADR-0367 decision 4). */
+	for (i = 0; i < stored_set->n; i++) {
+		char key[PKG_NAME_MAX + 32];
+
+		if (cbs_approval_of(incoming_set, stored_set->key[i]) != NULL)
+			continue;
+		if (stored_set->key[i][0] == '\0')
+			snprintf(key, sizeof(key), "artifact_sha256");
+		else
+			snprintf(key, sizeof(key), "artifact_sha256.%s", stored_set->key[i]);
+		approve_cbs_artifact(recipe_path, key,
+		                     stored_set->key[i][0] != '\0' ? stored_set->key[i] : name, version,
+		                     stored_set->sha[i]);
+	}
 	logstore_write("cixd", "info", "pkg: recipe %s@%s refreshed from git (%s); nothing rebuilds",
 	               name, version,
-	               incoming_sha[0] != '\0' && stored_sha[0] == '\0'
+	               cbs_approvals_missing(incoming_set, stored_set)
 	                   ? "git carries an approval this host did not have"
 	                   : "only comments differed");
 	return PKG_OK;
@@ -9833,10 +9925,9 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 	snprintf(version_dir, sizeof(version_dir), "%s/%s", name_dir, parsed.version);
 	snprintf(recipe_path, sizeof(recipe_path), "%s/%s", version_dir, PKG_RECIPE_CBS_FILE);
 	if (stat(recipe_path, &st) == 0) {
-		char stored_sha[PKG_SHA256_MAX];
-		char incoming_sha[PKG_SHA256_MAX];
+		struct cbs_approvals stored_set, incoming_set;
 		enum cbs_relation rel =
-		    recipe_cbs_relation(recipe_path, redacted, stored_sha, incoming_sha);
+		    recipe_cbs_relation(recipe_path, redacted, &stored_set, &incoming_set);
 
 		/*
 		 * ADR-0324: the same version with a different meaning is not
@@ -9847,21 +9938,23 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 		 *
 		 * An approval reaches a published CPDL recipe through
 		 * approve_cbs_artifact() after a build (#492), or through a
-		 * sync refresh below -- never as a republish.
+		 * sync refresh below -- never as a republish. Every artifact's
+		 * approval counts, an output's as much as the main package's
+		 * (ADR-0367 decision 4).
 		 */
 		if (sync != NULL) {
 			/* An approval this host holds and git lacks goes back (ADR-0324). */
 			snprintf(sync->version, sizeof(sync->version), "%s", parsed.version);
-			sync->writeback = rel != CBS_DIVERGENT && stored_sha[0] != '\0' &&
-			                  incoming_sha[0] == '\0';
+			sync->writeback =
+			    rel != CBS_DIVERGENT && cbs_approvals_missing(&stored_set, &incoming_set);
 		}
 		/* Only a sync refreshes: git is the authority, and a publish
 		 * on this host is not git (ADR-0324). */
 		if (sync != NULL && check == NULL && rel != CBS_DIVERGENT &&
-		    (rel == CBS_COMMENTS || (incoming_sha[0] != '\0' && stored_sha[0] == '\0'))) {
+		    (rel == CBS_COMMENTS || cbs_approvals_missing(&incoming_set, &stored_set))) {
 			enum pkg_error rerr =
 			    recipe_cbs_refresh(name, parsed.version, recipe_path, staging_path,
-			                       explain_json, redacted, stored_sha, incoming_sha);
+			                       explain_json, redacted, &stored_set, &incoming_set);
 
 			free(redacted);
 			free(explain_json);
@@ -18310,7 +18403,7 @@ int pkg_approval_writeback_work(void *unused)
 	for (i = 0; rc == 0 && i < g_wb.batch; i++) {
 		const struct writeback_item *it = &g_wb_queue[i];
 		char recipe_path[PATH_MAX], blob[FORGE_COMMIT_SHA_MAX];
-		char git_sha[PKG_SHA256_MAX], store_sha[PKG_SHA256_MAX];
+		struct cbs_approvals git_set, store_set;
 		char *store = NULL, *git = NULL;
 		size_t store_len = 0, git_len = 0;
 		const char *outcome = "differs";
@@ -18333,9 +18426,20 @@ int pkg_approval_writeback_work(void *unused)
 				outcome = "missing";
 			} else {
 				redact_repo_token(git, git_len + 1);
-				git_sha[0] = store_sha[0] = '\0';
-				if (cbs_lines_equal(git, store, 0, git_sha, store_sha)) {
-					if (git_sha[0] == '\0' && store_sha[0] != '\0') {
+				/*
+				 * Every approval line counts, an output's as much
+				 * as the main package's (ADR-0367 decision 4): the
+				 * store's text goes back when it holds one git
+				 * lacks and the two name the same bytes for every
+				 * artifact both approve. Not while git holds one
+				 * the store lacks: writing the store's text would
+				 * drop it, and the sync's refresh brings it here
+				 * first.
+				 */
+				if (cbs_lines_equal(git, store, 0, &git_set, &store_set) &&
+				    !cbs_approvals_conflict(&git_set, &store_set)) {
+					if (cbs_approvals_missing(&store_set, &git_set) &&
+					    !cbs_approvals_missing(&git_set, &store_set)) {
 						updates[n].path = it->path;
 						updates[n].content = store;
 						updates[n].content_len = strlen(store);
@@ -18343,7 +18447,7 @@ int pkg_approval_writeback_work(void *unused)
 						texts[n++] = store;
 						store = NULL;
 						outcome = "written";
-					} else if (strcmp(git_sha, store_sha) == 0) {
+					} else if (!cbs_approvals_missing(&git_set, &store_set)) {
 						outcome = "unchanged";
 					}
 				}
