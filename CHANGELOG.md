@@ -10,7 +10,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** after every sync, the daemon re-derives the rebuild queue from what each image holds. That pass now queues an image whose `apply: converge` manifest declares a rolling package it does not hold, as it already did for a missing pin. `test_pkg_sync` gains the case: a followed, converging image whose synced recipe declares one rolling entry must start converging with no further request.
 - **Why:** a `recipe: follow` image applies a synced recipe in the sync's helper child, so the child's own enqueue dies with it, and the parent's re-derivation is what starts the converge. That re-derivation skipped a rolling entry the image did not hold at all. On 192.168.15.95, 2026-10-31, hibr, newly declared rolling in `agent@1.0.4`, sat uninstalled for eleven minutes after `applied its recipe -- 34 entries declared, converging`. sed and less, declared pinned the same way earlier, had installed.
-- **Verified:** pending the release.
+- **Verified:** compile probe 0.2.57-681, selftest green, the new `test_pkg_sync` case included. Live on 192.168.15.95 as 0.2.57-643 since 2026-10-31. After the reboot, every rolling entry in the `agent` image moved by itself: `cixctl` to 0.2.57-643 and hibr to 0.99.402-1.
 
 ### A recipe's output rolls with its recipe (#378, ADR-0367)
 
