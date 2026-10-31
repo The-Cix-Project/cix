@@ -10,7 +10,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** `failed_command` on a package entry gains `exit_status` (the command's own code, or -1 when it did not exit) and `signal` (what killed it, or 0), read from cbs's `command-end` event. They are `null` when the engine did not report them, and always `null` on a run record, which does not keep them. `cixctl pkg ls` appends `(command killed by signal N)` or `(command exited N)` to a failed package's error. `test_cbsevents` covers a command killed by signal 9, one that exited 2, and an older record that carries neither.
 - **Why:** cbs's `status` says only whether a command met its recipe's expectation, so a compiler exiting 1 and a build step the kernel killed for memory read the same. cbs v0.1.118 added both fields (cix-build-system#297), and every build on 192.168.15.95 runs v0.1.122. The comments that said cbs never reports the exit code, and that its sequence numbers repeat, are corrected (v0.1.117 fixed the latter).
-- **Verified:** pending the release.
+- **Verified:** compile probe 0.2.57-683, selftest green, the new `test_cbsevents` cases included. Live on 192.168.15.95 as 0.2.57-645 since 2026-10-31. Not yet seen on a real failed build there: none has failed inside a command since.
 
 ### An output's approval carried forward is refused, as the main package's is (#668)
 
