@@ -186,7 +186,7 @@ struct pkg_entry {
 	 * own leaf lives at, under the shared budget parent. Stored on the
 	 * entry because spec_out->cg.name must stay valid until clone3(). */
 	char build_cgroup_path[PATH_MAX];
-	char build_argv_cmd[512];
+	char build_argv_cmd[768]; /* the build, then `cbs extract` of its artifact (ADR-0367) */
 	char *build_argv[4];
 	/*
 	 * PKG_DESTDIR for this build, held on the entry because it is not
@@ -204,9 +204,13 @@ struct pkg_entry {
 	 */
 	char build_destdir_env[PATH_MAX + 16];
 	/*
-	 * The same destination as build_destdir_env above, without the
-	 * "PKG_DESTDIR=/" prefix, so the post-build harvest can find the
-	 * tree the build was TOLD to write to rather than re-deriving it.
+	 * The tree the post-build harvest installs from, relative to the
+	 * build tree: PKG_INSTALL_TREE_REL, the entry's own artifact as the
+	 * build command unpacked it (ADR-0367). It used to be the same
+	 * destination as build_destdir_env above, which is cbs's dest and
+	 * holds every output of a multi-output build. Remembered so the
+	 * harvest reads the tree the build was told to fill rather than
+	 * re-deriving it.
 	 *
 	 * pkg_build_completed() has no recipe in scope -- it is handed a
 	 * container name and an exit status -- so re-deriving would mean
@@ -4296,6 +4300,21 @@ static const char *pkg_host_arch(void);
 #define PKG_CBS_ARTIFACT_DIR "/" PKG_CBS_ARTIFACT_DIR_REL
 
 /*
+ * ADR-0367: the tree an install takes its files from -- the entry's own
+ * artifact, unpacked. Never cbs's dest: once a recipe declares outputs,
+ * dest holds every package the build made, and the main package's
+ * install would carry the outputs' files too (cixctl inside cix). Two
+ * producers fill it, both with `cbs extract`: the build command, in the
+ * build container, after `cbs build` wrote the artifacts; and
+ * cixpkg_unpack_start(), host-side in a child, for a cache hit. So what
+ * is installed is byte for byte what is cached and published, for
+ * every recipe. Beside the artifacts for the reason they are outside
+ * the workspace: cbs owns that tree.
+ */
+#define PKG_INSTALL_TREE_REL "build/installed"
+#define PKG_INSTALL_TREE "/" PKG_INSTALL_TREE_REL
+
+/*
  * One package's artifact within PKG_CBS_ARTIFACT_DIR_REL, relative to
  * the build tree. cixd's version already carries the release
  * ("0.2.57-633"), so cbs's name-version-release-arch is
@@ -4438,18 +4457,30 @@ static int prepare_artifact_dir(const char *tree)
  * where --output-dir writes, and PKG_CBS_EVENTS for --events-file: the
  * operator's log keeps the human reporter, and the phases come from the
  * file (#388, #489).
+ *
+ * Then `cbs extract` unpacks this entry's own artifact -- name@version,
+ * which for an output is the output's -- into PKG_INSTALL_TREE, which
+ * is what the install takes (ADR-0367). In the build container, after
+ * the build, so it costs no step of its own on the daemon's side; under
+ * `set -e`, so a build whose artifact cannot be read fails as a build.
  */
-static void pkg_cbs_build_command(int chain_idx, struct pkg_entry *e, unsigned declared_phases)
+static void pkg_cbs_build_command(int chain_idx, struct pkg_entry *e, const char *version,
+                                  unsigned declared_phases)
 {
+	char artifact_rel[PATH_MAX];
+
+	if (cbs_output_artifact_rel(e->name, version, artifact_rel, sizeof(artifact_rel)) != 0)
+		artifact_rel[0] = '\0';
 	snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd),
 	         "set -e; cbs build /build/recipe.cbs --arch %s --staged %s --cache %s "
 	         "--output-dir %s --finalize-command /build/finalize.sh --events human "
-	         "--events-file %s%s",
+	         "--events-file %s%s; cbs extract /%s --into %s",
 	         pkg_host_arch(), PKG_CBS_WORKSPACE, PKG_CBS_CACHE_DIR, PKG_CBS_ARTIFACT_DIR,
 	         PKG_CBS_EVENTS,
 	         g_chains[chain_idx].hostbuild_extra_config_symbols[0] != '\0'
 	                 ? " --input " PKG_CBS_KMOD_EXTRA_INPUT
-	                 : "");
+	                 : "",
+	         artifact_rel, PKG_INSTALL_TREE);
 	pkg_build_events_start(chain_idx, e, declared_phases);
 }
 
@@ -11673,7 +11704,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	 * exactly as it did when it was inline. */
 	struct pkg_recipe recipe = *recipe_in;
 	char container_base[PATH_MAX];
-	char dest_dir[PATH_MAX], recipe_dst[PATH_MAX], extra_dir[PATH_MAX];
+	char dest_dir[PATH_MAX], install_dir[PATH_MAX], recipe_dst[PATH_MAX], extra_dir[PATH_MAX];
 	int i;
 
 	*out_compose_pid = -1;
@@ -11931,6 +11962,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	}
 
 	snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_tree, PKG_DEST_REL_CBS);
+	snprintf(install_dir, sizeof(install_dir), "%s/%s", e->build_tree, PKG_INSTALL_TREE_REL);
 	/* ADR-0305: cbs refuses any recipe path not ending in .cbs
 	 * (has_cbs_extension(), in `build` as well as `explain`), so the
 	 * name this is staged under is load-bearing rather than cosmetic --
@@ -11988,7 +12020,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				 * (ADR-0307 clause 3), and every step below has
 				 * already run: the previous tree was set aside,
 				 * dest_dir and tmp_dir were created, the child
-				 * filled dest_dir, and pkg_unpack_completed() ran
+				 * filled the install tree (ADR-0367), and pkg_unpack_completed() ran
 				 * the #139 usability check over the result. The
 				 * reset above is skipped for the same reason.
 				 */
@@ -12005,7 +12037,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				prep_step = "create tmp dir";
 				prep_errno = errno;
 			} else if (e->cache_hit) {
-				/* ADR-0122: dest_dir is populated straight from the
+				/* ADR-0122: the install tree is populated straight from the
 				 * local cache -- no source to verify, no recipe.sh to
 				 * source, no real compile needed. The build container
 				 * spawned below runs a pure no-op; its own tree
@@ -12053,8 +12085,16 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 					chain_release(chain_idx);
 					return 0;
 				} else {
-					if (cixpkg_unpack_start(cached, dest_dir, out_compose_pid,
-					                         out_compose_pidfd) != 0) {
+					/* ADR-0367: into the install tree, where a
+					 * fresh build's own artifact is unpacked too;
+					 * created so the unpack finds its parent, and
+					 * removed by it, since cbs refuses an existing
+					 * destination. */
+					if (persist_mkdir_p(install_dir) != 0) {
+						prep_step = "create the install tree";
+						prep_errno = errno;
+					} else if (cixpkg_unpack_start(cached, install_dir, out_compose_pid,
+					                                out_compose_pidfd) != 0) {
 						prep_step = "start the cixpkg unpack";
 						prep_stage = PIPELINE_UNPACK;
 					} else {
@@ -12098,7 +12138,8 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				if (prep_errno != 0)
 					logstore_write("cixd", "error",
 					                "pkg %s@%s: could not prepare build container (%s, into %s): %s",
-					                e->name, g_chains[chain_idx].image, prep_step, dest_dir,
+					                e->name, g_chains[chain_idx].image, prep_step,
+					                e->cache_hit ? install_dir : dest_dir,
 					                strerror(prep_errno));
 				else
 					/*
@@ -12231,7 +12272,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		snprintf(e->build_argv_cmd, sizeof(e->build_argv_cmd), ":");
 		e->progress_known = 0; /* #388: nothing builds, so no phase runs */
 	} else {
-		pkg_cbs_build_command(chain_idx, e, recipe.declared_phases);
+		pkg_cbs_build_command(chain_idx, e, recipe.version, recipe.declared_phases);
 	}
 	/*
 	 * /usr/bin/bash, not /bin/sh -- caught empirically (ADR-0056) the
@@ -12253,10 +12294,10 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 	e->build_argv[1] = "-c";
 	e->build_argv[2] = e->build_argv_cmd;
 	e->build_argv[3] = NULL;
-	snprintf(e->build_dest_rel, sizeof(e->build_dest_rel), "%s", PKG_DEST_REL_CBS);
+	snprintf(e->build_dest_rel, sizeof(e->build_dest_rel), "%s", PKG_INSTALL_TREE_REL);
 	snprintf(e->artifact_format, sizeof(e->artifact_format), "%s", recipe.artifact_format);
 	snprintf(e->build_destdir_env, sizeof(e->build_destdir_env), "PKG_DESTDIR=/%s",
-	         e->build_dest_rel);
+	         PKG_DEST_REL_CBS);
 	e->build_envp[0] = e->build_destdir_env;
 	e->build_envp[1] = "PATH=/usr/bin:/bin";
 	e->build_envp[2] = "HOME=/build";
@@ -12826,7 +12867,7 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
 		int reported = 0;
 
 		snprintf(dest_dir, sizeof(dest_dir), "%s/%s", e->build_tree,
-		         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_CBS);
+		         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_INSTALL_TREE_REL);
 		warn_unexecutable_binaries(dest_dir, e->name, 0, &reported);
 	}
 
@@ -12950,6 +12991,17 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 		return PKG_ERR_PERSIST_FAILED;
 	if (persist_mkdir_p(dest_dir) != 0)
 		return PKG_ERR_PERSIST_FAILED;
+	/* ADR-0367: an attempt that built and failed at install left its
+	 * unpacked artifact, and `cbs extract` refuses an existing
+	 * destination. A whole tree, so it leaves through ADR-0341's queue. */
+	{
+		char install_dir[PATH_MAX];
+
+		snprintf(install_dir, sizeof(install_dir), "%s/%s", e->build_tree,
+		         PKG_INSTALL_TREE_REL);
+		if (rootfs_discard(e->kept_build_container, install_dir, CONTAINER_ROOTFS_DIR) != 0)
+			return PKG_ERR_PERSIST_FAILED;
+	}
 
 	e->kept_build_container[0] = '\0';
 
@@ -12997,15 +13049,15 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	 * delete-and-recreate of dest_dir -- so a refused resume had
 	 * already destroyed the kept container's output tree on its way to
 	 * saying no. A refusal should leave what it refused alone. */
-	pkg_cbs_build_command(chain_idx, e, recipe.declared_phases);
+	pkg_cbs_build_command(chain_idx, e, recipe.version, recipe.declared_phases);
 	e->build_argv[0] = "/usr/bin/bash";
 	e->build_argv[1] = "-c";
 	e->build_argv[2] = e->build_argv_cmd;
 	e->build_argv[3] = NULL;
-	snprintf(e->build_dest_rel, sizeof(e->build_dest_rel), "%s", PKG_DEST_REL_CBS);
+	snprintf(e->build_dest_rel, sizeof(e->build_dest_rel), "%s", PKG_INSTALL_TREE_REL);
 	snprintf(e->artifact_format, sizeof(e->artifact_format), "%s", recipe.artifact_format);
 	snprintf(e->build_destdir_env, sizeof(e->build_destdir_env), "PKG_DESTDIR=/%s",
-	         e->build_dest_rel);
+	         PKG_DEST_REL_CBS);
 	e->build_envp[0] = e->build_destdir_env;
 	e->build_envp[1] = "PATH=/usr/bin:/bin";
 	e->build_envp[2] = "HOME=/build";
@@ -15407,7 +15459,7 @@ static void install_staged_paths(const struct pkg_entry *e, char *tree, size_t t
 {
 	snprintf(tree, tree_size, "%s", e->build_tree);
 	snprintf(dest_dir, dest_dir_size, "%s/%s", tree,
-	         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_CBS);
+	         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_INSTALL_TREE_REL);
 }
 
 /* Is this chain on its last job, the package it was asked for? */
@@ -16492,7 +16544,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 			         "the build staged no files -- %s holds nothing but directories, so this "
 			         "would publish an empty package. Check the install phase, and check "
 			         "whether the finalize phase removed everything it staged (#486)",
-			         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_DEST_REL_CBS);
+			         e->build_dest_rel[0] != '\0' ? e->build_dest_rel : PKG_INSTALL_TREE_REL);
 		else
 			snprintf(msg, sizeof(msg),
 			         "the build's staged tree %s does not exist, so there is nothing to install "

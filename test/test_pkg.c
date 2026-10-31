@@ -852,6 +852,70 @@ static int write_suid_recipe(const struct cix_client *c, const char *name, const
 }
 
 /*
+ * A recipe with one output (ADR-0367): its main package installs
+ * usr/bin/<name>, and output "<name>-tool" claims usr/bin/<name>-tool.
+ * One build stages both; each package must install only its own.
+ */
+static int write_multiout_recipe(const struct cix_client *c, const char *name, const char *version,
+                                 const char *tarball_path, const char *sha256)
+{
+	char srcdir[160];
+	char build_body[512], install_body[768], decls[256];
+	char content[4096];
+
+	fixture_srcdir(tarball_path, srcdir, sizeof(srcdir));
+	snprintf(build_body, sizeof(build_body),
+	         "        cd \"${src}/%s/%s\" {\n"
+	         "            run \"tcc\" {\n"
+	         "                \"-o\" \"hello\" \"hello.c\"\n"
+	         "            }\n"
+	         "        }\n",
+	         name, srcdir);
+	snprintf(install_body, sizeof(install_body),
+	         "        mkdir \"${dest}/usr/bin\" parents chmod 0755\n"
+	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s\"\n"
+	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s-tool\"\n",
+	         name, srcdir, name, name, srcdir, name);
+	snprintf(decls, sizeof(decls),
+	         "    output \"%s-tool\" {\n"
+	         "        files { \"usr/bin/%s-tool\" }\n"
+	         "    }\n\n",
+	         name, name);
+	cpdl_recipe_text_decl(content, sizeof(content), name, version, test_http_src(tarball_path),
+	                      sha256, NULL,
+	                      "            compiler \"tcc\"\n"
+	                      "            tool \"linux-headers\"\n"
+	                      "            tool \"bash\"\n"
+	                      "            tool \"coreutils\"\n"
+	                      "            tool \"binutils\"\n",
+	                      NULL, decls, build_body, install_body);
+	return publish_cpdl_content(c, name, version, content);
+}
+
+/* Whether GET /v1/pkg/<name> lists rel among its files: 1, 0, or -1
+ * when the package could not be read. */
+static int pkg_lists_file(const struct cix_client *c, const char *name, const char *rel)
+{
+	char path[128];
+	struct cix_response r;
+	int has = -1;
+
+	snprintf(path, sizeof(path), "/v1/pkg/%s", name);
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200 && r.json != NULL) {
+		const struct json_value *files = json_object_get(r.json, "files");
+		size_t k;
+
+		has = 0;
+		for (k = 0; files != NULL && files->type == JSON_ARRAY && k < files->u.array.count; k++)
+			if (str_eq(json_as_string(files->u.array.items[k]), rel))
+				has = 1;
+	}
+	cix_response_free(&r);
+	return has;
+}
+
+/*
  * A recipe that installs a tcc -shared library with `__thread` data:
  * the defect the install-time ELF gate refuses (#653), built the way
  * libuuid 2.42.2-7 was. The fixture tarball is only the mandatory main
@@ -7298,6 +7362,88 @@ skip_resume:
 				fprintf(stderr, "FAIL: #553 deleting sharedc, the path's owner, left it\n");
 				ok = 0;
 			}
+		}
+	}
+
+	/*
+	 * ADR-0367: a recipe's outputs are packages, and each installs only
+	 * its own files. One build stages usr/bin/multiout and
+	 * usr/bin/multiout-tool; output "multiout-tool" claims the second.
+	 *
+	 * Until 0.2.57-638 an install took cbs's whole dest, so the main
+	 * package carried every output's files too -- cixctl inside cix --
+	 * and only a cache hit, which unpacks the package's own artifact,
+	 * was right. Now both take the entry's artifact, unpacked. The
+	 * output's install is a cache hit on what the main package's build
+	 * cached beside it (cache_sibling_outputs()).
+	 */
+	{
+		char sha[65];
+		char tarball[PATH_MAX];
+		char st_m[64];
+		int stage_ok;
+
+		stage_ok = stage_fixture_tarball(scratch_dir, "multiout", "1.0", tarball,
+		                                 sizeof(tarball), sha, sizeof(sha)) == 0 &&
+		           write_multiout_recipe(&client, "multiout", "1.0", tarball, sha) == 0;
+		if (!stage_ok) {
+			fprintf(stderr, "FAIL: ADR-0367 could not publish the multiout recipe\n");
+			ok = 0;
+		}
+		if (stage_ok) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"multiout\"}",
+			                       &r) != 0 ||
+			    (r.status != 202 && r.status != 200)) {
+				fprintf(stderr, "FAIL: ADR-0367 install multiout status=%d\n", r.status);
+				ok = 0;
+				stage_ok = 0;
+			}
+			cix_response_free(&r);
+		}
+		if (stage_ok && (poll_pkg_state(&client, "multiout", st_m, sizeof(st_m), 240) != 0 ||
+		                 !str_eq(st_m, "installed"))) {
+			fprintf(stderr, "FAIL: ADR-0367 multiout did not install (state=%s)\n", st_m);
+			ok = 0;
+			stage_ok = 0;
+		}
+		if (stage_ok) {
+			if (pkg_lists_file(&client, "multiout", "usr/bin/multiout") != 1 ||
+			    access(base_path("/usr/bin/multiout"), F_OK) != 0) {
+				fprintf(stderr, "FAIL: ADR-0367 the main package lacks its own file\n");
+				ok = 0;
+			}
+			if (pkg_lists_file(&client, "multiout", "usr/bin/multiout-tool") != 0 ||
+			    access(base_path("/usr/bin/multiout-tool"), F_OK) == 0) {
+				fprintf(stderr, "FAIL: ADR-0367 the main package installed its output's "
+				                "file usr/bin/multiout-tool\n");
+				ok = 0;
+			}
+		}
+		if (stage_ok) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install",
+			                       "{\"name\":\"multiout-tool\"}", &r) != 0 ||
+			    (r.status != 202 && r.status != 200)) {
+				fprintf(stderr, "FAIL: ADR-0367 install multiout-tool status=%d\n", r.status);
+				ok = 0;
+				stage_ok = 0;
+			}
+			cix_response_free(&r);
+		}
+		if (stage_ok && (poll_pkg_state(&client, "multiout-tool", st_m, sizeof(st_m), 240) != 0 ||
+		                 !str_eq(st_m, "installed"))) {
+			fprintf(stderr, "FAIL: ADR-0367 multiout-tool did not install (state=%s)\n", st_m);
+			ok = 0;
+			stage_ok = 0;
+		}
+		if (stage_ok &&
+		    (pkg_lists_file(&client, "multiout-tool", "usr/bin/multiout-tool") != 1 ||
+		     pkg_lists_file(&client, "multiout-tool", "usr/bin/multiout") != 0 ||
+		     access(base_path("/usr/bin/multiout-tool"), F_OK) != 0)) {
+			fprintf(stderr, "FAIL: ADR-0367 multiout-tool must install exactly its own "
+			                "usr/bin/multiout-tool\n");
+			ok = 0;
 		}
 	}
 

@@ -46,6 +46,17 @@ For one release (0.2.57-636) this section recorded a different decision 5: the `
 - **Assembly takes `/bin/cixctl` from the `cixctl` package at the installed `cix` hostbuild's version**, unpacked by `cbs extract` in the assembly's own child. When that package is not in the local cache the assembly is refused before it starts, and the reason is reported as `refused` by `GET /system/assembly`, as a `409` by `POST /system/assembly`, and by the host roll. There is no fallback.
 - **A hit for a main package stands in for the build, so it brings every output the build would have made.** A local cache hit for a recipe's main package counts only when every output is cached at that version too. A repository copy counts only when every output comes from the same repository with it, each verified against its own approval (`metadata "artifact_sha256.<output>"`) or a trusted signature, through the one fetch-and-verify helper. Otherwise all of them are discarded and the next repository, then the source, is tried. A hit for an output needs nothing else: nothing relies on the rest, and requiring the main package would send `pkg install cixctl` back to a whole cix build, because a hostbuild's own package is never in the local cache.
 
+## Decision 3, as installed (0.2.57-638)
+
+Decision 3 says the requested package is installed from the artifact directory. Until 0.2.57-638 it was not. The build named and cached each artifact correctly, but the install took cbs's whole `dest` tree, which holds every output's files. So a main package carried its outputs' files (cixctl inside cix), a fresh build of an output would have installed the whole recipe, and the hostbuild harvest would have put the outputs into `ARTIFACTS_DIR`. Only a cache hit, which unpacks the package's own artifact, was right. No recipe declared an output, so nothing installed was wrong yet.
+
+An install now takes the entry's own artifact, unpacked into `build/installed`. Two producers fill that tree, both with `cbs extract`:
+
+- **A fresh build:** the build command runs `cbs extract` in the build container, after `cbs build` has written the artifacts.
+- **A cache hit:** `cixpkg_unpack_start()` runs it host-side, in a child.
+
+So what is installed is byte for byte what is cached and published, for every recipe. Routing a fresh build through the cache-hit unpack would leave one call site, but it would make the build's synchronous completion asynchronous. The in-container extract is the smaller change. A hostbuild's own package is still exported from its installed tree afterwards (#648). Now that the installed tree is the main artifact, that export only repeats bytes cbs already produced, and dropping it is a follow-on.
+
 ## Alternatives considered
 
 - **Keep `--output FILE` for single-output recipes, `--output-dir` for the rest.** Two build paths, the shape One Source of Truth forbids. ADR-0038 also calls `--output` the legacy form.

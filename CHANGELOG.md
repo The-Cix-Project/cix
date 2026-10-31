@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An install takes its own artifact, not the build's whole dest (#378, ADR-0367)
+
+- **What changed:** after `cbs build`, the build command runs `cbs extract` on the entry's own artifact into `build/installed`, and the install and the hostbuild harvest take their files from there. A cache hit unpacks into the same tree. `PKG_DESTDIR` still names cbs's dest. A resumed build sets aside a previous attempt's install tree through ADR-0341's queue, since `cbs extract` refuses an existing destination. `test_pkg` gains a recipe with one output: its main package must not install the output's file, and the output, installed from the cache, must install only its own.
+- **Why:** once a recipe declares outputs, cbs's dest holds every package the build made. Installing from it gave the main package its outputs' files too: `cix` would have carried `usr/bin/cixctl` beside the `cixctl` package, which is the duplicate ADR-0367 decision 5 rules out. Installing from the artifact also means what is installed is exactly what is cached and published, for every recipe.
+- **Verified:** pending the release.
+
 ### Assembly takes cixctl from the cixctl package, and a main package's hit brings its outputs (#378, ADR-0367 steps 3-4)
 
 - **What changed:**
@@ -27,7 +33,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **What changed:**
   - A name no recipe has can be another recipe's `output`. `find_recipe_path()` resolves it to that recipe, through `output_owner()`, which reads each recipe's derived `explain.json` instead of keeping a separate index.
   - `parse_recipe_for()` gives the output's own view: its name, its runtime requirements, and its own approval, `metadata "artifact_sha256.<output>"`. Every call site that resolves a package by name asks for that view.
-  - A build installs the output's artifact from the artifact directory by the output's name.
+  - A build names and caches the output's artifact by the output's name. (This entry said the build installed it from that artifact. It did not: the install took cbs's whole dest until 0.2.57-638, which corrected it.)
   - After a publish, the approval write-back writes the output's line into the recipe that builds it, and git learns it through that recipe. Deriving a new revision unsets every output's approval, as it does the main one.
   - A publish is refused when one of its outputs is named like another recipe or is already another recipe's output, and when the recipe is named like another recipe's output. Only a name's first publish walks the store.
   - `cbsrecipe` reads `explain`'s `outputs` (cbs v0.1.119); `test_cbsrecipe` covers it.
