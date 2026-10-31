@@ -9261,33 +9261,39 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
  * which is not only legitimate but expected the moment two revisions
  * build the same source.
  */
-static int stored_approval(const char *version_dir, char *out, size_t out_size)
+/*
+ * `key` names whose approval: "" for the recipe's main package
+ * (`"artifact_sha256"`), or an output's name (`"artifact_sha256.<output>"`,
+ * ADR-0367 decision 4). The quoted form keeps the main key from
+ * matching an output's, which begins the same way.
+ */
+static int stored_approval(const char *version_dir, const char *key, char *out, size_t out_size)
 {
 	/* One 64-hex value, so one length, named once. */
 	static const size_t SHA_LEN = PKG_SHA256_MAX - 1;
-	static const struct {
-		const char *file;
-		const char *key;
-	} WHERE[] = {
-		{ "explain.json", "\"artifact_sha256\"" },
-	};
+	static const char *const FILES[] = { "explain.json" };
+	char quoted[PKG_NAME_MAX + 32];
 	size_t w;
 
-	for (w = 0; w < sizeof(WHERE) / sizeof(WHERE[0]); w++) {
+	if (key[0] == '\0')
+		snprintf(quoted, sizeof(quoted), "\"artifact_sha256\"");
+	else
+		snprintf(quoted, sizeof(quoted), "\"artifact_sha256.%s\"", key);
+	for (w = 0; w < sizeof(FILES) / sizeof(FILES[0]); w++) {
 		char path[PATH_MAX];
 		char *buf = NULL;
 		size_t len = 0;
 		const char *p;
 		int found = 0;
 
-		snprintf(path, sizeof(path), "%s/%s", version_dir, WHERE[w].file);
+		snprintf(path, sizeof(path), "%s/%s", version_dir, FILES[w]);
 		if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)
 			continue;
-		p = strstr(buf, WHERE[w].key);
+		p = strstr(buf, quoted);
 		if (p != NULL) {
 			size_t i;
 
-			p += strlen(WHERE[w].key);
+			p += strlen(quoted);
 			/* Past the separator and any quoting: `"k": "v"` and
 			 * `pkg_artifact_sha256="v"` and a bare `=v` all land
 			 * on the first hex digit. */
@@ -9346,8 +9352,8 @@ static int stored_approval(const char *version_dir, char *out, size_t out_size)
  * publish, while the failure this prevents is silent and surfaces
  * weeks later somewhere else.
  */
-static int approval_is_taken(const char *name_dir, const char *version, const char *sha,
-                             char *out_other, size_t out_other_size)
+static int approval_is_taken(const char *name_dir, const char *version, const char *key,
+                             const char *sha, char *out_other, size_t out_other_size)
 {
 	DIR *d;
 	struct dirent *e;
@@ -9365,7 +9371,7 @@ static int approval_is_taken(const char *name_dir, const char *version, const ch
 		if (e->d_name[0] == '.' || strcmp(e->d_name, version) == 0)
 			continue;
 		snprintf(version_dir, sizeof(version_dir), "%s/%s", name_dir, e->d_name);
-		if (stored_approval(version_dir, have, sizeof(have)) != 0)
+		if (stored_approval(version_dir, key, have, sizeof(have)) != 0)
 			continue;
 		if (strcmp(have, sha) == 0) {
 			snprintf(out_other, out_other_size, "%s", e->d_name);
@@ -10075,22 +10081,60 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 	 * two revisions really did build identical bytes, which is not
 	 * the defect this is for.
 	 */
+	/*
+	 * #668: every artifact's approval, not only the main package's --
+	 * an output's line (`artifact_sha256.<output>`, ADR-0367 decision 4)
+	 * is carried forward by the same copy-and-edit, and names one build's
+	 * bytes just the same. The outputs come from this recipe's own
+	 * explain; key "" is the main package.
+	 */
 	{
-		char other_version[PKG_VERSION_MAX];
+		char keys[PKG_RECIPE_OUTPUTS_MAX + 1][PKG_NAME_MAX];
+		char shas[PKG_RECIPE_OUTPUTS_MAX + 1][PKG_SHA256_MAX];
+		char other_version[PKG_VERSION_MAX], perr_text[128];
+		struct cbs_explain *ex;
+		int nk, k;
 
-		other_version[0] = '\0';
-		if (approval_is_taken(name_dir, parsed.version, parsed.artifact_sha256, other_version,
-		                       sizeof(other_version))) {
+		keys[0][0] = '\0';
+		snprintf(shas[0], sizeof(shas[0]), "%s", parsed.artifact_sha256);
+		nk = 1;
+		ex = cbs_explain_parse(explain_json, strlen(explain_json), perr_text, sizeof(perr_text));
+		if (ex != NULL) {
+			int oi;
+
+			for (oi = 0; oi < cbs_explain_output_count(ex) && nk < PKG_RECIPE_OUTPUTS_MAX + 1;
+			     oi++) {
+				int is_main = 0;
+				const char *o = cbs_explain_output_name(ex, oi, &is_main);
+				char mkey[PKG_NAME_MAX + 32];
+
+				if (o == NULL || is_main)
+					continue;
+				snprintf(mkey, sizeof(mkey), "artifact_sha256.%s", o);
+				if (cbs_explain_metadata(ex, mkey, shas[nk], sizeof(shas[nk])) != 0 ||
+				    shas[nk][0] == '\0')
+					continue;
+				snprintf(keys[nk], sizeof(keys[nk]), "%s", o);
+				nk++;
+			}
+			cbs_explain_free(ex);
+		}
+		for (k = 0; k < nk; k++) {
+			other_version[0] = '\0';
+			if (!approval_is_taken(name_dir, parsed.version, keys[k], shas[k], other_version,
+			                       sizeof(other_version)))
+				continue;
 			snprintf(g_recipe_add_err, sizeof(g_recipe_add_err),
-			         "this artifact_sha256 is already %s@%s's approval -- an approval names "
-			         "one byte sequence from one build and is never carried forward. Drop "
-			         "the line and let the build earn its own (ADR-0307 clause 5)",
-			         name, other_version);
+			         "this artifact_sha256%s%s is already %s@%s's approval -- an approval "
+			         "names one byte sequence from one build and is never carried forward. "
+			         "Drop the line and let the build earn its own (ADR-0307 clause 5)",
+			         keys[k][0] != '\0' ? "." : "", keys[k], name, other_version);
 			logstore_write("cixd", "error",
-			               "pkg: recipe %s@%s refused -- its artifact_sha256 %s is already "
+			               "pkg: recipe %s@%s refused -- its artifact_sha256%s%s %s is already "
 			               "%s@%s's approval, so it describes bytes this version did not "
-			               "produce (#525)",
-			               name, parsed.version, parsed.artifact_sha256, name, other_version);
+			               "produce (#525, #668)",
+			               name, parsed.version, keys[k][0] != '\0' ? "." : "", keys[k],
+			               shas[k], name, other_version);
 			unlink(staging_path);
 			free(explain_json);
 			return PKG_ERR_INVALID_RECIPE;

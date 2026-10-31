@@ -7476,6 +7476,83 @@ skip_resume:
 				cix_response_free(&r);
 			}
 		}
+		/*
+		 * #668: an output's approval carried forward to the next
+		 * revision is refused, as the main package's is (#525). 1.2
+		 * declares one for multiout-tool; 1.3, copied from it, declares
+		 * the same and must be refused naming the output's key.
+		 */
+		if (stage_ok) {
+			static const char *const vers[2] = { "1.2", "1.3" };
+			const char *approval =
+			    "aaaabbbbccccddddeeeeffff0000111122223333444455556666777788889999";
+			int v;
+
+			for (v = 0; v < 2; v++) {
+				char sha_v[65], tarball_v[PATH_MAX], srcdir_v[160];
+				char build_v[512], install_v[512], decls_v[512], content_v[4096];
+				char *body_v;
+
+				if (stage_fixture_tarball(scratch_dir, "multiout", vers[v], tarball_v,
+				                          sizeof(tarball_v), sha_v, sizeof(sha_v)) != 0) {
+					fprintf(stderr, "FAIL: #668 could not stage multiout %s\n", vers[v]);
+					ok = 0;
+					break;
+				}
+				fixture_srcdir(tarball_v, srcdir_v, sizeof(srcdir_v));
+				snprintf(build_v, sizeof(build_v),
+				         "        cd \"${src}/multiout/%s\" {\n"
+				         "            run \"tcc\" {\n"
+				         "                \"-o\" \"hello\" \"hello.c\"\n"
+				         "            }\n"
+				         "        }\n",
+				         srcdir_v);
+				snprintf(install_v, sizeof(install_v),
+				         "        mkdir \"${dest}/usr/bin\" parents chmod 0755\n"
+				         "        copy \"${src}/multiout/%s/hello\" to \"${dest}/usr/bin/multiout\"\n"
+				         "        copy \"${src}/multiout/%s/hello\" to "
+				         "\"${dest}/usr/bin/multiout-tool\"\n",
+				         srcdir_v, srcdir_v);
+				snprintf(decls_v, sizeof(decls_v),
+				         "    metadata {\n"
+				         "        \"artifact_sha256.multiout-tool\" \"%s\"\n"
+				         "    }\n\n"
+				         "    output \"multiout-tool\" {\n"
+				         "        files { \"usr/bin/multiout-tool\" }\n"
+				         "    }\n\n",
+				         approval);
+				cpdl_recipe_text_decl(content_v, sizeof(content_v), "multiout", vers[v],
+				                      test_http_src(tarball_v), sha_v, NULL,
+				                      "            compiler \"tcc\"\n"
+				                      "            tool \"linux-headers\"\n"
+				                      "            tool \"bash\"\n"
+				                      "            tool \"coreutils\"\n"
+				                      "            tool \"binutils\"\n",
+				                      NULL, decls_v, build_v, install_v);
+				body_v = cpdl_publish_body("multiout", content_v, NULL);
+				memset(&r, 0, sizeof(r));
+				if (body_v == NULL ||
+				    cix_client_request(&client, "POST", "/v1/pkg/recipes", body_v, &r) != 0) {
+					fprintf(stderr, "FAIL: #668 POST multiout %s: no response\n", vers[v]);
+					ok = 0;
+				} else if (v == 0 && r.status != 204) {
+					fprintf(stderr, "FAIL: #668 multiout 1.2 with an output approval was "
+					                "refused: status=%d %.200s\n",
+					        r.status, r.body != NULL ? r.body : "");
+					ok = 0;
+				} else if (v == 1 && (r.status == 204 || r.body == NULL ||
+				                      strstr(r.body, "artifact_sha256.multiout-tool") == NULL ||
+				                      strstr(r.body, "multiout@1.2-1") == NULL)) {
+					fprintf(stderr, "FAIL: #668 multiout 1.3 carried 1.2's multiout-tool "
+					                "approval forward and was not refused naming it: "
+					                "status=%d %.200s\n",
+					        r.status, r.body != NULL ? r.body : "");
+					ok = 0;
+				}
+				cix_response_free(&r);
+				free(body_v);
+			}
+		}
 	}
 
 	/*

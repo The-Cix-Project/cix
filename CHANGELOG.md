@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An output's approval carried forward is refused, as the main package's is (#668)
+
+- **What changed:** the #525 publish check now covers every artifact a recipe approves. For the main package's `artifact_sha256` and each output's `artifact_sha256.<output>`, read from the incoming recipe's explain, a publish is refused when another version of the recipe already declares the same value under the same key. The refusal names the key and the other version. `test_pkg` publishes a revision with an output approval, then a copy carrying it forward, and asserts the second is refused naming `artifact_sha256.multiout-tool`.
+- **Why:** an approval names one byte sequence from one build (ADR-0307 clause 5), and a revision derived by copying the previous one carries every approval line with it. The check read only the main key, so an output's approval copied forward would have been published and then refused what its own build produced.
+- **Verified:** pending the release.
+
 ### A sync-applied image recipe installs its new rolling entries by itself (#669)
 
 - **What changed:** after every sync, the daemon re-derives the rebuild queue from what each image holds. That pass now queues an image whose `apply: converge` manifest declares a rolling package it does not hold, as it already did for a missing pin. `test_pkg_sync` gains the case: a followed, converging image whose synced recipe declares one rolling entry must start converging with no further request.
