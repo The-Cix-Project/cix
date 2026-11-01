@@ -113,6 +113,7 @@ Nine sections are replaced whole, the ones a single setter owns: site, daemon, r
 | `hostauth-permissions vocabulary` | Every permission the API declares |
 | `hostauth-permissions set GROUP PERMISSION...` | Replace what GROUP grants. A word outside the vocabulary is refused, naming it; a change that would leave nobody holding `identity:write` is refused with 409 |
 | `hostauth-permissions rm GROUP` | GROUP grants nothing, under the same refusal |
+| `mcp show` / `mcp on` / `mcp off` | Whether cixd serves its API to MCP clients as tools at `POST /v1/mcp` ([ADR-0368](../adr/0368-cixd-serves-the-api-as-mcp-tools.md)); off until turned on. Connecting an agent is [`mcp.md`](mcp.md) |
 | `app-password ls` / `app-password add NAME` / `app-password rm NAME` | Your own app passwords: the machine credential a script sends as HTTP Basic (`USER:PASSWORD`) on each request, with your permissions. `add` prints the secret on stdout, once; the daemon keeps only a hash. Needs a login session -- an app password cannot manage app passwords |
 
 ## Boot, updates and the control plane

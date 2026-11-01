@@ -6,6 +6,24 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### agent-1's Claude Code reaches cixd's MCP gateway as `cix-agent` (#391, ADR-0368 step 4)
+
+- **What changed:** this change is configuration on 192.168.15.95 and a deployment recipe. No cix code changed.
+  - The directory user `cix-agent` (uid 10003) is in `cix-agents`, with no login password and one app password, `claude-code`.
+  - cix-recipes `b26f404` publishes `agent-1@1.2.0`. It stages `/etc/claude-code/managed-settings.json`, declaring the `cix` server under `managedMcpServers` (additive, Claude Code 2.1.259 or later) at `https://cix.internal/v1/mcp` with an `Authorization: Basic {{SECRET:CIX_MCP_BASIC}}` header. Its `/etc/profile` exports `NODE_EXTRA_CA_CERTS=/etc/ssl/certs/cix-ca-bundle.pem`.
+  - agent-1 was recreated from it with the secret. The `agent-home` volume carried the operator's home across.
+  - MCP is on on that host, because the owner asked for the agent to be able to use it.
+  - The new guide `docs/guides/mcp.md` is the procedure, and `cli-reference.md` lists `cixctl mcp`.
+- **Why:**
+  - Step 4 of ADR-0368: agent-1's deployment stages the MCP client configuration from a secret. A deployment cannot write into `/home`, which is the volume, so the file is under `/etc`, where Claude Code reads managed settings. The secret sits in the container's rendered definition and so in a system backup, as the LDAP bind password in `/etc/ldap-authkeys.conf` already does.
+  - HTTPS rather than `http://` because `managedMcpServers` refuses plain HTTP, and because Basic credentials should not cross the services network in clear. `cix.internal` is the name cixd's certificate carries, and Cix DNS resolves it to 192.168.15.95.
+  - `managed-mcp.json` was not used: it takes exclusive control, and an operator could then add no MCP server of their own.
+  - The staged file is mode 0644, readable by every login on agent-1, all of them operators. The principal it carries holds the reads and `mcp:call` only.
+- **Verified:** on 192.168.15.95, 2026-11-01, at 0.2.57-650.
+  - Before the change: agent-1's own `cix-ca-bundle.pem` verified cixd's port-443 certificate as `cix.internal` (`curl --cacert ... --resolve cix.internal:443:192.168.15.95` answered 200, verify=0), and Claude Code on agent-1 was 2.1.314.
+  - After the recreate: the staged file held no unfilled `{{SECRET:` token. `claude mcp list` as the operator `claude` reported `cix: https://cix.internal/… (HTTP) - ✔ Connected`. The audit log carried `cix-agent (app-password claude-code) POST /v1/mcp` four times and no refusal.
+  - A tool call made by the agent itself waits on Claude Code being signed in on agent-1, which is the owner's step (#378).
+
 ### MCP tools can write: request bodies, announcements, and the DNS records (#391, ADR-0368 step 3)
 
 - **What changed:**

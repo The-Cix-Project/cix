@@ -27,6 +27,7 @@ Task-oriented "how do I do X" instructions for building, installing, operating, 
 | [`reinstall-and-restore.md`](reinstall-and-restore.md) | Wiping and reinstalling a host, and what a reinstall destroys that a backup cannot carry |
 | [`networking.md`](networking.md) | Networks, physical/VLAN interface attachment, and routing |
 | [`security.md`](security.md) | PKI, HTTPS, and LDAP-backed Unix/SSH accounts |
+| [`mcp.md`](mcp.md) | Letting an agent use Cix through MCP: the switch, its own principal in `cix-agents`, and pointing Claude Code at the gateway |
 
 **Extending** — building on top of Cix:
 
