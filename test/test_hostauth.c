@@ -1254,6 +1254,115 @@ out:
 	return ok;
 }
 
+/*
+ * #670 (ADR-0369): an admin group stays one as the vocabulary grows.
+ * The state file below was written by a build whose vocabulary was two
+ * words: growadmins held both and so was saved as an admin group, and
+ * partial held one. This build's vocabulary is larger. growadmins must
+ * hold every word of it, mcp:call included, and stay in admin_groups;
+ * partial must gain nothing; and the grant must be written back.
+ * Measured on 192.168.15.95 at 0.2.57-647 before the fix: cix-admins
+ * lacked mcp:call and admin_groups read [].
+ */
+static int test_vocabulary_growth(void)
+{
+	char saved_data_dir[PATH_MAX], dir[PATH_MAX], path[PATH_MAX];
+	struct cix_client c;
+	struct cix_response r;
+	const struct json_value *groups;
+	pid_t pid = -1;
+	int ok = 1;
+	FILE *f;
+
+	snprintf(saved_data_dir, sizeof(saved_data_dir), "%s", g_data_dir);
+	cix_client_init(&c, "127.0.0.1", TEST_PORT);
+	if (test_data_dir_create(dir, sizeof(dir)) != 0)
+		return 0;
+	snprintf(path, sizeof(path), "%s/state/hostauth_config.json", dir);
+	f = fopen(path, "w");
+	if (f == NULL) {
+		fprintf(stderr, "FAIL: #670 could not write %s\n", path);
+		ok = 0;
+		goto out;
+	}
+	fputs("{\"admin_groups\":[\"growadmins\"],\"idle_timeout_seconds\":900,"
+	      "\"permissions\":{\"growadmins\":[\"public\",\"containers:read\"],"
+	      "\"partial\":[\"containers:read\"]},\"standard_groups_provisioned\":true}\n",
+	      f);
+	fclose(f);
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", dir);
+	pid = start_daemon();
+	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+		fprintf(stderr, "FAIL: #670 daemon never accepted connections\n");
+		ok = 0;
+		goto out;
+	}
+	groups = get_mapping_groups(&c, &r);
+	if (groups == NULL) {
+		fprintf(stderr, "FAIL: #670 GET permissions, status=%d\n", r.status);
+		ok = 0;
+	} else {
+		const struct json_value *vocab = json_object_get(r.json, "vocabulary");
+		const struct json_value *admins = json_object_get(groups, "growadmins");
+
+		if (vocab == NULL || admins == NULL || admins->type != JSON_ARRAY ||
+		    admins->u.array.count != vocab->u.array.count ||
+		    mapping_group_has(groups, "growadmins", "mcp:call") != 1) {
+			fprintf(stderr, "FAIL: #670 a saved admin group must hold every word of this "
+			                "build's vocabulary: %.300s\n",
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		if (mapping_group_has(groups, "partial", "containers:read") != 1 ||
+		    mapping_group_has(groups, "partial", "mcp:call") != 0 ||
+		    mapping_group_has(groups, "partial", "public") != 0) {
+			fprintf(stderr, "FAIL: #670 a group that was not an admin group must gain "
+			                "nothing: %.300s\n",
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+	}
+	cix_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "GET", "/v1/system/hostauth-config", NULL, &r) != 0 ||
+	    r.status != 200 || !body_has(&r, "\"admin_groups\":[\"growadmins\"]")) {
+		fprintf(stderr, "FAIL: #670 admin_groups must still name growadmins: %.300s\n",
+		        r.body != NULL ? r.body : "");
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	if (test_assert_no_drift(&c, NULL) != 0)
+		ok = 0;
+	if (stop_daemon(pid) != 0)
+		ok = 0;
+	pid = -1;
+
+	/* Written back, so the file itself now says what the host grants. */
+	{
+		char buf[8192];
+		size_t n = 0;
+
+		f = fopen(path, "r");
+		if (f != NULL) {
+			n = fread(buf, 1, sizeof(buf) - 1, f);
+			fclose(f);
+		}
+		buf[n] = '\0';
+		if (strstr(buf, "\"mcp:call\"") == NULL) {
+			fprintf(stderr, "FAIL: #670 the grown grant was not written back: %.300s\n", buf);
+			ok = 0;
+		}
+	}
+out:
+	if (pid > 0 && stop_daemon(pid) != 0)
+		ok = 0;
+	test_data_dir_cleanup(dir);
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", saved_data_dir);
+	return ok;
+}
+
 int main(void)
 {
 	pid_t daemon_pid;
@@ -2645,6 +2754,8 @@ int main(void)
 	if (!test_permission_mapping())
 		ok = 0;
 	if (!test_standard_groups())
+		ok = 0;
+	if (!test_vocabulary_growth())
 		ok = 0;
 	if (!test_auth_throttle())
 		ok = 0;

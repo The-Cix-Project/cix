@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An admin group keeps every permission as the vocabulary grows (#670, ADR-0369)
+
+- **What changed:** when hostauth loads its saved mapping, each group named in the saved `admin_groups` is granted every word of the loading build's vocabulary, and the grant is written back. A group that held only some permissions gains nothing. `test_hostauth` loads a state file written under a two-word vocabulary. It checks that the admin group then holds every word, `mcp:call` included, and stays in `admin_groups`, that a partial group gains nothing, and that the file now names `mcp:call`.
+- **Why:** 0.2.57-647 added `mcp:call`, the first new permission since ADR-0317. On 192.168.15.95 the saved `cix-admins` did not gain it, so `admin_groups` was derived as `[]` and an admin session got 403 from `POST /v1/mcp`. A fresh host on the same release would have given `cix-admins` the new word. The owner's decision: admins get everything.
+- **Verified:** pending the release.
+
 ### cixd answers MCP clients: `POST /v1/mcp`, with twelve read-only tools (#391, ADR-0368 step 2)
 
 - **What changed:**
@@ -17,7 +23,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - Twelve read-only operations are tools: `getHealth`, `getSystemBoot`, `getSystemAssembly`, `listContainers`, `getContainer`, `getContainerStats`, `listPkg`, `getPkg`, `listImages`, `getImage`, `getPipelineRuns` and `listNetworks`.
   - The new `test_mcp`, in SELFTESTS, drives the protocol over the generated table against stubs of the daemon's two callbacks: initialize, notifications, errors, tools/list filtering, path building and encoding, unknown and missing arguments, refusal, a non-2xx answer, a parked handler and the switch. `test_apigen` counts 356 operations and 206 changes.
 - **Why:** step 2 of ADR-0368's order, so an MCP client can read the host. Writes, the `cix-agents` group, agent-1's configuration and parked handlers are steps 3 to 5.
-- **Verified:** compile probe 0.2.57-686, selftest green, `test_mcp` included. Live on 192.168.15.95 as 0.2.57-647 since 2026-11-01, with all 14 containers running. `POST /v1/mcp` from an admin session answers 403 `permission "mcp:call" is required for callMcp`, because no group on that host holds the new word. The tool calls themselves are not yet verified there. The same measurement found that adding a vocabulary word leaves a saved `cix-admins` without it, so `admin_groups` derived to `[]`.
+- **Verified:** compile probe 0.2.57-686, selftest green, `test_mcp` included. Live on 192.168.15.95 as 0.2.57-647 since 2026-11-01, with all 14 containers running. `POST /v1/mcp` from an admin session first answered 403 `permission "mcp:call" is required for callMcp`, because no group on that host held the new word: adding a vocabulary word left the saved `cix-admins` without it, so `admin_groups` derived to `[]`. The owner chose that admins get everything, and `cixctl hostauth-config set --admin-group=cix-admins` restored it. Then, with MCP off, a call answered 503. With it on:
+  - `initialize` answered `2025-06-18` and `serverInfo.version` `0.2.57-647`, and a notification answered a bodiless 202.
+  - `tools/list` offered 12 tools, and all 12 answered `isError: false`.
+  - `getContainer` for a container that does not exist was `isError: true` carrying `no such container`, and an unknown argument was -32602.
+  - Each call wrote its audit line, for example `mcp: claude called listPkg (GET /v1/pkg) -> 200 in 73 ms`.
+
+  MCP was turned off again afterwards. `listPkg`'s result is 6.2 MB, too large for an agent's context, so step 3 has to deal with result size.
 
 ### Every operation says whether an MCP client may call it, and the MCP switch exists (#391, ADR-0368 step 1)
 

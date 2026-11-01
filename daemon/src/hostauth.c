@@ -490,8 +490,14 @@ static int load_config(void)
 	 * ADR-0317 (#540): the mapping, or the migration into it.
 	 *
 	 * With "permissions" present it is the truth and admin_groups is
-	 * re-derived from it below; the file's own admin_groups is only
-	 * there for an older build after a rollback (see save_config()).
+	 * re-derived from it below. The file's own admin_groups is there
+	 * for an older build after a rollback (see save_config()), and for
+	 * one thing more (#670): it names the groups that held every
+	 * permission when the file was written, so each is granted every
+	 * word of this build's vocabulary. An admin group then stays one as
+	 * the vocabulary grows -- the owner, 2026-11-01: admins get
+	 * everything (ADR-0369). Before that, 0.2.57-647 added mcp:call and
+	 * 192.168.15.95's cix-admins lost admin, its admin_groups reading [].
 	 *
 	 * Without it, the file predates #540, and every group in its
 	 * admin_groups is granted every permission -- nobody gains or
@@ -502,7 +508,7 @@ static int load_config(void)
 	memset(g_perm_groups, 0, sizeof(g_perm_groups));
 	{
 		const struct json_value *jperms = json_object_get(root, "permissions");
-		int migrated = 0;
+		int migrated = 0, grown = 0, k;
 		size_t i, j;
 
 		if (jperms != NULL && jperms->type == JSON_OBJECT) {
@@ -535,9 +541,20 @@ static int load_config(void)
 				}
 				g_perm_group_count++;
 			}
-		} else {
-			int k;
+			for (k = 0; k < g_config.admin_group_count; k++) {
+				int at = perm_group_find(g_perm_groups, g_perm_group_count,
+				                         g_config.admin_groups[k]);
 
+				if (at >= 0 && !perm_group_holds_all(&g_perm_groups[at])) {
+					memset(g_perm_groups[at].has, 1, sizeof(g_perm_groups[at].has));
+					fprintf(stderr,
+					        "host auth: admin group \"%s\" granted the permissions this "
+					        "build adds (#670)\n",
+					        g_perm_groups[at].name);
+					grown = 1;
+				}
+			}
+		} else {
 			for (k = 0; k < g_config.admin_group_count; k++) {
 				struct perm_group *pg = &g_perm_groups[g_perm_group_count++];
 
@@ -556,6 +573,9 @@ static int load_config(void)
 			if (save_config() != 0)
 				fprintf(stderr, "host auth: could not write the migrated mapping back; it "
 				                "will be derived again at the next start\n");
+		} else if (grown && save_config() != 0) {
+			fprintf(stderr, "host auth: could not write the grown mapping back; it is "
+			                "granted again at the next start\n");
 		}
 	}
 	return 0;
