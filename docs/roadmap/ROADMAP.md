@@ -2465,7 +2465,9 @@ Gates: `test_mcp` (pure, over the generated table), `test_mcp_gateway` (a real c
 
 With the agent's own credential, from inside agent-1, the gateway offered 14 tools (no DNS writes), `listContainers` succeeded, and `createDnsRecord` was refused for `services:write`, both audited under `cix-agent (app-password claude-code)`.
 
-Not exercised yet: a call that Claude Code makes on its own, which waits on it being signed in on agent-1 (#378), and ADR-0368 step 5, handlers that park.
+Claude Code on agent-1, signed in by the owner, then called `listContainers` through the gateway on its own, audited as `cix-agent (app-password claude-code)` with status 200.
+
+Not exercised yet: ADR-0368 step 5, handlers that park.
 
 ## Part 351: the agent workstation is usable, and outputs roll (#378, #666, #667, #668, #669, ADR-0367, 0.2.57-641 to 0.2.57-645)
 
