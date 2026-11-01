@@ -17,7 +17,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - Twelve read-only operations are tools: `getHealth`, `getSystemBoot`, `getSystemAssembly`, `listContainers`, `getContainer`, `getContainerStats`, `listPkg`, `getPkg`, `listImages`, `getImage`, `getPipelineRuns` and `listNetworks`.
   - The new `test_mcp`, in SELFTESTS, drives the protocol over the generated table against stubs of the daemon's two callbacks: initialize, notifications, errors, tools/list filtering, path building and encoding, unknown and missing arguments, refusal, a non-2xx answer, a parked handler and the switch. `test_apigen` counts 356 operations and 206 changes.
 - **Why:** step 2 of ADR-0368's order, so an MCP client can read the host. Writes, the `cix-agents` group, agent-1's configuration and parked handlers are steps 3 to 5.
-- **Verified:** pending the release.
+- **Verified:** compile probe 0.2.57-686, selftest green, `test_mcp` included. Live on 192.168.15.95 as 0.2.57-647 since 2026-11-01, with all 14 containers running. `POST /v1/mcp` from an admin session answers 403 `permission "mcp:call" is required for callMcp`, because no group on that host holds the new word. The tool calls themselves are not yet verified there. The same measurement found that adding a vocabulary word leaves a saved `cix-admins` without it, so `admin_groups` derived to `[]`.
 
 ### Every operation says whether an MCP client may call it, and the MCP switch exists (#391, ADR-0368 step 1)
 

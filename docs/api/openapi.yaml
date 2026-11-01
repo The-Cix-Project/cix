@@ -4791,8 +4791,9 @@ paths:
         This operation needs `mcp:call`, which only a group granted it
         holds, so a principal without it cannot reach any tool. A
         notification (a message with no `id`) is answered 202 with no
-        body. While the service is off (`PUT /system/mcp`), every
-        request is answered 503.
+        body. While the service is off (`PUT /system/mcp`), a caller
+        holding `mcp:call` is answered 503; the permission is checked
+        first, so a caller without it is answered 403 either way.
       operationId: callMcp
       x-cix-invalidates: []
       x-cix-permission: mcp:call
