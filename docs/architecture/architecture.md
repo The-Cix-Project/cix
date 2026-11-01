@@ -10,7 +10,7 @@ A map of the system's components and how they connect — *what exists now*, not
 
 ```mermaid
 flowchart TB
-    clients["CLIENT SURFACES<br/>cixctl, web dashboard, physical console<br/>pure REST, zero direct runtime access"]
+    clients["CLIENT SURFACES<br/>cixctl, web dashboard, physical console,<br/>MCP clients through the MCP gateway<br/>pure REST, zero direct runtime access"]
     daemon["cixd<br/>the only process with runtime, network,<br/>DNS, PKI, LDAP and pkg access"]
     ext["OUTSIDE THE HOST<br/>recipe sources, package repositories,<br/>upstream projects"]
     state["PERSISTENT STATE<br/>BASE_DIR on the cix-containers partition,<br/>platform state on cix-config"]
@@ -35,6 +35,7 @@ Every capability either surface offers **exists as a REST endpoint first** — t
 - **`cixctl`** — one subcommand per endpoint, plus `console`, a real terminal over a hand-rolled WebSocket ([ADR-0043](../adr/0043-container-console-exec-websocket.md)).
 - **Web dashboard** — vanilla HTML/CSS/JS, no framework and no bundler, served by cixd. `web/api.js` is generated from `openapi.yaml` by `apigen`.
 - **Physical console** — video (`tty0`) and serial (`ttyS0`), a PID 1-spawned `cixctl` ([ADR-0034](../adr/0034-console-login-via-supervised-cixctl.md)).
+- **MCP clients** — an LLM agent such as Claude Code in agent-1, through the **MCP gateway** at `POST /v1/mcp` ([ADR-0368](../adr/0368-cixd-serves-the-api-as-mcp-tools.md)). It is part of cixd, not a separate process. Each tool is one operation the contract marks `x-cix-mcp: tool`, from a table `apigen` generates. A call is checked against that operation's own permission and runs the operation's own handler in-process. A write through it announces its `x-cix-invalidates` as a REST write does. It is off until an operator turns it on, and an agent authenticates as its own directory user in `cix-agents`.
 
 ## cixd
 

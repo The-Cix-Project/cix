@@ -2445,6 +2445,37 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 352: cixd serves its API to MCP clients, and agent-1's Claude Code is connected (#391, #670, ADR-0368, ADR-0369, 0.2.57-646 to 0.2.57-650)
+
+ADR-0368, accepted by the owner on 2026-11-01: cixd answers MCP clients itself at `POST /v1/mcp`, statelessly over Streamable HTTP. Every operation in the contract declares `x-cix-mcp: tool` or `none`, and `apigen` refuses one that says neither. apigen generates the tool table from the contract, including each tool's whole `inputSchema`: path parameters, query parameters and request-body properties. A call runs the operation's own handler in-process, after that operation's own `x-cix-permission` is checked for the same credential. The gateway itself needs `mcp:call`. Every call writes one audit line. The service is off until switched on, through `GET` and `PUT /v1/system/mcp` (`cixctl mcp`).
+
+**Measured on 192.168.15.95, 2026-11-01:**
+
+- **646 (step 1):** after the reboot `cixctl mcp show` reported off. `on` and `off` round-tripped, and each wrote an audit line naming who did it.
+- **647 (step 2):** the gateway and 12 read-only tools. A first call from an admin session was refused 403, because adding `mcp:call` had left the saved `cix-admins` without it, and so `admin_groups` derived to `[]` (#670). After the owner chose that admins get everything, the call answered 503 while MCP was off. With it on, all 12 tools answered without error, and every call was audited.
+- **648 (#670, ADR-0369):** an admin group is granted every word of the loading build's vocabulary, so it stays an admin group as the vocabulary grows. After the reboot `admin_groups` read `cix-admins`, and `cix-admins` held all 31 words.
+- **649 (step 3):** the `cix-agents` standard group, with `mcp:call` and every read. Standard groups are now recorded by name, so a group added later reaches a host that already has the others. On boot .95 logged `standard group cix-agents provisioned (gid 10005)`.
+- **650 (step 3):** tools can write. The gateway sends body arguments as the request body, and a write announces its `x-cix-invalidates` as a REST write does, because it does not pass through `dispatch()`. The DNS records are the first writes, which makes 17 tools. A throwaway record was created, updated and deleted through the gateway and read back over REST at each step, each call audited with its own status. `POST /v1/events/verify` then answered `"drift":[]` over 88 reads.
+- **Step 4 (agent-1 1.2.0, no release):** `cix-agent` (uid 10003) is a directory user in `cix-agents`, with no login password and one app password, `claude-code`.
+  - agent-1's deployment stages `/etc/claude-code/managed-settings.json`: a `managedMcpServers` entry for `https://cix.internal/v1/mcp`, whose Basic header is filled from a `{{SECRET:...}}` token at apply. It also exports `NODE_EXTRA_CA_CERTS` for the platform CA.
+  - Before agent-1 was recreated, its CA bundle verified cixd's certificate as `cix.internal`, and its Claude Code was 2.1.314.
+  - After the recreate, `claude mcp list` as `claude` reported `cix … ✔ Connected`. The audit log showed `cix-agent (app-password claude-code) POST /v1/mcp`.
+
+Gates: `test_mcp` (pure, over the generated table), `test_mcp_gateway` (a real cixd: writes, audit, no drift), and `test_hostauth`'s vocabulary-growth and standard-group cases.
+
+Not exercised yet: a tool call made by the agent itself, which waits on Claude Code being signed in on agent-1 (#378), and ADR-0368 step 5, handlers that park.
+
+## Part 351: the agent workstation is usable, and outputs roll (#378, #666, #667, #668, #669, ADR-0367, 0.2.57-641 to 0.2.57-645)
+
+Using agent-1 found the gaps a workstation hits first, and each is fixed and measured on 192.168.15.95 (2026-10-31):
+
+- **641 (#667):** cixctl reads `CIXCTL_HOST` and `CIXCTL_PORT` when no flag is given, and refuses a port outside 1 to 65535 rather than defaulting. agent-1 1.1.0 exports both in `/etc/profile`, and a plain `cixctl health` there answered `ok`.
+- **642 (ADR-0367):** an output resolves to the recipe that builds it when its available version is looked up, so it rolls with that recipe. `cixctl` in the `agent` image rolled from 0.2.57-640 to 642 with no operator action.
+- **643 (#669):** the re-derivation after a sync queues a converging image that declares a rolling entry it does not hold. hibr, newly declared in `agent@1.0.4`, had waited eleven minutes. After the reboot every rolling entry in `agent` moved by itself.
+- **644 (#668):** the #525 publish check covers every output's `artifact_sha256.<output>`, as it did the main package's.
+- **645 (#666):** a failed build records how its command ended, from cbs's `command-end` event: `exit_status`, and `signal`. `cixctl pkg ls` shows `(command exited N)` or `(command killed by signal N)`. It appeared live on compile probe 684's failed row, `(command exited 2)`.
+- `less` joined the agent and jumpbox images.
+
 ## Part 350: a recipe's outputs are packages, cixctl is one, and the agent workstation runs (#378, ADR-0366, ADR-0367, 0.2.57-633 to 0.2.57-640)
 
 ADR-0367 lets one recipe build several packages from one source, using cbs v0.1.119's `output` blocks. The cix recipe's first output is `cixctl`, so a workload image (ADR-0366's agent image, next) can install the client without taking the whole platform. Each output is an ordinary package with its own approval line. A build caches and publishes every package it produced. An install takes the entry's own artifact, unpacked, never the build's whole dest. A cache or repository hit for a main package counts only when every output comes with it. The control-plane root takes `/bin/cixctl` from the `cixctl` package of the same cix build, and is refused, visibly, when that package is absent.

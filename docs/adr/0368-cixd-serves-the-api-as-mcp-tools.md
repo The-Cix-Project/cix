@@ -64,3 +64,15 @@ Measured on 2026-11-01:
 - apigen gains one mandatory annotation and one emitted table. Every operation is edited once, mechanically, to declare `none`.
 - `test_apigen`'s counts move. `docs/api/README.md` changes with the contract in the same change. A new `test_mcp` joins `DAEMON_SELFTESTS`.
 - An agent's reach is its group's permissions, and every call it makes is in the audit log under its own user.
+
+## Implementation notes
+
+Recorded as each step lands, where the implementation is narrower than or departs from the text above.
+
+- **Steps 1 to 4 landed in 0.2.57-646 to 0.2.57-650 and in agent-1 1.2.0**, verified on 192.168.15.95 on 2026-11-01. ROADMAP Part 352 has the measurements.
+- **`test_mcp` is pure and `test_mcp_gateway` is the daemon test.** The protocol is tested over the generated table against stubs of the two callbacks the gateway reaches the daemon through: may the caller hold this permission, and run this request. What a call does once it reaches a handler, including the announcement a write must make, is tested against a real cixd and ends with `test_assert_no_drift()`.
+- **The audit line is `mcp: <who> called <tool> (<METHOD> <path>) -> <status> in <N> ms`.** Decision 8 wrote `surface=mcp`; the line says it with its `mcp:` prefix. `<who>` is `audit_who()`, so an app password is named beside its user.
+- **A write announces from `api_run()`.** Decision 9 says the inner handler's own setters announce what it changes. They announce only the changes a subsystem makes by itself; a change's `x-cix-invalidates` is announced by `dispatch()`, which a gateway call does not pass through, so `api_run()` makes the same `events_announce_change()` call for a successful write.
+- **Adding `mcp:call` exposed a gap in ADR-0317's mapping**: a saved group gained no word that a later build added, so `cix-admins` stopped holding every permission. [ADR-0369](0369-an-admin-group-holds-every-permission-including-new-ones.md) settles it: an admin group holds every permission, including later ones. Standard groups are recorded as provisioned by name, so `cix-agents` reached a host that already had the other three.
+- **agent-1's client configuration is in `/etc/claude-code/managed-settings.json`, not in the operator's home.** Decision 7 placed the app password in a file in the operator's home. A deployment cannot write there, because `/home` is the volume, so step 4 stages it where Claude Code reads managed settings: a `managedMcpServers` entry, which is additive, unlike `managed-mcp.json`. The secret therefore sits in the container's rendered definition and in a system backup, as the LDAP bind password already does. It is reached over HTTPS at `cix.internal`, the name cixd's certificate carries, because that key refuses plain HTTP.
+- **Responses are not trimmed (decision 5), and `listPkg` answers 6.2 MB on .95.** That is a question for the API's own filters, not for the gateway.

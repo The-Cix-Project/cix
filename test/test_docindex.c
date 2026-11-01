@@ -975,6 +975,7 @@ static void check_architecture_components(void)
 		{ "procfuse.c", "procfuse" },
 		{ "esp.c", "ESP" },
 		{ "trustanchor.c", "Trust anchors" },
+		{ "mcp.c", "MCP gateway" },
 	};
 	char *doc = slurp("docs/architecture/architecture.md");
 	size_t i;
