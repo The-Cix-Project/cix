@@ -10,7 +10,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **What changed:** when hostauth loads its saved mapping, each group named in the saved `admin_groups` is granted every word of the loading build's vocabulary, and the grant is written back. A group that held only some permissions gains nothing. `test_hostauth` loads a state file written under a two-word vocabulary. It checks that the admin group then holds every word, `mcp:call` included, and stays in `admin_groups`, that a partial group gains nothing, and that the file now names `mcp:call`.
 - **Why:** 0.2.57-647 added `mcp:call`, the first new permission since ADR-0317. On 192.168.15.95 the saved `cix-admins` did not gain it, so `admin_groups` was derived as `[]` and an admin session got 403 from `POST /v1/mcp`. A fresh host on the same release would have given `cix-admins` the new word. The owner's decision: admins get everything.
-- **Verified:** pending the release.
+- **Verified:** compile probe 0.2.57-687, selftest green, `test_hostauth` included. Live on 192.168.15.95 as 0.2.57-648 since 2026-11-01: after the reboot `admin_groups` still read `cix-admins`, `cix-admins` held all 31 words, `cix-operators` held no `mcp:call`, and all 14 containers were running. That host's file had been restored by hand before this release, so the growth path itself is proven by the test, not on the box.
 
 ### cixd answers MCP clients: `POST /v1/mcp`, with twelve read-only tools (#391, ADR-0368 step 2)
 
