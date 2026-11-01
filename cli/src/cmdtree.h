@@ -542,6 +542,14 @@ static const struct cli_node n_wireless_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
+/* ADR-0368 */
+static const struct cli_node n_mcp_subs[] = {
+	{ "off", NULL, NULL },
+	{ "on", NULL, NULL },
+	{ "show", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
 static const struct cli_node n_pager_subs[] = {
 	{ "off", NULL, NULL },
 	{ "on", NULL, NULL },
@@ -1658,6 +1666,7 @@ static const struct cli_node CLI_TREE[] = {
 	{ "ksm", n_ksm_flags, n_ksm_subs },
 	{ "zswap", n_zswap_flags, n_zswap_subs },
 	{ "wireless", n_wireless_flags, n_wireless_subs },
+	{ "mcp", NULL, n_mcp_subs },
 	{ "swap", NULL, n_swap_subs },
 	{ "host-stats", NULL, NULL },
 	{ "server-health", NULL, n_server_health_subs },
