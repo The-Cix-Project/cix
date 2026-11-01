@@ -61,13 +61,18 @@ static int stub_may(void *ctx, const char *permission)
 	return strcmp(permission, g_denied) != 0;
 }
 
-static int stub_run(void *ctx, const char *method, const char *path, int *status, char **body,
-                    size_t *body_len)
+static char g_ran_body[1024];
+static int g_ran_with_body;
+
+static int stub_run(void *ctx, const char *method, const char *path, const char *req,
+                    size_t req_len, int *status, char **body, size_t *body_len)
 {
 	(void)ctx;
 	g_runs++;
 	snprintf(g_ran_method, sizeof(g_ran_method), "%s", method);
 	snprintf(g_ran_path, sizeof(g_ran_path), "%s", path);
+	g_ran_with_body = req != NULL;
+	snprintf(g_ran_body, sizeof(g_ran_body), "%.*s", (int)req_len, req != NULL ? req : "");
 	*status = g_run_status;
 	*body = g_run_body != NULL ? strdup(g_run_body) : NULL;
 	*body_len = g_run_body != NULL ? strlen(g_run_body) : 0;
@@ -148,14 +153,14 @@ static void test_messages(void)
 
 static void test_tools_list(void)
 {
-	char out[65536];
+	static char out[262144];
 
 	check(mcp_tool_count() > 0, "the contract marks at least one tool");
 	g_denied = "";
 	ask("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}", out, sizeof(out));
 	check(has(out, "\"name\":\"getContainer\""), "tools/list offers getContainer");
 	check(has(out, "\"required\":[\"name\"]"), "a path parameter is required");
-	check(has(out, "\"include_internal\":{\"type\":\"string\"}"),
+	check(has(out, "\"include_internal\":{\"type\":\"string\""),
 	      "a query parameter is a property");
 	check(has(out, "\"additionalProperties\":false"), "no other argument is accepted");
 	check(has(out, "\"readOnlyHint\":true"), "a GET is read-only");
@@ -247,6 +252,97 @@ static void test_tools_call(void)
 	g_run_body = "{\"name\":\"dns-1\"}";
 }
 
+/* The tool named `name` in a parsed tools/list response, or NULL. */
+static const struct json_value *listed_tool(const struct json_value *root, const char *name)
+{
+	const struct json_value *tools =
+	    json_object_get(json_object_get(root, "result"), "tools");
+	size_t i;
+
+	for (i = 0; tools != NULL && tools->type == JSON_ARRAY && i < tools->u.array.count; i++) {
+		const char *n = json_as_string(json_object_get(tools->u.array.items[i], "name"));
+
+		if (n != NULL && strcmp(n, name) == 0)
+			return tools->u.array.items[i];
+	}
+	return NULL;
+}
+
+/*
+ * A write's inputSchema carries its body, rendered by apigen; read by
+ * parsing the response, as a client does, so an escaping fault shows
+ * as the wrong pattern rather than as text that merely contains one.
+ */
+static void test_write_schema(void)
+{
+	static char out[262144];
+	struct json_value *root;
+	const struct json_value *t, *schema, *props, *required;
+	const char *pattern;
+	size_t i;
+	int has_name = 0, has_ip = 0;
+
+	g_denied = "";
+	ask("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}", out, sizeof(out));
+	root = json_parse(out, strlen(out));
+	check(root != NULL, "tools/list is one JSON document");
+	t = listed_tool(root, "createDnsRecord");
+	schema = json_object_get(t, "inputSchema");
+	props = json_object_get(schema, "properties");
+	required = json_object_get(schema, "required");
+	pattern = json_as_string(json_object_get(json_object_get(props, "name"), "pattern"));
+	check(t != NULL && schema != NULL, "createDnsRecord is listed with an inputSchema");
+	check(pattern != NULL && strcmp(pattern, "^[A-Za-z0-9\\-]{1,63}(\\.[A-Za-z0-9\\-]{1,63})*$") == 0,
+	      "a body property's pattern reaches the client exactly as the contract writes it");
+	check(json_object_get(props, "ip") != NULL, "a body property is an argument");
+	for (i = 0; required != NULL && required->type == JSON_ARRAY && i < required->u.array.count;
+	     i++) {
+		const char *r = json_as_string(required->u.array.items[i]);
+
+		has_name |= r != NULL && strcmp(r, "name") == 0;
+		has_ip |= r != NULL && strcmp(r, "ip") == 0;
+	}
+	check(has_name && has_ip, "a required body property is required");
+	check(json_object_get(json_object_get(listed_tool(root, "deleteDnsRecord"), "annotations"),
+	                      "destructiveHint") != NULL &&
+	          json_object_get(json_object_get(listed_tool(root, "deleteDnsRecord"), "annotations"),
+	                          "destructiveHint")
+	                  ->u.boolean == 1,
+	      "a DELETE is destructive");
+	json_free(root);
+}
+
+static void test_write_call(void)
+{
+	char out[8192];
+
+	g_denied = "";
+	ask("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":"
+	    "\"createDnsRecord\",\"arguments\":{\"name\":\"t1.lan\",\"ip\":\"10.0.0.1\"}}}",
+	    out, sizeof(out));
+	check(strcmp(g_ran_method, "POST") == 0 && strcmp(g_ran_path, "/v1/dns/records") == 0 &&
+	          g_ran_with_body && strcmp(g_ran_body, "{\"name\":\"t1.lan\",\"ip\":\"10.0.0.1\"}") == 0,
+	      "a body's arguments become the body, as JSON");
+
+	ask("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":"
+	    "\"updateDnsRecord\",\"arguments\":{\"name\":\"t1.lan\",\"ip\":\"10.0.0.2\"}}}",
+	    out, sizeof(out));
+	check(strcmp(g_ran_method, "PUT") == 0 && strcmp(g_ran_path, "/v1/dns/records/t1.lan") == 0 &&
+	          strcmp(g_ran_body, "{\"ip\":\"10.0.0.2\"}") == 0,
+	      "a path argument goes to the path, and only the body's to the body");
+
+	ask("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":"
+	    "\"deleteDnsRecord\",\"arguments\":{\"name\":\"t1.lan\"}}}",
+	    out, sizeof(out));
+	check(strcmp(g_ran_method, "DELETE") == 0 && !g_ran_with_body,
+	      "an operation with no requestBody is sent none");
+
+	ask("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":"
+	    "\"getContainer\",\"arguments\":{\"name\":\"x\"}}}",
+	    out, sizeof(out));
+	check(!g_ran_with_body, "a GET is sent no body");
+}
+
 /* The switch: off when never saved, persisted, read back. */
 static void test_switch(void)
 {
@@ -282,6 +378,8 @@ int main(void)
 	test_messages();
 	test_tools_list();
 	test_tools_call();
+	test_write_schema();
+	test_write_call();
 	test_switch();
 	if (g_failures != 0) {
 		printf("test_mcp: %d FAILED\n", g_failures);

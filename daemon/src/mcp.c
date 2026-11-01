@@ -196,45 +196,6 @@ static void do_initialize(struct json_writer *w, const struct json_value *id,
 	jw_obj_close(w);
 }
 
-/* A comma-separated list as JSON Schema properties, every one a string. */
-static void write_string_props(struct json_writer *w, const char *list)
-{
-	const char *p = list;
-
-	while (*p != '\0') {
-		const char *comma = strchr(p, ',');
-		size_t len = comma != NULL ? (size_t)(comma - p) : strlen(p);
-		char name[128];
-
-		snprintf(name, sizeof(name), "%.*s", (int)len, p);
-		jw_key(w, name);
-		jw_obj_open(w);
-		jw_key(w, "type");
-		jw_str(w, "string");
-		jw_obj_close(w);
-		if (comma == NULL)
-			break;
-		p = comma + 1;
-	}
-}
-
-static void write_string_list(struct json_writer *w, const char *list)
-{
-	const char *p = list;
-
-	while (*p != '\0') {
-		const char *comma = strchr(p, ',');
-		size_t len = comma != NULL ? (size_t)(comma - p) : strlen(p);
-		char name[128];
-
-		snprintf(name, sizeof(name), "%.*s", (int)len, p);
-		jw_str(w, name);
-		if (comma == NULL)
-			break;
-		p = comma + 1;
-	}
-}
-
 /* tools/list: every tool the caller's permissions allow. */
 static void do_tools_list(struct json_writer *w, const struct json_value *id,
                           const struct mcp_caller *c)
@@ -255,22 +216,10 @@ static void do_tools_list(struct json_writer *w, const struct json_value *id,
 		jw_str(w, t->name);
 		jw_key(w, "description");
 		jw_str(w, t->summary);
+		/* Rendered by apigen from the contract: the path parameters,
+		 * the query parameters and the body's properties. */
 		jw_key(w, "inputSchema");
-		jw_obj_open(w);
-		jw_key(w, "type");
-		jw_str(w, "object");
-		jw_key(w, "properties");
-		jw_obj_open(w);
-		write_string_props(w, t->path_params);
-		write_string_props(w, t->query_params);
-		jw_obj_close(w);
-		jw_key(w, "required");
-		jw_arr_open(w);
-		write_string_list(w, t->path_params);
-		jw_arr_close(w);
-		jw_key(w, "additionalProperties");
-		jw_bool(w, 0);
-		jw_obj_close(w);
+		jw_raw_text(w, t->input_schema, strlen(t->input_schema));
 		jw_key(w, "annotations");
 		jw_obj_open(w);
 		jw_key(w, "readOnlyHint");
@@ -343,7 +292,8 @@ static int build_path(const struct cix_mcp_tool *t, const struct json_value *arg
 	}
 	for (i = 0; args != NULL && i < args->u.object.count; i++)
 		if (!in_list(t->path_params, args->u.object.keys[i]) &&
-		    !in_list(t->query_params, args->u.object.keys[i])) {
+		    !in_list(t->query_params, args->u.object.keys[i]) &&
+		    !in_list(t->body_params, args->u.object.keys[i])) {
 			snprintf(why, why_size, "%s takes no argument \"%s\"", t->name,
 			         args->u.object.keys[i]);
 			return -1;
@@ -400,6 +350,26 @@ too_long:
 	return -1;
 }
 
+/*
+ * The request body for a tool call: the arguments the body declares,
+ * as the JSON values the client sent. The handler validates them as it
+ * validates any request, so nothing is checked twice here.
+ */
+static void build_body(const struct cix_mcp_tool *t, const struct json_value *args,
+                       struct json_writer *body)
+{
+	size_t i;
+
+	jw_obj_open(body);
+	for (i = 0; args != NULL && args->type == JSON_OBJECT && i < args->u.object.count; i++) {
+		if (!in_list(t->body_params, args->u.object.keys[i]))
+			continue;
+		jw_key(body, args->u.object.keys[i]);
+		jw_value(body, args->u.object.values[i]);
+	}
+	jw_obj_close(body);
+}
+
 static long long now_ms(void)
 {
 	struct timespec ts;
@@ -436,6 +406,7 @@ static void do_tools_call(struct json_writer *w, const struct json_value *id,
 	const struct json_value *args = json_object_get(params, "arguments");
 	const struct cix_mcp_tool *t = tool_by_name(name);
 	char path[2048], why[256], msg[384];
+	struct json_writer req;
 	char *body = NULL;
 	size_t body_len = 0;
 	int status = 0;
@@ -459,12 +430,18 @@ static void do_tools_call(struct json_writer *w, const struct json_value *id,
 		write_error(w, id, -32602, why);
 		return;
 	}
+	jw_init(&req);
+	if (t->has_body)
+		build_body(t, args, &req);
 	started = now_ms();
-	if (c->run(c->ctx, t->method, path, &status, &body, &body_len) != 0) {
+	if (c->run(c->ctx, t->method, path, t->has_body ? req.buf : NULL, t->has_body ? req.len : 0,
+	           &status, &body, &body_len) != 0) {
+		jw_free(&req);
 		snprintf(msg, sizeof(msg), "%s %s matched no route", t->method, path);
 		write_call_result(w, id, msg, 1);
 		return;
 	}
+	jw_free(&req);
 	logstore_write("audit", "info", "mcp: %s called %s (%s %s) -> %d in %lld ms (ADR-0368)", user,
 	               t->name, t->method, path, status, now_ms() - started);
 	if (status == 0) {

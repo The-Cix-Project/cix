@@ -40,11 +40,12 @@ struct mcp_caller {
 	const char *server_version; /* initialize's serverInfo.version */
 	/* 1 when the caller holds `permission`. */
 	int (*may)(void *ctx, const char *permission);
-	/* Runs `method` `path` (query included) in-process. 0 with
-	 * *status and a malloc'd *body (NULL when none) when a route
+	/* Runs `method` `path` (query included) in-process, with `req`
+	 * (NULL when the operation takes no body) as the request body. 0
+	 * with *status and a malloc'd *body (NULL when none) when a route
 	 * answered; -1 when none matches. */
-	int (*run)(void *ctx, const char *method, const char *path, int *status, char **body,
-	           size_t *body_len);
+	int (*run)(void *ctx, const char *method, const char *path, const char *req,
+	           size_t req_len, int *status, char **body, size_t *body_len);
 };
 
 /*

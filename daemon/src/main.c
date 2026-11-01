@@ -28106,12 +28106,12 @@ static int mcp_caller_may(void *c, const char *permission)
 }
 
 /* ADR-0368: a tool runs its operation's own handler, as the caller. */
-static int mcp_caller_run(void *c, const char *method, const char *path, int *status, char **body,
-                          size_t *body_len)
+static int mcp_caller_run(void *c, const char *method, const char *path, const char *req,
+                          size_t req_len, int *status, char **body, size_t *body_len)
 {
 	const struct api_ctx *ctx = c;
 
-	return api_run(method, path, NULL, 0, ctx->user, ctx->peer_ip, status, body, body_len);
+	return api_run(method, path, req, req_len, ctx->user, ctx->peer_ip, status, body, body_len);
 }
 
 /* POST /v1/mcp (ADR-0368) */
@@ -28127,7 +28127,9 @@ static void op_callMcp(const struct api_ctx *ctx)
 	}
 	memset(&caller, 0, sizeof(caller));
 	caller.ctx = (void *)ctx;
-	caller.user = ctx->user != NULL ? ctx->user : "";
+	/* audit_who(): an app password, the agent's credential, is named
+	 * beside its user. */
+	caller.user = audit_who();
 	caller.server_version = CIX_BUILD_VERSION;
 	caller.may = mcp_caller_may;
 	caller.run = mcp_caller_run;
@@ -34892,6 +34894,12 @@ static int api_run(const char *method, const char *path, const char *body_in, si
 	stallwatch_step(step);
 	g_api_routes[idx].fn(&ctx);
 	status = http_last_status();
+	/* ADR-0339: a change that succeeded announces what its contract
+	 * makes stale, exactly as dispatch() does for the same route. A
+	 * write through the MCP gateway (ADR-0368) reaches here and not
+	 * dispatch(). */
+	if (strcmp(method, "GET") != 0 && status >= 200 && status < 300)
+		events_announce_change(g_api_routes[idx].op_id);
 	g_response_conn = saved_conn;
 	g_events_response_slot = saved_slot;
 	free(req_body);

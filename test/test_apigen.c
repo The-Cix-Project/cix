@@ -845,6 +845,33 @@ int main(void)
 	               "      x-cix-permission: public\n"
 	               "      x-cix-mcp: maybe\n",
 	               "must be tool or none");
+	/* A tool's body properties are arguments beside its parameters, so
+	 * one may not share a parameter's name. */
+	expect_refusal("an MCP tool whose body property is named like its path parameter",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing/{name}:\n"
+	               "    put:\n"
+	               "      operationId: putThing\n"
+	               "      x-cix-invalidates: []\n"
+	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: tool\n"
+	               "      parameters:\n"
+	               "        - name: name\n"
+	               "          in: path\n"
+	               "          required: true\n"
+	               "          schema:\n"
+	               "            type: string\n"
+	               "      requestBody:\n"
+	               "        required: true\n"
+	               "        content:\n"
+	               "          application/json:\n"
+	               "            schema:\n"
+	               "              type: object\n"
+	               "              properties:\n"
+	               "                name:\n"
+	               "                  type: string\n",
+	               "would mean both");
 	expect_refusal("a malformed vocabulary word",
 	               "x-cix-permissions:\n  - Things:Read\n"
 	               "paths:\n"

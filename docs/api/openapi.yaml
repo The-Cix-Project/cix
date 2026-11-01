@@ -9542,7 +9542,7 @@ paths:
       operationId: listDnsRecords
       x-cix-read: state
       x-cix-permission: services:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -9568,7 +9568,7 @@ paths:
       operationId: createDnsRecord
       x-cix-invalidates: [listDnsRecords, getDnsRecord]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -9608,7 +9608,7 @@ paths:
       operationId: getDnsRecord
       x-cix-read: state
       x-cix-permission: services:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/DnsRecordName"
@@ -9635,7 +9635,7 @@ paths:
       operationId: updateDnsRecord
       x-cix-invalidates: [listDnsRecords, getDnsRecord]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/DnsRecordName"
@@ -9676,7 +9676,7 @@ paths:
       operationId: deleteDnsRecord
       x-cix-invalidates: [listDnsRecords, getDnsRecord]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/DnsRecordName"

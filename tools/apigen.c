@@ -182,6 +182,11 @@ struct api_op {
 	 * DELETE implies it so the common case needs no annotation.
 	 */
 	char req_schema[APIGEN_ID_MAX];
+	/* Whether the operation declares a requestBody at all. req_schema
+	 * is blanked for a body schema with no properties, so it cannot
+	 * answer this; the MCP gateway sends a body exactly when this is
+	 * set (ADR-0368). */
+	int has_body;
 	/*
 	 * #592: the path parameters as a schema of their own, synthesized
 	 * as `<operationId>Args` -- named for `openForm`'s `args`, which is
@@ -2548,6 +2553,44 @@ static void check_mcp_annotations(const char *spec)
 			       g_ops[i].method, g_ops[i].path);
 }
 
+/*
+ * ADR-0368: a tool's arguments are its path parameters, its query
+ * parameters and its body's properties, side by side, so a tool is
+ * called the way the operation reads. A body property named like a
+ * parameter would make one argument mean two things; refused here,
+ * where one of them can be renamed, rather than guessed at runtime.
+ */
+static void check_mcp_arguments(const char *spec)
+{
+	int i, f, q;
+
+	for (i = 0; i < g_op_count; i++) {
+		const struct api_op *op = &g_ops[i];
+		const struct comp_schema *body;
+
+		if (strcmp(op->mcp, "tool") != 0 || op->req_schema[0] == '\0')
+			continue;
+		body = comp_schema_find(op->req_schema);
+		for (f = 0; body != NULL && f < body->n_field; f++) {
+			const char *name = body->field[f].name;
+			char probe[APIGEN_QNAME_MAX + 2];
+			int clash = 0;
+
+			if (body->field[f].read_only)
+				continue;
+			snprintf(probe, sizeof(probe), "{%s}", name);
+			clash = strstr(op->path, probe) != NULL;
+			for (q = 0; q < op->n_query; q++)
+				clash |= strcmp(op->query[q], name) == 0;
+			if (clash)
+				die_at(spec, op->line,
+				       "%s is x-cix-mcp: tool, and its body property \"%s\" has the name of "
+				       "one of its parameters -- an MCP argument would mean both (ADR-0368)",
+				       op->op_id, name);
+		}
+	}
+}
+
 /* ADR-0339: a read the events stream announces -- state, sample or
  * session. Streams and derived reads are never announced. */
 static int is_announced_read(const struct api_op *o)
@@ -3041,6 +3084,227 @@ static void emit_permissions(const char *out_path)
  * A row's path is the contract's, `{name}` and all; `path_params` and
  * `query_params` are comma-separated names, path ones in path order.
  */
+/*
+ * ADR-0368: a tool's inputSchema, rendered as JSON text here so cixd
+ * carries it whole and builds nothing at runtime. Text that came from
+ * the contract is JSON-escaped into the buffer; the buffer is then
+ * C-escaped by emit_js_string() as it is written, so a pattern's `\-`
+ * is `\\-` on the wire and `\-` again once a client parses it.
+ */
+struct mcp_json {
+	char *p;
+	size_t len, cap;
+};
+
+static void mj_raw(struct mcp_json *b, const char *s)
+{
+	size_t n = strlen(s);
+
+	if (b->len + n + 1 > b->cap) {
+		size_t cap = b->cap != 0 ? b->cap : 1024;
+
+		while (b->len + n + 1 > cap)
+			cap *= 2;
+		b->p = realloc(b->p, cap);
+		if (b->p == NULL) {
+			fprintf(stderr, "apigen: out of memory\n");
+			exit(1);
+		}
+		b->cap = cap;
+	}
+	memcpy(b->p + b->len, s, n + 1);
+	b->len += n;
+}
+
+/* A JSON string, with one level of YAML quoting removed. */
+static void mj_str(struct mcp_json *b, const char *raw)
+{
+	size_t n = strlen(raw), i;
+	char c[8];
+
+	if (n >= 2 && ((raw[0] == '"' && raw[n - 1] == '"') ||
+	               (raw[0] == '\'' && raw[n - 1] == '\''))) {
+		raw++;
+		n -= 2;
+	}
+	mj_raw(b, "\"");
+	for (i = 0; i < n; i++) {
+		unsigned char ch = (unsigned char)raw[i];
+
+		if (ch == '"' || ch == '\\') {
+			c[0] = '\\';
+			c[1] = (char)ch;
+			c[2] = '\0';
+		} else if (ch == '\n') {
+			snprintf(c, sizeof(c), "\\n");
+		} else if (ch < 0x20) {
+			snprintf(c, sizeof(c), "\\u%04x", ch);
+		} else {
+			c[0] = (char)ch;
+			c[1] = '\0';
+		}
+		mj_raw(b, c);
+	}
+	mj_raw(b, "\"");
+}
+
+/* A number, boolean or null verbatim; anything else as a string. */
+static void mj_literal(struct mcp_json *b, const char *raw)
+{
+	const char *p = raw;
+	int digits = 0, other = 0;
+
+	if (strcmp(raw, "true") == 0 || strcmp(raw, "false") == 0 || strcmp(raw, "null") == 0) {
+		mj_raw(b, raw);
+		return;
+	}
+	if (*p == '-' || *p == '+')
+		p++;
+	for (; *p != '\0'; p++) {
+		if (*p >= '0' && *p <= '9')
+			digits++;
+		else if (*p != '.')
+			other = 1;
+	}
+	if (digits > 0 && !other)
+		mj_raw(b, raw);
+	else
+		mj_str(b, raw);
+}
+
+static void mj_object(struct mcp_json *b, const struct comp_schema *s, int depth);
+
+/* One property's JSON Schema. */
+static void mj_field(struct mcp_json *b, const struct schema_field *fl, int depth)
+{
+	const struct comp_schema *of = fl->of[0] != '\0' ? comp_schema_find(fl->of) : NULL;
+	const char *type = fl->type[0] != '\0' ? fl->type : "string";
+
+	/* A field holding a named schema is that schema, or an array of
+	 * it; depth bounds a schema that names itself. */
+	if (of != NULL && depth < 4) {
+		if (strcmp(type, "array") == 0) {
+			mj_raw(b, "{\"type\":\"array\",\"items\":");
+			mj_object(b, of, depth + 1);
+		} else {
+			mj_object(b, of, depth + 1);
+			return;
+		}
+	} else {
+		mj_raw(b, "{\"type\":");
+		if (fl->nullable) {
+			mj_raw(b, "[");
+			mj_str(b, type);
+			mj_raw(b, ",\"null\"]");
+		} else {
+			mj_str(b, type);
+		}
+		if (strcmp(type, "array") == 0) {
+			mj_raw(b, ",\"items\":{\"type\":");
+			mj_str(b, fl->items[0] != '\0' ? fl->items : "string");
+			mj_raw(b, "}");
+		}
+	}
+	if (fl->format[0] != '\0') {
+		mj_raw(b, ",\"format\":");
+		mj_str(b, fl->format);
+	}
+	if (fl->pattern[0] != '\0') {
+		mj_raw(b, ",\"pattern\":");
+		mj_str(b, fl->pattern);
+	}
+	if (fl->enum_list[0] != '\0') {
+		char items[APIGEN_ENUM_ITEMS_MAX][APIGEN_ENUM_ITEM_MAX];
+		char tmp[APIGEN_ENUM_MAX];
+		int n, e;
+
+		snprintf(tmp, sizeof(tmp), "%s", fl->enum_list);
+		n = parse_enum_list(tmp, items, APIGEN_ENUM_ITEMS_MAX);
+		if (n < 0 || n > APIGEN_ENUM_ITEMS_MAX) {
+			fprintf(stderr, "apigen: %s has an enum the MCP table cannot hold\n", fl->name);
+			exit(1);
+		}
+		mj_raw(b, ",\"enum\":[");
+		for (e = 0; e < n; e++) {
+			if (e > 0)
+				mj_raw(b, ",");
+			if (strcmp(type, "string") == 0)
+				mj_str(b, items[e]);
+			else
+				mj_literal(b, items[e]);
+		}
+		mj_raw(b, "]");
+	}
+	if (fl->minimum[0] != '\0') {
+		mj_raw(b, ",\"minimum\":");
+		mj_literal(b, fl->minimum);
+	}
+	if (fl->maximum[0] != '\0') {
+		mj_raw(b, ",\"maximum\":");
+		mj_literal(b, fl->maximum);
+	}
+	if (fl->max_length[0] != '\0') {
+		mj_raw(b, ",\"maxLength\":");
+		mj_literal(b, fl->max_length);
+	}
+	if (fl->default_lit[0] != '\0') {
+		mj_raw(b, ",\"default\":");
+		mj_literal(b, fl->default_lit);
+	}
+	if (fl->title[0] != '\0') {
+		mj_raw(b, ",\"title\":");
+		mj_str(b, fl->title);
+	}
+	if (fl->desc >= 0 && g_desc_arena[fl->desc] != '\0') {
+		mj_raw(b, ",\"description\":");
+		mj_str(b, g_desc_arena + fl->desc);
+	}
+	mj_raw(b, "}");
+}
+
+/* Writes the properties of `s` a caller may send, each preceded by a
+ * comma when *first is clear; a readOnly field is the server's. */
+static void mj_props(struct mcp_json *b, const struct comp_schema *s, int depth, int *first)
+{
+	int f;
+
+	for (f = 0; f < s->n_field; f++) {
+		if (s->field[f].read_only)
+			continue;
+		mj_raw(b, *first ? "" : ",");
+		*first = 0;
+		mj_str(b, s->field[f].name);
+		mj_raw(b, ":");
+		mj_field(b, &s->field[f], depth);
+	}
+}
+
+/* The required names of `s` a caller sends, comma-led likewise. */
+static void mj_required(struct mcp_json *b, const struct comp_schema *s, int *first)
+{
+	int q, f;
+
+	for (q = 0; q < s->n_required; q++)
+		for (f = 0; f < s->n_field; f++)
+			if (strcmp(s->field[f].name, s->required[q]) == 0 && !s->field[f].read_only) {
+				mj_raw(b, *first ? "" : ",");
+				*first = 0;
+				mj_str(b, s->required[q]);
+			}
+}
+
+static void mj_object(struct mcp_json *b, const struct comp_schema *s, int depth)
+{
+	int first = 1;
+
+	mj_raw(b, "{\"type\":\"object\",\"properties\":{");
+	mj_props(b, s, depth, &first);
+	mj_raw(b, "},\"required\":[");
+	first = 1;
+	mj_required(b, s, &first);
+	mj_raw(b, "]}");
+}
+
 static void emit_mcp(const char *out_path, const char *spec)
 {
 	FILE *o = fopen(out_path, "w");
@@ -3062,8 +3326,11 @@ static void emit_mcp(const char *out_path, const char *spec)
 	           "\tconst char *summary;\n"
 	           "\tconst char *path_params;  /* comma-separated, in path order */\n"
 	           "\tconst char *query_params; /* comma-separated */\n"
+	           "\tconst char *body_params;  /* comma-separated: the body's own properties */\n"
+	           "\tint has_body;             /* the operation declares a requestBody */\n"
 	           "\tint read_only;            /* a GET */\n"
-	           "\tint destructive;          /* a DELETE, or x-cix-destructive: true */\n"
+	           "\tint destructive;          /* x-cix-destructive, or a DELETE when unstated */\n"
+	           "\tconst char *input_schema; /* the tool's inputSchema, as JSON */\n"
 	           "};\n\n");
 	fprintf(o, "static const struct cix_mcp_tool cix_mcp_tools[] = {\n");
 	for (i = 0; i < g_op_count; i++) {
@@ -3094,16 +3361,65 @@ static void emit_mcp(const char *out_path, const char *spec)
 				die_at(spec, op->line, "%s %s: too many query parameters for the MCP table",
 				       op->method, op->path);
 		}
-		fprintf(o, "\t{ \"%s\", \"%s\", \"/v1%s\", \"%s\", ", op->op_id, op->method, op->path,
-		        op->permission);
-		emit_js_string(o, op->summary);
-		fprintf(o, ", \"%s\", \"%s\", %d, %d },\n", pp, qp, strcmp(op->method, "GET") == 0,
-		        strcmp(op->method, "DELETE") == 0 || op->destructive);
+		{
+			const struct comp_schema *args =
+			    op->args_schema[0] != '\0' ? comp_schema_find(op->args_schema) : NULL;
+			const struct comp_schema *body =
+			    op->req_schema[0] != '\0' ? comp_schema_find(op->req_schema) : NULL;
+			struct mcp_json js = { NULL, 0, 0 };
+			char bp[APIGEN_MAX_FIELDS * APIGEN_QNAME_MAX];
+			size_t bl = 0;
+			int f, first = 1;
+
+			bp[0] = '\0';
+			/* Beside the parameters, so a tool is called the way the
+			 * operation reads; check_mcp_arguments() refused a name in
+			 * both. */
+			for (f = 0; body != NULL && f < body->n_field; f++) {
+				const char *name = body->field[f].name;
+
+				if (body->field[f].read_only)
+					continue;
+				bl += (size_t)snprintf(bp + bl, sizeof(bp) - bl, "%s%s", bl > 0 ? "," : "",
+				                       name);
+				if (bl >= sizeof(bp))
+					die_at(spec, op->line, "%s: too many body properties for the MCP table",
+					       op->op_id);
+			}
+			mj_raw(&js, "{\"type\":\"object\",\"properties\":{");
+			if (args != NULL)
+				mj_props(&js, args, 0, &first);
+			for (q = 0; q < op->n_query; q++) {
+				mj_raw(&js, first ? "" : ",");
+				first = 0;
+				mj_str(&js, op->query[q]);
+				mj_raw(&js, ":{\"type\":\"string\",\"description\":\"A query parameter.\"}");
+			}
+			if (body != NULL)
+				mj_props(&js, body, 0, &first);
+			mj_raw(&js, "},\"required\":[");
+			first = 1;
+			if (args != NULL)
+				mj_required(&js, args, &first);
+			if (body != NULL)
+				mj_required(&js, body, &first);
+			mj_raw(&js, "],\"additionalProperties\":false}");
+
+			fprintf(o, "\t{ \"%s\", \"%s\", \"/v1%s\", \"%s\", ", op->op_id, op->method,
+			        op->path, op->permission);
+			emit_js_string(o, op->summary);
+			fprintf(o, ", \"%s\", \"%s\", \"%s\", %d, %d, %d, ", pp, qp, bp, op->has_body,
+			        strcmp(op->method, "GET") == 0,
+			        op->destructive_set ? op->destructive : strcmp(op->method, "DELETE") == 0);
+			emit_js_string(o, js.p);
+			fprintf(o, " },\n");
+			free(js.p);
+		}
 		count++;
 	}
 	/* An empty initialiser list is not valid C; a NULL row ends a table
 	 * that may have none. */
-	fprintf(o, "\t{ NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0 },\n};\n\n");
+	fprintf(o, "\t{ NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, 0, NULL },\n};\n\n");
 	fprintf(o, "#define CIX_MCP_TOOL_COUNT %d\n\n#endif\n", count);
 	fclose(o);
 }
@@ -3494,6 +3810,8 @@ int main(int argc, char **argv)
 			 * must go with it, or the next operation's body would be
 			 * read into the previous operation's schema. */
 			g_in_request = strcmp(key, "requestBody") == 0;
+			if (g_in_request && cur_op >= 0)
+				g_ops[cur_op].has_body = 1;
 			if (!g_in_request)
 				g_req_schema = -1;
 			if (strcmp(key, "x-cix-destructive") == 0) {
@@ -4032,6 +4350,7 @@ int main(int argc, char **argv)
 	check_inline_item_required(spec);
 	check_read_annotations(spec);
 	check_mcp_annotations(spec);
+	check_mcp_arguments(spec);
 
 	if (emit_path != NULL)
 		emit_routes(emit_path, spec);

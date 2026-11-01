@@ -6,6 +6,23 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### MCP tools can write: request bodies, announcements, and the DNS records (#391, ADR-0368 step 3)
+
+- **What changed:**
+  - `apigen --emit-mcp` renders each tool's whole `inputSchema` from the contract: the path parameters (from their synthesized schema), the query parameters, and the request body's own properties. Each property carries its type, format, pattern, enum, bounds, default, title and description, and a field holding a named schema is that schema. The table also carries the body's property names and whether the operation declares a `requestBody` at all.
+  - The text is JSON-escaped and then C-escaped, so the hostname pattern's `\-` reaches a client as `\-`.
+  - `apigen` refuses a tool whose body property is named like one of its parameters, since that argument would mean both.
+  - The gateway sends the body's arguments as the JSON request body, exactly when the operation declares one.
+  - `api_run()` announces a successful write's `x-cix-invalidates` through `events_announce_change()`, as `dispatch()` does, because a write through the gateway reaches the handler and not `dispatch()`.
+  - The audit line names the caller through `audit_who()`, so an app password is named beside its user.
+  - `listDnsRecords`, `getDnsRecord`, `createDnsRecord`, `updateDnsRecord` and `deleteDnsRecord` are tools, which makes 17.
+  - Three tests:
+    - `test_mcp` parses `tools/list` and checks the pattern exactly, the required body properties and `destructiveHint`, and checks which arguments go to the path and which to the body.
+    - The new `test_mcp_gateway`, in DAEMON_SELFTESTS, creates, updates and deletes a DNS record through a real cixd, reads each back over REST, checks the audit line, and ends with `test_assert_no_drift()`.
+    - `test_apigen` refuses the name collision.
+- **Why:** step 3 of ADR-0368. A write needs its body, and its announcement, which ADR-0339's drift check would otherwise report.
+- **Verified:** pending the release.
+
 ### The `cix-agents` standard group, and standard groups provisioned per name (#391, ADR-0368 step 3)
 
 - **What changed:**
