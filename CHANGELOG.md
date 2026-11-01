@@ -21,7 +21,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
     - The new `test_mcp_gateway`, in DAEMON_SELFTESTS, creates, updates and deletes a DNS record through a real cixd, reads each back over REST, checks the audit line, and ends with `test_assert_no_drift()`.
     - `test_apigen` refuses the name collision.
 - **Why:** step 3 of ADR-0368. A write needs its body, and its announcement, which ADR-0339's drift check would otherwise report.
-- **Verified:** pending the release.
+- **Verified:** compile probe 0.2.57-689, selftest green, with `test_apigen`, `test_mcp` and `test_mcp_gateway` included. Live on 192.168.15.95 as 0.2.57-650 since 2026-11-01, with all 14 containers running. With MCP on:
+  - `tools/list` offered 17 tools.
+  - `mcp-verify.lan` was created, updated and deleted through the gateway, and each step read back over REST: 10.255.255.1, then 10.255.255.2, then 404.
+  - The audit log carried `mcp: claude called createDnsRecord (POST /v1/dns/records) -> 201 in 9 ms`, and the update's 200 and the delete's 204.
+  - `POST /v1/events/verify` answered `"drift":[]` over 88 reads.
+
+  MCP was turned off again.
 
 ### The `cix-agents` standard group, and standard groups provisioned per name (#391, ADR-0368 step 3)
 
@@ -32,7 +38,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - `test_hostauth` checks `cix-agents`'s grants on a fresh host. It also loads a file that has only the boolean and checks three things: `cix-agents` alone is provisioned, `cix-readers` stays absent, and the names are written back.
   - Every test data directory now starts with all four groups recorded as done.
 - **Why:** ADR-0368 provisions `cix-agents` like the other standard groups. Provisioning was gated by one boolean, set once per host, so on 192.168.15.95, which had it, the new group would never have appeared.
-- **Verified:** pending the release.
+- **Verified:** compile probe 0.2.57-688, selftest green, `test_hostauth` included. Live on 192.168.15.95 as 0.2.57-649 since 2026-11-01. That host's file had only the boolean. On boot it logged `standard group cix-agents provisioned (gid 10005)`, and the mapping gives `cix-agents` the 13 reads and `mcp:call`. `admin_groups` still read `cix-admins`, and all 14 containers were running.
 
 ### An admin group keeps every permission as the vocabulary grows (#670, ADR-0369)
 
