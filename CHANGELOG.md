@@ -22,7 +22,8 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **Verified:** on 192.168.15.95, 2026-11-01, at 0.2.57-650.
   - Before the change: agent-1's own `cix-ca-bundle.pem` verified cixd's port-443 certificate as `cix.internal` (`curl --cacert ... --resolve cix.internal:443:192.168.15.95` answered 200, verify=0), and Claude Code on agent-1 was 2.1.314.
   - After the recreate: the staged file held no unfilled `{{SECRET:` token. `claude mcp list` as the operator `claude` reported `cix: https://cix.internal/… (HTTP) - ✔ Connected`. The audit log carried `cix-agent (app-password claude-code) POST /v1/mcp` four times and no refusal.
-  - A tool call made by the agent itself waits on Claude Code being signed in on agent-1, which is the owner's step (#378).
+  - With the agent's own credential, read from the staged file inside agent-1, the gateway offered 14 tools: the 17 minus the three DNS writes. `listContainers` answered `isError: false`. `createDnsRecord` was refused with `needs the permission services:write`. The audit log carried `mcp: cix-agent (app-password claude-code) called listContainers (GET /v1/containers) -> 200 in 3 ms` and, as a warning, `refused createDnsRecord -- needs services:write`.
+  - A call that Claude Code makes on its own waits on Claude Code being signed in on agent-1, which is the owner's step (#378).
 
 ### MCP tools can write: request bodies, announcements, and the DNS records (#391, ADR-0368 step 3)
 
