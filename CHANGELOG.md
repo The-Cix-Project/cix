@@ -6,6 +6,19 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cixd answers MCP clients: `POST /v1/mcp`, with twelve read-only tools (#391, ADR-0368 step 2)
+
+- **What changed:**
+  - `POST /v1/mcp` is the gateway: MCP 2025-06-18 over Streamable HTTP, statelessly, one JSON-RPC message per request. It answers `initialize`, `ping`, `tools/list` and `tools/call`, answers a notification with a bodiless 202, and anything else with -32601. While `PUT /v1/system/mcp` has the service off, it answers 503.
+  - The gateway needs the new permission `mcp:call`, which no group holds until it is granted.
+  - Each tool is the operation of the same name. `apigen --emit-mcp` generates the tool table from the contract's `x-cix-mcp: tool` operations, with names, summaries, permissions, and path and query parameters. cixd carries no copy of the spec.
+  - `tools/list` offers only the tools the caller's permissions allow. A `tools/call` checks the operation's own `x-cix-permission` for the same credential, builds the request path from the arguments with each one percent-encoded, and runs the operation's own handler in-process. The in-process runner `events_run_get()` used to run only GETs. It becomes `api_run()`, which runs any operation, and `events_run_get()` is now a wrapper over it. The credential check `authorize_route()` made is now `request_authz()`, which `authorize_route()` and the gateway share.
+  - A 2xx answer is the tool's text result. Anything else, including a handler that parks, is an `isError` result carrying the API's own body. Every call writes one audit line with the user, the tool, the request, the status and the time it took, and a refused call writes a warning naming the permission it lacked.
+  - Twelve read-only operations are tools: `getHealth`, `getSystemBoot`, `getSystemAssembly`, `listContainers`, `getContainer`, `getContainerStats`, `listPkg`, `getPkg`, `listImages`, `getImage`, `getPipelineRuns` and `listNetworks`.
+  - The new `test_mcp`, in SELFTESTS, drives the protocol over the generated table against stubs of the daemon's two callbacks: initialize, notifications, errors, tools/list filtering, path building and encoding, unknown and missing arguments, refusal, a non-2xx answer, a parked handler and the switch. `test_apigen` counts 356 operations and 206 changes.
+- **Why:** step 2 of ADR-0368's order, so an MCP client can read the host. Writes, the `cix-agents` group, agent-1's configuration and parked handlers are steps 3 to 5.
+- **Verified:** pending the release.
+
 ### Every operation says whether an MCP client may call it, and the MCP switch exists (#391, ADR-0368 step 1)
 
 - **What changed:** ADR-0368 is accepted. The first step of its plan:
@@ -13,7 +26,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - `GET` and `PUT /v1/system/mcp {"enabled": bool}` (`cixctl mcp [show|on|off]`) hold the switch for cixd's MCP service, persisted in `state/mcp.json` and off by default. Turning it on or off writes an audit line naming who did it.
   - `test_apigen` refuses a missing and an unknown `x-cix-mcp`, and its counts move to 355 operations, 150 reads and 205 changes.
 - **Why:** #391 asks cixd to serve its API to MCP clients, so Claude Code in agent-1 can call Cix as typed tools rather than through a shell. The owner's direction: exposure is marked on each operation, generated from the contract, governed by its own permission group, logged, and off until switched on. The endpoint that answers MCP clients, the generated tool table and the `cix-agents` group follow in later steps.
-- **Verified:** pending the release.
+- **Verified:** compile probe 0.2.57-685, selftest green. Live on 192.168.15.95 as 0.2.57-646 since 2026-11-01: after the reboot `cixctl mcp show` reported off, `mcp on` and `mcp off` round-tripped, the audit log carried `mcp: enabled by claude` and `mcp: disabled by claude`, and all 14 containers were running.
 
 ### A failed build says how its command ended: exit code or signal (#666, #489)
 

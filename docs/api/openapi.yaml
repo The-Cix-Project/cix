@@ -49,6 +49,7 @@ x-cix-permissions:
   - config:write
   - system:read
   - system:write
+  - mcp:call
 paths:
   /health:
     get:
@@ -61,7 +62,7 @@ paths:
       x-cix-read: sample
       x-cix-sample-period: 10
       x-cix-permission: public
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -1076,7 +1077,7 @@ paths:
       operationId: getSystemAssembly
       x-cix-read: state
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "200":
@@ -1242,7 +1243,7 @@ paths:
       operationId: getSystemBoot
       x-cix-read: state
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -4765,6 +4766,79 @@ paths:
           description: The body is not an object with a boolean enabled
         "500":
           description: The setting could not be persisted
+  /mcp:
+    post:
+      summary: cixd's MCP gateway -- the API as tools (ADR-0368)
+      description: >
+        The Model Context Protocol, revision 2025-06-18, over Streamable
+        HTTP: one JSON-RPC 2.0 message per request, a JSON response, no
+        server-sent events and no session (`Mcp-Session-Id` is never
+        issued). Implemented methods are `initialize`, `ping`,
+        `notifications/initialized`, `tools/list` and `tools/call`; any
+        other is JSON-RPC error -32601.
+
+        A tool is an operation this contract marks `x-cix-mcp: tool`,
+        named by its operationId. Its arguments are the operation's path
+        and query parameters, all strings. `tools/list` offers only the
+        tools the caller's permissions allow. `tools/call` checks the
+        operation's own `x-cix-permission` for the caller and then runs
+        the operation's own handler, so a call does exactly what the
+        REST request would. A 2xx answer is the tool's text result; any
+        other is a result with `isError`, carrying the API's own error
+        body. Every call writes one audit line: the user, the tool, its
+        status and its duration.
+
+        This operation needs `mcp:call`, which only a group granted it
+        holds, so a principal without it cannot reach any tool. A
+        notification (a message with no `id`) is answered 202 with no
+        body. While the service is off (`PUT /system/mcp`), every
+        request is answered 503.
+      operationId: callMcp
+      x-cix-invalidates: []
+      x-cix-permission: mcp:call
+      x-cix-mcp: none
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jsonrpc, method]
+              properties:
+                jsonrpc:
+                  type: string
+                  enum: ["2.0"]
+                method:
+                  type: string
+                  description: initialize, ping, notifications/initialized, tools/list or tools/call.
+                params:
+                  type: object
+                  description: >
+                    The method's parameters. For tools/call, `name` (the
+                    tool) and `arguments` (its path and query parameters
+                    by name). A request also carries `id`, a string or a
+                    number, echoed in the response.
+      responses:
+        "200":
+          description: A JSON-RPC 2.0 response, carrying `result` or `error` and the request's `id`
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jsonrpc]
+                properties:
+                  jsonrpc:
+                    type: string
+                  result:
+                    type: object
+                    description: The method's result; for tools/call, `content` (one text item) and `isError`.
+                  error:
+                    type: object
+                    description: "`code` and `message`: -32700 parse error, -32600 invalid request, -32601 no such method, -32602 invalid params."
+        "202":
+          description: A notification was accepted; no body
+        "503":
+          description: The MCP service is off (PUT /system/mcp)
   /system/swap:
     get:
       summary: Whether the host swap file is enabled (ADR-0069)
@@ -6990,7 +7064,7 @@ paths:
       x-cix-read: state
       x-cix-volatile-fields: [captured_output]
       x-cix-permission: containers:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: include_internal
@@ -8210,7 +8284,7 @@ paths:
       operationId: listNetworks
       x-cix-read: state
       x-cix-permission: networks:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -8633,7 +8707,7 @@ paths:
       operationId: listImages
       x-cix-read: state
       x-cix-permission: images:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -8701,7 +8775,7 @@ paths:
       operationId: getImage
       x-cix-read: state
       x-cix-permission: images:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ImageName"
@@ -12944,7 +13018,7 @@ paths:
       operationId: getPipelineRuns
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -14286,7 +14360,7 @@ paths:
       x-cix-read: state
       x-cix-volatile-fields: [stage_seconds, run_seconds, last_output_seconds_ago]
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -14309,7 +14383,7 @@ paths:
       x-cix-read: state
       x-cix-volatile-fields: [stage_seconds, run_seconds, last_output_seconds_ago]
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       # web since #407: Software > Build > Overview fans out over
       # active_job_names to show one card per in-flight build, and this
       # is where the per-job detail lives (state, image, stage,
@@ -14408,7 +14482,7 @@ paths:
       operationId: getContainer
       x-cix-read: state
       x-cix-permission: containers:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -14728,7 +14802,7 @@ paths:
       x-cix-read: stream
       x-cix-sample-period: 2
       x-cix-permission: containers:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"

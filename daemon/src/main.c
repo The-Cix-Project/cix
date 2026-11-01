@@ -28090,6 +28090,55 @@ static void op_setSystemMcp(const struct api_ctx *ctx)
 	jw_free(&w);
 }
 
+static enum hostauth_authz request_authz(const struct http_request *req, const char *permission,
+                                         int consume);
+static int api_run(const char *method, const char *path, const char *body_in, size_t body_in_len,
+                   const char *user, const char *peer, int *out_status, char **out_body,
+                   size_t *out_len);
+
+/* ADR-0368: a tool is allowed by its own operation's permission, asked
+ * of the same credential the request carried. */
+static int mcp_caller_may(void *c, const char *permission)
+{
+	const struct api_ctx *ctx = c;
+
+	return request_authz(ctx->req, permission, 0) == HOSTAUTH_AUTHZ_OK;
+}
+
+/* ADR-0368: a tool runs its operation's own handler, as the caller. */
+static int mcp_caller_run(void *c, const char *method, const char *path, int *status, char **body,
+                          size_t *body_len)
+{
+	const struct api_ctx *ctx = c;
+
+	return api_run(method, path, NULL, 0, ctx->user, ctx->peer_ip, status, body, body_len);
+}
+
+/* POST /v1/mcp (ADR-0368) */
+static void op_callMcp(const struct api_ctx *ctx)
+{
+	struct mcp_caller caller;
+	struct json_writer w;
+
+	if (!mcp_enabled()) {
+		respond_error(ctx->fd, 503, "Service Unavailable",
+		              "MCP is off on this host; PUT /v1/system/mcp {\"enabled\": true} turns it on");
+		return;
+	}
+	memset(&caller, 0, sizeof(caller));
+	caller.ctx = (void *)ctx;
+	caller.user = ctx->user != NULL ? ctx->user : "";
+	caller.server_version = CIX_BUILD_VERSION;
+	caller.may = mcp_caller_may;
+	caller.run = mcp_caller_run;
+	jw_init(&w);
+	if (mcp_handle(ctx->req->body, ctx->req->body_len, &caller, &w) == 202)
+		http_write_response(ctx->fd, 202, "Accepted", "application/json", "", 0);
+	else
+		respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 /* GET /v1/storage/quota */
 static void op_getStorageQuota(const struct api_ctx *ctx)
 {
@@ -30529,6 +30578,34 @@ static const char *ws_selected_protocol(const struct http_request *req)
 }
 
 /*
+ * Whether this request's caller holds `permission`: an app password
+ * (#543, already verified once for the request by
+ * resolve_request_identity()), or a session named by a Bearer header or
+ * a WebSocket subprotocol. The one decision authorize_route() makes, and
+ * the one ADR-0368's gateway asks for each tool call. `consume` spends a
+ * single-use session, as a route's own check does; the gateway peeks,
+ * as the event stream does, because the route check already spent it.
+ */
+static enum hostauth_authz request_authz(const struct http_request *req, const char *permission,
+                                         int consume)
+{
+	char token_hdr[HOSTAUTH_TOKEN_LEN + 32];
+	char ws_token[HOSTAUTH_TOKEN_LEN + 1];
+	const char *bearer = NULL;
+
+	if (g_req_basic != 0)
+		return hostauth_authorize_app_password(g_req_basic == 1 ? g_req_user : NULL,
+		                                       permission);
+	if (http_find_header(req->headers, req->headers_len, "Authorization", token_hdr,
+	                      sizeof(token_hdr)) >= 0)
+		bearer = strncmp(token_hdr, "Bearer ", 7) == 0 ? token_hdr + 7 : token_hdr;
+	else if (ws_protocol_bearer(req, ws_token, sizeof(ws_token)))
+		bearer = ws_token;
+	return consume ? hostauth_authorize(bearer, permission)
+	               : hostauth_authorize_peek(bearer, permission);
+}
+
+/*
  * ADR-0317 section 4 (#541): the one authorization check, asked by
  * dispatch() for every API operation after the generated table has
  * matched its route and before anything else about the request is
@@ -30558,9 +30635,6 @@ static const char *ws_selected_protocol(const struct http_request *req)
 static int authorize_route(int fd, const struct http_request *req, const struct api_route *route,
                            int is_head)
 {
-	char token_hdr[HOSTAUTH_TOKEN_LEN + 32];
-	char ws_token[HOSTAUTH_TOKEN_LEN + 1];
-	const char *bearer = NULL;
 	/* A read in the sense the audit rule means: an operation whose
 	 * permission is `<area>:read`. The console is a GET and is not
 	 * one -- a refused shell is worth a line. */
@@ -30571,19 +30645,7 @@ static int authorize_route(int fd, const struct http_request *req, const struct 
 	 * from the same bytes. A single-use session was consumed there. */
 	if (g_response_conn != NULL && g_response_conn->req_authorized)
 		return 1;
-	/* #543: an app password, already verified (or refused) once for
-	 * this request by resolve_request_identity(). */
-	if (g_req_basic != 0) {
-		authz = hostauth_authorize_app_password(g_req_basic == 1 ? g_req_user : NULL,
-		                                        route->permission);
-	} else {
-		if (http_find_header(req->headers, req->headers_len, "Authorization", token_hdr,
-		                      sizeof(token_hdr)) >= 0)
-			bearer = strncmp(token_hdr, "Bearer ", 7) == 0 ? token_hdr + 7 : token_hdr;
-		else if (ws_protocol_bearer(req, ws_token, sizeof(ws_token)))
-			bearer = ws_token;
-		authz = hostauth_authorize(bearer, route->permission);
-	}
+	authz = request_authz(req, route->permission, 1);
 
 	/* ADR-0340: an app password nothing could check is answered busy.
 	 * Not audited and not counted: it says nothing about the caller. */
@@ -34749,17 +34811,22 @@ static unsigned long g_events_check_ticks;
 static int g_events_check_cursor;
 
 /*
- * Runs the GET at `path` -- query and path parameters included, as
- * dispatch() would -- into memory. Returns 0 with the 200 body in
- * *out_body (the caller frees it), or -1 when nothing matches or the
- * answer is not a 200. Authorization is the caller's: this is the
- * handler alone, as a request would reach it after authorize_route().
+ * Runs `method` `path` -- query and path parameters included, as
+ * dispatch() would -- into memory, with `body` as the request body.
+ * Returns 0 with the handler's status in *out_status (0 when it wrote
+ * nothing, which is a handler that parked) and its body in *out_body
+ * (malloc'd, NUL-terminated, NULL when none), or -1 when no route
+ * matches. Authorization is the caller's: this is the handler alone, as
+ * a request would reach it after authorize_route(). `user` and `peer`
+ * are what the handler sees as its caller.
  *
  * Restores g_response_conn and the generation-header slot on the way
- * out: POST /v1/events/verify runs this inside a request, whose own
- * response must still reach its own client.
+ * out: POST /v1/events/verify and POST /v1/mcp (ADR-0368) run this
+ * inside a request, whose own response must still reach its client.
  */
-static int events_run_get(const char *path, char **out_body, size_t *out_len)
+static int api_run(const char *method, const char *path, const char *body_in, size_t body_in_len,
+                   const char *user, const char *peer, int *out_status, char **out_body,
+                   size_t *out_len)
 {
 	struct conn *saved_conn = g_response_conn;
 	int saved_slot = g_events_response_slot;
@@ -34769,24 +34836,36 @@ static int events_run_get(const char *path, char **out_body, size_t *out_len)
 	const char *body = NULL;
 	size_t body_len = 0;
 	char step[STALLWATCH_ACTIVITY_MAX];
+	char *req_body = NULL;
 	int idx, status;
 
+	*out_status = 0;
 	*out_body = NULL;
 	*out_len = 0;
 	idx = api_route_match(g_api_routes, (int)(sizeof(g_api_routes) / sizeof(g_api_routes[0])),
-	                      "GET", path, params);
+	                      method, path, params);
 	if (idx < 0)
 		return -1;
+	if (body_in != NULL && body_in_len > 0) {
+		req_body = malloc(body_in_len + 1);
+		if (req_body == NULL)
+			return -1;
+		memcpy(req_body, body_in, body_in_len);
+		req_body[body_in_len] = '\0';
+	}
 
 	memset(&req, 0, sizeof(req));
-	snprintf(req.method, sizeof(req.method), "GET");
+	snprintf(req.method, sizeof(req.method), "%s", method);
 	snprintf(req.path, sizeof(req.path), "%s", path);
 	req.headers = (char *)"";
+	req.body = req_body;
+	req.body_len = req_body != NULL ? body_in_len : 0;
+	req.content_length = (long)req.body_len;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.fd = -1;
 	ctx.req = &req;
-	ctx.user = "";
-	ctx.peer_ip = "";
+	ctx.user = user != NULL ? user : "";
+	ctx.peer_ip = peer != NULL ? peer : "";
 	ctx.p[0] = params[0];
 	ctx.p[1] = params[1];
 
@@ -34809,14 +34888,15 @@ static int events_run_get(const char *path, char **out_body, size_t *out_len)
 	 * a step (#619), so the pass is named by its slowest read, and a
 	 * read that never returns is named by the watchdog.
 	 */
-	snprintf(step, sizeof(step), "GET %s", path);
+	snprintf(step, sizeof(step), "%s %s", method, path);
 	stallwatch_step(step);
 	g_api_routes[idx].fn(&ctx);
 	status = http_last_status();
 	g_response_conn = saved_conn;
 	g_events_response_slot = saved_slot;
+	free(req_body);
 
-	if (status == 200 && g_self_read_conn.out_buf != NULL) {
+	if (g_self_read_conn.out_buf != NULL) {
 		const char *end = memmem(g_self_read_conn.out_buf, g_self_read_conn.out_len,
 		                         "\r\n\r\n", 4);
 
@@ -34835,7 +34915,26 @@ static int events_run_get(const char *path, char **out_body, size_t *out_len)
 	}
 	free(g_self_read_conn.out_buf);
 	g_self_read_conn.out_buf = NULL;
-	return *out_body != NULL ? 0 : -1;
+	g_self_read_conn.out_len = 0;
+	*out_status = status;
+	return 0;
+}
+
+/* api_run() for a GET whose answer must be a 200 with a body: the
+ * self-check's read. Returns 0 with the body, or -1. */
+static int events_run_get(const char *path, char **out_body, size_t *out_len)
+{
+	int status;
+
+	if (api_run("GET", path, NULL, 0, "", "", &status, out_body, out_len) != 0)
+		return -1;
+	if (status != 200 || *out_body == NULL) {
+		free(*out_body);
+		*out_body = NULL;
+		*out_len = 0;
+		return -1;
+	}
+	return 0;
 }
 
 /*

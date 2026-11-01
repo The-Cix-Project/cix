@@ -96,6 +96,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | PUT | `/system/wireless` | Set the country, or `null` to return to the world domain -- persisted, and sent to the kernel now and at every start |
 | GET | `/system/mcp` | Whether cixd serves its API to MCP clients as tools ([ADR-0368](../adr/0368-cixd-serves-the-api-as-mcp-tools.md)); off until an operator turns it on |
 | PUT | `/system/mcp` | Turn the MCP service on or off, `{"enabled": bool}` -- persisted, and in force at once |
+| POST | `/mcp` | The MCP gateway: one JSON-RPC 2.0 message, answered with the operations marked `x-cix-mcp: tool` as tools, under the caller's own permissions; needs `mcp:call`, 503 while the service is off |
 | GET | `/system/kmsg` | Tail the kernel ring buffer directly (`tail` filter) -- dmesg for a host with no shell |
 | GET | `/system/logs` | Query the consolidated log store (`source`/`level`/`container`/`regex`/`since`/`tail` filters) |
 | GET | `/system/logs/config` | The consolidated log store's size cap |
@@ -1031,7 +1032,19 @@ The lists were seeded from the path: a change marks a read stale when one path r
 
 cixd can serve its API to MCP clients as tools, one tool per operation ([ADR-0368](../adr/0368-cixd-serves-the-api-as-mcp-tools.md)). **Every operation says whether it is one**, with `x-cix-mcp: tool` or `x-cix-mcp: none`, and `apigen` refuses an operation that says neither, as it refuses one with no `x-cix-permission` or `x-cix-read`. Neither value is a default, so an operation becoming callable by an agent is a visible line in a diff. It is a key of its own rather than a word in `x-cix-expose`: `cli` and `web` name clients that must call an operation, which `test_api_surfaces` enforces, while `tool` offers an operation to any MCP client and promises no caller.
 
-Every operation is `none` today. The service is off until `PUT /system/mcp {"enabled": true}` (`cixctl mcp on`), and the endpoint that answers MCP clients arrives in a later release. Parity is the goal and is reached operation by operation: an operation becomes `tool` once it is verified over the gateway. A WebSocket upgrade is never a tool, and an operation that parks or returns a non-JSON body stays `none` until the gateway can serve it.
+Twelve read-only operations are `tool` so far: `getHealth`, `getSystemBoot`, `getSystemAssembly`, `listContainers`, `getContainer`, `getContainerStats`, `listPkg`, `getPkg`, `listImages`, `getImage`, `getPipelineRuns` and `listNetworks`. Parity is the goal and is reached operation by operation: an operation becomes `tool` once it is verified over the gateway. A WebSocket upgrade is never a tool, and an operation that parks or returns a non-JSON body stays `none` until the gateway can serve it.
+
+### The gateway: `POST /mcp`
+
+`POST /v1/mcp` speaks MCP revision 2025-06-18 over Streamable HTTP, statelessly: one JSON-RPC 2.0 message per request, one JSON response, no server-sent events and no `Mcp-Session-Id`. It answers `initialize`, `ping`, `tools/list` and `tools/call`, accepts `notifications/initialized` (or any other notification) with a bodiless 202, and answers any other method with error -32601. The service is off until `PUT /system/mcp {"enabled": true}` (`cixctl mcp on`); while it is off the gateway answers 503.
+
+The gateway itself needs `mcp:call`, which no group holds unless it is granted. Behind it, each tool is the operation of the same name, checked against that operation's own `x-cix-permission` for the same credential the request carried, so `tools/list` offers only what the caller may call and a `tools/call` is the REST request it names: the tool's arguments become the operation's path and query parameters, percent-encoded, and the operation's own handler answers. A 2xx answer is the tool's text result. Anything else is a result with `isError: true`, carrying the API's own error body, and an argument the operation does not take is JSON-RPC error -32602. Every call writes one audit line naming the user, the tool, the request it made, the status and the time it took, and a refused call writes a warning naming the permission it lacked.
+
+```
+POST /v1/mcp
+{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+ "params": {"name": "getContainer", "arguments": {"name": "dns-1"}}}
+```
 
 ## Creating a network
 
