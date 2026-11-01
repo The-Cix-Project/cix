@@ -97,6 +97,9 @@ struct api_op {
 	char path[APIGEN_PATH_MAX];   /* spec path, no /v1 prefix */
 	char op_id[APIGEN_ID_MAX];
 	char expose[APIGEN_EXPOSE_MAX]; /* raw list contents, "" when absent */
+	/* ADR-0368: x-cix-mcp, "tool" or "none"; "" until read, and a build
+	 * failure if it is still "" once the spec has been read. */
+	char mcp[8];
 	int rest_param;
 	/* ADR-0317 (#539): the one permission this operation requires,
 	 * from x-cix-permission; "" until read, and a build failure if
@@ -2521,6 +2524,26 @@ static void check_read_annotations(const char *spec)
 	}
 }
 
+/*
+ * ADR-0368: every operation says whether MCP clients may call it --
+ * `x-cix-mcp: tool` or `x-cix-mcp: none`. A missing one is a build
+ * failure, as a missing x-cix-permission or x-cix-read is: a default in
+ * either direction would make "an agent can call this" happen, or not,
+ * without anyone deciding it. Run last, after check_read_annotations(),
+ * so a fixture written for an older rule is refused for that rule.
+ */
+static void check_mcp_annotations(const char *spec)
+{
+	int i;
+
+	for (i = 0; i < g_op_count; i++)
+		if (g_ops[i].mcp[0] == '\0')
+			die_at(spec, g_ops[i].line,
+			       "%s %s has no x-cix-mcp -- every operation must say tool or none: "
+			       "whether MCP clients may call it (ADR-0368)",
+			       g_ops[i].method, g_ops[i].path);
+}
+
 /* ADR-0339: a read the events stream announces -- state, sample or
  * session. Streams and derived reads are never announced. */
 static int is_announced_read(const struct api_op *o)
@@ -3439,6 +3462,20 @@ int main(int argc, char **argv)
 					*w = '\0';
 				}
 				snprintf(g_ops[cur_op].expose, sizeof(g_ops[cur_op].expose), "%s", v);
+			} else if (strcmp(key, "x-cix-mcp") == 0) {
+				char v[16];
+
+				/* ADR-0368: whether MCP clients may call this, decided
+				 * per operation and never defaulted. */
+				snprintf(v, sizeof(v), "%s", value_of(line));
+				strip_eol(v);
+				if (g_ops[cur_op].mcp[0] != '\0')
+					die_at(spec, lineno, "%s %s declares x-cix-mcp twice",
+					       g_ops[cur_op].method, g_ops[cur_op].path);
+				if (strcmp(v, "tool") != 0 && strcmp(v, "none") != 0)
+					die_at(spec, lineno,
+					       "x-cix-mcp must be tool or none, not \"%s\" (ADR-0368)", v);
+				snprintf(g_ops[cur_op].mcp, sizeof(g_ops[cur_op].mcp), "%s", v);
 			} else if (strcmp(key, "x-cix-read") == 0) {
 				char v[16];
 
@@ -3874,6 +3911,7 @@ int main(int argc, char **argv)
 	}
 	check_inline_item_required(spec);
 	check_read_annotations(spec);
+	check_mcp_annotations(spec);
 
 	if (emit_path != NULL)
 		emit_routes(emit_path, spec);

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, for #391. The owner's direction of 2026-11-01: mark MCP exposure separately on each operation, work towards full parity with the API, generate it from the contract with no hand-written code, govern it with its own permission group, log it clearly, and give it clear exposure control. A dedicated agent user is the principal. ADR-0317's permission model, which #391 waited on, shipped in 0.2.57-396.
+Accepted by the owner on 2026-11-01, for #391. Their direction the same day: mark MCP exposure separately on each operation, work towards full parity with the API, generate it from the contract with no hand-written code, govern it with its own permission group, log it clearly, and give it clear exposure control. A dedicated agent user is the principal. ADR-0317's permission model, which #391 waited on, shipped in 0.2.57-396.
 
 ## Context
 

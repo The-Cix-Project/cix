@@ -424,8 +424,8 @@ int main(void)
 	status = run_apigen("docs/api/openapi.yaml", NULL, out, sizeof(out));
 	if (status != 0)
 		fail("apigen rejected the real spec: %.300s", out);
-	else if (atoi(out) != 353)
-		fail("apigen found %d operations in the real spec, expected 353 -- if the spec "
+	else if (atoi(out) != 355)
+		fail("apigen found %d operations in the real spec, expected 355 -- if the spec "
 		     "genuinely changed, update this number deliberately; a silently different "
 		     "count is how a lost route hides",
 		     atoi(out));
@@ -461,10 +461,12 @@ int main(void)
 	               "    get:\n"
 	               "      operationId: sameName\n"
 	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n"
 	               "  /b:\n"
 	               "    get:\n"
 	               "      operationId: sameName\n"
-	               "      x-cix-permission: public\n",
+	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n",
 	               "duplicate");
 
 	/* 4. Something that is not an HTTP method directly under a path.
@@ -501,7 +503,8 @@ int main(void)
 	               "  /thing/{name}:\n"
 	               "    get:\n"
 	               "      operationId: getThing\n"
-	               "      x-cix-permission: public\n",
+	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n",
 	               "not the declared parameter");
 	expect_refusal("path parameters declared out of the path's order",
 	               VOCAB
@@ -510,6 +513,7 @@ int main(void)
 	               "    get:\n"
 	               "      operationId: getThing\n"
 	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n"
 	               "      parameters:\n"
 	               "        - name: b\n"
 	               "          in: path\n"
@@ -535,6 +539,7 @@ int main(void)
 	               "    get:\n"
 	               "      operationId: getThing\n"
 	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n"
 	               "components:\n"
 	               "  schemas:\n"
 	               "    A:\n"
@@ -571,6 +576,7 @@ int main(void)
 	               "    get:\n"
 	               "      operationId: getThing\n"
 	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n"
 	               "components:\n"
 	               "  schemas:\n"
 	               "    Holder:\n"
@@ -592,6 +598,7 @@ int main(void)
 	               "    get:\n"
 	               "      operationId: getThing\n"
 	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n"
 	               "      responses:\n"
 	               "        \"200\":\n"
 	               "          description: ok\n"
@@ -637,7 +644,8 @@ int main(void)
 	               "  /thing:\n"
 	               "    get:\n"
 	               "      operationId: unknownPermission\n"
-	               "      x-cix-permission: things:write\n",
+	               "      x-cix-permission: things:write\n"
+	               "      x-cix-mcp: none\n",
 	               "not in x-cix-permissions");
 	expect_refusal("an operation declaring two permissions",
 	               VOCAB
@@ -646,21 +654,24 @@ int main(void)
 	               "    get:\n"
 	               "      operationId: twoPermissions\n"
 	               "      x-cix-permission: public\n"
-	               "      x-cix-permission: things:read\n",
+	               "      x-cix-mcp: none\n"
+	               "      x-cix-permission: things:read\n"
+	               "      x-cix-mcp: none\n",
 	               "twice");
 	expect_refusal("a spec with no permission vocabulary",
 	               "paths:\n"
 	               "  /thing:\n"
 	               "    get:\n"
 	               "      operationId: noVocabulary\n"
-	               "      x-cix-permission: public\n",
+	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n",
 	               "no x-cix-permissions");
 	/*
 	 * ADR-0339 (#599): every read states its kind and every change the
 	 * reads it makes stale. The events stream announces from these, so
 	 * a gap is a page that stays stale with nothing saying so -- a
 	 * build failure, as a missing permission is. The real spec passing
-	 * above is the positive control: all 149 reads and 204 changes.
+	 * above is the positive control: all 150 reads and 205 changes.
 	 */
 	expect_refusal("a read with no x-cix-read",
 	               VOCAB
@@ -668,7 +679,8 @@ int main(void)
 	               "  /thing:\n"
 	               "    get:\n"
 	               "      operationId: getThing\n"
-	               "      x-cix-permission: public\n",
+	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n",
 	               "has no x-cix-read");
 	expect_refusal("a read of an unknown kind",
 	               VOCAB
@@ -677,7 +689,8 @@ int main(void)
 	               "    get:\n"
 	               "      operationId: getThing\n"
 	               "      x-cix-read: live\n"
-	               "      x-cix-permission: public\n",
+	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n",
 	               "must be state, sample");
 	expect_refusal("a sample with no period",
 	               VOCAB
@@ -686,7 +699,8 @@ int main(void)
 	               "    get:\n"
 	               "      operationId: getThing\n"
 	               "      x-cix-read: sample\n"
-	               "      x-cix-permission: public\n",
+	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n",
 	               "x-cix-sample-period goes with");
 	/* A stream may take a period -- that makes it subscribable -- and a
 	 * state read may not: its changes are announced, never sampled. */
@@ -698,7 +712,8 @@ int main(void)
 	               "      operationId: getThing\n"
 	               "      x-cix-read: state\n"
 	               "      x-cix-sample-period: 2\n"
-	               "      x-cix-permission: public\n",
+	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n",
 	               "x-cix-sample-period goes with");
 	expect_refusal("a change with no x-cix-invalidates",
 	               VOCAB
@@ -708,9 +723,11 @@ int main(void)
 	               "      operationId: getThing\n"
 	               "      x-cix-read: state\n"
 	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n"
 	               "    put:\n"
 	               "      operationId: putThing\n"
-	               "      x-cix-permission: public\n",
+	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n",
 	               "has no x-cix-invalidates");
 	expect_refusal("a change invalidating a read that does not exist",
 	               VOCAB
@@ -719,7 +736,8 @@ int main(void)
 	               "    put:\n"
 	               "      operationId: putThing\n"
 	               "      x-cix-invalidates: [getNothing]\n"
-	               "      x-cix-permission: public\n",
+	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n",
 	               "not a GET operation");
 	expect_refusal("a change invalidating a stream",
 	               VOCAB
@@ -729,10 +747,12 @@ int main(void)
 	               "      operationId: tailThing\n"
 	               "      x-cix-read: stream\n"
 	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n"
 	               "    put:\n"
 	               "      operationId: putThing\n"
 	               "      x-cix-invalidates: [tailThing]\n"
-	               "      x-cix-permission: public\n",
+	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n",
 	               "a stream read");
 	expect_refusal("a view composed of itself",
 	               VOCAB
@@ -742,7 +762,8 @@ int main(void)
 	               "      operationId: getThing\n"
 	               "      x-cix-read: state\n"
 	               "      x-cix-composed-of: [getThing]\n"
-	               "      x-cix-permission: public\n",
+	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n",
 	               "composed of itself");
 	expect_refusal("a view composed of a view",
 	               VOCAB
@@ -752,18 +773,21 @@ int main(void)
 	               "      operationId: getA\n"
 	               "      x-cix-read: state\n"
 	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n"
 	               "  /b:\n"
 	               "    get:\n"
 	               "      operationId: getB\n"
 	               "      x-cix-read: state\n"
 	               "      x-cix-composed-of: [getA]\n"
 	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n"
 	               "  /c:\n"
 	               "    get:\n"
 	               "      operationId: getC\n"
 	               "      x-cix-read: state\n"
 	               "      x-cix-composed-of: [getB]\n"
-	               "      x-cix-permission: public\n",
+	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n",
 	               "itself a view");
 	expect_refusal("an invalidation list mixing * with names",
 	               VOCAB
@@ -773,10 +797,12 @@ int main(void)
 	               "      operationId: getThing\n"
 	               "      x-cix-read: state\n"
 	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n"
 	               "    put:\n"
 	               "      operationId: putThing\n"
 	               "      x-cix-invalidates: [*, getThing]\n"
-	               "      x-cix-permission: public\n",
+	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n",
 	               "stands alone");
 	expect_refusal("an invalidation list with an empty entry",
 	               VOCAB
@@ -786,18 +812,45 @@ int main(void)
 	               "      operationId: getThing\n"
 	               "      x-cix-read: state\n"
 	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n"
 	               "    put:\n"
 	               "      operationId: putThing\n"
 	               "      x-cix-invalidates: [getThing, , getThing]\n"
-	               "      x-cix-permission: public\n",
+	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: none\n",
 	               "empty entry");
+	/*
+	 * ADR-0368: every operation says whether MCP clients may call it,
+	 * and only tool or none is a value. The real spec passing above is
+	 * the positive control: all 355 operations declare it.
+	 */
+	expect_refusal("an operation with no x-cix-mcp",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: getThing\n"
+	               "      x-cix-read: state\n"
+	               "      x-cix-permission: public\n",
+	               "has no x-cix-mcp");
+	expect_refusal("an x-cix-mcp that is neither tool nor none",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: getThing\n"
+	               "      x-cix-read: state\n"
+	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: maybe\n",
+	               "must be tool or none");
 	expect_refusal("a malformed vocabulary word",
 	               "x-cix-permissions:\n  - Things:Read\n"
 	               "paths:\n"
 	               "  /thing:\n"
 	               "    get:\n"
 	               "      operationId: badWord\n"
-	               "      x-cix-permission: Things:Read\n",
+	               "      x-cix-permission: Things:Read\n"
+	               "      x-cix-mcp: none\n",
 	               "is not a permission");
 
 	/*
@@ -932,9 +985,9 @@ int main(void)
 			}
 			fclose(f);
 			unlink(routes_path);
-			if (rows != 353 || with_permission != rows)
+			if (rows != 355 || with_permission != rows)
 				fail("the generated route table has %d rows and %d carry a permission; "
-				     "expected 353 and 353 (ADR-0317)",
+				     "expected 355 and 355 (ADR-0317)",
 				     rows, with_permission);
 		}
 	}
@@ -1012,13 +1065,13 @@ int main(void)
 		}
 		unlink(slots_path);
 		unlink(table_path);
-		if (count != 127 || defines != count || read_rows != count)
+		if (count != 128 || defines != count || read_rows != count)
 			fail("the events slots say %d reads, define %d EV_ constants and the table has "
-			     "%d read rows; all three should be 127 (ADR-0339)",
+			     "%d read rows; all three should be 128 (ADR-0339)",
 			     count, defines, read_rows);
-		if (change_count != 204 || change_rows != change_count)
+		if (change_count != 205 || change_rows != change_count)
 			fail("the events table declares %d changes and has %d change rows; both should "
-			     "be 204, one per non-GET operation (ADR-0339)",
+			     "be 205, one per non-GET operation (ADR-0339)",
 			     change_count, change_rows);
 		if (stream_count != 7 || stream_rows != stream_count)
 			fail("the events table declares %d subscribable reads and has %d stream rows; "
@@ -1123,10 +1176,10 @@ int main(void)
 			fclose(f);
 			unlink(hdr_path);
 		}
-		if (defines != 353)
-			fail("CLI header has %d path defines, expected one per operation (353)", defines);
-		if (methods != 353)
-			fail("CLI header has %d method defines, expected one per operation (353)", methods);
+		if (defines != 355)
+			fail("CLI header has %d path defines, expected one per operation (355)", defines);
+		if (methods != 355)
+			fail("CLI header has %d method defines, expected one per operation (355)", methods);
 		if (braces != 0)
 			fail("%d CLI path define(s) still contain '{' -- a parameter was not converted "
 			     "to %%s and would put a literal brace in the URL",
@@ -1453,8 +1506,8 @@ int main(void)
 			fclose(f);
 			unlink(js_path);
 		}
-		if (shapes != 353)
-			fail("web api.js has %d _SHAPE entries, expected one per operation (353)",
+		if (shapes != 355)
+			fail("web api.js has %d _SHAPE entries, expected one per operation (355)",
 			     shapes);
 		if (!saw_fields)
 			fail("web api.js has no FIELDS table -- the renderers have nothing to render "
@@ -1679,8 +1732,8 @@ int main(void)
 			     "raise it rather than check a prefix of them%s",
 			     "APIGEN_TEST_MAX_REQ", "");
 		if (n_names == 0)
-			fail("no operation in api.js names a request schema -- 127 of the "
-			     "contract's 353 carry a requestBody, so this is a reader that "
+			fail("no operation in api.js names a request schema -- 128 of the "
+			     "contract's 355 carry a requestBody, so this is a reader that "
 			     "resolved none of them");
 		if (dangling > 0)
 			fail("%d operation(s) name a request schema with no FIELDS entry, the first "

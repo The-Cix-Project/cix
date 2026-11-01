@@ -94,6 +94,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | PUT | `/system/zswap` | Configure it -- partial update, applied to the running kernel and persisted |
 | GET | `/system/wireless` | The host's wireless regulatory domain: the configured country, the domain the kernel has, and each radio's own (ADR-0354) |
 | PUT | `/system/wireless` | Set the country, or `null` to return to the world domain -- persisted, and sent to the kernel now and at every start |
+| GET | `/system/mcp` | Whether cixd serves its API to MCP clients as tools ([ADR-0368](../adr/0368-cixd-serves-the-api-as-mcp-tools.md)); off until an operator turns it on |
+| PUT | `/system/mcp` | Turn the MCP service on or off, `{"enabled": bool}` -- persisted, and in force at once |
 | GET | `/system/kmsg` | Tail the kernel ring buffer directly (`tail` filter) -- dmesg for a host with no shell |
 | GET | `/system/logs` | Query the consolidated log store (`source`/`level`/`container`/`regex`/`since`/`tail` filters) |
 | GET | `/system/logs/config` | The consolidated log store's size cap |
@@ -1024,6 +1026,12 @@ log tail and the kernel log.
   it found.
 
 The lists were seeded from the path: a change marks a read stale when one path root is a segment-prefix of the other. Cross-resource effects were then added by hand: a package install changes images, a container changes networks and volumes, and a group change changes `whoami`. Marking too much costs one extra read. Marking too little is what the box's drift check reports, and what the events test fails on, so a missing name is a bug to fix in the contract.
+
+### Which operations an MCP client may call (`x-cix-mcp`)
+
+cixd can serve its API to MCP clients as tools, one tool per operation ([ADR-0368](../adr/0368-cixd-serves-the-api-as-mcp-tools.md)). **Every operation says whether it is one**, with `x-cix-mcp: tool` or `x-cix-mcp: none`, and `apigen` refuses an operation that says neither, as it refuses one with no `x-cix-permission` or `x-cix-read`. Neither value is a default, so an operation becoming callable by an agent is a visible line in a diff. It is a key of its own rather than a word in `x-cix-expose`: `cli` and `web` name clients that must call an operation, which `test_api_surfaces` enforces, while `tool` offers an operation to any MCP client and promises no caller.
+
+Every operation is `none` today. The service is off until `PUT /system/mcp {"enabled": true}` (`cixctl mcp on`), and the endpoint that answers MCP clients arrives in a later release. Parity is the goal and is reached operation by operation: an operation becomes `tool` once it is verified over the gateway. A WebSocket upgrade is never a tool, and an operation that parks or returns a non-JSON body stays `none` until the gateway can serve it.
 
 ## Creating a network
 

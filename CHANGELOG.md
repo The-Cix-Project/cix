@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Every operation says whether an MCP client may call it, and the MCP switch exists (#391, ADR-0368 step 1)
+
+- **What changed:** ADR-0368 is accepted. The first step of its plan:
+  - Every operation in the contract declares `x-cix-mcp: tool` or `x-cix-mcp: none`, and `apigen` refuses one that declares neither or any other value. All 353 existing operations are `none`.
+  - `GET` and `PUT /v1/system/mcp {"enabled": bool}` (`cixctl mcp [show|on|off]`) hold the switch for cixd's MCP service, persisted in `state/mcp.json` and off by default. Turning it on or off writes an audit line naming who did it.
+  - `test_apigen` refuses a missing and an unknown `x-cix-mcp`, and its counts move to 355 operations, 150 reads and 205 changes.
+- **Why:** #391 asks cixd to serve its API to MCP clients, so Claude Code in agent-1 can call Cix as typed tools rather than through a shell. The owner's direction: exposure is marked on each operation, generated from the contract, governed by its own permission group, logged, and off until switched on. The endpoint that answers MCP clients, the generated tool table and the `cix-agents` group follow in later steps.
+- **Verified:** pending the release.
+
 ### A failed build says how its command ended: exit code or signal (#666, #489)
 
 - **What changed:** `failed_command` on a package entry gains `exit_status` (the command's own code, or -1 when it did not exit) and `signal` (what killed it, or 0), read from cbs's `command-end` event. They are `null` when the engine did not report them, and always `null` on a run record, which does not keep them. `cixctl pkg ls` appends `(command killed by signal N)` or `(command exited N)` to a failed package's error. `test_cbsevents` covers a command killed by signal 9, one that exited 2, and an older record that carries neither.

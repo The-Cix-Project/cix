@@ -576,6 +576,8 @@ static const char USAGE_TEXT[] =
 	        "  zswap show / zswap set [--enable | --disable] [--max-pool-percent=N]\n"
 	        "               [--compressor=NAME]  -- compress pages in RAM before they would\n"
 	        "               reach the swap device (ADR-0196)\n"
+	        "  mcp [show|on|off]  -- whether cixd serves its API to MCP clients as\n"
+	        "               tools (ADR-0368); off until turned on\n"
 	        "  wireless show / wireless set --country=CC | --clear  -- the host's\n"
 	        "               regulatory domain, one for every radio (ADR-0354)\n"
 	        "  kernel-policy show | refresh\n"
@@ -4873,6 +4875,44 @@ static int cmd_wireless(const struct cix_client *c, int json_mode, int argc, cha
 	}
 	jw_free(&w);
 	return emit(&r, json_mode, fmt_wireless);
+}
+
+/* ADR-0368: cixctl mcp show|on|off -- whether cixd serves MCP. */
+static void fmt_mcp(const struct json_value *v)
+{
+	const struct json_value *en = json_object_get(v, "enabled");
+	int on = en != NULL && en->type == JSON_BOOL && en->u.boolean;
+
+	printf("mcp: %s\n", on ? "on -- cixd answers MCP clients"
+	                       : "off -- cixd refuses MCP clients (cixctl mcp on to start)");
+}
+
+static int cmd_mcp(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	const char *sub = argc > 0 ? argv[0] : "show";
+
+	if (strcmp(sub, "show") == 0) {
+		if (cix_client_request(c, CIX_API_getSystemMcp_METHOD, CIX_API_getSystemMcp, NULL, &r) !=
+		    0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_mcp);
+	}
+	if (argc != 1 || (strcmp(sub, "on") != 0 && strcmp(sub, "off") != 0)) {
+		fprintf(stderr, "usage: cixctl mcp [show|on|off]\n"
+		                "  whether cixd serves its API to MCP clients as tools (ADR-0368);\n"
+		                "  off until turned on\n");
+		return 2;
+	}
+	if (cix_client_request(c, CIX_API_setSystemMcp_METHOD, CIX_API_setSystemMcp,
+	                       strcmp(sub, "on") == 0 ? "{\"enabled\":true}" : "{\"enabled\":false}",
+	                       &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	return emit(&r, json_mode, fmt_mcp);
 }
 
 static int cmd_swap_status(const struct cix_client *c, int json_mode)
@@ -19976,6 +20016,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_ksm(client, json_mode, argc, argv);
 	if (strcmp(cmd, "zswap") == 0)
 		return cmd_zswap(client, json_mode, argc, argv);
+	if (strcmp(cmd, "mcp") == 0)
+		return cmd_mcp(client, json_mode, argc, argv);
 	if (strcmp(cmd, "wireless") == 0)
 		return cmd_wireless(client, json_mode, argc, argv);
 	if (strcmp(cmd, "swap") == 0)

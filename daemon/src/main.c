@@ -67,6 +67,7 @@
 #include "zswap.h"
 #include "wireless.h"
 #include "quotamode.h"
+#include "mcp.h"
 #include "dhcp.h"
 #include "procfuse.h"
 #include "proctitle.h"
@@ -309,6 +310,7 @@ char ZSWAP_STATE_PATH[PATH_MAX];        /* issue #51 -- compressed swap cache se
 char KSM_STATE_PATH[PATH_MAX];          /* issue #50 -- samepage merging settings */
 char WIRELESS_STATE_PATH[PATH_MAX];     /* ADR-0354 -- the host's wireless country */
 char QUOTAMODE_STATE_PATH[PATH_MAX];    /* ADR-0359 -- the quota mode a new btrfs gets */
+char MCP_STATE_PATH[PATH_MAX];          /* ADR-0368 -- whether cixd serves MCP */
 char DHCP_STATE_PATH[PATH_MAX];         /* DHCP ranges and static reservations */
 char STALLWATCH_RECORDS_PATH[PATH_MAX]; /* issue #100 -- control-plane stall records */
 char VOLUMES_STATE_PATH[PATH_MAX];      /* issue #88 */
@@ -507,6 +509,7 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(KSM_STATE_PATH, sizeof(KSM_STATE_PATH), "%s/ksm.json", STATE_DIR);
 	snprintf(WIRELESS_STATE_PATH, sizeof(WIRELESS_STATE_PATH), "%s/wireless.json", STATE_DIR);
 	snprintf(QUOTAMODE_STATE_PATH, sizeof(QUOTAMODE_STATE_PATH), "%s/quota-mode.json", STATE_DIR);
+	snprintf(MCP_STATE_PATH, sizeof(MCP_STATE_PATH), "%s/mcp.json", STATE_DIR);
 	snprintf(DHCP_STATE_PATH, sizeof(DHCP_STATE_PATH), "%s/dhcp.json", STATE_DIR);
 	snprintf(STALLWATCH_RECORDS_PATH, sizeof(STALLWATCH_RECORDS_PATH),
 	         "%s/control_plane_stalls.jsonl", STATE_DIR);
@@ -28048,6 +28051,45 @@ static void op_setWireless(const struct api_ctx *ctx)
 	handle_wireless_put(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
+/* GET /v1/system/mcp (ADR-0368) */
+static void op_getSystemMcp(const struct api_ctx *ctx)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	mcp_write_config_json(&w);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* PUT /v1/system/mcp (ADR-0368) */
+static void op_setSystemMcp(const struct api_ctx *ctx)
+{
+	struct json_value *root = json_parse(ctx->req->body, ctx->req->body_len);
+	const struct json_value *v = root != NULL ? json_object_get(root, "enabled") : NULL;
+	struct json_writer w;
+	int enabled;
+
+	if (v == NULL || v->type != JSON_BOOL) {
+		json_free(root);
+		respond_error(ctx->fd, 400, "Bad Request", "body must be {\"enabled\": true|false}");
+		return;
+	}
+	enabled = v->u.boolean;
+	json_free(root);
+	if (mcp_set_enabled(enabled) != MCP_OK) {
+		respond_error(ctx->fd, 500, "Internal Server Error",
+		              "the MCP setting could not be persisted; nothing was changed");
+		return;
+	}
+	logstore_write("audit", "info", "mcp: %s by %s (ADR-0368)", enabled ? "enabled" : "disabled",
+	               ctx->user != NULL && ctx->user[0] != '\0' ? ctx->user : "-");
+	jw_init(&w);
+	mcp_write_config_json(&w);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 /* GET /v1/storage/quota */
 static void op_getStorageQuota(const struct api_ctx *ctx)
 {
@@ -38035,6 +38077,7 @@ static int cixd_main(int argc, char **argv)
 	 * computes its channels under it. */
 	wireless_init(WIRELESS_STATE_PATH);
 	quotamode_init(QUOTAMODE_STATE_PATH); /* ADR-0359 */
+	mcp_init(MCP_STATE_PATH); /* ADR-0368 */
 	ksm_init(KSM_STATE_PATH);
 	dhcp_init(DHCP_STATE_PATH);
 	/* A cached answer from a previous run, if there is one. Its own
