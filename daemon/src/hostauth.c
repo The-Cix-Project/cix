@@ -67,13 +67,25 @@ static struct perm_group g_perm_groups[HOSTAUTH_PERM_GROUPS_MAX];
 static int g_perm_group_count;
 
 /*
- * ADR-0317 section 7 (#542): whether this host has already been given
- * the standard groups. Recorded so they are provisioned once, not on
+ * ADR-0317 section 7 (#542): which standard groups this host has
+ * already been given. Recorded so each is provisioned once, not on
  * every boot: a standard group the operator deleted stays deleted, the
  * same rule ADR-0315 and ADR-0316 apply to the other defaults a fresh
  * host is given. Persisted beside the mapping.
+ *
+ * Recorded per group, by name (`standard_groups_done`), so that a
+ * standard group added by a later build reaches a host that already
+ * has the others: cix-agents (ADR-0368) is the first. The boolean is
+ * still written, true once every group is done, for an older build
+ * after a rollback, which reads only that.
  */
+#define HOSTAUTH_STANDARD_GROUPS 4
 static int g_standard_groups_provisioned;
+static unsigned char g_standard_done[HOSTAUTH_STANDARD_GROUPS];
+
+/* Defined with the standard groups themselves, further down. */
+static int standard_group_index(const char *name);
+static void write_standard_groups_done(struct json_writer *w);
 
 static int perm_index(const char *word)
 {
@@ -402,6 +414,8 @@ static int save_config(void)
 	write_mapping_groups(&w);
 	jw_key(&w, "standard_groups_provisioned");
 	jw_bool(&w, g_standard_groups_provisioned);
+	jw_key(&w, "standard_groups_done");
+	write_standard_groups_done(&w);
 	jw_obj_close(&w);
 	rc = persist_atomic_write(g_config_path, w.buf, w.len);
 	jw_free(&w);
@@ -482,8 +496,34 @@ static int load_config(void)
 	 * the first boot of that build provision the standard groups. */
 	{
 		const struct json_value *jprov = json_object_get(root, "standard_groups_provisioned");
+		const struct json_value *jdone = json_object_get(root, "standard_groups_done");
 
 		g_standard_groups_provisioned = jprov != NULL && jprov->type == JSON_BOOL && jprov->u.boolean;
+		memset(g_standard_done, 0, sizeof(g_standard_done));
+		if (jdone != NULL && jdone->type == JSON_ARRAY) {
+			size_t i;
+
+			for (i = 0; i < jdone->u.array.count; i++) {
+				int s = standard_group_index(json_as_string(jdone->u.array.items[i]));
+
+				if (s >= 0)
+					g_standard_done[s] = 1;
+			}
+		} else if (g_standard_groups_provisioned) {
+			/* Written before the list existed (0.2.57-648 and older),
+			 * when the standard groups were exactly these three, so
+			 * `true` says each of them was done. */
+			static const char *const before_list[] = { "cix-admins", "cix-operators",
+			                                           "cix-readers" };
+			size_t i;
+
+			for (i = 0; i < sizeof(before_list) / sizeof(before_list[0]); i++) {
+				int s = standard_group_index(before_list[i]);
+
+				if (s >= 0)
+					g_standard_done[s] = 1;
+			}
+		}
 	}
 
 	/*
@@ -1492,6 +1532,13 @@ static int grants_reader(const char *word)
 	return word_is_area(word, "read");
 }
 
+/* ADR-0368: an MCP agent may reach the gateway and read; granting it
+ * more is an ordinary group edit. */
+static int grants_agent(const char *word)
+{
+	return strcmp(word, "mcp:call") == 0 || word_is_area(word, "read");
+}
+
 static const struct {
 	const char *name;
 	int (*grants)(const char *word);
@@ -1499,15 +1546,38 @@ static const struct {
 	{ "cix-admins", grants_admin },
 	{ "cix-operators", grants_operator },
 	{ "cix-readers", grants_reader },
+	{ "cix-agents", grants_agent },
 };
+
+_Static_assert(sizeof(standard_groups) / sizeof(standard_groups[0]) == HOSTAUTH_STANDARD_GROUPS,
+               "g_standard_done has one entry per standard group");
+
+static int standard_group_index(const char *name)
+{
+	int s;
+
+	for (s = 0; name != NULL && s < HOSTAUTH_STANDARD_GROUPS; s++)
+		if (strcmp(standard_groups[s].name, name) == 0)
+			return s;
+	return -1;
+}
+
+static void write_standard_groups_done(struct json_writer *w)
+{
+	int s;
+
+	jw_arr_open(w);
+	for (s = 0; s < HOSTAUTH_STANDARD_GROUPS; s++)
+		if (g_standard_done[s])
+			jw_str(w, standard_groups[s].name);
+	jw_arr_close(w);
+}
 
 int hostauth_provision_standard_groups(void)
 {
 	size_t s;
-	int complete = 1, changed = 0;
+	int complete = 1, changed = 0, recorded = 0;
 
-	if (g_standard_groups_provisioned)
-		return 0;
 	for (s = 0; s < sizeof(standard_groups) / sizeof(standard_groups[0]); s++) {
 		const char *name = standard_groups[s].name;
 		struct perm_group *pg;
@@ -1515,13 +1585,18 @@ int hostauth_provision_standard_groups(void)
 		enum ldap_record_error rerr;
 		int i, gid;
 
+		if (g_standard_done[s])
+			continue;
 		/* Section 7: "an existing group of the same name is never
 		 * re-granted" -- existing in the directory, or already in
 		 * the mapping. On 192.168.15.95 cix-admins is the directory's
 		 * own admin group, and it keeps exactly what it has. */
 		if (ldap_group_find(name) != NULL ||
-		    perm_group_find(g_perm_groups, g_perm_group_count, name) >= 0)
+		    perm_group_find(g_perm_groups, g_perm_group_count, name) >= 0) {
+			g_standard_done[s] = 1;
+			recorded = 1;
 			continue;
+		}
 		if (g_perm_group_count >= HOSTAUTH_PERM_GROUPS_MAX ||
 		    (standard_groups[s].grants == grants_admin &&
 		     count_groups_holding_all(g_perm_groups, g_perm_group_count) >=
@@ -1547,6 +1622,7 @@ int hostauth_provision_standard_groups(void)
 		snprintf(pg->name, sizeof(pg->name), "%s", name);
 		for (i = 0; i < CIX_PERMISSION_COUNT; i++)
 			pg->has[i] = (unsigned char)standard_groups[s].grants(cix_permissions[i]);
+		g_standard_done[s] = 1;
 		changed = 1;
 		logstore_write("hostauth", "info", "standard group %s provisioned (gid %d)", name, gid);
 	}
@@ -1554,9 +1630,9 @@ int hostauth_provision_standard_groups(void)
 		derive_admin_groups();
 	/* Only once every standard group exists or was deliberately found
 	 * already there; a failure is retried at the next start, and the
-	 * groups already made are skipped then as existing. */
+	 * groups already made are skipped then as done. */
 	g_standard_groups_provisioned = complete;
-	if ((changed || complete) && save_config() != 0) {
+	if ((changed || recorded) && save_config() != 0) {
 		logstore_write("hostauth", "err",
 		               "could not persist the standard groups' permissions; the groups "
 		               "exist in the directory and will not be re-granted");

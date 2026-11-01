@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The `cix-agents` standard group, and standard groups provisioned per name (#391, ADR-0368 step 3)
+
+- **What changed:**
+  - A fourth standard group, `cix-agents`, holds `mcp:call` and every `read` permission and nothing else. It is the group for an MCP agent's principal, and granting it more is an ordinary group edit.
+  - The host now records which standard groups it has been given, by name, in `hostauth_config.json`'s `standard_groups_done`. It still writes the boolean `standard_groups_provisioned` for an older build after a rollback. A file that has only the boolean was written when the standard groups were the first three, so it counts as those three done.
+  - So a standard group added by a later build reaches a host that already has the others, and a group the operator deleted still stays deleted.
+  - `test_hostauth` checks `cix-agents`'s grants on a fresh host. It also loads a file that has only the boolean and checks three things: `cix-agents` alone is provisioned, `cix-readers` stays absent, and the names are written back.
+  - Every test data directory now starts with all four groups recorded as done.
+- **Why:** ADR-0368 provisions `cix-agents` like the other standard groups. Provisioning was gated by one boolean, set once per host, so on 192.168.15.95, which had it, the new group would never have appeared.
+- **Verified:** pending the release.
+
 ### An admin group keeps every permission as the vocabulary grows (#670, ADR-0369)
 
 - **What changed:** when hostauth loads its saved mapping, each group named in the saved `admin_groups` is granted every word of the loading build's vocabulary, and the grant is written back. A group that held only some permissions gains nothing. `test_hostauth` loads a state file written under a two-word vocabulary. It checks that the admin group then holds every word, `mcp:call` included, and stays in `admin_groups`, that a partial group gains nothing, and that the file now names `mcp:call`.

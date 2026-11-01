@@ -39,6 +39,11 @@ extern char **environ;
 
 #define TEST_PORT 7680
 #define PORT_ARG "--port=7680"
+/* A state file's record that every standard group was given, so a
+ * scenario that writes its own file counts only its own groups. */
+#define STANDARD_GROUPS_ALL_DONE                                                              \
+	"\"standard_groups_done\":[\"cix-admins\",\"cix-operators\",\"cix-readers\","            \
+	"\"cix-agents\"]"
 
 static char g_data_dir[PATH_MAX];
 
@@ -381,7 +386,7 @@ static int test_permission_mapping(void)
 		return 0;
 	}
 	fputs("{\"admin_groups\":[\"legacyadmins\"],\"idle_timeout_seconds\":900,"
-	      "\"standard_groups_provisioned\":true}\n",
+	      "\"standard_groups_provisioned\":true," STANDARD_GROUPS_ALL_DONE "}\n",
 	      f);
 	fclose(f);
 	snprintf(g_data_dir, sizeof(g_data_dir), "%s", dir);
@@ -739,6 +744,16 @@ static int test_standard_groups(void)
 		    mapping_group_has(groups, "cix-readers", "public") != 0 ||
 		    mapping_group_has(groups, "cix-readers", "images:write") != 0) {
 			fprintf(stderr, "FAIL: #542 cix-readers must be every read, nothing else: %.300s\n",
+			        r.body != NULL ? r.body : "");
+			ok = 0;
+		}
+		if (mapping_group_has(groups, "cix-agents", "mcp:call") != 1 ||
+		    mapping_group_has(groups, "cix-agents", "containers:read") != 1 ||
+		    mapping_group_has(groups, "cix-agents", "public") != 0 ||
+		    mapping_group_has(groups, "cix-agents", "containers:operate") != 0 ||
+		    mapping_group_has(groups, "cix-agents", "dns:write") > 0) {
+			fprintf(stderr, "FAIL: ADR-0368 cix-agents must be mcp:call and every read, "
+			                "nothing else: %.300s\n",
 			        r.body != NULL ? r.body : "");
 			ok = 0;
 		}
@@ -1255,6 +1270,98 @@ out:
 }
 
 /*
+ * ADR-0368: a standard group a later build adds reaches a host that
+ * already has the others. The state file is one written before the
+ * per-name record (0.2.57-648 and older): the boolean alone, which then
+ * meant the three groups that existed. This build must provision
+ * cix-agents and only cix-agents -- cix-readers, absent from this
+ * directory, was done and so stays absent -- and write the names back.
+ */
+static int test_standard_groups_added(void)
+{
+	char saved_data_dir[PATH_MAX], dir[PATH_MAX], path[PATH_MAX];
+	struct cix_client c;
+	struct cix_response r;
+	const struct json_value *groups;
+	pid_t pid = -1;
+	int ok = 1;
+	FILE *f;
+
+	snprintf(saved_data_dir, sizeof(saved_data_dir), "%s", g_data_dir);
+	cix_client_init(&c, "127.0.0.1", TEST_PORT);
+	if (test_data_dir_create(dir, sizeof(dir)) != 0)
+		return 0;
+	snprintf(path, sizeof(path), "%s/state/hostauth_config.json", dir);
+	f = fopen(path, "w");
+	if (f == NULL) {
+		fprintf(stderr, "FAIL: ADR-0368 could not write %s\n", path);
+		ok = 0;
+		goto out;
+	}
+	fputs("{\"standard_groups_provisioned\":true}\n", f);
+	fclose(f);
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", dir);
+	pid = start_daemon();
+	if (pid < 0 || wait_for_daemon(&c, 50) != 0) {
+		fprintf(stderr, "FAIL: ADR-0368 daemon never accepted connections\n");
+		ok = 0;
+		goto out;
+	}
+	groups = get_mapping_groups(&c, &r);
+	if (groups == NULL || mapping_group_has(groups, "cix-agents", "mcp:call") != 1 ||
+	    mapping_group_has(groups, "cix-agents", "images:read") != 1 ||
+	    mapping_group_has(groups, "cix-readers", "images:read") != -1 ||
+	    mapping_group_has(groups, "cix-admins", "mcp:call") != -1) {
+		fprintf(stderr, "FAIL: ADR-0368 a host saved before cix-agents must be given it, and "
+		                "only it: %.300s\n",
+		        r.body != NULL ? r.body : "");
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&c, "GET", "/v1/ldap/groups", NULL, &r) != 0 || r.status != 200 ||
+	    !body_has(&r, "\"cix-agents\"") || body_has(&r, "\"cix-readers\"")) {
+		fprintf(stderr, "FAIL: ADR-0368 the directory must hold cix-agents and no other "
+		                "standard group: %.300s\n",
+		        r.body != NULL ? r.body : "");
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	if (test_assert_no_drift(&c, NULL) != 0)
+		ok = 0;
+	if (stop_daemon(pid) != 0)
+		ok = 0;
+	pid = -1;
+
+	{
+		char buf[8192];
+		size_t n = 0;
+
+		f = fopen(path, "r");
+		if (f != NULL) {
+			n = fread(buf, 1, sizeof(buf) - 1, f);
+			fclose(f);
+		}
+		buf[n] = '\0';
+		if (strstr(buf, "\"standard_groups_done\":[\"cix-admins\",\"cix-operators\","
+		                "\"cix-readers\",\"cix-agents\"]") == NULL) {
+			fprintf(stderr, "FAIL: ADR-0368 the provisioned names were not written back: "
+			                "%.300s\n",
+			        buf);
+			ok = 0;
+		}
+	}
+out:
+	if (pid > 0 && stop_daemon(pid) != 0)
+		ok = 0;
+	test_data_dir_cleanup(dir);
+	snprintf(g_data_dir, sizeof(g_data_dir), "%s", saved_data_dir);
+	return ok;
+}
+
+/*
  * #670 (ADR-0369): an admin group stays one as the vocabulary grows.
  * The state file below was written by a build whose vocabulary was two
  * words: growadmins held both and so was saved as an admin group, and
@@ -1287,7 +1394,8 @@ static int test_vocabulary_growth(void)
 	}
 	fputs("{\"admin_groups\":[\"growadmins\"],\"idle_timeout_seconds\":900,"
 	      "\"permissions\":{\"growadmins\":[\"public\",\"containers:read\"],"
-	      "\"partial\":[\"containers:read\"]},\"standard_groups_provisioned\":true}\n",
+	      "\"partial\":[\"containers:read\"]},\"standard_groups_provisioned\":true,"
+	      STANDARD_GROUPS_ALL_DONE "}\n",
 	      f);
 	fclose(f);
 	snprintf(g_data_dir, sizeof(g_data_dir), "%s", dir);
@@ -2756,6 +2864,8 @@ int main(void)
 	if (!test_standard_groups())
 		ok = 0;
 	if (!test_vocabulary_growth())
+		ok = 0;
+	if (!test_standard_groups_added())
 		ok = 0;
 	if (!test_auth_throttle())
 		ok = 0;

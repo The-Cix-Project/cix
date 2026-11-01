@@ -389,17 +389,20 @@ int test_data_dir_create(char *out_path, size_t out_size)
 		fclose(f);
 		/*
 		 * ADR-0317 section 7 (#542): a host with no record of having
-		 * provisioned them is given cix-admins, cix-operators and
-		 * cix-readers at startup. A test daemon starts as a host that
-		 * already has, so its directory and permission mapping hold
-		 * only what the test puts there. test_hostauth removes this to
-		 * test the provisioning itself.
+		 * provisioned them is given cix-admins, cix-operators,
+		 * cix-readers and cix-agents at startup. A test daemon starts
+		 * as a host that already has, every one of them by name, so its
+		 * directory and permission mapping hold only what the test puts
+		 * there. test_hostauth removes this to test the provisioning
+		 * itself.
 		 */
 		snprintf(cfg, sizeof(cfg), "%s/hostauth_config.json", cfg_dir);
 		f = fopen(cfg, "w");
 		if (f == NULL)
 			return -1;
-		fputs("{\"standard_groups_provisioned\":true}\n", f);
+		fputs("{\"standard_groups_provisioned\":true,\"standard_groups_done\":[\"cix-admins\","
+		      "\"cix-operators\",\"cix-readers\",\"cix-agents\"]}\n",
+		      f);
 		fclose(f);
 	}
 	{
