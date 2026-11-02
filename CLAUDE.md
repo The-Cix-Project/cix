@@ -277,7 +277,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **A gateway call runs through `api_run()`, never `dispatch()`.** Anything `dispatch()` does for every request has to happen there too. A successful write's `events_announce_change()` is the one so far, and `test_mcp_gateway` ends with `test_assert_no_drift()` to hold it.
 - **Responses are never trimmed.** A response too large for an agent is a question for the API's filters.
 - **Off until an operator turns it on** (`cixctl mcp`). On 192.168.15.95 it is on since 2026-11-01, because the owner asked for agent-1's agent to use it.
-- **An agent is its own directory user in `cix-agents`** (`mcp:call` and every read), authenticating with an app password. On .95 that is `cix-agent`, app password `claude-code`. agent-1's deployment stages the client configuration from a `{{SECRET:CIX_MCP_BASIC}}` token, never from git. Granting `cix-agents` more is the owner's call.
+- **An agent is its own directory user in `cix-agents`** (`mcp:call` and every read), authenticating with an app password. A higher level is a further group composed onto `cix-agents`, never a widened `cix-agents`. On .95 there are two: `cix-agent` (read-only, no app password), and `cix-agent-full`, which is also in `agents-full`, holding every permission. agent-1's Claude Code is read-write as `cix-agent-full`, app password `claude-code`, by the owner's choice of 2026-11-02 (*"Please do that, r/w"*). agent-1's deployment stages the client configuration from a `{{SECRET:CIX_MCP_BASIC}}` token, never from git. What an agent group grants is the owner's call.
 
 ## Every package can roll: a discovery kind, an authentication method, a green build
 
