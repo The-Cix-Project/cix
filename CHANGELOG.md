@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A fetched source is flushed to disk by the fetch child, so build prep clones it at metadata cost (#646)
+
+- **What changed:**
+  - **The fetch child flushes each source.** After downloading a source, it now `fsync`s the file before exiting. Build prep's `copy_file_simple()` clones sources into the cbs cache with `FICLONE` (#236). A clone of a file whose pages are still dirty writes them out first, and that ran on the event loop.
+  - **`copy_file_simple()` tallies which way it went**, `copy by clone` or `copy by bytes`. A slow build-prep pass in the stall record now names its copies.
+- **Why:**
+  - `GET /v1/system/stalls` on 192.168.15.95 recorded "build prep: copy the sources into the cbs cache" holding the loop 1002 ms during a build, and "stage the build tree" 741 ms, today (ts 1793636177 and 1793637904). Nothing inside either was named.
+  - The source and the build tree are on one btrfs filesystem and one mount (both under `REBUILDABLE_DIR`), so the clone itself can work. The fetch child wrote the file with no flush, which leaves the writeback to the clone.
+  - The staging step holds no fsync, so its 741 ms is not that class; the new tally will say whether its copy was the slow part.
+  - #646's older figures are not current. The 2.7 s and 1.4 s session writes were fixed by ADR-0361 (#659), and no session-write stall has been recorded since. The 5.7 s staging stall was the build slot's `rmtree()` on the loop, fixed by #626 before ADR-0360.
+- **Verified:** pending the release.
+
 ### The installer lists a NIC it has a driver for, verified on current media (#442)
 
 - **What changed:** no behaviour. A comment in `cix-install.c` still said the installer "carries no module tree, so only virtio NICs appear", which #442's fix in v2.57.199 had made false. It now says what is true and how it was measured.

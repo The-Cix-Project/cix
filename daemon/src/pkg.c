@@ -4117,6 +4117,7 @@ static int copy_file_simple(const char *src, const char *dst)
 	int in, out;
 	char buf[4096];
 	ssize_t n;
+	long long t;
 
 	in = open(src, O_RDONLY);
 	if (in < 0)
@@ -4126,7 +4127,14 @@ static int copy_file_simple(const char *src, const char *dst)
 		close(in);
 		return -1;
 	}
+	/*
+	 * #646: tallied by which way it went, so a slow pass names it. A
+	 * build prep step held the loop a second on .95 with nothing inside
+	 * it named, which is how the cause stayed unestablished.
+	 */
+	t = stallwatch_tally_start();
 	if (ioctl(out, FICLONE, in) == 0) {
+		stallwatch_tally("copy by clone", t);
 		close(in);
 		close(out);
 		return 0;
@@ -4139,6 +4147,7 @@ static int copy_file_simple(const char *src, const char *dst)
 			return -1;
 		}
 	}
+	stallwatch_tally("copy by bytes", t);
 	close(in);
 	close(out);
 	return n < 0 ? -1 : 0;
@@ -11225,6 +11234,22 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 					close(fd);
 				}
 				_exit(1);
+			}
+			/*
+			 * #646: written to disk here, in the child, so the build's
+			 * prep can clone it at metadata cost. A clone of a file
+			 * whose pages are still dirty writes them out first, and
+			 * that ran on the event loop: "build prep: copy the sources
+			 * into the cbs cache" held it 1002 ms on 192.168.15.95
+			 * during a build (2026-11-02, ts 1793636177).
+			 */
+			{
+				int sfd = open(src_tarball_path, O_RDONLY);
+
+				if (sfd >= 0) {
+					(void)fsync(sfd);
+					close(sfd);
+				}
 			}
 		}
 		_exit(0);
