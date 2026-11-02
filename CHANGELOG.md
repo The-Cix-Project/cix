@@ -16,7 +16,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - The source and the build tree are on one btrfs filesystem and one mount (both under `REBUILDABLE_DIR`), so the clone itself can work. The fetch child wrote the file with no flush, which leaves the writeback to the clone.
   - The staging step holds no fsync, so its 741 ms is not that class; the new tally will say whether its copy was the slow part.
   - #646's older figures are not current. The 2.7 s and 1.4 s session writes were fixed by ADR-0361 (#659), and no session-write stall has been recorded since. The 5.7 s staging stall was the build slot's `rmtree()` on the loop, fixed by #626 before ADR-0360.
-- **Verified:** pending the release.
+- **Verified:** compile probe 0.2.57-697, selftest green. Live on 192.168.15.95 as 0.2.57-654 since 2026-11-02, with all 14 containers running. `probe-qemu-boot@8-1` was built on it. Its prep cloned the 70 MB installer ISO and a source tarball into the cbs cache, and `GET /v1/system/stalls` recorded no pass over the watchdog's threshold (about 750 ms) after the reboot, where a build's source copy had held the loop 1002 ms that morning. That is one sample, and the watchdog's threshold means a faster pass would leave no record. #646's self-check reads stay open.
 
 ### The installer lists a NIC it has a driver for, verified on current media (#442)
 
