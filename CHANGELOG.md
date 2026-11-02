@@ -6,6 +6,19 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### MCP step 5: work that parks is served, and a file answers in base64; 341 tools (#391, ADR-0368)
+
+- **What changed:**
+  - **A tool's work may park.** The ten park entry points (`backup_ask`, `bootmgr_submit`, `cred_broker`, `datadir_ask`, `kmod_broker`, `logread_broker`, `park_body_take`, `pkg_delete_ask`, `update_submit`, `verify_ask`) find their connection through `request_conn()`, not `g_response_conn`. `api_run()` takes the connection a park may attach to: the MCP request's own for a tool call, none for the events self-check. It reports a handler that parked, and the gateway then writes nothing. The request is served again when the work is done, and the call made again finds its result. The audit line is written on that pass.
+  - **An answer that is not JSON is an embedded resource**, `blob` in base64, `mimeType` from the response, and the request as its `cix:` URI. `api_run()` now returns the response's `Content-Type`. apigen no longer refuses a non-JSON 200.
+  - **Fourteen more operations are tools, which makes 341 of 356**: the system logs, backup, backup snapshot, system update, boot manager, package verify, uninstall, data-directory report, the three module operations, a container file, a build log and an artifact download.
+  - **Fifteen stay `none`**: 3 WebSockets, 4 `authenticated`, 4 credential parks (login and the three LDAP operations that set a password, because a connection holds one credential verdict and the MCP request's app password may hold it), `getWhoami` and `postLogout`, `verifyEvents` and `callMcp`. `test_mcp_exposure` now refuses only the credential parks among parks, and controls on `handle_login`.
+  - **Tests:**
+    - `test_mcp` covers a call that parks (nothing sent, nothing audited) and a non-JSON answer (`aGVsbG8=` for `hello`, with its `mimeType` and URI). It links `base64.c`.
+    - `test_mcp_gateway` checks a filtered log read, which parks, against REST. Its read-equivalence loop now includes the parked reads: backup, data-dir report, verify.
+- **Why:** step 5 of ADR-0368, and the owner's choice of base64 for the files (2026-11-02). Before checking, every park record was read field by field: each owns its bytes, so a record made for a request on `api_run()`'s stack outlives that request safely.
+- **Verified:** pending the release.
+
 ### 327 of 356 operations are MCP tools, held by gates rather than a list (#391, ADR-0368)
 
 - **What changed:**

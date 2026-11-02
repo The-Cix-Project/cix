@@ -239,6 +239,50 @@ static void check_read_equivalence(const struct cix_client *c)
 	check(compared >= 100, "read equivalence compared every read tool");
 }
 
+/*
+ * ADR-0368 step 5: a filtered log read runs in a helper (ADR-0342), so
+ * through the gateway it parks the MCP request itself, which is served
+ * again when the read is done -- and must then answer what REST does.
+ */
+static void check_parked_read(const struct cix_client *c)
+{
+	struct cix_response rest, gw;
+	const struct json_value *result, *text;
+	struct json_value *mcp_body = NULL;
+
+	memset(&rest, 0, sizeof(rest));
+	memset(&gw, 0, sizeof(gw));
+	if (cix_client_request(c, "GET", "/v1/system/logs?source=cixd&tail=5", NULL, &rest) != 0 ||
+	    cix_client_request(c, "POST", "/v1/mcp",
+	                       "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":"
+	                       "{\"name\":\"getSystemLogs\",\"arguments\":{\"source\":\"cixd\","
+	                       "\"tail\":\"5\"}}}",
+	                       &gw) != 0) {
+		check(0, "step 5: a filtered log read could not be asked both ways");
+		cix_response_free(&rest);
+		cix_response_free(&gw);
+		return;
+	}
+	result = json_object_get(gw.json, "result");
+	text = json_object_get(json_object_get(result, "content") != NULL &&
+	                               json_object_get(result, "content")->u.array.count > 0
+	                           ? json_object_get(result, "content")->u.array.items[0]
+	                           : NULL,
+	                       "text");
+	if (json_as_string(text) != NULL)
+		mcp_body = json_parse(json_as_string(text), strlen(json_as_string(text)));
+	check(rest.status == 200 && gw.status == 200 &&
+	          json_object_get(result, "isError") != NULL &&
+	          json_object_get(result, "isError")->u.boolean == 0 &&
+	          same_shape(rest.json, mcp_body),
+	      "step 5: a filtered log read parks the MCP request and answers as REST does");
+	if (gw.body != NULL && json_object_get(result, "isError") == NULL)
+		fprintf(stderr, "    %.300s\n", gw.body);
+	json_free(mcp_body);
+	cix_response_free(&rest);
+	cix_response_free(&gw);
+}
+
 int main(void)
 {
 	struct cix_client c;
@@ -280,6 +324,7 @@ int main(void)
 	cix_response_free(&r);
 
 	check_read_equivalence(&c);
+	check_parked_read(&c);
 
 	check(mcp(&c,
 	          "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":"

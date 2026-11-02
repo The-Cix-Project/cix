@@ -10,24 +10,24 @@
  * for every tool, its `op_<operationId>` function and each `handle_*`
  * that function calls, one level down, must contain none of
  *
- *   - a park: `_ask(`, `park_body_take(`, `bootmgr_submit(`,
- *     `update_submit(`. A parked handler is answered busy in-process
- *     (park_body_take()'s and credcheck_ask()'s own sentinel checks),
- *     so it is safe, but it can never succeed until step 5 serves it.
- *   - a password hash: `hash_request_password(`, `credcheck_hash(`,
- *     `credcheck_new_secret(`, which park too.
+ *   - a credential park: `credcheck_ask(`, `hash_request_password(`,
+ *     `credcheck_hash(`, `credcheck_new_secret(`. Since step 5 a tool's
+ *     work parks the MCP request itself and is served on the pass that
+ *     runs it again; a credential check cannot, because a connection
+ *     holds one credential verdict and the MCP request's own app
+ *     password may already be in it (ADR-0340's "checked once").
  *   - a header read: `http_find_header(`, `->headers`. In-process there
  *     are none, so the answer would be about nobody.
  *   - an in-process run of its own: `api_run(`, `events_run_get(`,
  *     which would reuse the one sentinel the outer call is using.
  *
- * What the contract alone decides (a WebSocket, `authenticated`, a body
- * that is not JSON) apigen refuses; this is the half only the source
- * can answer. When written (2026-11-02), 29 of 356 operations stayed
- * `none`: 3 WebSockets, 4 more `authenticated`, and 3 non-JSON bodies,
- * which are apigen's to refuse; and 15 that park, 2 that read a header
- * (whoami, logout) and 2 that run operations in-process themselves
- * (verifyEvents, callMcp), which are this test's.
+ * What the contract alone decides (a WebSocket, `authenticated`) apigen
+ * refuses; this is the half only the source can answer. After step 5
+ * (2026-11-02), 15 of 356 operations stay `none`: 3 WebSockets and 4
+ * more `authenticated`, which are apigen's to refuse; and 4 credential
+ * parks (login, and the three LDAP operations that set a password), 2
+ * header reads (whoami, logout) and 2 in-process runs (verifyEvents,
+ * callMcp), which are this test's.
  *
  * In SELFTESTS: it reads files and runs nothing.
  */
@@ -157,10 +157,8 @@ static char *function_body(const char *name)
 }
 
 static const char *const g_refused[] = {
-	"_ask(",          "park_body_take(",        "bootmgr_submit(",
-	"update_submit(", "hash_request_password(", "credcheck_hash(",
-	"credcheck_new_secret(", "http_find_header(", "->headers",
-	"api_run(",       "events_run_get(",
+	"credcheck_ask(", "hash_request_password(", "credcheck_hash(", "credcheck_new_secret(",
+	"http_find_header(", "->headers", "api_run(", "events_run_get(",
 };
 
 /* The first refused text in body, or NULL. */
@@ -237,10 +235,10 @@ int main(void)
 	/* Controls: the scan must see a park and a header read where they
 	 * are, or a clean result means nothing. */
 	{
-		char *b = function_body("handle_logs_get");
+		char *b = function_body("handle_login");
 
 		if (b == NULL || refused_in(b) == NULL) {
-			fprintf(stderr, "  FAIL: control: handle_logs_get() was not found to park\n");
+			fprintf(stderr, "  FAIL: control: handle_login() was not found to park on a credential\n");
 			g_failures++;
 		}
 		free(b);

@@ -1,4 +1,5 @@
 #include "mcp.h"
+#include "base64.h"
 #include "json.h"
 #include "logstore.h"
 #include "persist.h"
@@ -394,24 +395,71 @@ static void write_call_result(struct json_writer *w, const struct json_value *id
 	jw_obj_close(w);
 }
 
-static void do_tools_call(struct json_writer *w, const struct json_value *id,
-                          const struct json_value *params, const struct mcp_caller *c)
+/*
+ * A successful answer that is not JSON -- a file's bytes, a build log,
+ * an artifact -- as an embedded resource whose `blob` is the bytes in
+ * base64 (the owner, 2026-11-02), so nothing in them is altered or
+ * lost on the way to the client. Its URI is the request it answers.
+ */
+static void write_resource_result(struct json_writer *w, const struct json_value *id,
+                                  const char *path, const char *type, const char *body,
+                                  size_t body_len)
+{
+	size_t b64_size = ((body_len + 2) / 3) * 4 + 1;
+	char *b64 = malloc(b64_size);
+	char uri[2100];
+
+	if (b64 == NULL ||
+	    base64_encode((const unsigned char *)body, body_len, b64, b64_size) != 0) {
+		free(b64);
+		write_call_result(w, id, "the answer could not be encoded", 1);
+		return;
+	}
+	snprintf(uri, sizeof(uri), "cix:%s", path);
+	open_result(w, id);
+	jw_obj_open(w);
+	jw_key(w, "content");
+	jw_arr_open(w);
+	jw_obj_open(w);
+	jw_key(w, "type");
+	jw_str(w, "resource");
+	jw_key(w, "resource");
+	jw_obj_open(w);
+	jw_key(w, "uri");
+	jw_str(w, uri);
+	jw_key(w, "mimeType");
+	jw_str(w, type);
+	jw_key(w, "blob");
+	jw_str(w, b64);
+	jw_obj_close(w);
+	jw_obj_close(w);
+	jw_arr_close(w);
+	jw_key(w, "isError");
+	jw_bool(w, 0);
+	jw_obj_close(w);
+	jw_obj_close(w);
+	free(b64);
+}
+
+/* 1 when the call parked this request (nothing written), else 0. */
+static int do_tools_call(struct json_writer *w, const struct json_value *id,
+                         const struct json_value *params, const struct mcp_caller *c)
 {
 	const char *name = json_as_string(json_object_get(params, "name"));
 	const struct json_value *args = json_object_get(params, "arguments");
 	const struct cix_mcp_tool *t = tool_by_name(name);
-	char path[2048], why[256], msg[384];
+	char path[2048], why[256], msg[384], type[128];
 	struct json_writer req;
 	char *body = NULL;
 	size_t body_len = 0;
-	int status = 0, sent;
+	int status = 0, sent, ran;
 	long long started;
 	const char *user = c->user != NULL && c->user[0] != '\0' ? c->user : "-";
 
 	if (t == NULL) {
 		snprintf(msg, sizeof(msg), "no tool named \"%s\"", name != NULL ? name : "");
 		write_error(w, id, -32602, msg);
-		return;
+		return 0;
 	}
 	if (!c->may(c->ctx, t->permission)) {
 		logstore_write("audit", "warn", "mcp: %s refused %s -- needs %s (ADR-0368)", user,
@@ -419,38 +467,42 @@ static void do_tools_call(struct json_writer *w, const struct json_value *id,
 		snprintf(msg, sizeof(msg), "%s needs the permission %s, which you do not hold", t->name,
 		         t->permission);
 		write_call_result(w, id, msg, 1);
-		return;
+		return 0;
 	}
 	if (build_path(t, args, path, sizeof(path), why, sizeof(why)) != 0) {
 		write_error(w, id, -32602, why);
-		return;
+		return 0;
 	}
 	jw_init(&req);
 	sent = t->has_body && build_body(args, &req);
 	started = now_ms();
-	if (c->run(c->ctx, t->method, path, sent ? req.buf : NULL, sent ? req.len : 0, &status, &body,
-	           &body_len) != 0) {
-		jw_free(&req);
+	ran = c->run(c->ctx, t->method, path, sent ? req.buf : NULL, sent ? req.len : 0, &status,
+	             &body, &body_len, type, sizeof(type));
+	jw_free(&req);
+	if (ran < 0) {
 		snprintf(msg, sizeof(msg), "%s %s matched no route", t->method, path);
 		write_call_result(w, id, msg, 1);
-		return;
+		return 0;
 	}
-	jw_free(&req);
+	if (ran == 1) {
+		/* Step 5: the work parked this request. It is audited on the
+		 * pass that answers, when the request is served again. */
+		free(body);
+		return 1;
+	}
 	logstore_write("audit", "info", "mcp: %s called %s (%s %s) -> %d in %lld ms (ADR-0368)", user,
 	               t->name, t->method, path, status, now_ms() - started);
 	if (status == 0) {
-		/* Nothing was written: the handler waits on background work and
-		 * would answer later, which a call here cannot (ADR-0368 step 5). */
-		snprintf(msg, sizeof(msg),
-		         "%s answers once background work finishes, which an MCP call cannot wait for "
-		         "yet",
-		         t->name);
+		snprintf(msg, sizeof(msg), "%s wrote no answer", t->name);
 		write_call_result(w, id, msg, 1);
+	} else if (status >= 200 && status < 300 && body != NULL &&
+	           strncmp(type, "application/json", 16) != 0) {
+		write_resource_result(w, id, path, type, body, body_len);
 	} else {
-		write_call_result(w, id, body != NULL ? body : "",
-		                  status < 200 || status >= 300);
+		write_call_result(w, id, body != NULL ? body : "", status < 200 || status >= 300);
 	}
 	free(body);
+	return 0;
 }
 
 int mcp_handle(const char *request, size_t len, const struct mcp_caller *c,
@@ -497,7 +549,10 @@ int mcp_handle(const char *request, size_t len, const struct mcp_caller *c,
 	} else if (strcmp(method, "tools/list") == 0) {
 		do_tools_list(w, id, c);
 	} else if (strcmp(method, "tools/call") == 0) {
-		do_tools_call(w, id, params, c);
+		if (do_tools_call(w, id, params, c)) {
+			json_free(root);
+			return MCP_PARKED;
+		}
 	} else {
 		char msg[160];
 

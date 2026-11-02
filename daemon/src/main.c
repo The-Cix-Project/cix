@@ -28093,8 +28093,8 @@ static void op_setSystemMcp(const struct api_ctx *ctx)
 static enum hostauth_authz request_authz(const struct http_request *req, const char *permission,
                                          int consume);
 static int api_run(const char *method, const char *path, const char *body_in, size_t body_in_len,
-                   const char *user, const char *peer, int *out_status, char **out_body,
-                   size_t *out_len);
+                   const char *user, const char *peer, struct conn *park_conn, int *out_status,
+                   char **out_body, size_t *out_len, char *out_type, size_t out_type_size);
 
 /* ADR-0368: a tool is allowed by its own operation's permission, asked
  * of the same credential the request carried. */
@@ -28105,13 +28105,22 @@ static int mcp_caller_may(void *c, const char *permission)
 	return request_authz(ctx->req, permission, 0) == HOSTAUTH_AUTHZ_OK;
 }
 
-/* ADR-0368: a tool runs its operation's own handler, as the caller. */
+/*
+ * ADR-0368: a tool runs its operation's own handler, as the caller.
+ * Work it parks parks this MCP request, on its own connection (step 5),
+ * which is the connection being served while op_callMcp() runs.
+ */
 static int mcp_caller_run(void *c, const char *method, const char *path, const char *req,
-                          size_t req_len, int *status, char **body, size_t *body_len)
+                          size_t req_len, int *status, char **body, size_t *body_len, char *type,
+                          size_t type_size)
 {
 	const struct api_ctx *ctx = c;
+	struct conn *cc = g_response_conn;
 
-	return api_run(method, path, req, req_len, ctx->user, ctx->peer_ip, status, body, body_len);
+	if (cc != NULL && (cc->fd < 0 || cc->kind != CONN_CLIENT))
+		cc = NULL;
+	return api_run(method, path, req, req_len, ctx->user, ctx->peer_ip, cc, status, body,
+	               body_len, type, type_size);
 }
 
 /* POST /v1/mcp (ADR-0368) */
@@ -28134,10 +28143,19 @@ static void op_callMcp(const struct api_ctx *ctx)
 	caller.may = mcp_caller_may;
 	caller.run = mcp_caller_run;
 	jw_init(&w);
-	if (mcp_handle(ctx->req->body, ctx->req->body_len, &caller, &w) == 202)
+	switch (mcp_handle(ctx->req->body, ctx->req->body_len, &caller, &w)) {
+	case MCP_PARKED:
+		/* Step 5: a tool's work parked this request, which writes
+		 * nothing now and is served again -- this whole message, the
+		 * call included -- when the work is done (serve_request()). */
+		break;
+	case 202:
 		http_write_response(ctx->fd, 202, "Accepted", "application/json", "", 0);
-	else
+		break;
+	default:
 		respond_json(ctx->fd, 200, "OK", &w);
+		break;
+	}
 	jw_free(&w);
 }
 
@@ -30288,6 +30306,26 @@ static void op_createStoragePartitionTable(const struct api_ctx *ctx)
  * been freed or repurposed.
  */
 static struct conn *g_response_conn;
+
+/*
+ * ADR-0368 step 5: where a request's work parks is not always where its
+ * response goes. api_run() writes an MCP tool call's response into
+ * g_self_read_conn and hands it back to the gateway, while the call's
+ * work, if it parks, must park the MCP request itself, on the client's
+ * connection, so that request is served again -- and the call run
+ * again, now finding its result -- when the work is done. While
+ * api_run() is running a handler, g_api_run_park is that connection, or
+ * NULL when nothing may park (the events self-check, which serves no
+ * client); otherwise the request's connection is g_response_conn. Every
+ * park asks request_conn(), never g_response_conn.
+ */
+static int g_api_run_active;
+static struct conn *g_api_run_park;
+
+static struct conn *request_conn(void)
+{
+	return g_api_run_active ? g_api_run_park : g_response_conn;
+}
 
 /*
  * Who is making the request currently being dispatched, "" when nobody
@@ -33444,7 +33482,7 @@ static void park_start_waiting(enum park_kind kind)
 static enum credcheck_answer cred_broker(const struct credcheck_request *rq,
                                          struct credcheck_out *out)
 {
-	struct conn *cc = g_response_conn;
+	struct conn *cc = request_conn();
 	unsigned char bind[CREDCHECK_BIND_LEN];
 	struct park *p;
 
@@ -33590,7 +33628,7 @@ static void cred_check_done(int exit_status, void *ctx)
  */
 static enum park_body_answer park_body_take(int *result_fd)
 {
-	struct conn *cc = g_response_conn;
+	struct conn *cc = request_conn();
 
 	if (cc == NULL || cc->fd < 0 || cc->kind != CONN_CLIENT)
 		return PARK_ANSWER_BUSY;
@@ -33672,7 +33710,7 @@ static enum logread_answer logread_broker(const struct logread_query *q, int *re
 	default:
 		return LOGREAD_FAILED;
 	}
-	p = park_new(PARK_LOGREAD, g_response_conn);
+	p = park_new(PARK_LOGREAD, request_conn());
 	if (p == NULL)
 		return LOGREAD_BUSY;
 	p->q = *q;
@@ -33700,7 +33738,7 @@ static enum park_body_answer backup_ask(const char *target, int *result_fd)
 
 	if (a != PARK_ANSWER_ASK)
 		return a;
-	p = park_new(PARK_BACKUP, g_response_conn);
+	p = park_new(PARK_BACKUP, request_conn());
 	if (p == NULL)
 		return PARK_ANSWER_BUSY;
 	snprintf(p->backup_target, sizeof(p->backup_target), "%s", target);
@@ -33732,7 +33770,7 @@ static enum park_body_answer verify_ask(int *result_fd)
 
 	if (a != PARK_ANSWER_ASK)
 		return a;
-	p = park_new(PARK_VERIFY, g_response_conn);
+	p = park_new(PARK_VERIFY, request_conn());
 	if (p == NULL)
 		return PARK_ANSWER_BUSY;
 	return park_body_submit(p);
@@ -33755,7 +33793,7 @@ static enum park_body_answer datadir_ask(const char *entry, int *result_fd)
 
 	if (a != PARK_ANSWER_ASK)
 		return a;
-	p = park_new(PARK_DATADIR, g_response_conn);
+	p = park_new(PARK_DATADIR, request_conn());
 	if (p == NULL)
 		return PARK_ANSWER_BUSY;
 	snprintf(p->datadir_entry, sizeof(p->datadir_entry), "%s", entry != NULL ? entry : "");
@@ -33784,7 +33822,7 @@ static struct park *g_pkg_delete_park[PKG_MAX_CONCURRENT_JOBS];
 static enum park_body_answer pkg_delete_ask(const char *name, const char *image,
                                             enum pkg_error *out_result)
 {
-	struct conn *cc = g_response_conn;
+	struct conn *cc = request_conn();
 	int rfd = -1;
 	enum park_body_answer a = park_body_take(&rfd);
 	struct park *p;
@@ -33877,7 +33915,7 @@ static struct park *park_new_with_body(enum park_kind kind, struct conn *cc, con
  */
 static int update_submit(const char *body, size_t body_len)
 {
-	struct park *p = park_new_with_body(PARK_UPDATE, g_response_conn, body, body_len);
+	struct park *p = park_new_with_body(PARK_UPDATE, request_conn(), body, body_len);
 
 	if (p == NULL)
 		return -1;
@@ -33959,7 +33997,7 @@ static int bootmgr_running(void)
  * none is running. 0 when parked; -1 when no helper could start. */
 static int bootmgr_submit(const char *body, size_t body_len)
 {
-	struct park *p = park_new_with_body(PARK_BOOTMGR, g_response_conn, body, body_len);
+	struct park *p = park_new_with_body(PARK_BOOTMGR, request_conn(), body, body_len);
 
 	if (p == NULL)
 		return -1;
@@ -34085,7 +34123,7 @@ static void kmod_hotplug(const char *alias, const char *device)
 static enum kmodscan_answer kmod_broker(const struct kmodscan_job *job,
                                         struct kmodscan_report **out)
 {
-	struct conn *cc = g_response_conn;
+	struct conn *cc = request_conn();
 	struct park *p;
 
 	if (job->kind == KMODSCAN_JOB_SWEEP)
@@ -34811,26 +34849,28 @@ static struct conn g_self_read_conn;
 static struct conn g_events_check_conn = { .fd = -1 };
 static unsigned long g_events_check_ticks;
 static int g_events_check_cursor;
-/* ADR-0368: api_run() is running a handler on g_self_read_conn. */
-static int g_api_run_active;
 
 /*
  * Runs `method` `path` -- query and path parameters included, as
  * dispatch() would -- into memory, with `body` as the request body.
- * Returns 0 with the handler's status in *out_status (0 when it wrote
- * nothing, which is a handler that parked) and its body in *out_body
- * (malloc'd, NUL-terminated, NULL when none), or -1 when no route
- * matches. Authorization is the caller's: this is the handler alone, as
- * a request would reach it after authorize_route(). `user` and `peer`
- * are what the handler sees as its caller.
+ * Returns 0 with the handler's status in *out_status, its body in
+ * *out_body (malloc'd, NUL-terminated, NULL when none) and its
+ * Content-Type in out_type; -1 when no route matches; or 1 when the
+ * handler parked its work on `park_conn` and wrote nothing, so the
+ * request being served on park_conn is served again when the work is
+ * done (ADR-0368 step 5). `park_conn` NULL means nothing may park, and
+ * such a handler answers busy. Authorization is the caller's: this is
+ * the handler alone, as a request would reach it after
+ * authorize_route(). `user` and `peer` are what the handler sees as its
+ * caller.
  *
  * Restores g_response_conn and the generation-header slot on the way
  * out: POST /v1/events/verify and POST /v1/mcp (ADR-0368) run this
  * inside a request, whose own response must still reach its client.
  */
 static int api_run(const char *method, const char *path, const char *body_in, size_t body_in_len,
-                   const char *user, const char *peer, int *out_status, char **out_body,
-                   size_t *out_len)
+                   const char *user, const char *peer, struct conn *park_conn, int *out_status,
+                   char **out_body, size_t *out_len, char *out_type, size_t out_type_size)
 {
 	struct conn *saved_conn = g_response_conn;
 	int saved_slot = g_events_response_slot;
@@ -34841,11 +34881,14 @@ static int api_run(const char *method, const char *path, const char *body_in, si
 	size_t body_len = 0;
 	char step[STALLWATCH_ACTIVITY_MAX];
 	char *req_body = NULL;
-	int idx, status;
+	struct park *park_before;
+	int idx, status, parked;
 
 	*out_status = 0;
 	*out_body = NULL;
 	*out_len = 0;
+	if (out_type_size > 0)
+		out_type[0] = '\0';
 	idx = api_route_match(g_api_routes, (int)(sizeof(g_api_routes) / sizeof(g_api_routes[0])),
 	                      method, path, params);
 	if (idx < 0)
@@ -34861,6 +34904,8 @@ static int api_run(const char *method, const char *path, const char *body_in, si
 		*out_body = strdup(nested);
 		*out_len = *out_body != NULL ? sizeof(nested) - 1 : 0;
 		*out_status = 503;
+		if (out_type_size > 0)
+			snprintf(out_type, out_type_size, "application/json");
 		return 0;
 	}
 	if (body_in != NULL && body_in_len > 0) {
@@ -34907,10 +34952,15 @@ static int api_run(const char *method, const char *path, const char *body_in, si
 	 */
 	snprintf(step, sizeof(step), "%s %s", method, path);
 	stallwatch_step(step);
+	park_before = park_conn != NULL ? park_conn->park : NULL;
+	g_api_run_park = park_conn;
 	g_api_run_active = 1;
 	g_api_routes[idx].fn(&ctx);
 	g_api_run_active = 0;
+	g_api_run_park = NULL;
 	status = http_last_status();
+	parked = status == 0 && park_conn != NULL && park_conn->park != NULL &&
+	         park_conn->park != park_before;
 	/* ADR-0339: a change that succeeded announces what its contract
 	 * makes stale, exactly as dispatch() does for the same route. A
 	 * write through the MCP gateway (ADR-0368) reaches here and not
@@ -34924,10 +34974,19 @@ static int api_run(const char *method, const char *path, const char *body_in, si
 	if (g_self_read_conn.out_buf != NULL) {
 		const char *end = memmem(g_self_read_conn.out_buf, g_self_read_conn.out_len,
 		                         "\r\n\r\n", 4);
+		const char *ct = memmem(g_self_read_conn.out_buf, g_self_read_conn.out_len,
+		                        "\r\nContent-Type: ", 16);
 
 		if (end != NULL) {
 			body = end + 4;
 			body_len = g_self_read_conn.out_len - (size_t)(body - g_self_read_conn.out_buf);
+		}
+		if (ct != NULL && end != NULL && ct < end && out_type_size > 0) {
+			const char *v = ct + 16;
+			const char *eol = memmem(v, (size_t)(end + 2 - v), "\r\n", 2);
+
+			if (eol != NULL)
+				snprintf(out_type, out_type_size, "%.*s", (int)(eol - v), v);
 		}
 	}
 	if (body != NULL) {
@@ -34942,16 +35001,19 @@ static int api_run(const char *method, const char *path, const char *body_in, si
 	g_self_read_conn.out_buf = NULL;
 	g_self_read_conn.out_len = 0;
 	*out_status = status;
-	return 0;
+	return parked ? 1 : 0;
 }
 
 /* api_run() for a GET whose answer must be a 200 with a body: the
- * self-check's read. Returns 0 with the body, or -1. */
+ * self-check's read, which serves no client and so may not park.
+ * Returns 0 with the body, or -1. */
 static int events_run_get(const char *path, char **out_body, size_t *out_len)
 {
+	char type[64];
 	int status;
 
-	if (api_run("GET", path, NULL, 0, "", "", &status, out_body, out_len) != 0)
+	if (api_run("GET", path, NULL, 0, "", "", NULL, &status, out_body, out_len, type,
+	            sizeof(type)) != 0)
 		return -1;
 	if (status != 200 || *out_body == NULL) {
 		free(*out_body);

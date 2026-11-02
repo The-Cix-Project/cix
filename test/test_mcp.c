@@ -63,9 +63,12 @@ static int stub_may(void *ctx, const char *permission)
 
 static char g_ran_body[1024];
 static int g_ran_with_body;
+static const char *g_run_type = "application/json";
+static int g_run_parks;
 
 static int stub_run(void *ctx, const char *method, const char *path, const char *req,
-                    size_t req_len, int *status, char **body, size_t *body_len)
+                    size_t req_len, int *status, char **body, size_t *body_len, char *type,
+                    size_t type_size)
 {
 	(void)ctx;
 	g_runs++;
@@ -76,7 +79,8 @@ static int stub_run(void *ctx, const char *method, const char *path, const char 
 	*status = g_run_status;
 	*body = g_run_body != NULL ? strdup(g_run_body) : NULL;
 	*body_len = g_run_body != NULL ? strlen(g_run_body) : 0;
-	return 0;
+	snprintf(type, type_size, "%s", g_run_type);
+	return g_run_parks ? 1 : 0;
 }
 
 static const struct mcp_caller g_caller = { NULL, "agent", "0.2.57-test", stub_may, stub_run };
@@ -263,14 +267,38 @@ static void test_tools_call(void)
 	check(has(out, "\"isError\":true") && has(out, "no such container"),
 	      "a non-2xx answer is an isError result carrying the API's error");
 
+	/* Step 5: a call whose work parks the request sends nothing and
+	 * writes no audit line; the request is served again later. */
 	g_run_status = 0;
 	g_run_body = NULL;
-	ask("{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":"
+	g_run_parks = 1;
+	g_log[0] = '\0';
+	check(ask("{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":"
+	          "\"getContainer\",\"arguments\":{\"name\":\"x\"}}}",
+	          out, sizeof(out)) == MCP_PARKED &&
+	          out[0] == '\0',
+	      "a call that parks the request answers nothing yet");
+	check(g_log[0] == '\0', "and is audited on the pass that answers, not this one");
+	g_run_parks = 0;
+
+	ask("{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"tools/call\",\"params\":{\"name\":"
 	    "\"getContainer\",\"arguments\":{\"name\":\"x\"}}}",
 	    out, sizeof(out));
-	check(has(out, "\"isError\":true") && has(out, "background work"),
-	      "a handler that parks is an isError result, not a hang");
+	check(has(out, "\"isError\":true") && has(out, "wrote no answer"),
+	      "a handler that writes nothing is an isError result, not a hang");
+
+	/* A body that is not JSON is the bytes, in base64. */
 	g_run_status = 200;
+	g_run_body = "hello";
+	g_run_type = "text/plain; charset=utf-8";
+	ask("{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":"
+	    "\"getContainer\",\"arguments\":{\"name\":\"x\"}}}",
+	    out, sizeof(out));
+	check(has(out, "\"type\":\"resource\"") && has(out, "\"blob\":\"aGVsbG8=\"") &&
+	          has(out, "\"mimeType\":\"text/plain; charset=utf-8\"") &&
+	          has(out, "\"uri\":\"cix:/v1/containers/x\"") && has(out, "\"isError\":false"),
+	      "a non-JSON answer is an embedded resource, base64");
+	g_run_type = "application/json";
 	g_run_body = "{\"name\":\"dns-1\"}";
 }
 

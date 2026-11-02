@@ -1436,7 +1436,7 @@ paths:
       operationId: updateSystem
       x-cix-invalidates: [getSystemBoot, getBootNext, getSystemAssembly]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -1605,7 +1605,7 @@ paths:
       operationId: getSystemBackup
       x-cix-read: derived
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -1825,7 +1825,7 @@ paths:
       operationId: postBackupConfigSnapshotNow
       x-cix-invalidates: [getBackupConfig]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -3298,7 +3298,7 @@ paths:
       operationId: postKmodLoad
       x-cix-invalidates: [listKmod]
       x-cix-permission: config:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       x-cix-rest-param: true
       parameters:
@@ -3414,7 +3414,7 @@ paths:
       operationId: deleteKmod
       x-cix-invalidates: [listKmod]
       x-cix-permission: config:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       x-cix-rest-param: true
       parameters:
@@ -3690,7 +3690,7 @@ paths:
       operationId: runKmodScan
       x-cix-invalidates: [getKmodScan]
       x-cix-permission: config:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "202":
@@ -4787,7 +4787,10 @@ paths:
         tools the caller's permissions allow. `tools/call` checks the
         operation's own `x-cix-permission` for the caller and then runs
         the operation's own handler, so a call does exactly what the
-        REST request would. A 2xx answer is the tool's text result; any
+        REST request would. A 2xx JSON answer is the tool's text result,
+        and a 2xx answer that is not JSON an embedded resource whose `blob`
+        is the bytes in base64. Work that parks parks this request, which
+        answers when the work is done. Any
         other is a result with `isError`, carrying the API's own error
         body. Every call writes one audit line: the user, the tool, its
         status and its duration.
@@ -5134,7 +5137,7 @@ paths:
       operationId: getSystemDataDir
       x-cix-read: derived
       x-cix-permission: storage:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - name: entry
@@ -5745,7 +5748,7 @@ paths:
       operationId: setBootManager
       x-cix-invalidates: [getBootManager]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -6549,7 +6552,7 @@ paths:
       x-cix-read: stream
       x-cix-sample-period: 2
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: source
@@ -12087,7 +12090,7 @@ paths:
       operationId: verifyPkgFiles
       x-cix-read: derived
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "200":
@@ -12380,7 +12383,7 @@ paths:
       operationId: downloadPkgArtifactExport
       x-cix-read: derived
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/PkgName"
@@ -13792,7 +13795,7 @@ paths:
       operationId: getBuildLog
       x-cix-read: derived
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: file
@@ -14438,7 +14441,7 @@ paths:
       operationId: deletePkg
       x-cix-invalidates: [listBuildEnvironments, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg, listImages, getImage, listSoftware]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/PkgName"
@@ -15272,7 +15275,7 @@ paths:
       operationId: getContainerFile
       x-cix-read: derived
       x-cix-permission: containers:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"

@@ -733,8 +733,8 @@ $(BUILD)/test_kmodpolicy: test/test_kmodpolicy.c daemon/src/kmodpolicy.c daemon/
 	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@
 # ADR-0368: the MCP protocol over the generated tool table, against stubs
 # of the daemon's two callbacks; persist.c for the switch's file.
-$(BUILD)/test_mcp: test/test_mcp.c daemon/src/mcp.c daemon/src/persist.c daemon/src/json.c $(BUILD)/generated/mcp_tools.h | $(BUILD)
-	$(CC) $(DAEMON_CFLAGS) $(filter %.c,$^) -o $@
+$(BUILD)/test_mcp: test/test_mcp.c daemon/src/mcp.c daemon/src/persist.c daemon/src/json.c daemon/src/base64.c $(BUILD)/generated/mcp_tools.h | $(BUILD)
+	$(CC) $(DAEMON_CFLAGS) $(filter %.c,$^) -lcrypto -o $@
 # ADR-0368: every tool's handler answers in-process -- read from the
 # daemon's source, against the generated tool table.
 $(BUILD)/test_mcp_exposure: test/test_mcp_exposure.c $(BUILD)/generated/mcp_tools.h | $(BUILD)

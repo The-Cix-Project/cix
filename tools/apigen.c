@@ -188,9 +188,6 @@ struct api_op {
 	 * set (ADR-0368). */
 	int has_body;
 	int body_required; /* requestBody: required: true */
-	/* Its 200 answers something other than application/json, which has
-	 * no tool form (ADR-0368). */
-	int non_json;
 	/* It answers 101: a WebSocket session, never a tool (ADR-0368). */
 	int upgrade;
 	/*
@@ -2577,11 +2574,11 @@ static void check_mcp_arguments(const char *spec)
 		if (strcmp(op->mcp, "tool") != 0)
 			continue;
 		/*
-		 * Three kinds of operation have no tool form, decided from the
+		 * Two kinds of operation have no tool form, decided from the
 		 * contract alone: a WebSocket upgrade (it answers 101) is a
-		 * session, not a call; an app password -- an agent's
-		 * credential -- can never hold `authenticated`; and a body
-		 * that is not JSON has no form in a tool result yet. A read
+		 * session, not a call; and an app password -- an agent's
+		 * credential -- can never hold `authenticated`. A body that is
+		 * not JSON is a tool, answered as a base64 resource. A read
 		 * whose x-cix-read is `stream` is a plain GET of a changing
 		 * value, and is not refused for that. What only the handler's
 		 * text can answer is test_mcp_exposure's.
@@ -2595,11 +2592,6 @@ static void check_mcp_arguments(const char *spec)
 			die_at(spec, op->line,
 			       "%s is x-cix-mcp: tool, and its permission is authenticated, which an "
 			       "app password never holds (ADR-0368)",
-			       op->op_id);
-		if (op->non_json)
-			die_at(spec, op->line,
-			       "%s is x-cix-mcp: tool, and its 200 is not application/json, which has "
-			       "no tool form (ADR-0368)",
 			       op->op_id);
 		if (!op->has_body)
 			continue;
@@ -4070,10 +4062,6 @@ int main(int argc, char **argv)
 					g_ops[cur_op].upgrade = 1;
 				continue;
 			}
-			/* ADR-0368: a 200 body that is not JSON has no tool form. */
-			if (g_in_200 && ind == 12 && key_at(line, 12, key, sizeof(key)) &&
-			    strcmp(key, "application/json") != 0)
-				g_ops[cur_op].non_json = 1;
 			if (g_in_200 && ind == 16 && key_at(line, 16, key, sizeof(key))) {
 				if (strcmp(key, "$ref") == 0) {
 					ref_tail(value_of(line), g_ops[cur_op].resp_schema,

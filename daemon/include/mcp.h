@@ -42,17 +42,24 @@ struct mcp_caller {
 	int (*may)(void *ctx, const char *permission);
 	/* Runs `method` `path` (query included) in-process, with `req`
 	 * (NULL when the operation takes no body) as the request body. 0
-	 * with *status and a malloc'd *body (NULL when none) when a route
-	 * answered; -1 when none matches. */
+	 * with *status, a malloc'd *body (NULL when none) and its
+	 * Content-Type in `type` when a route answered; -1 when none
+	 * matches; 1 when the operation parked its work on this request,
+	 * which is served again, and the call made again, when it is done
+	 * (ADR-0368 step 5). */
 	int (*run)(void *ctx, const char *method, const char *path, const char *req,
-	           size_t req_len, int *status, char **body, size_t *body_len);
+	           size_t req_len, int *status, char **body, size_t *body_len, char *type,
+	           size_t type_size);
 };
 
 /*
  * Answers one JSON-RPC message. Returns 200 with the response in `w`
- * (jw_init()ed by the caller), or 202 for a notification, when `w` is
- * left empty and nothing is to be sent.
+ * (jw_init()ed by the caller), 202 for a notification, when `w` is left
+ * empty and nothing is to be sent, or MCP_PARKED when a tool's work
+ * parked the request: nothing is sent now, and the same message is
+ * answered when the request is served again.
  */
+#define MCP_PARKED 0
 int mcp_handle(const char *request, size_t len, const struct mcp_caller *c,
                struct json_writer *w);
 
