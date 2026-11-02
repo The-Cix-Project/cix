@@ -127,7 +127,7 @@ paths:
       operationId: getConfig
       x-cix-read: derived
       x-cix-permission: config:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -178,7 +178,7 @@ paths:
       operationId: applyConfig
       x-cix-invalidates: [*]
       x-cix-permission: config:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       requestBody:
         required: true
@@ -231,7 +231,7 @@ paths:
       operationId: diffConfig
       x-cix-invalidates: []
       x-cix-permission: config:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       requestBody:
         required: true
@@ -734,7 +734,7 @@ paths:
       operationId: getHostauthConfig
       x-cix-read: state
       x-cix-permission: identity:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -760,7 +760,7 @@ paths:
       operationId: putHostauthConfig
       x-cix-invalidates: [getHostauthConfig]
       x-cix-permission: identity:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       security:
         - bearerAuth: []
@@ -884,7 +884,7 @@ paths:
       operationId: getHostauthPermissions
       x-cix-read: state
       x-cix-permission: identity:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       security:
         - bearerAuth: []
@@ -908,7 +908,7 @@ paths:
       operationId: putHostauthGroupPermissions
       x-cix-invalidates: [getHostauthPermissions, getWhoami]
       x-cix-permission: identity:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: group
@@ -957,7 +957,7 @@ paths:
       operationId: deleteHostauthGroupPermissions
       x-cix-invalidates: [getHostauthPermissions, getWhoami]
       x-cix-permission: identity:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: group
@@ -1001,7 +1001,7 @@ paths:
       x-cix-read: state
       x-cix-volatile-fields: [expires_in_seconds]
       x-cix-permission: identity:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -1038,7 +1038,7 @@ paths:
       operationId: revokeHostauthSessions
       x-cix-invalidates: [listHostauthSessions, getWhoami]
       x-cix-permission: identity:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: username
@@ -1191,7 +1191,7 @@ paths:
       operationId: postSystemAssembly
       x-cix-invalidates: [getSystemAssembly]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "202":
@@ -1346,7 +1346,8 @@ paths:
       operationId: shutdownSystem
       x-cix-invalidates: []
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
+      x-cix-destructive: true
       x-cix-expose: [cli, web]
       responses:
         "202":
@@ -1367,7 +1368,8 @@ paths:
       operationId: rebootSystem
       x-cix-invalidates: []
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
+      x-cix-destructive: true
       x-cix-expose: [cli, web]
       responses:
         "202":
@@ -1664,7 +1666,8 @@ paths:
       operationId: postSystemRestore
       x-cix-invalidates: [*]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
+      x-cix-destructive: true
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -1725,7 +1728,7 @@ paths:
       operationId: getBackupConfig
       x-cix-read: state
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -1754,7 +1757,7 @@ paths:
       operationId: putBackupConfig
       x-cix-invalidates: [getBackupConfig, getBackupConfigStatus]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -1794,7 +1797,7 @@ paths:
       operationId: getBackupConfigStatus
       x-cix-read: state
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -1871,7 +1874,7 @@ paths:
       operationId: getSystemSite
       x-cix-read: state
       x-cix-permission: config:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -1893,7 +1896,7 @@ paths:
       operationId: putSystemSite
       x-cix-invalidates: [getSystemSite, listDnsRecords, getDnsRecord, listPkiCerts, getPkiCert]
       x-cix-permission: config:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -1942,7 +1945,7 @@ paths:
       operationId: getDaemonConfig
       x-cix-read: state
       x-cix-permission: config:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -1974,7 +1977,7 @@ paths:
       operationId: putDaemonConfig
       x-cix-invalidates: [getDaemonConfig]
       x-cix-permission: config:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -2023,7 +2026,7 @@ paths:
       operationId: getManagementAddress
       x-cix-read: state
       x-cix-permission: networks:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -2062,7 +2065,7 @@ paths:
       operationId: putManagementAddress
       x-cix-invalidates: [getManagementAddress, getSystemRoutes, listDevices, listDeviceMaps]
       x-cix-permission: networks:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -2109,7 +2112,7 @@ paths:
       operationId: deleteManagementAddress
       x-cix-invalidates: [getManagementAddress, listDevices, listDeviceMaps]
       x-cix-permission: networks:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -2146,7 +2149,7 @@ paths:
       operationId: flapSystemInterface
       x-cix-invalidates: []
       x-cix-permission: networks:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - name: name
@@ -2196,7 +2199,7 @@ paths:
       operationId: getSystemRoutes
       x-cix-read: state
       x-cix-permission: networks:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -2228,7 +2231,7 @@ paths:
       operationId: postSystemRoute
       x-cix-invalidates: [getSystemRoutes]
       x-cix-permission: networks:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: false
@@ -2262,7 +2265,7 @@ paths:
       operationId: deleteSystemRoute
       x-cix-invalidates: [getSystemRoutes]
       x-cix-permission: networks:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: false
@@ -2306,7 +2309,7 @@ paths:
       x-cix-read: stream
       x-cix-sample-period: 2
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -2346,7 +2349,7 @@ paths:
       x-cix-read: sample
       x-cix-sample-period: 30
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -2386,7 +2389,7 @@ paths:
       operationId: setServerHealthDrain
       x-cix-invalidates: [getServerHealth]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: kind
@@ -2445,7 +2448,7 @@ paths:
       x-cix-read: stream
       x-cix-sample-period: 2
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -2477,7 +2480,7 @@ paths:
       operationId: killSystemProcess
       x-cix-invalidates: []
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: pid
@@ -2506,7 +2509,7 @@ paths:
       operationId: getSystemPing
       x-cix-read: derived
       x-cix-permission: networks:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "200":
@@ -2526,7 +2529,7 @@ paths:
       operationId: postSystemPing
       x-cix-invalidates: []
       x-cix-permission: networks:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       requestBody:
         required: true
@@ -2570,7 +2573,7 @@ paths:
       operationId: getSystemResolv
       x-cix-read: state
       x-cix-permission: networks:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "200":
@@ -2593,7 +2596,7 @@ paths:
       operationId: putSystemResolv
       x-cix-invalidates: [getSystemResolv]
       x-cix-permission: networks:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       requestBody:
         required: true
@@ -2642,7 +2645,7 @@ paths:
       operationId: listTrustAnchors
       x-cix-read: state
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -2671,7 +2674,7 @@ paths:
       operationId: addTrustAnchor
       x-cix-invalidates: [listTrustAnchors]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -2713,7 +2716,7 @@ paths:
       operationId: removeTrustAnchor
       x-cix-invalidates: [listTrustAnchors]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: fingerprint
@@ -2750,7 +2753,7 @@ paths:
       operationId: getSystemSigningKeys
       x-cix-read: state
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -2781,7 +2784,7 @@ paths:
       operationId: putSystemSigningKeys
       x-cix-invalidates: [getSystemSigningKeys]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -2830,7 +2833,7 @@ paths:
       operationId: deleteSystemSigningKeys
       x-cix-invalidates: [getSystemSigningKeys]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -2867,7 +2870,7 @@ paths:
       operationId: getSystemReleaseKey
       x-cix-read: state
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -2893,7 +2896,7 @@ paths:
       operationId: putSystemReleaseKey
       x-cix-invalidates: [getSystemReleaseKey]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -2942,7 +2945,7 @@ paths:
       operationId: deleteSystemReleaseKey
       x-cix-invalidates: [getSystemReleaseKey]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -2971,7 +2974,7 @@ paths:
       operationId: getSystemCatalogueKey
       x-cix-read: state
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "200":
@@ -2991,7 +2994,7 @@ paths:
       operationId: putSystemCatalogueKey
       x-cix-invalidates: [getSystemCatalogueKey]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       requestBody:
         required: true
@@ -3031,7 +3034,7 @@ paths:
       operationId: deleteSystemCatalogueKey
       x-cix-invalidates: [getSystemCatalogueKey]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "200":
@@ -3058,7 +3061,7 @@ paths:
       operationId: listSystemSysctl
       x-cix-read: state
       x-cix-permission: config:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -3085,7 +3088,7 @@ paths:
       operationId: getSystemSysctl
       x-cix-read: state
       x-cix-permission: config:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       x-cix-rest-param: true
       parameters:
@@ -3129,7 +3132,7 @@ paths:
       operationId: putSystemSysctl
       x-cix-invalidates: [listSystemSysctl, getSystemSysctl]
       x-cix-permission: config:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       x-cix-rest-param: true
       parameters:
@@ -3189,7 +3192,7 @@ paths:
       operationId: deleteSystemSysctl
       x-cix-invalidates: [listSystemSysctl, getSystemSysctl]
       x-cix-permission: config:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       x-cix-rest-param: true
       parameters:
@@ -3224,7 +3227,7 @@ paths:
       x-cix-read: sample
       x-cix-sample-period: 60
       x-cix-permission: config:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -3249,7 +3252,7 @@ paths:
       operationId: getKmodInfo
       x-cix-read: derived
       x-cix-permission: config:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       x-cix-rest-param: true
       parameters:
@@ -3463,7 +3466,7 @@ paths:
       operationId: listKmodConfig
       x-cix-read: state
       x-cix-permission: config:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -3492,7 +3495,7 @@ paths:
       operationId: putKmodConfig
       x-cix-invalidates: [listKmodConfig]
       x-cix-permission: config:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -3540,7 +3543,7 @@ paths:
       operationId: deleteKmodConfig
       x-cix-invalidates: [listKmodConfig]
       x-cix-permission: config:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -3578,7 +3581,7 @@ paths:
       operationId: getKmodPolicy
       x-cix-read: state
       x-cix-permission: config:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -3597,7 +3600,7 @@ paths:
       operationId: putKmodPolicy
       x-cix-invalidates: [getKmodPolicy, listKmod]
       x-cix-permission: config:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -3666,7 +3669,7 @@ paths:
       operationId: getKmodScan
       x-cix-read: state
       x-cix-permission: config:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -3725,7 +3728,7 @@ paths:
       operationId: postKmodBuild
       x-cix-invalidates: [listKmod, listBuildLogs]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -3788,7 +3791,7 @@ paths:
       operationId: getLogStorage
       x-cix-read: state
       x-cix-permission: storage:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -3808,7 +3811,7 @@ paths:
       operationId: getLogStorageMigrateStatus
       x-cix-read: state
       x-cix-permission: storage:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -3833,7 +3836,7 @@ paths:
       operationId: migrateLogStorage
       x-cix-invalidates: [getLogStorage, getLogStorageMigrateStatus]
       x-cix-permission: storage:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -3896,7 +3899,7 @@ paths:
       operationId: getDataStorage
       x-cix-read: state
       x-cix-permission: storage:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -3926,7 +3929,7 @@ paths:
       operationId: migrateDataStorage
       x-cix-invalidates: [getDataStorage]
       x-cix-permission: storage:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -3983,7 +3986,7 @@ paths:
       operationId: getRebuildableStorage
       x-cix-read: state
       x-cix-permission: storage:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -4002,7 +4005,7 @@ paths:
       operationId: getRebuildableStorageMigrateStatus
       x-cix-read: state
       x-cix-permission: storage:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -4035,7 +4038,7 @@ paths:
       operationId: migrateRebuildableStorage
       x-cix-invalidates: [getRebuildableStorage, getRebuildableStorageMigrateStatus]
       x-cix-permission: storage:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -4089,7 +4092,7 @@ paths:
       operationId: getDhcp
       x-cix-read: state
       x-cix-permission: services:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -4115,7 +4118,7 @@ paths:
       operationId: getDhcpServers
       x-cix-read: state
       x-cix-permission: services:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -4134,7 +4137,7 @@ paths:
       operationId: registerDhcpServer
       x-cix-invalidates: [getDhcp, getDhcpServers, listContainers]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -4170,7 +4173,7 @@ paths:
       operationId: unregisterDhcpServer
       x-cix-invalidates: [getDhcp, getDhcpServers, listContainers]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: container
@@ -4194,7 +4197,7 @@ paths:
       operationId: getDhcpNetwork
       x-cix-read: state
       x-cix-permission: services:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: []
       parameters:
         - name: network
@@ -4244,7 +4247,7 @@ paths:
       operationId: setDhcpNetwork
       x-cix-invalidates: [getDhcp, getDhcpNetwork]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: network
@@ -4331,7 +4334,7 @@ paths:
       operationId: deleteDhcpNetwork
       x-cix-invalidates: [getDhcp, getDhcpNetwork]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: network
@@ -4359,7 +4362,7 @@ paths:
       x-cix-read: sample
       x-cix-sample-period: 30
       x-cix-permission: services:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -4389,7 +4392,7 @@ paths:
       operationId: addDhcpReservation
       x-cix-invalidates: [getDhcp]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -4440,7 +4443,7 @@ paths:
       operationId: deleteDhcpReservation
       x-cix-invalidates: [getDhcp]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: mac
@@ -4490,7 +4493,7 @@ paths:
       x-cix-read: sample
       x-cix-sample-period: 30
       x-cix-permission: config:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "200":
@@ -4516,7 +4519,7 @@ paths:
       operationId: putKsm
       x-cix-invalidates: [getKsm]
       x-cix-permission: config:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       requestBody:
         required: true
@@ -4580,7 +4583,7 @@ paths:
       x-cix-read: sample
       x-cix-sample-period: 30
       x-cix-permission: storage:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -4611,7 +4614,7 @@ paths:
       operationId: setZswap
       x-cix-invalidates: [getZswap]
       x-cix-permission: storage:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -4662,7 +4665,7 @@ paths:
       x-cix-read: sample
       x-cix-sample-period: 30
       x-cix-permission: devices:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -4689,7 +4692,7 @@ paths:
       operationId: setWireless
       x-cix-invalidates: [getWireless]
       x-cix-permission: devices:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -4726,7 +4729,7 @@ paths:
       operationId: getSystemMcp
       x-cix-read: state
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "200":
@@ -4743,7 +4746,7 @@ paths:
       operationId: setSystemMcp
       x-cix-invalidates: [getSystemMcp]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       requestBody:
         required: true
@@ -4779,7 +4782,8 @@ paths:
 
         A tool is an operation this contract marks `x-cix-mcp: tool`,
         named by its operationId. Its arguments are the operation's path
-        and query parameters, all strings. `tools/list` offers only the
+        and query parameters, plus one `body` argument holding the request
+        body when the operation takes one. `tools/list` offers only the
         tools the caller's permissions allow. `tools/call` checks the
         operation's own `x-cix-permission` for the caller and then runs
         the operation's own handler, so a call does exactly what the
@@ -4847,7 +4851,7 @@ paths:
       x-cix-read: sample
       x-cix-sample-period: 30
       x-cix-permission: storage:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -4866,7 +4870,7 @@ paths:
       operationId: postSystemSwap
       x-cix-invalidates: [getSystemSwap]
       x-cix-permission: storage:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -4928,7 +4932,7 @@ paths:
       operationId: deleteSystemSwap
       x-cix-invalidates: [getSystemSwap]
       x-cix-permission: storage:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "204":
@@ -4955,7 +4959,7 @@ paths:
       operationId: getSystemRollingConfig
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -4981,7 +4985,7 @@ paths:
       operationId: putSystemRollingConfig
       x-cix-invalidates: [getSystemRollingConfig]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -5022,7 +5026,7 @@ paths:
       operationId: getSystemPkgBuildConfig
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -5050,7 +5054,7 @@ paths:
       operationId: putSystemPkgBuildConfig
       x-cix-invalidates: [getSystemPkgBuildConfig]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -5203,7 +5207,7 @@ paths:
       x-cix-read: stream
       x-cix-sample-period: 2
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: limit
@@ -5370,7 +5374,7 @@ paths:
       operationId: getKernelPolicy
       x-cix-read: state
       x-cix-permission: config:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -5393,7 +5397,7 @@ paths:
       operationId: setKernelPolicy
       x-cix-invalidates: [getKernelPolicy]
       x-cix-permission: config:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -5437,7 +5441,7 @@ paths:
       operationId: refreshKernelPolicy
       x-cix-invalidates: [getKernelPolicy]
       x-cix-permission: config:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "202":
@@ -5471,7 +5475,7 @@ paths:
       operationId: getEsp
       x-cix-read: state
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -5498,7 +5502,7 @@ paths:
       operationId: putEsp
       x-cix-invalidates: [getEsp]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -5558,7 +5562,7 @@ paths:
       operationId: deleteEspEntry
       x-cix-invalidates: [getEsp]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -5605,7 +5609,7 @@ paths:
       operationId: getBootNext
       x-cix-read: state
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -5630,7 +5634,7 @@ paths:
       operationId: setBootNext
       x-cix-invalidates: [getBootNext]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -5673,7 +5677,7 @@ paths:
       operationId: clearBootNext
       x-cix-invalidates: [getBootNext]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "204":
@@ -5695,7 +5699,7 @@ paths:
       operationId: getBootManager
       x-cix-read: state
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -5832,7 +5836,7 @@ paths:
       operationId: getBootConsole
       x-cix-read: state
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -5864,7 +5868,7 @@ paths:
       operationId: setBootConsole
       x-cix-invalidates: [getBootConsole]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -5928,7 +5932,7 @@ paths:
       operationId: getControlPlaneReservation
       x-cix-read: state
       x-cix-permission: storage:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -5952,7 +5956,7 @@ paths:
       operationId: setControlPlaneReservation
       x-cix-invalidates: [getControlPlaneReservation]
       x-cix-permission: storage:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -5993,7 +5997,7 @@ paths:
       operationId: getSystemTlsThrottle
       x-cix-read: state
       x-cix-permission: config:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -6023,7 +6027,7 @@ paths:
       operationId: putSystemTlsThrottle
       x-cix-invalidates: [getSystemTlsThrottle, getSystemTlsThrottleStatus]
       x-cix-permission: config:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         content:
@@ -6074,7 +6078,7 @@ paths:
       x-cix-read: sample
       x-cix-sample-period: 5
       x-cix-permission: config:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -6096,7 +6100,7 @@ paths:
       operationId: getSystemNtp
       x-cix-read: state
       x-cix-permission: services:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -6117,7 +6121,7 @@ paths:
       operationId: putSystemNtp
       x-cix-invalidates: [getSystemNtp, getSystemNtpStatus]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -6160,7 +6164,7 @@ paths:
       x-cix-read: sample
       x-cix-sample-period: 60
       x-cix-permission: services:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -6183,7 +6187,7 @@ paths:
       operationId: postSystemNtpSync
       x-cix-invalidates: [getSystemNtp, getSystemNtpStatus, getSystemTime]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "202":
@@ -6214,7 +6218,7 @@ paths:
       x-cix-read: sample
       x-cix-sample-period: 300
       x-cix-permission: services:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -6234,7 +6238,7 @@ paths:
       operationId: putSystemTime
       x-cix-invalidates: [getSystemTime]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -6268,7 +6272,7 @@ paths:
       operationId: listNtpServers
       x-cix-read: state
       x-cix-permission: services:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -6294,7 +6298,7 @@ paths:
       operationId: createNtpServer
       x-cix-invalidates: [listNtpServers, listContainers]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -6334,7 +6338,7 @@ paths:
       operationId: deleteNtpServer
       x-cix-invalidates: [listNtpServers, listContainers]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: container
@@ -6358,7 +6362,7 @@ paths:
       operationId: listSyslogTargets
       x-cix-read: state
       x-cix-permission: services:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -6389,7 +6393,7 @@ paths:
       operationId: createSyslogTarget
       x-cix-invalidates: [listSyslogTargets, listContainers]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -6429,7 +6433,7 @@ paths:
       operationId: deleteSyslogTarget
       x-cix-invalidates: [listSyslogTargets, listContainers]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: container
@@ -6472,7 +6476,7 @@ paths:
       x-cix-read: stream
       x-cix-sample-period: 2
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: tail
@@ -6636,7 +6640,7 @@ paths:
       operationId: getSystemLogsConfig
       x-cix-read: state
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -6668,7 +6672,7 @@ paths:
       operationId: putSystemLogsConfig
       x-cix-invalidates: [getSystemLogsConfig]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -6716,7 +6720,7 @@ paths:
       operationId: getSystemIso
       x-cix-read: state
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -6804,7 +6808,7 @@ paths:
       operationId: postSystemIso
       x-cix-invalidates: [getSystemIso, getSystemIsoPublished]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: false
@@ -6876,7 +6880,7 @@ paths:
       operationId: publishSystemIso
       x-cix-invalidates: [getSystemIso]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "202":
@@ -6955,7 +6959,7 @@ paths:
       operationId: getSystemIsoPublished
       x-cix-read: state
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -6987,7 +6991,7 @@ paths:
       x-cix-read: state
       x-cix-volatile-fields: [idle_seconds]
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "200":
@@ -7012,7 +7016,7 @@ paths:
       operationId: deleteBuildEnvironment
       x-cix-invalidates: [listBuildEnvironments, getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - name: name
@@ -7144,7 +7148,7 @@ paths:
       operationId: createContainer
       x-cix-invalidates: [listContainers, getContainer, listNetworks, getNetwork, listVolumes, getVolume, listDevices, listDeviceMaps, listDnsRecords]
       x-cix-permission: containers:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -7208,7 +7212,7 @@ paths:
       operationId: listDevices
       x-cix-read: state
       x-cix-permission: devices:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -7247,7 +7251,7 @@ paths:
       x-cix-read: sample
       x-cix-sample-period: 30
       x-cix-permission: storage:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -7287,7 +7291,7 @@ paths:
       x-cix-read: sample
       x-cix-sample-period: 30
       x-cix-permission: storage:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -7304,7 +7308,7 @@ paths:
       operationId: setStorageQuota
       x-cix-invalidates: [getStorageQuota]
       x-cix-permission: storage:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -7346,7 +7350,7 @@ paths:
       operationId: getStorageFormatStatus
       x-cix-read: state
       x-cix-permission: storage:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -7389,7 +7393,8 @@ paths:
       operationId: formatStorage
       x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices, listDeviceMaps]
       x-cix-permission: storage:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
+      x-cix-destructive: true
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -7465,7 +7470,7 @@ paths:
       operationId: unmountStorage
       x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices, listDeviceMaps]
       x-cix-permission: storage:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -7539,7 +7544,7 @@ paths:
       operationId: getStorageFreeSpace
       x-cix-read: derived
       x-cix-permission: storage:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -7623,7 +7628,8 @@ paths:
       operationId: createStoragePartitionTable
       x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices, listDeviceMaps]
       x-cix-permission: storage:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
+      x-cix-destructive: true
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -7689,7 +7695,7 @@ paths:
       operationId: addStoragePartition
       x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices, listDeviceMaps]
       x-cix-permission: storage:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -7776,7 +7782,7 @@ paths:
       operationId: resizeStoragePartition
       x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices, listDeviceMaps]
       x-cix-permission: storage:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -7858,7 +7864,7 @@ paths:
       operationId: deleteStoragePartition
       x-cix-invalidates: [listStorage, getStorageFormatStatus, listDevices, listDeviceMaps]
       x-cix-permission: storage:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -7914,7 +7920,7 @@ paths:
       operationId: listDeviceMaps
       x-cix-read: state
       x-cix-permission: devices:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -7939,7 +7945,7 @@ paths:
       operationId: createDeviceMap
       x-cix-invalidates: [listDeviceMaps, listDevices]
       x-cix-permission: devices:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -7983,7 +7989,7 @@ paths:
       operationId: deleteDeviceMap
       x-cix-invalidates: [listDeviceMaps, listDevices]
       x-cix-permission: devices:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -8021,7 +8027,7 @@ paths:
       operationId: listStorageRoles
       x-cix-read: state
       x-cix-permission: storage:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -8049,7 +8055,7 @@ paths:
       operationId: createStorageRole
       x-cix-invalidates: [listStorageRoles, listStorage, listDevices, listDeviceMaps]
       x-cix-permission: storage:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -8093,7 +8099,7 @@ paths:
       operationId: deleteStorageRole
       x-cix-invalidates: [listStorageRoles, listDevices, listDeviceMaps]
       x-cix-permission: storage:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -8136,7 +8142,7 @@ paths:
       operationId: listVolumes
       x-cix-read: state
       x-cix-permission: volumes:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -8162,7 +8168,7 @@ paths:
       operationId: createVolume
       x-cix-invalidates: [listVolumes, getVolume, getVolumeUsage, getVolumeBackups]
       x-cix-permission: volumes:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -8221,7 +8227,7 @@ paths:
       operationId: getVolume
       x-cix-read: state
       x-cix-permission: volumes:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - name: volume_name
@@ -8255,7 +8261,7 @@ paths:
       operationId: deleteVolume
       x-cix-invalidates: [listVolumes, getVolume, getVolumeUsage, getVolumeBackups]
       x-cix-permission: volumes:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: volume_name
@@ -8314,7 +8320,7 @@ paths:
       operationId: createNetwork
       x-cix-invalidates: [listNetworks, getNetwork, getSystemRoutes]
       x-cix-permission: networks:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -8354,7 +8360,7 @@ paths:
       operationId: getNetwork
       x-cix-read: state
       x-cix-permission: networks:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/NetworkName"
@@ -8396,7 +8402,7 @@ paths:
       operationId: updateNetwork
       x-cix-invalidates: [listNetworks, getNetwork, getSystemRoutes]
       x-cix-permission: networks:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/NetworkName"
@@ -8451,7 +8457,7 @@ paths:
       operationId: deleteNetwork
       x-cix-invalidates: [listNetworks, getNetwork, getSystemRoutes]
       x-cix-permission: networks:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/NetworkName"
@@ -8521,7 +8527,7 @@ paths:
       x-cix-read: stream
       x-cix-sample-period: 2
       x-cix-permission: networks:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -8556,7 +8562,7 @@ paths:
       operationId: attachNetworkInterface
       x-cix-invalidates: [listNetworks, getNetwork, listDevices, listDeviceMaps]
       x-cix-permission: networks:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/NetworkName"
@@ -8604,7 +8610,7 @@ paths:
       operationId: detachNetworkInterface
       x-cix-invalidates: [listNetworks, getNetwork, listDevices, listDeviceMaps]
       x-cix-permission: networks:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/NetworkName"
@@ -8668,7 +8674,7 @@ paths:
       operationId: imagesGc
       x-cix-invalidates: [listImages, getImage, getImageVersionManifest, getImagePolicy]
       x-cix-permission: images:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: false
@@ -8736,7 +8742,7 @@ paths:
       operationId: createImage
       x-cix-invalidates: [listImages, getImage, getImageVersionManifest, listImageRecipes, getImageRecipe, getImagePolicy]
       x-cix-permission: images:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -8808,7 +8814,7 @@ paths:
       operationId: deleteImage
       x-cix-invalidates: [listImages, getImage, getImageVersionManifest, listImageRecipes, getImageRecipe, getImagePolicy]
       x-cix-permission: images:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ImageName"
@@ -8865,7 +8871,7 @@ paths:
       operationId: getImageVersionManifest
       x-cix-read: state
       x-cix-permission: images:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ImageName"
@@ -8912,7 +8918,7 @@ paths:
       operationId: setImageManifestEntry
       x-cix-invalidates: [listImages, getImage, getImageVersionManifest, listImageRecipes, getImageRecipe, getImagePolicy, listPkg]
       x-cix-permission: images:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ImageName"
@@ -8961,7 +8967,7 @@ paths:
       operationId: unsetImageManifestEntry
       x-cix-invalidates: [listImages, getImage, getImageVersionManifest, listImageRecipes, getImageRecipe, getImagePolicy, listPkg]
       x-cix-permission: images:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ImageName"
@@ -8995,7 +9001,7 @@ paths:
       operationId: listImageRecipes
       x-cix-read: state
       x-cix-permission: images:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -9019,7 +9025,7 @@ paths:
       operationId: addImageRecipe
       x-cix-invalidates: [listImages, getImage, getImageVersionManifest, listImageRecipes, getImageRecipe, getImagePolicy]
       x-cix-permission: images:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -9066,7 +9072,7 @@ paths:
       operationId: getImageRecipe
       x-cix-read: state
       x-cix-permission: images:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ImageName"
@@ -9088,7 +9094,7 @@ paths:
       operationId: deleteImageRecipe
       x-cix-invalidates: [listImages, getImage, getImageVersionManifest, listImageRecipes, getImageRecipe, getImagePolicy]
       x-cix-permission: images:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ImageName"
@@ -9120,7 +9126,7 @@ paths:
       operationId: renameImage
       x-cix-invalidates: [listImages, getImage, getImageVersionManifest, listImageRecipes, getImageRecipe, getImagePolicy]
       x-cix-permission: images:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/ImageName"
@@ -9170,7 +9176,7 @@ paths:
       operationId: applyImageRecipe
       x-cix-invalidates: [listImages, getImage, getImageVersionManifest, listImageRecipes, getImageRecipe, getImagePolicy, listPkg, getPipeline]
       x-cix-permission: images:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ImageName"
@@ -9215,7 +9221,7 @@ paths:
       operationId: getImagePolicy
       x-cix-read: state
       x-cix-permission: images:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ImageName"
@@ -9240,7 +9246,7 @@ paths:
       operationId: setImagePolicy
       x-cix-invalidates: [listImages, getImage, getImageVersionManifest, listImageRecipes, getImageRecipe, getImagePolicy]
       x-cix-permission: images:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ImageName"
@@ -9296,7 +9302,7 @@ paths:
       operationId: exportImageRecipe
       x-cix-read: derived
       x-cix-permission: images:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ImageName"
@@ -9322,7 +9328,7 @@ paths:
       operationId: listDeployments
       x-cix-read: state
       x-cix-permission: containers:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -9347,7 +9353,7 @@ paths:
       operationId: addDeployment
       x-cix-invalidates: [listDeployments, getDeployment, listContainers, listImages, listDevices, listDeviceMaps]
       x-cix-permission: containers:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -9387,7 +9393,7 @@ paths:
       operationId: getDeployment
       x-cix-read: state
       x-cix-permission: containers:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -9409,7 +9415,7 @@ paths:
       operationId: deleteDeployment
       x-cix-invalidates: [listDeployments, getDeployment, listContainers, listDevices, listDeviceMaps]
       x-cix-permission: containers:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -9460,7 +9466,7 @@ paths:
       operationId: applyDeployment
       x-cix-invalidates: [listDeployments, getDeployment, listContainers, listImages, getImage, listDevices, listDeviceMaps]
       x-cix-permission: containers:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -9704,7 +9710,7 @@ paths:
       operationId: getDnsForwarders
       x-cix-read: state
       x-cix-permission: services:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -9735,7 +9741,7 @@ paths:
       operationId: setDnsForwarders
       x-cix-invalidates: [getDnsForwarders]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -9786,7 +9792,7 @@ paths:
       operationId: provisionDns
       x-cix-invalidates: [listDnsServers, listDnsRecords, listContainers]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: false
@@ -9840,7 +9846,7 @@ paths:
       operationId: listDnsServers
       x-cix-read: state
       x-cix-permission: services:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -9864,7 +9870,7 @@ paths:
       operationId: createDnsServer
       x-cix-invalidates: [listDnsServers, listContainers]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -9910,7 +9916,7 @@ paths:
       operationId: deleteDnsServer
       x-cix-invalidates: [listDnsServers, listContainers]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/DnsServerContainerName"
@@ -9930,7 +9936,7 @@ paths:
       operationId: listLdapServers
       x-cix-read: state
       x-cix-permission: services:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -9960,7 +9966,7 @@ paths:
       operationId: createLdapServer
       x-cix-invalidates: [listLdapServers, listContainers]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -10006,7 +10012,7 @@ paths:
       operationId: deleteLdapServer
       x-cix-invalidates: [listLdapServers, listContainers]
       x-cix-permission: services:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/LdapServerContainerName"
@@ -10026,7 +10032,7 @@ paths:
       operationId: listLdapGroups
       x-cix-read: state
       x-cix-permission: identity:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -10051,7 +10057,7 @@ paths:
       operationId: createLdapGroup
       x-cix-invalidates: [listLdapGroups, getLdapGroup, getWhoami, getHostauthPermissions]
       x-cix-permission: identity:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -10085,7 +10091,7 @@ paths:
       operationId: getLdapGroup
       x-cix-read: state
       x-cix-permission: identity:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/LdapGroupName"
@@ -10125,7 +10131,7 @@ paths:
       operationId: updateLdapGroup
       x-cix-invalidates: [listLdapGroups, getLdapGroup, getWhoami, getHostauthPermissions]
       x-cix-permission: identity:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/LdapGroupName"
@@ -10184,7 +10190,7 @@ paths:
       operationId: deleteLdapGroup
       x-cix-invalidates: [listLdapGroups, getLdapGroup, getWhoami, getHostauthPermissions]
       x-cix-permission: identity:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/LdapGroupName"
@@ -10233,7 +10239,7 @@ paths:
       operationId: listLdapUsers
       x-cix-read: state
       x-cix-permission: identity:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -10323,7 +10329,7 @@ paths:
       operationId: getLdapUser
       x-cix-read: state
       x-cix-permission: identity:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/LdapUserName"
@@ -10426,7 +10432,7 @@ paths:
       operationId: deleteLdapUser
       x-cix-invalidates: [listLdapUsers, getLdapUser, listLdapUserAppPasswords, getWhoami]
       x-cix-permission: identity:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/LdapUserName"
@@ -10458,7 +10464,7 @@ paths:
       operationId: listLdapUserAppPasswords
       x-cix-read: state
       x-cix-permission: identity:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -10570,7 +10576,7 @@ paths:
       operationId: deleteLdapUserAppPassword
       x-cix-invalidates: [listLdapUsers, getLdapUser, listLdapUserAppPasswords]
       x-cix-permission: identity:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -10605,7 +10611,7 @@ paths:
       operationId: getLdapConfig
       x-cix-read: state
       x-cix-permission: identity:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -10633,7 +10639,7 @@ paths:
       operationId: updateLdapConfig
       x-cix-invalidates: [getLdapConfig]
       x-cix-permission: identity:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -10678,7 +10684,7 @@ paths:
       operationId: getPkiCa
       x-cix-read: state
       x-cix-permission: pki:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -10710,7 +10716,7 @@ paths:
       operationId: createPkiCa
       x-cix-invalidates: [getPkiCa, listPkiCerts, getPkiCert]
       x-cix-permission: pki:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: false
@@ -10750,7 +10756,7 @@ paths:
       operationId: getPkiIntermediate
       x-cix-read: state
       x-cix-permission: pki:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -10787,7 +10793,7 @@ paths:
       operationId: createPkiIntermediate
       x-cix-invalidates: [getPkiIntermediate, listPkiCerts, getPkiCert]
       x-cix-permission: pki:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: false
@@ -10827,7 +10833,7 @@ paths:
       operationId: listPkiCerts
       x-cix-read: state
       x-cix-permission: pki:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -10853,7 +10859,7 @@ paths:
       operationId: createPkiCert
       x-cix-invalidates: [listPkiCerts, getPkiCert]
       x-cix-permission: pki:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -10895,7 +10901,7 @@ paths:
       operationId: getPkiCert
       x-cix-read: state
       x-cix-permission: pki:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/PkiCertName"
@@ -10923,7 +10929,7 @@ paths:
       operationId: deletePkiCert
       x-cix-invalidates: [listPkiCerts, getPkiCert]
       x-cix-permission: pki:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/PkiCertName"
@@ -10977,7 +10983,7 @@ paths:
       operationId: exportPki
       x-cix-invalidates: []
       x-cix-permission: pki:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       requestBody:
         required: true
@@ -11055,7 +11061,8 @@ paths:
       operationId: importPki
       x-cix-invalidates: [getPkiCa, getPkiIntermediate, listPkiCerts, getPkiCert]
       x-cix-permission: pki:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
+      x-cix-destructive: true
       x-cix-expose: [cli]
       requestBody:
         required: true
@@ -11121,7 +11128,7 @@ paths:
       operationId: resetPki
       x-cix-invalidates: [getPkiCa, getPkiIntermediate, listPkiCerts]
       x-cix-permission: pki:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       x-cix-destructive: true
       requestBody:
@@ -11210,7 +11217,7 @@ paths:
       operationId: listPkgRebuilds
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       # cli only for now: cixctl renders this, the dashboard does not yet.
       # Declaring [web] as an intention rather than a fact is exactly what
       # test_api_surfaces refuses, and it is right to -- a surface listed
@@ -11246,7 +11253,7 @@ paths:
       operationId: listPkgRecipes
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -11276,7 +11283,7 @@ paths:
       operationId: addPkgRecipe
       x-cix-invalidates: [listPkgRecipes, getPkgRecipe, getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -11399,7 +11406,7 @@ paths:
       operationId: getPkgRecipe
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/PkgRecipeName"
@@ -11432,7 +11439,7 @@ paths:
       operationId: deletePkgRecipe
       x-cix-invalidates: [listPkgRecipes, getPkgRecipe, getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/PkgRecipeName"
@@ -11461,7 +11468,7 @@ paths:
       operationId: listPkgSources
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -11477,7 +11484,7 @@ paths:
       operationId: addPkgSource
       x-cix-invalidates: [listPkgSources, getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -11551,7 +11558,7 @@ paths:
       operationId: updatePkgSource
       x-cix-invalidates: [listPkgSources, getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -11623,7 +11630,7 @@ paths:
       operationId: deletePkgSource
       x-cix-invalidates: [listPkgSources, getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -11653,7 +11660,7 @@ paths:
       operationId: getPkgSourceOwnership
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -11669,7 +11676,7 @@ paths:
       operationId: setPkgSourceOwnership
       x-cix-invalidates: [getPkgSourceOwnership, getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -11717,7 +11724,7 @@ paths:
       operationId: commitPkgRecipe
       x-cix-invalidates: [getPkgRecipeCommit, getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       requestBody:
         required: true
@@ -11768,7 +11775,7 @@ paths:
       operationId: getPkgRecipeCommit
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "200":
@@ -11792,7 +11799,7 @@ paths:
       operationId: revisePkgRecipe
       x-cix-invalidates: [getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       requestBody:
         required: true
@@ -11866,7 +11873,7 @@ paths:
       operationId: pkgSync
       x-cix-invalidates: [getPkgSyncStatus, getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "202":
@@ -11921,7 +11928,7 @@ paths:
       operationId: getPkgSyncStatus
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -11937,7 +11944,7 @@ paths:
       operationId: getPkgCacheConfig
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -11955,7 +11962,7 @@ paths:
       operationId: putPkgCacheConfig
       x-cix-invalidates: [getPkgCacheConfig, getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -12014,7 +12021,7 @@ paths:
       x-cix-read: state
       x-cix-composed-of: [listPkg, listPkgRecipes]
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -12119,7 +12126,7 @@ paths:
       operationId: getPkgCache
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -12138,7 +12145,7 @@ paths:
       operationId: deletePkgCache
       x-cix-invalidates: [getPkgCache, getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "204":
@@ -12169,7 +12176,7 @@ paths:
       operationId: exportPkgArtifact
       x-cix-invalidates: [listBuildEnvironments, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/PkgName"
@@ -12205,7 +12212,7 @@ paths:
       operationId: getPkgArtifactExport
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: []
       parameters:
         - $ref: "#/components/parameters/PkgName"
@@ -12318,7 +12325,7 @@ paths:
       operationId: publishPkgArtifact
       x-cix-invalidates: [listBuildEnvironments, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/PkgName"
@@ -12430,7 +12437,7 @@ paths:
       operationId: listPkgRepositories
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -12447,7 +12454,7 @@ paths:
       operationId: addPkgRepository
       x-cix-invalidates: [getPkgArtifactExport, listPkgRepositories, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -12506,7 +12513,7 @@ paths:
       operationId: updatePkgRepository
       x-cix-invalidates: [getPkgArtifactExport, listPkgRepositories, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -12558,7 +12565,7 @@ paths:
       operationId: deletePkgRepository
       x-cix-invalidates: [getPkgArtifactExport, listPkgRepositories, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -12596,7 +12603,7 @@ paths:
       operationId: listPkgPolicies
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "200":
@@ -12630,7 +12637,7 @@ paths:
       operationId: setPkgPolicy
       x-cix-invalidates: [getPkgArtifactExport, listPkgPolicies, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - name: name
@@ -12678,7 +12685,7 @@ paths:
       operationId: clearPkgPolicy
       x-cix-invalidates: [getPkgArtifactExport, listPkgPolicies, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - name: name
@@ -12709,7 +12716,7 @@ paths:
       operationId: listUpstreamKinds
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "200":
@@ -12739,7 +12746,7 @@ paths:
       operationId: listScheduleActions
       x-cix-read: state
       x-cix-permission: schedules:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -12775,7 +12782,7 @@ paths:
       operationId: listSchedules
       x-cix-read: state
       x-cix-permission: schedules:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -12798,7 +12805,7 @@ paths:
       operationId: getSchedule
       x-cix-read: state
       x-cix-permission: schedules:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - name: name
@@ -12830,7 +12837,7 @@ paths:
       operationId: setSchedule
       x-cix-invalidates: [listSchedules, getSchedule]
       x-cix-permission: schedules:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -12854,7 +12861,7 @@ paths:
       operationId: deleteSchedule
       x-cix-invalidates: [listSchedules, getSchedule]
       x-cix-permission: schedules:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -12882,7 +12889,7 @@ paths:
       operationId: runSchedule
       x-cix-invalidates: [listSchedules, getSchedule]
       x-cix-permission: schedules:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: name
@@ -12961,7 +12968,7 @@ paths:
       x-cix-read: state
       x-cix-composed-of: [listPkg, listImages, getEsp, listDeployments, listContainers, getSourceCatalogue]
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -13079,7 +13086,7 @@ paths:
       operationId: getPipelineApprovals
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "200":
@@ -13125,7 +13132,7 @@ paths:
       operationId: approvePipeline
       x-cix-invalidates: [getPipeline]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       requestBody:
         required: true
@@ -13186,7 +13193,7 @@ paths:
       operationId: revokePipelineApproval
       x-cix-invalidates: [getPipeline]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       requestBody:
         required: true
@@ -13228,7 +13235,7 @@ paths:
       operationId: getPipelineConfig
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "200":
@@ -13253,7 +13260,7 @@ paths:
       operationId: setPipelineConfig
       x-cix-invalidates: [getPipelineConfig, getPipelineRuns]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       requestBody:
         required: true
@@ -13285,7 +13292,7 @@ paths:
       operationId: getPkgTrustedOrigins
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "200":
@@ -13305,7 +13312,7 @@ paths:
       operationId: setPkgTrustedOrigins
       x-cix-invalidates: [getPkgArtifactExport, getPkgTrustedOrigins, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       requestBody:
         required: true
@@ -13345,7 +13352,7 @@ paths:
       operationId: listPkgBadVersions
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "200":
@@ -13365,7 +13372,7 @@ paths:
       operationId: clearPkgBadVersion
       x-cix-invalidates: [getPkgArtifactExport, listPkgBadVersions, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - name: name
@@ -13446,7 +13453,7 @@ paths:
       operationId: getSourceCatalogue
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "200":
@@ -13471,7 +13478,7 @@ paths:
       operationId: getSourcePolicy
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       responses:
         "200":
@@ -13510,7 +13517,7 @@ paths:
       operationId: setDefaultSourcePolicy
       x-cix-invalidates: [getPkgArtifactExport, getSourcePolicy, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       requestBody:
         required: true
@@ -13559,7 +13566,7 @@ paths:
       operationId: setPkgSourcePolicy
       x-cix-invalidates: [listBuildEnvironments, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - name: name
@@ -13608,7 +13615,7 @@ paths:
       operationId: clearPkgSourcePolicy
       x-cix-invalidates: [listBuildEnvironments, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - name: name
@@ -13633,7 +13640,7 @@ paths:
       operationId: listPkgUpstreamKeys
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - name: name
@@ -13660,7 +13667,7 @@ paths:
       operationId: addPkgUpstreamKey
       x-cix-invalidates: [listBuildEnvironments, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - name: name
@@ -13705,7 +13712,7 @@ paths:
       operationId: removePkgUpstreamKey
       x-cix-invalidates: [listBuildEnvironments, listPkgRebuilds, listPkgRecipes, getPkgRecipe, listPkgSources, getPkgSourceOwnership, getPkgRecipeCommit, getPkgSyncStatus, getPkgCacheConfig, getPkgDrift, getPkgCache, getPkgArtifactExport, listPkgRepositories, listPkgPolicies, listUpstreamKinds, getPkgTrustedOrigins, listPkgBadVersions, getSourceCatalogue, getSourcePolicy, listPkgUpstreamKeys, listBuildLogs, getPkgHostbuild, listPkg, getPkg]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - name: name
@@ -13755,7 +13762,7 @@ paths:
       x-cix-read: state
       x-cix-volatile-fields: [size_bytes, modified_at]
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -13821,7 +13828,7 @@ paths:
       operationId: pkgInstall
       x-cix-invalidates: [getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg, listImages, getImage, listSoftware, listBuildLogs, getPipeline, getPipelineRuns]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -13898,7 +13905,7 @@ paths:
       operationId: pkgCancel
       x-cix-invalidates: [getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg, listBuildLogs, getPipeline, getPipelineRuns]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       requestBody:
         required: true
@@ -13952,7 +13959,7 @@ paths:
       operationId: pkgUpdateAll
       x-cix-invalidates: [getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg, listImages, getImage, listSoftware, listBuildLogs, getPipeline, getPipelineRuns]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -14004,7 +14011,7 @@ paths:
       operationId: pkgHostbuild
       x-cix-invalidates: [getPkgArtifactExport, listPkgUpstreamKeys, getPkgHostbuild, listPkg, getPkg, listImages, getImage, listSoftware, listBuildLogs, getPipeline, getPipelineRuns, getSystemAssembly]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       requestBody:
         required: true
@@ -14092,7 +14099,7 @@ paths:
       operationId: pkgResume
       x-cix-invalidates: [getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg, listImages, getImage, listSoftware, listBuildLogs, getPipeline, getPipelineRuns]
       x-cix-permission: packages:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       requestBody:
         required: true
@@ -14138,7 +14145,7 @@ paths:
       operationId: getPkgHostbuild
       x-cix-read: state
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/PkgName"
@@ -14540,7 +14547,7 @@ paths:
       operationId: deleteContainer
       x-cix-invalidates: [listContainers, getContainer, listNetworks, getNetwork, listVolumes, getVolume, listDevices, listDeviceMaps, listDnsRecords, listDnsServers, listLdapServers, listNtpServers, listSyslogTargets, listLdapUsers, listPkiCerts]
       x-cix-permission: containers:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -14585,7 +14592,7 @@ paths:
       operationId: patchContainer
       x-cix-invalidates: [listContainers, getContainer, listNetworks, getNetwork, listVolumes, getVolume, listDevices, listDeviceMaps]
       x-cix-permission: containers:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -14652,7 +14659,7 @@ paths:
       operationId: startContainer
       x-cix-invalidates: [listContainers, getContainer, listNetworks, getNetwork, listDevices, listDeviceMaps]
       x-cix-permission: containers:operate
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -14703,7 +14710,7 @@ paths:
       operationId: pauseContainer
       x-cix-invalidates: [listContainers, getContainer]
       x-cix-permission: containers:operate
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -14743,7 +14750,7 @@ paths:
       operationId: unpauseContainer
       x-cix-invalidates: [listContainers, getContainer]
       x-cix-permission: containers:operate
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -14858,7 +14865,7 @@ paths:
       operationId: stopContainer
       x-cix-invalidates: [listContainers, getContainer, listNetworks, getNetwork, listDevices, listDeviceMaps]
       x-cix-permission: containers:operate
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -14916,7 +14923,7 @@ paths:
       operationId: startContainerService
       x-cix-invalidates: [listContainers, getContainer]
       x-cix-permission: containers:operate
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -14947,7 +14954,7 @@ paths:
       operationId: stopContainerService
       x-cix-invalidates: [listContainers, getContainer]
       x-cix-permission: containers:operate
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -14975,7 +14982,7 @@ paths:
       operationId: restartContainerService
       x-cix-invalidates: [listContainers, getContainer]
       x-cix-permission: containers:operate
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -15401,7 +15408,7 @@ paths:
       operationId: putContainerFile
       x-cix-invalidates: [listContainers, getContainer]
       x-cix-permission: containers:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -15502,7 +15509,7 @@ paths:
       operationId: deleteContainerFile
       x-cix-invalidates: [listContainers, getContainer]
       x-cix-permission: containers:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       tags: [containers]
       parameters:
         - name: name
@@ -15562,7 +15569,7 @@ paths:
       x-cix-read: state
       x-cix-composed-of: [listImageRecipes, listImages, listPkgRecipes, listPkg, listDeployments, listContainers]
       x-cix-permission: packages:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       responses:
         "200":
@@ -15616,7 +15623,7 @@ paths:
       operationId: factoryReset
       x-cix-invalidates: []
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       x-cix-destructive: true
       requestBody:
@@ -15669,7 +15676,7 @@ paths:
       operationId: getVolumeBackupConfig
       x-cix-read: state
       x-cix-permission: system:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [web]
       responses:
         "200":
@@ -15691,7 +15698,7 @@ paths:
       operationId: setVolumeBackupConfig
       x-cix-invalidates: [getVolumeBackupConfig]
       x-cix-permission: system:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [web]
       requestBody:
         required: true
@@ -15740,7 +15747,7 @@ paths:
       operationId: setVolumeOwner
       x-cix-invalidates: [listVolumes, getVolume, getVolumeUsage, getVolumeBackups]
       x-cix-permission: volumes:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: volume_name
@@ -15830,7 +15837,7 @@ paths:
       operationId: setVolumeQuota
       x-cix-invalidates: [listVolumes, getVolume, getVolumeUsage, getVolumeBackups]
       x-cix-permission: volumes:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: volume_name
@@ -15938,7 +15945,7 @@ paths:
       x-cix-read: sample
       x-cix-sample-period: 60
       x-cix-permission: volumes:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: volume_name
@@ -16020,7 +16027,7 @@ paths:
       operationId: getVolumeBackups
       x-cix-read: state
       x-cix-permission: volumes:read
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: volume_name
@@ -16053,7 +16060,7 @@ paths:
       operationId: setVolumeBackupPolicy
       x-cix-invalidates: [listVolumes, getVolume, getVolumeUsage, getVolumeBackups]
       x-cix-permission: volumes:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [web]
       parameters:
         - name: volume_name
@@ -16146,7 +16153,7 @@ paths:
       operationId: takeVolumeBackup
       x-cix-invalidates: [listVolumes, getVolume, getVolumeUsage, getVolumeBackups]
       x-cix-permission: volumes:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: volume_name
@@ -16195,7 +16202,8 @@ paths:
       operationId: restoreVolume
       x-cix-invalidates: [listVolumes, getVolume, getVolumeUsage, getVolumeBackups]
       x-cix-permission: volumes:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
+      x-cix-destructive: true
       x-cix-expose: [cli, web]
       parameters:
         - name: volume_name
@@ -16247,7 +16255,7 @@ paths:
       operationId: deleteVolumeSnapshot
       x-cix-invalidates: [listVolumes, getVolume, getVolumeUsage, getVolumeBackups]
       x-cix-permission: volumes:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [web]
       parameters:
         - name: volume_name
@@ -16299,7 +16307,7 @@ paths:
       operationId: migrateVolume
       x-cix-invalidates: [listVolumes, getVolume, getVolumeUsage, getVolumeBackups]
       x-cix-permission: volumes:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - name: volume_name
@@ -16382,7 +16390,7 @@ paths:
       operationId: attachContainerVolume
       x-cix-invalidates: [listContainers, getContainer, listVolumes, getVolume]
       x-cix-permission: containers:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -16438,7 +16446,7 @@ paths:
       operationId: detachContainerVolume
       x-cix-invalidates: [listContainers, getContainer, listVolumes, getVolume]
       x-cix-permission: containers:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -16508,7 +16516,7 @@ paths:
       operationId: setContainerSysctls
       x-cix-invalidates: [listContainers, getContainer]
       x-cix-permission: containers:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli, web]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -16581,7 +16589,7 @@ paths:
       operationId: attachContainerNetwork
       x-cix-invalidates: [listContainers, getContainer, listNetworks, getNetwork]
       x-cix-permission: containers:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -16643,7 +16651,7 @@ paths:
       operationId: detachContainerNetwork
       x-cix-invalidates: [listContainers, getContainer, listNetworks, getNetwork]
       x-cix-permission: containers:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -16700,7 +16708,7 @@ paths:
       operationId: attachContainerDevice
       x-cix-invalidates: [listContainers, getContainer, listDevices, listDeviceMaps]
       x-cix-permission: containers:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"
@@ -16782,7 +16790,7 @@ paths:
       operationId: detachContainerDevice
       x-cix-invalidates: [listContainers, getContainer, listDevices, listDeviceMaps]
       x-cix-permission: containers:write
-      x-cix-mcp: none
+      x-cix-mcp: tool
       x-cix-expose: [cli]
       parameters:
         - $ref: "#/components/parameters/ContainerName"

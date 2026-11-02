@@ -6,6 +6,23 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### 327 of 356 operations are MCP tools, held by gates rather than a list (#391, ADR-0368)
+
+- **What changed:**
+  - Every operation the gates allow is `x-cix-mcp: tool`: 327 of 356, up from 17. The owner replaced per-operation verification with verification by class on 2026-11-02.
+  - The 29 that stay `none` are held by two gates:
+    - **`apigen` refuses** an operation that answers 101 (a WebSocket: `getEvents`, `pkgBuildLog`, `consoleContainer`), one whose permission is `authenticated`, and one whose 200 is not JSON.
+    - **The new `test_mcp_exposure`**, in SELFTESTS, reads every tool's `op_` function and each `handle_*` it calls, and refuses a park (`*_ask(`, `park_body_take(`, the update and boot-manager submits, a password hash), a request-header read, or an in-process run of its own. It controls itself on `handle_logs_get` and `handle_whoami`.
+  - **A request body travels in one `body` argument**, typed by the body's schema, instead of as properties beside the parameters. The flat layout collided in three operations (`addStoragePartition`, `updateLdapGroup`, `attachContainerVolume`), and could not express `patchContainer`'s free-form merge or a map body. `apigen` refuses a parameter named `body`, and `requestBody: required: true` makes `body` required.
+  - **`api_run()` refuses re-entry** with a 503, so `verifyEvents` or `callMcp` run from inside a call cannot reuse the one sentinel connection.
+  - **Seven more operations declare `x-cix-destructive: true`**, so an MCP client confirms them and the dashboard asks first: reboot, shutdown, storage format, a new partition table, volume restore, system restore and PKI import.
+  - Tests:
+    - `test_mcp_gateway` compares every read tool with REST from the same daemon: the same success, the same top-level keys, the same error body. A path parameter is given a name nothing has.
+    - `test_mcp` reads `tools/list` through an allocated buffer, now that the list is megabytes. It checks the `body` argument's schema, a free-form body, and a body property named like a path parameter.
+    - `test_apigen` refuses each new case.
+- **Why:** the owner's direction is parity with the API, and the gateway adds nothing per operation: a tool runs the same handler under the same permission. What can stop an operation from being a tool is a property of its contract entry or its handler's text, so those are what the gates read.
+- **Verified:** pending the release.
+
 ### agent-1's Claude Code reaches cixd's MCP gateway as `cix-agent` (#391, ADR-0368 step 4)
 
 - **What changed:** this change is configuration on 192.168.15.95 and a deployment recipe. No cix code changed.

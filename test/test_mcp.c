@@ -95,6 +95,25 @@ static int ask(const char *request, char *out, size_t out_size)
 	return status;
 }
 
+/* As ask(), for an answer of any size -- tools/list over every tool in
+ * the contract runs to megabytes. The caller frees the text. */
+static char *ask_alloc(const char *request)
+{
+	struct json_writer w;
+	char *text;
+
+	jw_init(&w);
+	mcp_handle(request, strlen(request), &g_caller, &w);
+	text = strdup(w.buf != NULL ? w.buf : "");
+	jw_free(&w);
+	return text;
+}
+
+static int str_is(const char *a, const char *b)
+{
+	return a != NULL && strcmp(a, b) == 0;
+}
+
 static int has(const char *text, const char *needle)
 {
 	return strstr(text, needle) != NULL;
@@ -153,11 +172,11 @@ static void test_messages(void)
 
 static void test_tools_list(void)
 {
-	static char out[262144];
+	char *out;
 
 	check(mcp_tool_count() > 0, "the contract marks at least one tool");
 	g_denied = "";
-	ask("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}", out, sizeof(out));
+	out = ask_alloc("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}");
 	check(has(out, "\"name\":\"getContainer\""), "tools/list offers getContainer");
 	check(has(out, "\"required\":[\"name\"]"), "a path parameter is required");
 	check(has(out, "\"include_internal\":{\"type\":\"string\""),
@@ -165,12 +184,15 @@ static void test_tools_list(void)
 	check(has(out, "\"additionalProperties\":false"), "no other argument is accepted");
 	check(has(out, "\"readOnlyHint\":true"), "a GET is read-only");
 	check(!has(out, "\"name\":\"callMcp\""), "the gateway is not a tool of itself");
+	check(!has(out, "\"name\":\"consoleContainer\""), "a WebSocket is never a tool");
+	free(out);
 
 	g_denied = "containers:read";
-	ask("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}", out, sizeof(out));
+	out = ask_alloc("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}");
 	check(!has(out, "\"name\":\"getContainer\"") && !has(out, "\"name\":\"listContainers\""),
 	      "tools/list leaves out what the caller may not call");
 	check(has(out, "\"name\":\"getHealth\""), "and still offers what it may");
+	free(out);
 	g_denied = "";
 }
 
@@ -216,7 +238,7 @@ static void test_tools_call(void)
 	check(g_runs == 0 && has(out, "\"code\":-32602"), "a missing path argument is -32602");
 
 	ask("{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":"
-	    "\"deleteContainer\",\"arguments\":{\"name\":\"x\"}}}",
+	    "\"consoleContainer\",\"arguments\":{\"name\":\"x\"}}}",
 	    out, sizeof(out));
 	check(g_runs == 0 && has(out, "\"code\":-32602"),
 	      "an operation not marked tool cannot be called");
@@ -275,34 +297,55 @@ static const struct json_value *listed_tool(const struct json_value *root, const
  */
 static void test_write_schema(void)
 {
-	static char out[262144];
+	char *out;
 	struct json_value *root;
-	const struct json_value *t, *schema, *props, *required;
+	const struct json_value *t, *schema, *props, *body, *bprops, *brequired, *required;
 	const char *pattern;
 	size_t i;
-	int has_name = 0, has_ip = 0;
+	int has_name = 0, has_ip = 0, has_body = 0;
 
 	g_denied = "";
-	ask("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}", out, sizeof(out));
+	out = ask_alloc("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}");
 	root = json_parse(out, strlen(out));
+	free(out);
 	check(root != NULL, "tools/list is one JSON document");
 	t = listed_tool(root, "createDnsRecord");
 	schema = json_object_get(t, "inputSchema");
 	props = json_object_get(schema, "properties");
 	required = json_object_get(schema, "required");
-	pattern = json_as_string(json_object_get(json_object_get(props, "name"), "pattern"));
+	body = json_object_get(props, "body");
+	bprops = json_object_get(body, "properties");
+	brequired = json_object_get(body, "required");
+	pattern = json_as_string(json_object_get(json_object_get(bprops, "name"), "pattern"));
 	check(t != NULL && schema != NULL, "createDnsRecord is listed with an inputSchema");
 	check(pattern != NULL && strcmp(pattern, "^[A-Za-z0-9\\-]{1,63}(\\.[A-Za-z0-9\\-]{1,63})*$") == 0,
 	      "a body property's pattern reaches the client exactly as the contract writes it");
-	check(json_object_get(props, "ip") != NULL, "a body property is an argument");
-	for (i = 0; required != NULL && required->type == JSON_ARRAY && i < required->u.array.count;
+	check(json_object_get(bprops, "ip") != NULL, "the body argument carries the body's schema");
+	for (i = 0; brequired != NULL && brequired->type == JSON_ARRAY && i < brequired->u.array.count;
 	     i++) {
-		const char *r = json_as_string(required->u.array.items[i]);
+		const char *r = json_as_string(brequired->u.array.items[i]);
 
 		has_name |= r != NULL && strcmp(r, "name") == 0;
 		has_ip |= r != NULL && strcmp(r, "ip") == 0;
 	}
-	check(has_name && has_ip, "a required body property is required");
+	check(has_name && has_ip, "a required body property is required within the body");
+	for (i = 0; required != NULL && required->type == JSON_ARRAY && i < required->u.array.count;
+	     i++) {
+		const char *r = json_as_string(required->u.array.items[i]);
+
+		has_body |= r != NULL && strcmp(r, "body") == 0;
+	}
+	check(has_body, "a required requestBody makes the body argument required");
+	{
+		const struct json_value *pc =
+		    json_object_get(json_object_get(json_object_get(listed_tool(root, "patchContainer"),
+		                                                    "inputSchema"),
+		                                    "properties"),
+		                    "body");
+
+		check(pc != NULL && str_is(json_as_string(json_object_get(pc, "type")), "object"),
+		      "a free-form body is an object argument");
+	}
 	check(json_object_get(json_object_get(listed_tool(root, "deleteDnsRecord"), "annotations"),
 	                      "destructiveHint") != NULL &&
 	          json_object_get(json_object_get(listed_tool(root, "deleteDnsRecord"), "annotations"),
@@ -318,18 +361,30 @@ static void test_write_call(void)
 
 	g_denied = "";
 	ask("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":"
-	    "\"createDnsRecord\",\"arguments\":{\"name\":\"t1.lan\",\"ip\":\"10.0.0.1\"}}}",
+	    "\"createDnsRecord\",\"arguments\":{\"body\":{\"name\":\"t1.lan\",\"ip\":\"10.0.0.1\"}}}}",
 	    out, sizeof(out));
 	check(strcmp(g_ran_method, "POST") == 0 && strcmp(g_ran_path, "/v1/dns/records") == 0 &&
 	          g_ran_with_body && strcmp(g_ran_body, "{\"name\":\"t1.lan\",\"ip\":\"10.0.0.1\"}") == 0,
-	      "a body's arguments become the body, as JSON");
+	      "the body argument is the request body, as JSON");
 
 	ask("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":"
-	    "\"updateDnsRecord\",\"arguments\":{\"name\":\"t1.lan\",\"ip\":\"10.0.0.2\"}}}",
+	    "\"updateDnsRecord\",\"arguments\":{\"name\":\"t1.lan\",\"body\":{\"ip\":\"10.0.0.2\"}}}}",
 	    out, sizeof(out));
 	check(strcmp(g_ran_method, "PUT") == 0 && strcmp(g_ran_path, "/v1/dns/records/t1.lan") == 0 &&
 	          strcmp(g_ran_body, "{\"ip\":\"10.0.0.2\"}") == 0,
-	      "a path argument goes to the path, and only the body's to the body");
+	      "a path argument goes to the path, and the body argument to the body");
+
+	ask("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":"
+	    "\"addStoragePartition\",\"arguments\":{\"name\":\"vdb\",\"body\":{\"name\":\"data\"}}}}",
+	    out, sizeof(out));
+	check(strcmp(g_ran_path, "/v1/storage/vdb/partitions") == 0 &&
+	          strcmp(g_ran_body, "{\"name\":\"data\"}") == 0,
+	      "a body property named like a path parameter stays apart from it");
+
+	ask("{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":"
+	    "\"createDnsRecord\",\"arguments\":{\"name\":\"t1.lan\"}}}",
+	    out, sizeof(out));
+	check(has(out, "\"code\":-32602"), "a body property given outside body is not an argument");
 
 	ask("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":"
 	    "\"deleteDnsRecord\",\"arguments\":{\"name\":\"t1.lan\"}}}",

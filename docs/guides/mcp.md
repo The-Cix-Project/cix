@@ -45,7 +45,7 @@ cixctl ldap user add --name=cix-agent-full --primarygroup=<cix-agents gid> \
     --secondary-groups=<agents-full gid>
 ```
 
-On 192.168.15.95, `cix-agent` (read-only) sees 14 of the 17 tools, and `cix-agent-full` sees all 17. A narrower level is a group holding one or two permissions, such as `services:write` for an agent that manages DNS.
+On 192.168.15.95, `cix-agent` (read-only) is offered only the tools its reads allow, and `cix-agent-full` is offered every tool. A narrower level is a group holding one or two permissions, such as `services:write` for an agent that manages DNS.
 
 Three things to know about a level:
 - **A group holding every permission is an admin group** ([ADR-0369](../adr/0369-an-admin-group-holds-every-permission-including-new-ones.md)). It appears in `admin_groups` and gains any permission a later build adds. That includes `identity:write`, so such an agent can create users and app passwords and change what groups grant.

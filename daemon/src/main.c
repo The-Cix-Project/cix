@@ -34811,6 +34811,8 @@ static struct conn g_self_read_conn;
 static struct conn g_events_check_conn = { .fd = -1 };
 static unsigned long g_events_check_ticks;
 static int g_events_check_cursor;
+/* ADR-0368: api_run() is running a handler on g_self_read_conn. */
+static int g_api_run_active;
 
 /*
  * Runs `method` `path` -- query and path parameters included, as
@@ -34848,6 +34850,19 @@ static int api_run(const char *method, const char *path, const char *body_in, si
 	                      method, path, params);
 	if (idx < 0)
 		return -1;
+	/* ADR-0368: one sentinel, so one run at a time. An operation that
+	 * itself runs api_run() (verifyEvents, callMcp) called from inside
+	 * one is answered, not run on a sentinel already in use. */
+	if (g_api_run_active) {
+		static const char nested[] =
+		    "{\"error\":\"this operation runs other operations in-process itself, so it "
+		    "cannot be run from inside one (ADR-0368)\"}";
+
+		*out_body = strdup(nested);
+		*out_len = *out_body != NULL ? sizeof(nested) - 1 : 0;
+		*out_status = 503;
+		return 0;
+	}
 	if (body_in != NULL && body_in_len > 0) {
 		req_body = malloc(body_in_len + 1);
 		if (req_body == NULL)
@@ -34892,7 +34907,9 @@ static int api_run(const char *method, const char *path, const char *body_in, si
 	 */
 	snprintf(step, sizeof(step), "%s %s", method, path);
 	stallwatch_step(step);
+	g_api_run_active = 1;
 	g_api_routes[idx].fn(&ctx);
+	g_api_run_active = 0;
 	status = http_last_status();
 	/* ADR-0339: a change that succeeded announces what its contract
 	 * makes stale, exactly as dispatch() does for the same route. A

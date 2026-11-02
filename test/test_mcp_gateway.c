@@ -17,10 +17,12 @@
 #include "json.h"
 #include "test_drift.h"
 #include "test_image_fixture.h"
+#include "generated/mcp_tools.h"
 
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -125,6 +127,118 @@ static void get_status(const struct cix_client *c, const char *path, int want,
 	cix_response_free(&r);
 }
 
+/* Whether two JSON documents are objects with the same top-level keys,
+ * or are both something other than an object. */
+static int same_shape(const struct json_value *a, const struct json_value *b)
+{
+	size_t i;
+
+	if (a == NULL || b == NULL)
+		return a == b;
+	if (a->type != b->type)
+		return 0;
+	if (a->type != JSON_OBJECT)
+		return 1;
+	if (a->u.object.count != b->u.object.count)
+		return 0;
+	for (i = 0; i < a->u.object.count; i++)
+		if (json_object_get(b, a->u.object.keys[i]) == NULL)
+			return 0;
+	return 1;
+}
+
+/*
+ * ADR-0368: every read that is a tool answers through the gateway as
+ * it answers over REST, from the same daemon. A tool call runs the same
+ * handler in-process, so what this catches is a handler that behaves
+ * differently there -- one that parks (the gateway is told busy), or
+ * reads the connection -- which test_mcp_exposure's scan of the source
+ * could miss one call further down. A path parameter is given a name
+ * nothing has, so the comparison is of two not-founds and nothing is
+ * created. Success must agree; a success must carry the same top-level
+ * keys (a value may change between two reads of a live host); a
+ * failure must carry the same error body.
+ */
+static void check_read_equivalence(const struct cix_client *c)
+{
+	int i, compared = 0;
+
+	for (i = 0; i < CIX_MCP_TOOL_COUNT; i++) {
+		const struct cix_mcp_tool *t = &cix_mcp_tools[i];
+		char path[512], args[512], msg[1024], what[600];
+		struct cix_response rest, gw;
+		const struct json_value *result, *text, *is_error;
+		struct json_value *mcp_body;
+		size_t pl = 0, al = 0;
+		const char *p;
+		int rest_ok, ok;
+
+		if (strcmp(t->method, "GET") != 0)
+			continue;
+		al += (size_t)snprintf(args + al, sizeof(args) - al, "{");
+		for (p = t->path; *p != '\0' && pl + 1 < sizeof(path); p++) {
+			if (*p == '{') {
+				const char *e = strchr(p, '}');
+
+				if (e == NULL)
+					break;
+				pl += (size_t)snprintf(path + pl, sizeof(path) - pl, "mcp-equiv-none");
+				al += (size_t)snprintf(args + al, sizeof(args) - al, "%s\"%.*s\":\"mcp-equiv-none\"",
+				                       al > 1 ? "," : "", (int)(e - p - 1), p + 1);
+				p = e;
+				continue;
+			}
+			path[pl++] = *p;
+		}
+		path[pl] = '\0';
+		snprintf(args + al, sizeof(args) - al, "}");
+
+		memset(&rest, 0, sizeof(rest));
+		memset(&gw, 0, sizeof(gw));
+		snprintf(msg, sizeof(msg),
+		         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"%s\","
+		         "\"arguments\":%s}}",
+		         t->name, args);
+		if (cix_client_request(c, "GET", path, NULL, &rest) != 0 ||
+		    cix_client_request(c, "POST", "/v1/mcp", msg, &gw) != 0 || gw.status != 200) {
+			snprintf(what, sizeof(what), "read equivalence: %s could not be asked both ways",
+			         t->name);
+			check(0, what);
+			cix_response_free(&rest);
+			cix_response_free(&gw);
+			continue;
+		}
+		result = json_object_get(gw.json, "result");
+		is_error = json_object_get(result, "isError");
+		text = json_object_get(json_object_get(result, "content") != NULL &&
+		                               json_object_get(result, "content")->u.array.count > 0
+		                           ? json_object_get(result, "content")->u.array.items[0]
+		                           : NULL,
+		                       "text");
+		rest_ok = rest.status >= 200 && rest.status < 300;
+		mcp_body = json_as_string(text) != NULL
+		               ? json_parse(json_as_string(text), strlen(json_as_string(text)))
+		               : NULL;
+		if (is_error == NULL || is_error->type != JSON_BOOL || is_error->u.boolean == rest_ok)
+			ok = 0;
+		else if (rest_ok)
+			ok = same_shape(rest.json, mcp_body);
+		else
+			ok = rest.body != NULL && json_as_string(text) != NULL &&
+			     strcmp(rest.body, json_as_string(text)) == 0;
+		snprintf(what, sizeof(what), "read equivalence: %s (REST %d): %.200s / %.200s", t->name,
+		         rest.status, rest.body != NULL ? rest.body : "",
+		         json_as_string(text) != NULL ? json_as_string(text) : "");
+		check(ok, what);
+		compared++;
+		json_free(mcp_body);
+		cix_response_free(&rest);
+		cix_response_free(&gw);
+	}
+	printf("  read equivalence: %d reads compared\n", compared);
+	check(compared >= 100, "read equivalence compared every read tool");
+}
+
 int main(void)
 {
 	struct cix_client c;
@@ -165,9 +279,11 @@ int main(void)
 	      "initialize is answered");
 	cix_response_free(&r);
 
+	check_read_equivalence(&c);
+
 	check(mcp(&c,
 	          "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":"
-	          "\"createDnsRecord\",\"arguments\":{\"name\":\"mcp-gw.lan\",\"ip\":\"10.77.0.1\"}}}",
+	          "\"createDnsRecord\",\"arguments\":{\"body\":{\"name\":\"mcp-gw.lan\",\"ip\":\"10.77.0.1\"}}}}",
 	          &r) == 200 &&
 	          call_result_is(&r, 0),
 	      "createDnsRecord through the gateway succeeds");
@@ -179,7 +295,7 @@ int main(void)
 
 	check(mcp(&c,
 	          "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":"
-	          "\"updateDnsRecord\",\"arguments\":{\"name\":\"mcp-gw.lan\",\"ip\":\"10.77.0.2\"}}}",
+	          "\"updateDnsRecord\",\"arguments\":{\"name\":\"mcp-gw.lan\",\"body\":{\"ip\":\"10.77.0.2\"}}}}",
 	          &r) == 200 &&
 	          call_result_is(&r, 0),
 	      "updateDnsRecord through the gateway succeeds");
@@ -189,7 +305,7 @@ int main(void)
 
 	check(mcp(&c,
 	          "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":"
-	          "\"createDnsRecord\",\"arguments\":{\"name\":\"bad name!\",\"ip\":\"10.77.0.3\"}}}",
+	          "\"createDnsRecord\",\"arguments\":{\"body\":{\"name\":\"bad name!\",\"ip\":\"10.77.0.3\"}}}}",
 	          &r) == 200 &&
 	          call_result_is(&r, 1),
 	      "a body the handler refuses is an isError result");

@@ -190,8 +190,8 @@ static void do_initialize(struct json_writer *w, const struct json_value *id,
 	jw_key(w, "instructions");
 	jw_str(w, "Each tool is one operation of the Cix host API (docs/api/openapi.yaml), named "
 	          "by its operationId; its arguments are the operation's path and query "
-	          "parameters. A call does exactly what the REST request would, under your own "
-	          "permissions.");
+	          "parameters, and `body` holds the request body when the operation takes one. A "
+	          "call does exactly what the REST request would, under your own permissions.");
 	jw_obj_close(w);
 	jw_obj_close(w);
 }
@@ -293,7 +293,7 @@ static int build_path(const struct cix_mcp_tool *t, const struct json_value *arg
 	for (i = 0; args != NULL && i < args->u.object.count; i++)
 		if (!in_list(t->path_params, args->u.object.keys[i]) &&
 		    !in_list(t->query_params, args->u.object.keys[i]) &&
-		    !in_list(t->body_params, args->u.object.keys[i])) {
+		    !(t->has_body && strcmp(args->u.object.keys[i], "body") == 0)) {
 			snprintf(why, why_size, "%s takes no argument \"%s\"", t->name,
 			         args->u.object.keys[i]);
 			return -1;
@@ -351,23 +351,18 @@ too_long:
 }
 
 /*
- * The request body for a tool call: the arguments the body declares,
- * as the JSON values the client sent. The handler validates them as it
- * validates any request, so nothing is checked twice here.
+ * The request body for a tool call: the `body` argument, as the JSON
+ * the client sent, or none when it sent none. The handler validates it
+ * as it validates any request, so nothing is checked twice here.
  */
-static void build_body(const struct cix_mcp_tool *t, const struct json_value *args,
-                       struct json_writer *body)
+static int build_body(const struct json_value *args, struct json_writer *body)
 {
-	size_t i;
+	const struct json_value *v = json_object_get(args, "body");
 
-	jw_obj_open(body);
-	for (i = 0; args != NULL && args->type == JSON_OBJECT && i < args->u.object.count; i++) {
-		if (!in_list(t->body_params, args->u.object.keys[i]))
-			continue;
-		jw_key(body, args->u.object.keys[i]);
-		jw_value(body, args->u.object.values[i]);
-	}
-	jw_obj_close(body);
+	if (v == NULL)
+		return 0;
+	jw_value(body, v);
+	return 1;
 }
 
 static long long now_ms(void)
@@ -409,7 +404,7 @@ static void do_tools_call(struct json_writer *w, const struct json_value *id,
 	struct json_writer req;
 	char *body = NULL;
 	size_t body_len = 0;
-	int status = 0;
+	int status = 0, sent;
 	long long started;
 	const char *user = c->user != NULL && c->user[0] != '\0' ? c->user : "-";
 
@@ -431,11 +426,10 @@ static void do_tools_call(struct json_writer *w, const struct json_value *id,
 		return;
 	}
 	jw_init(&req);
-	if (t->has_body)
-		build_body(t, args, &req);
+	sent = t->has_body && build_body(args, &req);
 	started = now_ms();
-	if (c->run(c->ctx, t->method, path, t->has_body ? req.buf : NULL, t->has_body ? req.len : 0,
-	           &status, &body, &body_len) != 0) {
+	if (c->run(c->ctx, t->method, path, sent ? req.buf : NULL, sent ? req.len : 0, &status, &body,
+	           &body_len) != 0) {
 		jw_free(&req);
 		snprintf(msg, sizeof(msg), "%s %s matched no route", t->method, path);
 		write_call_result(w, id, msg, 1);

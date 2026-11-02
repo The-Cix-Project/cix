@@ -187,6 +187,12 @@ struct api_op {
 	 * answer this; the MCP gateway sends a body exactly when this is
 	 * set (ADR-0368). */
 	int has_body;
+	int body_required; /* requestBody: required: true */
+	/* Its 200 answers something other than application/json, which has
+	 * no tool form (ADR-0368). */
+	int non_json;
+	/* It answers 101: a WebSocket session, never a tool (ADR-0368). */
+	int upgrade;
 	/*
 	 * #592: the path parameters as a schema of their own, synthesized
 	 * as `<operationId>Args` -- named for `openForm`'s `args`, which is
@@ -2554,40 +2560,60 @@ static void check_mcp_annotations(const char *spec)
 }
 
 /*
- * ADR-0368: a tool's arguments are its path parameters, its query
- * parameters and its body's properties, side by side, so a tool is
- * called the way the operation reads. A body property named like a
- * parameter would make one argument mean two things; refused here,
- * where one of them can be renamed, rather than guessed at runtime.
+ * ADR-0368: what an operation must be for a tool to stand for it, and
+ * how its arguments are named. A tool's arguments are its path
+ * parameters, its query parameters, and -- when it declares a
+ * requestBody -- one `body` argument holding the body, so no body
+ * property can collide with a parameter and a free-form body has a
+ * form. A parameter named `body` would collide with that argument.
  */
 static void check_mcp_arguments(const char *spec)
 {
-	int i, f, q;
+	int i, q;
 
 	for (i = 0; i < g_op_count; i++) {
 		const struct api_op *op = &g_ops[i];
-		const struct comp_schema *body;
 
-		if (strcmp(op->mcp, "tool") != 0 || op->req_schema[0] == '\0')
+		if (strcmp(op->mcp, "tool") != 0)
 			continue;
-		body = comp_schema_find(op->req_schema);
-		for (f = 0; body != NULL && f < body->n_field; f++) {
-			const char *name = body->field[f].name;
-			char probe[APIGEN_QNAME_MAX + 2];
-			int clash = 0;
-
-			if (body->field[f].read_only)
-				continue;
-			snprintf(probe, sizeof(probe), "{%s}", name);
-			clash = strstr(op->path, probe) != NULL;
-			for (q = 0; q < op->n_query; q++)
-				clash |= strcmp(op->query[q], name) == 0;
-			if (clash)
+		/*
+		 * Three kinds of operation have no tool form, decided from the
+		 * contract alone: a WebSocket upgrade (it answers 101) is a
+		 * session, not a call; an app password -- an agent's
+		 * credential -- can never hold `authenticated`; and a body
+		 * that is not JSON has no form in a tool result yet. A read
+		 * whose x-cix-read is `stream` is a plain GET of a changing
+		 * value, and is not refused for that. What only the handler's
+		 * text can answer is test_mcp_exposure's.
+		 */
+		if (op->upgrade)
+			die_at(spec, op->line,
+			       "%s is x-cix-mcp: tool, and it answers 101 -- a WebSocket session, "
+			       "not a call, so it is never a tool (ADR-0368)",
+			       op->op_id);
+		if (strcmp(op->permission, "authenticated") == 0)
+			die_at(spec, op->line,
+			       "%s is x-cix-mcp: tool, and its permission is authenticated, which an "
+			       "app password never holds (ADR-0368)",
+			       op->op_id);
+		if (op->non_json)
+			die_at(spec, op->line,
+			       "%s is x-cix-mcp: tool, and its 200 is not application/json, which has "
+			       "no tool form (ADR-0368)",
+			       op->op_id);
+		if (!op->has_body)
+			continue;
+		for (q = 0; q < op->n_query; q++)
+			if (strcmp(op->query[q], "body") == 0)
 				die_at(spec, op->line,
-				       "%s is x-cix-mcp: tool, and its body property \"%s\" has the name of "
-				       "one of its parameters -- an MCP argument would mean both (ADR-0368)",
-				       op->op_id, name);
-		}
+				       "%s is x-cix-mcp: tool with a requestBody, and a query parameter is "
+				       "named \"body\", the argument its body travels in (ADR-0368)",
+				       op->op_id);
+		if (strstr(op->path, "{body}") != NULL)
+			die_at(spec, op->line,
+			       "%s is x-cix-mcp: tool with a requestBody, and a path parameter is "
+			       "named \"body\", the argument its body travels in (ADR-0368)",
+			       op->op_id);
 	}
 }
 
@@ -3326,8 +3352,7 @@ static void emit_mcp(const char *out_path, const char *spec)
 	           "\tconst char *summary;\n"
 	           "\tconst char *path_params;  /* comma-separated, in path order */\n"
 	           "\tconst char *query_params; /* comma-separated */\n"
-	           "\tconst char *body_params;  /* comma-separated: the body's own properties */\n"
-	           "\tint has_body;             /* the operation declares a requestBody */\n"
+	           "\tint has_body;             /* a requestBody: the `body` argument carries it */\n"
 	           "\tint read_only;            /* a GET */\n"
 	           "\tint destructive;          /* x-cix-destructive, or a DELETE when unstated */\n"
 	           "\tconst char *input_schema; /* the tool's inputSchema, as JSON */\n"
@@ -3367,25 +3392,8 @@ static void emit_mcp(const char *out_path, const char *spec)
 			const struct comp_schema *body =
 			    op->req_schema[0] != '\0' ? comp_schema_find(op->req_schema) : NULL;
 			struct mcp_json js = { NULL, 0, 0 };
-			char bp[APIGEN_MAX_FIELDS * APIGEN_QNAME_MAX];
-			size_t bl = 0;
-			int f, first = 1;
+			int first = 1;
 
-			bp[0] = '\0';
-			/* Beside the parameters, so a tool is called the way the
-			 * operation reads; check_mcp_arguments() refused a name in
-			 * both. */
-			for (f = 0; body != NULL && f < body->n_field; f++) {
-				const char *name = body->field[f].name;
-
-				if (body->field[f].read_only)
-					continue;
-				bl += (size_t)snprintf(bp + bl, sizeof(bp) - bl, "%s%s", bl > 0 ? "," : "",
-				                       name);
-				if (bl >= sizeof(bp))
-					die_at(spec, op->line, "%s: too many body properties for the MCP table",
-					       op->op_id);
-			}
 			mj_raw(&js, "{\"type\":\"object\",\"properties\":{");
 			if (args != NULL)
 				mj_props(&js, args, 0, &first);
@@ -3395,20 +3403,37 @@ static void emit_mcp(const char *out_path, const char *spec)
 				mj_str(&js, op->query[q]);
 				mj_raw(&js, ":{\"type\":\"string\",\"description\":\"A query parameter.\"}");
 			}
-			if (body != NULL)
-				mj_props(&js, body, 0, &first);
+			/* One argument for the whole body, whatever its shape: a
+			 * schema with fields is rendered, and a free-form one (a
+			 * map, a merge) is an object the handler validates. */
+			if (op->has_body) {
+				mj_raw(&js, first ? "" : ",");
+				first = 0;
+				mj_raw(&js, "\"body\":");
+				if (body != NULL && body->n_field > 0) {
+					mj_object(&js, body, 0);
+					js.len--; /* reopen the object to add its description */
+					js.p[js.len] = '\0';
+				} else {
+					mj_raw(&js, "{\"type\":\"object\"");
+				}
+				mj_raw(&js, ",\"description\":\"The request body.\"}");
+			}
 			mj_raw(&js, "},\"required\":[");
 			first = 1;
 			if (args != NULL)
 				mj_required(&js, args, &first);
-			if (body != NULL)
-				mj_required(&js, body, &first);
+			if (op->has_body && op->body_required) {
+				mj_raw(&js, first ? "" : ",");
+				first = 0;
+				mj_raw(&js, "\"body\"");
+			}
 			mj_raw(&js, "],\"additionalProperties\":false}");
 
 			fprintf(o, "\t{ \"%s\", \"%s\", \"/v1%s\", \"%s\", ", op->op_id, op->method,
 			        op->path, op->permission);
 			emit_js_string(o, op->summary);
-			fprintf(o, ", \"%s\", \"%s\", \"%s\", %d, %d, %d, ", pp, qp, bp, op->has_body,
+			fprintf(o, ", \"%s\", \"%s\", %d, %d, %d, ", pp, qp, op->has_body,
 			        strcmp(op->method, "GET") == 0,
 			        op->destructive_set ? op->destructive : strcmp(op->method, "DELETE") == 0);
 			emit_js_string(o, js.p);
@@ -3419,7 +3444,7 @@ static void emit_mcp(const char *out_path, const char *spec)
 	}
 	/* An empty initialiser list is not valid C; a NULL row ends a table
 	 * that may have none. */
-	fprintf(o, "\t{ NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, 0, NULL },\n};\n\n");
+	fprintf(o, "\t{ NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, 0, NULL },\n};\n\n");
 	fprintf(o, "#define CIX_MCP_TOOL_COUNT %d\n\n#endif\n", count);
 	fclose(o);
 }
@@ -3975,6 +4000,11 @@ int main(int argc, char **argv)
 		 * is the right answer here and a refusal is the right answer
 		 * for a route.
 		 */
+		/* ADR-0368: `requestBody: required: true` makes a tool's
+		 * `body` argument required. */
+		if (g_in_request && cur_op >= 0 && ind == 8 && key_at(line, 8, key, sizeof(key)) &&
+		    strcmp(key, "required") == 0 && strncmp(value_of(line), "true", 4) == 0)
+			g_ops[cur_op].body_required = 1;
 		/* ADR-0338: requestBody: content: application/json: schema:
 		 * $ref -- the $ref at 14, which names a component. */
 		if (g_in_request && cur_op >= 0 && ind == 14 &&
@@ -4036,8 +4066,14 @@ int main(int argc, char **argv)
 			if (ind == 8) {
 				g_in_200 = key_at(line, 8, key, sizeof(key)) &&
 				           strcmp(key, "\"200\"") == 0;
+				if (key_at(line, 8, key, sizeof(key)) && strcmp(key, "\"101\"") == 0)
+					g_ops[cur_op].upgrade = 1;
 				continue;
 			}
+			/* ADR-0368: a 200 body that is not JSON has no tool form. */
+			if (g_in_200 && ind == 12 && key_at(line, 12, key, sizeof(key)) &&
+			    strcmp(key, "application/json") != 0)
+				g_ops[cur_op].non_json = 1;
 			if (g_in_200 && ind == 16 && key_at(line, 16, key, sizeof(key))) {
 				if (strcmp(key, "$ref") == 0) {
 					ref_tail(value_of(line), g_ops[cur_op].resp_schema,

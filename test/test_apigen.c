@@ -845,21 +845,24 @@ int main(void)
 	               "      x-cix-permission: public\n"
 	               "      x-cix-mcp: maybe\n",
 	               "must be tool or none");
-	/* A tool's body properties are arguments beside its parameters, so
-	 * one may not share a parameter's name. */
-	expect_refusal("an MCP tool whose body property is named like its path parameter",
+	/*
+	 * ADR-0368: what the contract alone says cannot be a tool. A tool's
+	 * body travels in one `body` argument, so a parameter may not be
+	 * named that; a WebSocket (it answers 101), an `authenticated`
+	 * operation and a non-JSON 200 have no tool form.
+	 */
+	expect_refusal("an MCP tool with a requestBody and a query parameter named body",
 	               VOCAB
 	               "paths:\n"
-	               "  /thing/{name}:\n"
+	               "  /thing:\n"
 	               "    put:\n"
 	               "      operationId: putThing\n"
 	               "      x-cix-invalidates: []\n"
 	               "      x-cix-permission: public\n"
 	               "      x-cix-mcp: tool\n"
 	               "      parameters:\n"
-	               "        - name: name\n"
-	               "          in: path\n"
-	               "          required: true\n"
+	               "        - name: body\n"
+	               "          in: query\n"
 	               "          schema:\n"
 	               "            type: string\n"
 	               "      requestBody:\n"
@@ -871,7 +874,47 @@ int main(void)
 	               "              properties:\n"
 	               "                name:\n"
 	               "                  type: string\n",
-	               "would mean both");
+	               "the argument its body travels in");
+	expect_refusal("an MCP tool that answers 101",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: getThing\n"
+	               "      x-cix-read: stream\n"
+	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: tool\n"
+	               "      responses:\n"
+	               "        \"101\":\n"
+	               "          description: Switching Protocols\n",
+	               "a WebSocket session");
+	expect_refusal("an MCP tool whose permission is authenticated",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: getThing\n"
+	               "      x-cix-read: state\n"
+	               "      x-cix-permission: authenticated\n"
+	               "      x-cix-mcp: tool\n",
+	               "app password never holds");
+	expect_refusal("an MCP tool whose 200 is not JSON",
+	               VOCAB
+	               "paths:\n"
+	               "  /thing:\n"
+	               "    get:\n"
+	               "      operationId: getThing\n"
+	               "      x-cix-read: state\n"
+	               "      x-cix-permission: public\n"
+	               "      x-cix-mcp: tool\n"
+	               "      responses:\n"
+	               "        \"200\":\n"
+	               "          description: The bytes\n"
+	               "          content:\n"
+	               "            application/octet-stream:\n"
+	               "              schema:\n"
+	               "                type: string\n",
+	               "not application/json");
 	expect_refusal("a malformed vocabulary word",
 	               "x-cix-permissions:\n  - Things:Read\n"
 	               "paths:\n"
