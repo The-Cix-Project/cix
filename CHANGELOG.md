@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An app password never writes identities (#391, ADR-0370)
+
+- **What changed:** `hostauth_authorize_app_password()` refuses `identity:write` beside `authenticated`. An app password, an agent's or a script's credential, can no longer create or change users, groups, permissions, sessions or app passwords, even when its user holds that permission. Those writes take a login session. `tools/list` drops every identity-write tool from any app-password caller's list by itself. `test_hostauth` checks that `root_admin`, holding every permission, is refused a group create and an app-password create with an app password, and still reads identities with it.
+- **Why:** the owner, 2026-11-02: an agent should never be able to add users. On 192.168.15.95 the example agent group `agents-full` had been given every permission, so agent-1's Claude Code, as `cix-agent-full`, could create users and app passwords and change what groups grant, over REST as well as MCP. The same day, before this release:
+  - **The hole was closed by configuration.** `agents-full` lost `identity:write`, and `admin_groups` went back to `cix-admins` alone.
+  - **The audit log showed no identity write** by `cix-agent-full`; everything it did was DNS round-trips and reads made in testing.
+  - **The agent then saw no identity write.** It was offered 331 tools, none of them an identity write, and a REST group create from agent-1 answered 403.
+  - **The agent's reach was narrowed further**, at the owner's choice: `agents-full` also lost `system:write` and `config:write`, so reboot, update, restore, factory reset and config apply stay human.
+
+  This release makes the rule hold whatever a group grants.
+- **Verified:** pending the release.
+
 ### MCP step 5: work that parks is served, and a file answers in base64; 341 tools (#391, ADR-0368)
 
 - **What changed:**

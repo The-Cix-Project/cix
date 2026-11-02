@@ -47,11 +47,11 @@ cixctl ldap user add --name=cix-agent-dns --primarygroup=<cix-agents gid> \
 
 Name the permissions a level needs, and never hand it the whole vocabulary.
 
-**An agent never holds `identity:write`** (the owner, 2026-11-02: an agent should never be able to add users). That permission creates users and app passwords and changes what every group grants, so an agent holding it can widen its own reach and mint credentials that outlive its revocation. That defeats the containment its group exists for. A group holding every permission is worse still: it is an admin group ([ADR-0369](../adr/0369-an-admin-group-holds-every-permission-including-new-ones.md)), which gains any permission a later build adds.
+**An agent never holds `identity:write`** (the owner, 2026-11-02: an agent should never be able to add users). That permission creates users and app passwords and changes what every group grants, so an agent holding it can widen its own reach and mint credentials that outlive its revocation. That defeats the containment its group exists for. The daemon enforces this on the credential itself: an app password, which is what an agent authenticates with, never satisfies `identity:write`, even when its user holds it ([ADR-0370](../adr/0370-an-app-password-never-writes-identities.md)). A group holding every permission is worse still: it is an admin group ([ADR-0369](../adr/0369-an-admin-group-holds-every-permission-including-new-ones.md)), which gains any permission a later build adds.
 
 Two more things to know about a level:
 - **The finest grain is an area and a verb** (`services:write`, `containers:operate`). "DNS records but not DNS servers" is not expressible today.
-- **An app password works on the REST API too.** An agent's groups are its whole reach; `mcp:call` decides only whether it may use the gateway.
+- **An app password works on the REST API too.** An agent's groups are its whole reach there, less what no app password ever holds: `authenticated` and `identity:write` ([ADR-0370](../adr/0370-an-app-password-never-writes-identities.md)). `mcp:call` decides only whether it may use the gateway.
 
 ## 3. Point the client at the gateway
 

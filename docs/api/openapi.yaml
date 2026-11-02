@@ -10502,7 +10502,8 @@ paths:
         this response only; it keeps a bcrypt hash, rendered into glauth as
         `passappbcrypt` so the same credential works for an LDAP bind. The
         API accepts it on any request as HTTP Basic (`name:secret`), with
-        exactly the user's permissions except `authenticated`. At most 8
+        exactly the user's permissions except `authenticated` and
+        `identity:write` (ADR-0370), which take a login session. At most 8
         per user.
       operationId: createLdapUserAppPassword
       x-cix-invalidates: [listLdapUsers, getLdapUser, listLdapUserAppPasswords]

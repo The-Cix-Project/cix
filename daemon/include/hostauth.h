@@ -417,8 +417,12 @@ enum hostauth_authz hostauth_authorize_peek(const char *token, const char *permi
  * exception: `authenticated` is refused. It means "any valid session",
  * and it is what guards a user managing their OWN app passwords; if an
  * app password satisfied it, a leaked one could mint successors that
- * outlive its own revocation. Managing app passwords with one needs
- * identity:write, like managing anyone's.
+ * outlive its own revocation. And identity:write is refused too
+ * (ADR-0370, the owner on 2026-11-02): it creates users and app
+ * passwords and changes what groups grant, so an app password -- the
+ * credential an agent or a script holds -- holding it could widen its
+ * own reach and mint successors by another route. Managing users,
+ * groups, permissions or app passwords takes a login session.
  */
 enum hostauth_authz hostauth_authorize_app_password(const char *username, const char *permission);
 

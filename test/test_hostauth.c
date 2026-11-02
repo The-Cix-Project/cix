@@ -2211,6 +2211,58 @@ int main(void)
 					ok = 0;
 				}
 
+				/*
+				 * ADR-0370: an app password never satisfies
+				 * identity:write, even its user's own. root_admin holds
+				 * every permission; with a session it creates groups
+				 * (above), and with an app password it may not create
+				 * a group, a user or an app password.
+				 */
+				{
+					char admin_secret[128] = "";
+
+					memset(&r, 0, sizeof(r));
+					if (request_with_token(&client, "POST",
+					                       "/v1/ldap/users/root_admin/app-passwords", token,
+					                       "{\"name\":\"agent\"}", &r) == 0 &&
+					    r.status == 201 && json_str_field(r.json, "password") != NULL)
+						snprintf(admin_secret, sizeof(admin_secret), "%s",
+						         json_str_field(r.json, "password"));
+					cix_response_free(&r);
+					if (admin_secret[0] == '\0') {
+						fprintf(stderr, "FAIL: ADR-0370 root_admin's app password\n");
+						ok = 0;
+					} else {
+						st = basic_request("POST", "/v1/ldap/groups", "root_admin",
+						                   admin_secret,
+						                   "{\"name\":\"apppwgroup\",\"gidnumber\":7801}", body,
+						                   sizeof(body));
+						if (st != 403) {
+							fprintf(stderr, "FAIL: ADR-0370 an app password must not "
+							                "create a group, expected 403, got %d\n",
+							        st);
+							ok = 0;
+						}
+						st = basic_request("POST", "/v1/ldap/users/plain_user/app-passwords",
+						                   "root_admin", admin_secret, "{\"name\":\"minted2\"}",
+						                   body, sizeof(body));
+						if (st != 403) {
+							fprintf(stderr, "FAIL: ADR-0370 an app password must not "
+							                "create an app password, expected 403, got %d\n",
+							        st);
+							ok = 0;
+						}
+						st = basic_request("GET", "/v1/ldap/users", "root_admin", admin_secret,
+						                   NULL, body, sizeof(body));
+						if (st != 200) {
+							fprintf(stderr, "FAIL: ADR-0370 an app password still reads "
+							                "identities, expected 200, got %d\n",
+							        st);
+							ok = 0;
+						}
+					}
+				}
+
 				/* A listing carries names, never a hash or a secret. */
 				memset(&r, 0, sizeof(r));
 				if (request_with_token(&client, "GET", "/v1/ldap/users/plain_user/app-passwords",

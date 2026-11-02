@@ -1650,8 +1650,9 @@ enum hostauth_authz hostauth_authorize_app_password(const char *username, const 
 	if (username == NULL || username[0] == '\0')
 		return HOSTAUTH_AUTHZ_NO_SESSION;
 	/* `authenticated` is "any valid session", and an app password is
-	 * not one: see the header. */
-	if (strcmp(permission, "authenticated") == 0)
+	 * not one; and `identity:write`, which makes users and credentials,
+	 * is never an app password's (ADR-0370): see the header. */
+	if (strcmp(permission, "authenticated") == 0 || strcmp(permission, "identity:write") == 0)
 		return HOSTAUTH_AUTHZ_FORBIDDEN;
 	return hostauth_user_has_permission(username, permission) ? HOSTAUTH_AUTHZ_OK
 	                                                          : HOSTAUTH_AUTHZ_FORBIDDEN;
