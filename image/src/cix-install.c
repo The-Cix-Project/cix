@@ -1320,21 +1320,21 @@ static int install_main(int argc, char **argv)
 			/*
 			 * Blank is a real answer now, and the screen says so.
 			 *
-			 * Two reasons it has to be. On real hardware the built-in
-			 * Ethernet is frequently NOT listed below at all: the NIC
-			 * drivers are kernel modules and this installer carries no
-			 * module tree, so only virtio NICs (built in) appear --
-			 * measured on a real bare-metal attempt, 2026-09-12. And an
-			 * operator may simply not have decided the address yet.
+			 * Two reasons it has to be. A machine's Ethernet may not be
+			 * listed below: its chipset may be none of the drivers the
+			 * media carries, and nicreport_no_nic_reason() then says so
+			 * (#442). The media does carry the NIC drivers and modprobe,
+			 * and load_nic_modules() loads them before the list: measured
+			 * on 2026-11-02 by probe-qemu-boot@8-1, where
+			 * cix-installer-0.2.57-585 with an Intel e1000e listed eth0
+			 * and offered it as the default. And an operator may simply
+			 * not have decided the address yet.
 			 *
 			 * Installing with none is a deliberate state, not a broken
 			 * one: cixd's DEFAULT_BIND is 127.0.0.1 and boot_init()
 			 * brings `lo` up for exactly that, so the box comes up
-			 * running and answering on loopback. The installed system
-			 * DOES load the NIC drivers -- load_boot_modules()
-			 * modprobes e1000e, igb, ixgbe, r8169 and tg3 -- so the
-			 * interface that is invisible here is present there, which
-			 * is why deferring the decision works at all.
+			 * running and answering on loopback, and the address is set
+			 * after boot (`cixctl management-network set`, ADR-0283).
 			 */
 			dual_printf("\nPick the interface to manage this box on. `lo` (127.0.0.1) is a\n");
 			dual_printf("real choice: it installs a box that comes up running, answering on\n");

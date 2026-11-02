@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The installer lists a NIC it has a driver for, verified on current media (#442)
+
+- **What changed:** no behaviour. A comment in `cix-install.c` still said the installer "carries no module tree, so only virtio NICs appear", which #442's fix in v2.57.199 had made false. It now says what is true and how it was measured.
+- **Verified:** on 192.168.15.95, 2026-11-02, by `probe-qemu-boot@8-1`. Cix's own qemu and OVMF booted the newest published installer, `cix-installer-0.2.57-585`, with an Intel e1000e card. The run used a direct kernel boot, so `--disk=/dev/vda` could preseed the disk step. The installer loaded the NIC drivers and e1000e registered `eth0` before `modprobe` returned. It listed `eth0` and `lo`, and offered `[eth0]` as the management interface. `@6-1` had stopped at `no disks found`, and `@7-1`'s serial-console answers never reached the disk prompt; both are kept. Still unverified: a physical machine, which #430's USB boot test also needs.
+
 ### vpn-1 is named, answers known callers by itself, and runs longwire 0.5.33 (no cix change)
 
 - **What changed:** configuration on 192.168.15.95, approved by the owner on 2026-11-02. longwire 0.5.33-1 was authored, published and installed by cixd's own rolling discovery (ADR-0323) after a `schedule run discover`. vpn-1 runs deployment `vpn-1@1.0.5` (cix-recipes `bdca4bd`), which adds `--name vpn-1` (announced, not `--listed`) and `--answer known`: a number it has been connected to before, or a caller vouched for by a member of its line, is picked up with nobody at the console, and a new number still rings. It does not use `auto`, because vpn-1 bridges a LAN.
