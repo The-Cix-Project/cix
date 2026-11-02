@@ -16,7 +16,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - **The agent's reach was narrowed further**, at the owner's choice: `agents-full` also lost `system:write` and `config:write`, so reboot, update, restore, factory reset and config apply stay human.
 
   This release makes the rule hold whatever a group grants.
-- **Verified:** pending the release.
+- **Verified:** compile probe 0.2.57-696, selftest green, with the new `test_hostauth` case. Live on 192.168.15.95 as 0.2.57-653 since 2026-11-02, with all 14 containers running. A temporary app password for `claude`, in `cix-admins` and holding every permission, was refused a group create and an app-password create (403 and 403). It read users and containers (200 and 200), and was revoked. Neither the group nor the app password exists.
 
 ### MCP step 5: work that parks is served, and a file answers in base64; 341 tools (#391, ADR-0368)
 
