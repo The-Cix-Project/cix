@@ -34,6 +34,24 @@ cixctl hostauth-permissions set cix-agents mcp:call containers:read ... services
 
 `set` replaces the whole list, so name every permission the group should keep.
 
+### Agent levels
+
+Give each agent its own user and build its level from groups. A user holds the union of their groups, and `tools/list` offers each agent only what that union allows. Keep `cix-agents` as every agent's primary group: the gateway and read-only. Add what a given agent may do as further groups, instead of widening `cix-agents` for all of them:
+
+```sh
+cixctl ldap group add --name=agents-full
+cixctl hostauth-permissions set agents-full $(cixctl hostauth-permissions vocabulary)
+cixctl ldap user add --name=cix-agent-full --primarygroup=<cix-agents gid> \
+    --secondary-groups=<agents-full gid>
+```
+
+On 192.168.15.95, `cix-agent` (read-only) sees 14 of the 17 tools, and `cix-agent-full` sees all 17. A narrower level is a group holding one or two permissions, such as `services:write` for an agent that manages DNS.
+
+Three things to know about a level:
+- **A group holding every permission is an admin group** ([ADR-0369](../adr/0369-an-admin-group-holds-every-permission-including-new-ones.md)). It appears in `admin_groups` and gains any permission a later build adds. That includes `identity:write`, so such an agent can create users and app passwords and change what groups grant.
+- **The finest grain is an area and a verb** (`services:write`, `containers:operate`). "DNS records but not DNS servers" is not expressible today.
+- **An app password works on the REST API too.** An agent's groups are its whole reach; `mcp:call` decides only whether it may use the gateway.
+
 ## 3. Point the client at the gateway
 
 The gateway is `https://cix.internal/v1/mcp`. cixd's certificate names `cix.internal`, which resolves through the host's DNS servers, and is issued by the Cix platform CA. The client sends the app password as HTTP Basic, `cix-agent:<secret>` in base64.
