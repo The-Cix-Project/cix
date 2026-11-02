@@ -2445,6 +2445,27 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 353: 327 of 356 operations are MCP tools, held by gates rather than a list (#391, ADR-0368, 0.2.57-651)
+
+The owner replaced per-operation verification with verification by class (2026-11-02). The gateway adds nothing per operation, because a tool runs the handler `dispatch()` calls under the same permission. Whether an operation can be a tool is therefore a property of its contract entry and its handler's text, and both are gated:
+
+- `apigen` refuses an operation that answers 101, one whose permission is `authenticated`, and a non-JSON 200.
+- `test_mcp_exposure` reads every tool's handler one call deep and refuses a park, a header read, or an in-process run of its own.
+- `test_mcp_gateway` compares every read tool with REST.
+
+Twenty-nine operations stay `none`: 3 WebSockets, 4 more `authenticated`, 3 non-JSON, 15 that park (ADR-0368 step 5), 2 that read a header and 2 that run operations in-process. A request body now travels in one `body` argument, typed by its schema. Seven dangerous operations declare `x-cix-destructive`.
+
+**Measured on 192.168.15.95, 2026-11-02:**
+
+- Probes 691 and 692 failed before any release, on a header missing `<stddef.h>`, a source scan capped at 64 of 130 files, and a fixture missing a vocabulary word. Probe 693 was green.
+- 651 booted with all 14 containers running. From inside agent-1, as `cix-agent-full`:
+  - `tools/list` offered 327 tools, and no parked one.
+  - Six newly exposed reads succeeded.
+  - A DNS record was created, updated and deleted with the `body` argument, audited 201, 200 and 204.
+  - `POST /v1/events/verify` reported `"drift":[]` over 88 reads.
+
+Not done yet: ADR-0368 step 5 (the 15 parked operations), and a decision on the 3 non-JSON bodies.
+
 ## Part 352: cixd serves its API to MCP clients, and agent-1's Claude Code is connected (#391, #670, ADR-0368, ADR-0369, 0.2.57-646 to 0.2.57-650)
 
 ADR-0368, accepted by the owner on 2026-11-01: cixd answers MCP clients itself at `POST /v1/mcp`, statelessly over Streamable HTTP. Every operation in the contract declares `x-cix-mcp: tool` or `none`, and `apigen` refuses one that says neither. apigen generates the tool table from the contract, including each tool's whole `inputSchema`: path parameters, query parameters and request-body properties. A call runs the operation's own handler in-process, after that operation's own `x-cix-permission` is checked for the same credential. The gateway itself needs `mcp:call`. Every call writes one audit line. The service is off until switched on, through `GET` and `PUT /v1/system/mcp` (`cixctl mcp`).

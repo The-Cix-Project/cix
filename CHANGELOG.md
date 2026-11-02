@@ -21,7 +21,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
     - `test_mcp` reads `tools/list` through an allocated buffer, now that the list is megabytes. It checks the `body` argument's schema, a free-form body, and a body property named like a path parameter.
     - `test_apigen` refuses each new case.
 - **Why:** the owner's direction is parity with the API, and the gateway adds nothing per operation: a tool runs the same handler under the same permission. What can stop an operation from being a tool is a property of its contract entry or its handler's text, so those are what the gates read.
-- **Verified:** pending the release.
+- **Verified:**
+  - Compile probes 691 and 692 failed and were fixed before any release: the generated header used `NULL` without `<stddef.h>`, `test_mcp_exposure` read only 64 of daemon/src's 130 files and so never saw `main.c`, and the `authenticated` fixture lacked the word in its vocabulary.
+  - Compile probe 693 was green, with `test_apigen`, `test_mcp`, `test_mcp_exposure` and `test_mcp_gateway` (read equivalence included) passing. Live on 192.168.15.95 as 0.2.57-651 since 2026-11-02, with all 14 containers running.
+  - From inside agent-1, with Claude Code's own `cix-agent-full` credential, `tools/list` offered 327 tools and no `getSystemLogs`. Six newly exposed reads (`listVolumes`, `listSchedules`, `getPipeline`, `listLdapUsers`, `getSystemTime`, `listPkgSources`) answered `isError: false`.
+  - A DNS record was created, updated and deleted with the `body` argument and audited 201, 200 and 204. `POST /v1/events/verify` then answered `"drift":[]` over 88 reads.
 
 ### agent-1's Claude Code reaches cixd's MCP gateway as `cix-agent` (#391, ADR-0368 step 4)
 
