@@ -43,7 +43,7 @@ static int g_failures;
 static struct {
 	char name[128];
 	char *text;
-} g_files[64];
+} g_files[256];
 static int g_file_count;
 
 static char *slurp(const char *path)
@@ -83,12 +83,20 @@ static void load_sources(void)
 		g_failures++;
 		return;
 	}
-	while ((de = readdir(d)) != NULL && g_file_count < 64) {
+	while ((de = readdir(d)) != NULL) {
 		size_t n = strlen(de->d_name);
 		char path[300];
 
 		if (n < 3 || strcmp(de->d_name + n - 2, ".c") != 0)
 			continue;
+		/* Every file, or the scan is of a part of the daemon: a
+		 * 64-file cap once dropped main.c (130 files, 2026-11-02). */
+		if (g_file_count >= (int)(sizeof(g_files) / sizeof(g_files[0]))) {
+			fprintf(stderr, "  FAIL: daemon/src holds more sources than this test reads; "
+			                "raise g_files\n");
+			g_failures++;
+			break;
+		}
 		snprintf(path, sizeof(path), "daemon/src/%s", de->d_name);
 		g_files[g_file_count].text = slurp(path);
 		if (g_files[g_file_count].text == NULL)
@@ -233,6 +241,13 @@ int main(void)
 
 		if (b == NULL || refused_in(b) == NULL) {
 			fprintf(stderr, "  FAIL: control: handle_logs_get() was not found to park\n");
+			g_failures++;
+		}
+		free(b);
+		b = function_body("op_getHealth");
+		if (b == NULL) {
+			fprintf(stderr, "  FAIL: control: op_getHealth() was not found -- the scan "
+			                "did not read main.c\n");
 			g_failures++;
 		}
 		free(b);

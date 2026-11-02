@@ -889,7 +889,7 @@ int main(void)
 	               "          description: Switching Protocols\n",
 	               "a WebSocket session");
 	expect_refusal("an MCP tool whose permission is authenticated",
-	               VOCAB
+	               "x-cix-permissions:\n  - public\n  - authenticated\n  - things:read\n"
 	               "paths:\n"
 	               "  /thing:\n"
 	               "    get:\n"
