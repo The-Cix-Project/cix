@@ -17,7 +17,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
     - `test_mcp` covers a call that parks (nothing sent, nothing audited) and a non-JSON answer (`aGVsbG8=` for `hello`, with its `mimeType` and URI). It links `base64.c`.
     - `test_mcp_gateway` checks a filtered log read, which parks, against REST. Its read-equivalence loop now includes the parked reads: backup, data-dir report, verify.
 - **Why:** step 5 of ADR-0368, and the owner's choice of base64 for the files (2026-11-02). Before checking, every park record was read field by field: each owns its bytes, so a record made for a request on `api_run()`'s stack outlives that request safely.
-- **Verified:** pending the release.
+- **Verified:**
+  - Compile probe 694 stopped on a forward reference (`g_response_conn` read before its declaration), fixed by `client_request_conn()`. Compile probe 695 was green, with `test_mcp`, `test_mcp_exposure`, `test_mcp_gateway` (the parked log read included), `test_events` and `test_hostauth`. Live on 192.168.15.95 as 0.2.57-652 since 2026-11-02, with all 14 containers running.
+  - **Base64:** `getBuildLog` (52,072 bytes, `text/plain; charset=utf-8`) and `getContainerFile` for agent-1's `/etc/profile` (2,089 bytes, `application/octet-stream`) each decoded byte-identical to the same request over REST.
+  - **Parks:** `getSystemLogs` filtered to `audit`, `getSystemDataDir` and `verifyPkgFiles` each answered `isError: false`; `verifyPkgFiles` waited 9.97 s for its helper. `deletePkg` uninstalled `probe-cix-compile` from `base` through the gateway and answered 204. Each wrote exactly one `called` audit line, and `POST /v1/events/verify` answered `"drift":[]` over 88 reads.
+  - Not exercised live: a backup snapshot, a system update, a boot manager install and a module load. .95 has no backup target, and the others change the host.
 
 ### 327 of 356 operations are MCP tools, held by gates rather than a list (#391, ADR-0368)
 

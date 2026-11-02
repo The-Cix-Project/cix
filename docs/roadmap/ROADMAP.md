@@ -2445,6 +2445,18 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 354: MCP step 5, work that parks is served and a file answers in base64; 341 tools (#391, ADR-0368, 0.2.57-652)
+
+A tool's work may park, as ADR-0368 decision 3 sketched. The ten park entry points find their connection through `request_conn()`, which is the MCP request's own while `api_run()` runs a handler for the gateway. A parked call sends nothing, and the whole `POST /v1/mcp` is served again when the work is done. An answer that is not JSON is an embedded resource whose `blob` is the bytes in base64 (the owner's choice). 341 of 356 operations are tools. The 15 that are not are 3 WebSockets, 4 `authenticated`, 4 credential parks (one credential verdict per connection, ADR-0340), 2 header reads and 2 in-process runs.
+
+**Measured on 192.168.15.95, 2026-11-02:**
+
+- Probe 694 stopped on a forward reference, and probe 695 was green. 652 booted with all 14 containers running.
+- **Base64:** a build log (52,072 bytes) and a container file (2,089 bytes) decoded byte-identical to the same request over REST.
+- **Parks:** a filtered log read, the data-directory report and a package verification answered through the gateway. The verification waited 9.97 s for its helper. An uninstall through the gateway answered 204 and removed the package. Each call was audited once, and `POST /v1/events/verify` reported `"drift":[]`.
+
+Not exercised live: a backup snapshot (no target on .95), a system update, a boot manager install, a module load.
+
 ## Part 353: 327 of 356 operations are MCP tools, held by gates rather than a list (#391, ADR-0368, 0.2.57-651)
 
 The owner replaced per-operation verification with verification by class (2026-11-02). The gateway adds nothing per operation, because a tool runs the handler `dispatch()` calls under the same permission. Whether an operation can be a tool is therefore a property of its contract entry and its handler's text, and both are gated:
