@@ -28095,6 +28095,8 @@ static enum hostauth_authz request_authz(const struct http_request *req, const c
 static int api_run(const char *method, const char *path, const char *body_in, size_t body_in_len,
                    const char *user, const char *peer, struct conn *park_conn, int *out_status,
                    char **out_body, size_t *out_len, char *out_type, size_t out_type_size);
+/* The client connection whose request is being served, or NULL. */
+static struct conn *client_request_conn(void);
 
 /* ADR-0368: a tool is allowed by its own operation's permission, asked
  * of the same credential the request carried. */
@@ -28115,12 +28117,9 @@ static int mcp_caller_run(void *c, const char *method, const char *path, const c
                           size_t type_size)
 {
 	const struct api_ctx *ctx = c;
-	struct conn *cc = g_response_conn;
 
-	if (cc != NULL && (cc->fd < 0 || cc->kind != CONN_CLIENT))
-		cc = NULL;
-	return api_run(method, path, req, req_len, ctx->user, ctx->peer_ip, cc, status, body,
-	               body_len, type, type_size);
+	return api_run(method, path, req, req_len, ctx->user, ctx->peer_ip, client_request_conn(),
+	               status, body, body_len, type, type_size);
 }
 
 /* POST /v1/mcp (ADR-0368) */
@@ -30325,6 +30324,15 @@ static struct conn *g_api_run_park;
 static struct conn *request_conn(void)
 {
 	return g_api_run_active ? g_api_run_park : g_response_conn;
+}
+
+/* What the gateway hands api_run() to park on: the request being
+ * served, when it is a client's. */
+static struct conn *client_request_conn(void)
+{
+	struct conn *cc = g_response_conn;
+
+	return cc != NULL && cc->fd >= 0 && cc->kind == CONN_CLIENT ? cc : NULL;
 }
 
 /*
