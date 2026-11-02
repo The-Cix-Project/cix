@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### vpn-1 is named, answers known callers by itself, and runs longwire 0.5.33 (no cix change)
+
+- **What changed:** configuration on 192.168.15.95, approved by the owner on 2026-11-02. longwire 0.5.33-1 was authored, published and installed by cixd's own rolling discovery (ADR-0323) after a `schedule run discover`. vpn-1 runs deployment `vpn-1@1.0.5` (cix-recipes `bdca4bd`), which adds `--name vpn-1` (announced, not `--listed`) and `--answer known`: a number it has been connected to before, or a caller vouched for by a member of its line, is picked up with nobody at the console, and a new number still rings. It does not use `auto`, because vpn-1 bridges a LAN.
+- **Verified:** vpn-1 running, its command carrying both flags. `longwire show` reports engine 0.5.33, dial tone, an easy NAT and number 353-768-703, on line d7c39a with 2 members. Its log shows 856-953-492 joining "vouched for by a member" and connected directly with nobody at the console.
+- **An outage on the way, and its cause:** vpn-1 was down for a while.
+  - My recreate removed the container and applied the deployment in one command without waiting for the removal to finish, so the apply was refused 409 (the name was still in use).
+  - The same command then discarded the secret values it had read from the old definition, without checking that the apply had worked. Those values existed nowhere else on the host.
+  - The owner re-applied with the secrets. A placeholder `…` from my instructions in the first attempt gave `bad switchboard key id`; the second attempt is the one running.
+  - The lesson: wait for a removal to finish, and never discard the only copy of a value before the step that needs it has been confirmed.
+
 ### An app password never writes identities (#391, ADR-0370)
 
 - **What changed:** `hostauth_authorize_app_password()` refuses `identity:write` beside `authenticated`. An app password, an agent's or a script's credential, can no longer create or change users, groups, permissions, sessions or app passwords, even when its user holds that permission. Those writes take a login session. `tools/list` drops every identity-write tool from any app-password caller's list by itself. `test_hostauth` checks that `root_admin`, holding every permission, is refused a group create and an app-password create with an app password, and still reads identities with it.
