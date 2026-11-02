@@ -39,16 +39,17 @@ cixctl hostauth-permissions set cix-agents mcp:call containers:read ... services
 Give each agent its own user and build its level from groups. A user holds the union of their groups, and `tools/list` offers each agent only what that union allows. Keep `cix-agents` as every agent's primary group: the gateway and read-only. Add what a given agent may do as further groups, instead of widening `cix-agents` for all of them:
 
 ```sh
-cixctl ldap group add --name=agents-full
-cixctl hostauth-permissions set agents-full $(cixctl hostauth-permissions vocabulary)
-cixctl ldap user add --name=cix-agent-full --primarygroup=<cix-agents gid> \
-    --secondary-groups=<agents-full gid>
+cixctl ldap group add --name=agents-dns
+cixctl hostauth-permissions set agents-dns services:write
+cixctl ldap user add --name=cix-agent-dns --primarygroup=<cix-agents gid> \
+    --secondary-groups=<agents-dns gid>
 ```
 
-On 192.168.15.95, `cix-agent` (read-only) is offered only the tools its reads allow, and `cix-agent-full` is offered every tool. A narrower level is a group holding one or two permissions, such as `services:write` for an agent that manages DNS.
+Name the permissions a level needs, and never hand it the whole vocabulary.
 
-Three things to know about a level:
-- **A group holding every permission is an admin group** ([ADR-0369](../adr/0369-an-admin-group-holds-every-permission-including-new-ones.md)). It appears in `admin_groups` and gains any permission a later build adds. That includes `identity:write`, so such an agent can create users and app passwords and change what groups grant.
+**An agent never holds `identity:write`** (the owner, 2026-11-02: an agent should never be able to add users). That permission creates users and app passwords and changes what every group grants, so an agent holding it can widen its own reach and mint credentials that outlive its revocation. That defeats the containment its group exists for. A group holding every permission is worse still: it is an admin group ([ADR-0369](../adr/0369-an-admin-group-holds-every-permission-including-new-ones.md)), which gains any permission a later build adds.
+
+Two more things to know about a level:
 - **The finest grain is an area and a verb** (`services:write`, `containers:operate`). "DNS records but not DNS servers" is not expressible today.
 - **An app password works on the REST API too.** An agent's groups are its whole reach; `mcp:call` decides only whether it may use the gateway.
 
