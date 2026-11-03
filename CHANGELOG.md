@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### vpn-1 down after hibr 0.99.432 rolled: longwire rebuilt as 0.5.39-2 (#672)
+
+- **What happened:** cixd rolled hibr to 0.99.432-1 on 2026-11-03, and the `vpn` image followed. That hibr expects module ABI 17. longwire's module had been compiled against hibr 0.99.431's header, so it was ABI 16. vpn-1 then exited at every start (`hibr: mod: longwire: abi 16, shell expects 17`) and restarted every ~15 s.
+- **Fix:** longwire@0.5.39-2 is the same source, rebuilt against hibr 0.99.432 (cix-recipes dc44fce3). `vpn` rolled onto it, and vpn-1 came up on line d7c39a as 353-768-703.
+- **Still open:** a rolled package never rebuilds what compiled against it, so this recurs at hibr's next ABI bump. That is #672, and no design has been chosen yet.
+
 ### A build tool brings its whole build (ADR-0372, #350)
 
 - **Accepted by the owner on 2026-11-03, and implemented in `buildenv_add_tool()` (`daemon/src/pkg.c`).**
