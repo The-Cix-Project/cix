@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted by the owner on 2026-11-03, for #350, with both decisions below taken: wait for ADR-0367 outputs, and `cix` is followed like any entry. Not built yet; the phases are in order, and phase 1 waits on ADR-0367's next step. This is [ADR-0291](0291-the-control-plane-root-is-an-image.md)'s proposal restated against the root as it is assembled today. ADR-0291 described a root that no longer exists: build-host tools copied by `shelled_bins[]`, a library table, an elfcheck tension. [ADR-0337](0337-the-root-is-derived-from-one-list-with-no-build-host-fallback.md) and [ADR-0303](0303-a-hostbuild-carries-pkg-depends-it-does-not-resolve-it.md) removed all three. ADR-0291 stays as written, because an ADR is append-only, and is Superseded by this one.
+Accepted by the owner on 2026-11-03, for #350, with both decisions below taken: wait for ADR-0367 outputs, and `cix` is followed like any entry. Not built yet; the phases are in order. This is [ADR-0291](0291-the-control-plane-root-is-an-image.md)'s proposal restated against the root as it is assembled today. ADR-0291 described a root that no longer exists: build-host tools copied by `shelled_bins[]`, a library table, an elfcheck tension. [ADR-0337](0337-the-root-is-derived-from-one-list-with-no-build-host-fallback.md) and [ADR-0303](0303-a-hostbuild-carries-pkg-depends-it-does-not-resolve-it.md) removed all three. ADR-0291 stays as written, because an ADR is append-only, and is Superseded by this one.
 
 ## Context
 
@@ -64,7 +64,7 @@ An image's content is whole packages and nothing else ([ADR-0333](0333-an-images
 
 Both taken on 2026-11-03: **A is "wait for outputs"** and **B is "followed"**. So `cix` rolls in `cix-root`, and an assembly runs when `cix-root` gains a version, not when a cix hostbuild finishes. The options are kept below as they were put.
 
-- **A. Wait for outputs, or accept the growth.** With ADR-0367 outputs for curl, openssl, ncurses and kernel, the root stays the size it is today: 13,275,136 bytes as squashed for 0.2.57-654. Without them, it also carries the headers, the terminfo database, a second bzImage and four extra command-line tools. ADR-0367 is already in progress for #378.
+- **A. Wait for outputs, or accept the growth.** With ADR-0367 outputs for curl, openssl, ncurses and kernel, the root stays the size it is today: 13,275,136 bytes as squashed for 0.2.57-654. Without them, it also carries the headers, the terminfo database, a second bzImage and four extra command-line tools. cixd installs a named output into an image already (0.2.57-635; `cixctl` is installed that way in `agent`), so waiting costs recipe work, not daemon work.
 - **B. How `cix-root` gets the cix that was just built.**
   - **Pinned at hostbuild:** the assembly first installs `cix@X` into `cix-root`. That moves the pin (ADR-0320), so the recipe has to leave cix unpinned or follow the install. The timing is today's: a hostbuild produces a root.
   - **Followed:** `cix` rolls in `cix-root` like any other entry, and an assembly runs when the image gains a version. That covers the host roll (ADR-0327) too, but it moves the trigger from "a cix build finished" to "the image changed".
@@ -78,7 +78,7 @@ Both taken on 2026-11-03: **A is "wait for outputs"** and **B is "followed"**. S
 
 Priced in builds and releases, in order. Each phase is verified on 192.168.15.95: chroot-run the assembled root before any boot, then boot it.
 
-1. **Outputs** (if A is "wait"): a `cixd` output in the `cix` recipe (a routine hostbuild), a modules output in `kernel` (**a kernel rebuild, which is asked for first**), and library outputs for curl, openssl and ncurses (three ordinary rebuilds, which roll the images that follow them). This depends on cixd installing a named output into an image, which is ADR-0367's next step.
+1. **Outputs** (if A is "wait"): a `cixd` output in the `cix` recipe (a routine hostbuild), a modules output in `kernel` (**a kernel rebuild, which is asked for first**), and library outputs for curl, openssl and ncurses (three ordinary rebuilds, which roll the images that follow them). No cixd change: outputs install as packages since 0.2.57-635. The split keeps the libraries in the main package and moves headers, CLIs and terminfo into outputs, so no consumer's `requires` changes.
 2. **`cix-root` image recipe**, created on .95. A probe compares its tree with the current assembled root, path by path and hash by hash. No cixd code changes.
 3. **One release:** `mkbootroot` takes one tree, `spawn_cix_bootroot_assembly()` passes the image version, and the deletions above are made. The tests that build a root pass a fixture tree.
 4. **Retire the three images** on .95, and update the documents that name them.

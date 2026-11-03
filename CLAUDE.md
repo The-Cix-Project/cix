@@ -461,7 +461,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 
 **The root becomes the current version of one image, `cix-root`, plus mount points, `resolv.conf` and `os-release`** -- [ADR-0371](docs/adr/0371-the-control-plane-root-is-one-image.md), accepted by the owner on 2026-11-03 for #350. It supersedes ADR-0291, which was never accepted.
 
-- **Wait for outputs** (the owner's choice): the root is not to grow. curl, openssl, ncurses and kernel get ADR-0367 outputs first, so `cix-root` installs their libraries and modules without headers, terminfo, CLIs or a `bzImage`. Phase 1 therefore waits on cixd installing a named output into an image.
+- **Wait for outputs** (the owner's choice): the root is not to grow. curl, openssl, ncurses and kernel get ADR-0367 outputs first, so `cix-root` installs their libraries and modules without headers, terminfo, CLIs or a `bzImage`. cixd installs outputs into images already (0.2.57-635), so phase 1 is recipe work; the kernel rebuild in it is asked for first.
 - **`cix` is followed like any entry** (the owner's choice, over a pin written at hostbuild): an assembly runs when `cix-root` gains a version, not when a cix hostbuild finishes.
 - **Until it is built, today's assembly stands.** A package the root needs still goes into `cix-hosttools`. Do not add a new input slot to `mkbootroot`, or a new image whose only job is feeding the root. `controlplane_programs.h` stays as a gate over the result, not as a source of content.
 
