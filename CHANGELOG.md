@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cbs v0.1.129 everywhere, and cixd reads the ABI an entry offers (ADR-0373, #672)
+
+- **cbs v0.1.129-1:** authored from v0.1.122-1. Its archive hash was measured by `probe-cbs-tarball@129-1`. It was built on .95, and `cix-builder` and `cix-hosttools` rolled onto it.
+- **Root:** an assembly put v0.1.129 into the root, and after the reboot `probe-abi@1-1`, a publish-only recipe declaring `abi "1"`, was accepted at publish.
+- **0.2.57-659:** `cbs_explain_abi()` reads the `abi` of the exact entry named: the package's own, or an output's own, never inherited. `test_cbsrecipe` covers the three-entry case and an older engine's document.
+- **Test floor:** it moves to cbs v0.1.129-1 (fixture list, release recipe url, sha and filename), with the corpus pinned at cix-recipes 4c349b0b, measured by `probe-recipes-tarball@3-1`.
+- **Verified:** probe 702 passed, the floor tests included. 659 booted on slot b with 14 containers and vpn-1 online. Nothing acts on an ABI yet: the build record, the hold and the rebuild are the next three releases.
+
 ### The root and the installer take the module tree from kernel-modules (ADR-0371, #350)
 
 - **cixd (0.2.57-658):** `g_root_outputs` gains an owner and a `kernel-modules` row. `root_output_resolve()` and `root_output_unpack()` serve the root assembly and the installer ISO build, each under its own directory. `resolve_kernel_modules_dir()`, which read the kernel hostbuild's artifact directory, is gone.
