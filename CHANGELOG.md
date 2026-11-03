@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### ADR-0373 accepted: a provider declares its ABI, and its consumers follow it (#672)
+
+- **What it decides:** a provider such as hibr declares the ABI it offers. cixd records the ABI each build was built against, beside its artifact approval. It holds a provider's roll in an image whose consumers were built against another ABI, and authors rebuild revisions of those consumers. That is the hold that would have kept vpn-1 up, and the rebuild that was done by hand with longwire 0.5.39-2.
+- **Blocked on cix-build-system#312**, the typed `abi` field. Until it ships, nothing changes.
+- **Measured for its Context:** longwire 0.5.41-1, rolled at 12:59Z, an hour after hibr 0.99.432, came out ABI 17 only because its roll landed later.
+
 ### cix 0.2.57-657 declares output cixd, and the root is assembled from it (#350)
 
 - **Recipe:** `cix@0.2.57-657` adds `output "cixd"` (`bin/cixd`, `bin/cix-init`, `web`, needing glibc, openssl, libarchive and curl at runtime) and installs both binaries under `bin/`. The main package keeps only the build-side tools.

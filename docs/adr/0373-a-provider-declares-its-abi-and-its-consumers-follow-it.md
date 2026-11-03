@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-11-03, for #672. One half depends on a CPDL declaration that cix-build-system does not have yet.
+Accepted by the owner on 2026-11-03, for #672, with both halves (the hold and the rebuild). The provider's declaration is a CPDL field cix-build-system does not have yet, so the cixd work waits on that ticket, cix-build-system#312.
 
 ## Context
 
