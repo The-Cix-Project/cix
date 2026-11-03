@@ -7848,67 +7848,28 @@ static int pkg_version_cmp(const char *a, const char *b)
 	return *a == '\0' ? -1 : 1;
 }
 
-static int buildenv_add_tool(const char *name, const char *via, struct buildenv_tool *out, int max,
-                              int *n, char *err, size_t err_size, int depth)
+/*
+ * The newest usable installed copy of name: exactly version when that
+ * is non-NULL, and strictly older than below when that is non-NULL.
+ *
+ * Any image will do -- a package's own built files are the same
+ * files whichever image it was installed into -- but only if that
+ * image can still be resolved to a real rootfs to copy them out of.
+ * A stale image left behind by an earlier era of this project
+ * ("cix-builder", on the first real box) still carries INSTALLED
+ * package rows while having no current version at all, and taking
+ * the first name match regardless meant a perfectly healthy tool
+ * installed in three good images resolved to the one broken one
+ * (issue #111). *unusable names such an image when one was skipped,
+ * so the failure names the package and the image, not a file path.
+ */
+static struct pkg_entry *buildenv_newest_installed(const char *name, const char *version,
+                                                   const char *below, const char **unusable)
 {
 	struct pkg_entry *found = NULL;
-	const char *unusable = NULL;
-	char version[IMAGE_VERSION_MAX];
-	char deps_copy[PKG_DEPENDS_MAX];
-	char *tok, *save = NULL;
-	char bare_name[PKG_NAME_MAX];
-	const char *want_version = NULL;
+	char current[IMAGE_VERSION_MAX];
 	int i;
 
-	/*
-	 * Issue #127: a declared build tool may be version-pinned as
-	 * "name@version" (e.g. "tcc@0.9.27-7", to require the revision that
-	 * fixes a miscompile). Split it here: bare_name is what matches a
-	 * package's own name, want_version (if present and non-empty) is the
-	 * exact installed version required. A bare "name" pins nothing and
-	 * resolves to the newest usable copy, exactly as before.
-	 */
-	{
-		const char *at = strchr(name, '@');
-
-		if (at != NULL) {
-			size_t bl = (size_t)(at - name);
-
-			if (bl >= sizeof(bare_name))
-				bl = sizeof(bare_name) - 1;
-			memcpy(bare_name, name, bl);
-			bare_name[bl] = '\0';
-			want_version = (at[1] != '\0') ? at + 1 : NULL;
-		} else {
-			snprintf(bare_name, sizeof(bare_name), "%s", name);
-		}
-	}
-
-	for (i = 0; i < *n; i++) {
-		if (strcmp(out[i].name, bare_name) == 0)
-			return 0; /* already in the environment */
-	}
-	if (depth > PKG_BUILDENV_MAX_DEPTH) {
-		snprintf(err, err_size, "dependency chain under build tool \"%s\" is too deep", via);
-		return -1;
-	}
-	if (*n >= max) {
-		snprintf(err, err_size, "more than %d packages in the composed build environment", max);
-		return -1;
-	}
-
-	/*
-	 * Any image will do -- a package's own built files are the same
-	 * files whichever image it was installed into -- but only if that
-	 * image can still be resolved to a real rootfs to copy them out of.
-	 * A stale image left behind by an earlier era of this project
-	 * ("cix-builder", on the first real box) still carries INSTALLED
-	 * package rows while having no current version at all, and taking
-	 * the first name match regardless meant a perfectly healthy tool
-	 * installed in three good images resolved to the one broken one
-	 * (issue #111). Checked here rather than during the copy so the
-	 * failure names the package and the image, not a file path.
-	 */
 	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
 		const char *img;
 
@@ -7948,19 +7909,178 @@ static int buildenv_add_tool(const char *name, const char *via, struct buildenv_
 		       g_packages[i].state == PKG_STATE_BUILDING) &&
 		      g_packages[i].file_count > 0))
 			continue;
-		if (strcmp(g_packages[i].name, bare_name) != 0)
+		if (strcmp(g_packages[i].name, name) != 0)
 			continue;
-		if (want_version != NULL && strcmp(g_packages[i].version, want_version) != 0)
+		if (version != NULL && strcmp(g_packages[i].version, version) != 0)
+			continue;
+		if (below != NULL && pkg_version_cmp(g_packages[i].version, below) >= 0)
 			continue;
 		img = normalize_image(g_packages[i].image);
-		if (image_current_version(img, version, sizeof(version)) != IMAGE_OK) {
-			unusable = img;
+		if (image_current_version(img, current, sizeof(current)) != IMAGE_OK) {
+			*unusable = img;
 			continue;
 		}
 		/* Newest usable copy wins, wherever it lives -- never
 		 * whichever the registry listed first. */
 		if (found == NULL || pkg_version_cmp(g_packages[i].version, found->version) > 0)
 			found = &g_packages[i];
+	}
+	return found;
+}
+
+/*
+ * ADR-0372: 1 when every output the recipe of name@version declares is
+ * itself installed somewhere usable at that version, so the whole build
+ * can be composed. 0 with missing naming the first that is not.
+ *
+ * A version with no stored recipe has no outputs to know of and counts
+ * as complete: the composer can only bring what a recipe says it built.
+ */
+static int buildenv_outputs_installed(const char *name, const char *version, char *missing,
+                                      size_t missing_size)
+{
+	char path[PATH_MAX];
+	char outputs[PKG_RECIPE_OUTPUTS_MAX][PKG_NAME_MAX];
+	const char *unusable = NULL;
+	int count, k;
+
+	if (find_recipe_path(name, version, path, sizeof(path)) != 0)
+		return 1;
+	count = recipe_outputs(path, outputs, PKG_RECIPE_OUTPUTS_MAX);
+	for (k = 0; k < count; k++) {
+		if (buildenv_newest_installed(outputs[k], version, NULL, &unusable) == NULL) {
+			snprintf(missing, missing_size, "%s", outputs[k]);
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static int buildenv_add_tool(const char *name, const char *via, struct buildenv_tool *out, int max,
+                              int *n, char *err, size_t err_size, int depth);
+
+/*
+ * ADR-0372: a declared build tool brings its whole build -- every output
+ * of its recipe, at the version the tool resolved to. Each is added
+ * through buildenv_add_tool() as name@version, so its own runtime
+ * dependencies follow as any package's do.
+ */
+static int buildenv_add_outputs(const char *name, const char *version, struct buildenv_tool *out,
+                                int max, int *n, char *err, size_t err_size, int depth)
+{
+	char path[PATH_MAX];
+	char outputs[PKG_RECIPE_OUTPUTS_MAX][PKG_NAME_MAX];
+	int count, k;
+
+	if (find_recipe_path(name, version, path, sizeof(path)) != 0)
+		return 0;
+	count = recipe_outputs(path, outputs, PKG_RECIPE_OUTPUTS_MAX);
+	for (k = 0; k < count; k++) {
+		char spec[PKG_NAME_MAX + PKG_VERSION_MAX + 1];
+
+		if ((size_t)snprintf(spec, sizeof(spec), "%s@%s", outputs[k], version) >= sizeof(spec)) {
+			snprintf(err, err_size, "output \"%s\" of build tool \"%s\" does not fit the composer",
+			         outputs[k], name);
+			return -1;
+		}
+		if (buildenv_add_tool(spec, name, out, max, n, err, err_size, depth + 1) != 0)
+			return -1;
+	}
+	return 0;
+}
+
+static int buildenv_add_tool(const char *name, const char *via, struct buildenv_tool *out, int max,
+                              int *n, char *err, size_t err_size, int depth)
+{
+	struct pkg_entry *found = NULL;
+	const char *unusable = NULL;
+	const char *below = NULL;
+	const char *missing_at = NULL;
+	char missing[PKG_NAME_MAX] = "";
+	char deps_copy[PKG_DEPENDS_MAX];
+	char *tok, *save = NULL;
+	char bare_name[PKG_NAME_MAX];
+	const char *want_version = NULL;
+	int i;
+
+	/*
+	 * Issue #127: a declared build tool may be version-pinned as
+	 * "name@version" (e.g. "tcc@0.9.27-7", to require the revision that
+	 * fixes a miscompile). Split it here: bare_name is what matches a
+	 * package's own name, want_version (if present and non-empty) is the
+	 * exact installed version required. A bare "name" pins nothing and
+	 * resolves to the newest usable copy, exactly as before.
+	 */
+	{
+		const char *at = strchr(name, '@');
+
+		if (at != NULL) {
+			size_t bl = (size_t)(at - name);
+
+			if (bl >= sizeof(bare_name))
+				bl = sizeof(bare_name) - 1;
+			memcpy(bare_name, name, bl);
+			bare_name[bl] = '\0';
+			want_version = (at[1] != '\0') ? at + 1 : NULL;
+		} else {
+			snprintf(bare_name, sizeof(bare_name), "%s", name);
+		}
+	}
+
+	for (i = 0; i < *n; i++) {
+		if (strcmp(out[i].name, bare_name) != 0)
+			continue;
+		/* Already in the environment. A declared tool that first
+		 * arrived as another's runtime dependency still brings its
+		 * whole build (ADR-0372). */
+		if (via != NULL)
+			return 0;
+		return buildenv_add_outputs(out[i].name, out[i].version, out, max, n, err, err_size,
+		                            depth);
+	}
+	if (depth > PKG_BUILDENV_MAX_DEPTH) {
+		snprintf(err, err_size, "dependency chain under build tool \"%s\" is too deep", via);
+		return -1;
+	}
+	if (*n >= max) {
+		snprintf(err, err_size, "more than %d packages in the composed build environment", max);
+		return -1;
+	}
+
+	/*
+	 * The newest version whose whole build is installed (ADR-0372). A
+	 * package with outputs resolves to the newest version at which every
+	 * output is installed too -- for every package the walk meets, not
+	 * only declared tools, or a tool first pulled in as another's
+	 * runtime dependency could settle on a version its outputs have not
+	 * reached, and the environment would depend on the order tools were
+	 * written. A package without outputs is complete at every version,
+	 * so it resolves exactly as before.
+	 */
+	for (;;) {
+		struct pkg_entry *c = buildenv_newest_installed(bare_name, want_version, below, &unusable);
+		char gap[PKG_NAME_MAX];
+
+		if (c == NULL)
+			break;
+		if (buildenv_outputs_installed(c->name, c->version, gap, sizeof(gap))) {
+			found = c;
+			break;
+		}
+		if (missing_at == NULL) {
+			snprintf(missing, sizeof(missing), "%s", gap);
+			missing_at = c->version;
+		}
+		below = c->version;
+	}
+	if (found == NULL && missing_at != NULL) {
+		snprintf(err, err_size,
+		         "%s \"%s\" is installed at %s, but its output \"%s\" is not installed anywhere "
+		         "at that version, so its whole build cannot be composed -- install %s@%s "
+		         "(ADR-0372)",
+		         via == NULL ? "declared build tool" : "runtime dependency", bare_name, missing_at,
+		         missing, missing, missing_at);
+		return -1;
 	}
 	if (found == NULL && unusable != NULL) {
 		snprintf(err, err_size,
@@ -8004,6 +8124,11 @@ static int buildenv_add_tool(const char *name, const char *via, struct buildenv_
 		if (buildenv_add_tool(tok, found->name, out, max, n, err, err_size, depth + 1) != 0)
 			return -1;
 	}
+	/* A declared tool brings its whole build (ADR-0372); a runtime
+	 * dependency is the one package it names. */
+	if (via == NULL)
+		return buildenv_add_outputs(found->name, found->version, out, max, n, err, err_size,
+		                            depth);
 	return 0;
 }
 

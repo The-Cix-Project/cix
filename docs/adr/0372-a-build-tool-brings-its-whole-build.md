@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-11-03, for #350, as the composition rule the owner chose for [ADR-0371](0371-the-control-plane-root-is-one-image.md): split the libraries, and have a `tool` bring its package's outputs. It amends [ADR-0199](0199-recipes-declare-their-build-tools.md) and [ADR-0367](0367-a-recipes-outputs-are-packages.md) and reverses nothing in them.
+Accepted by the owner on 2026-11-03, for #350, as the composition rule the owner chose for [ADR-0371](0371-the-control-plane-root-is-one-image.md): split the libraries, and have a `tool` bring its package's outputs. It amends [ADR-0199](0199-recipes-declare-their-build-tools.md) and [ADR-0367](0367-a-recipes-outputs-are-packages.md) and reverses nothing in them.
 
 ## Context
 
@@ -17,7 +17,7 @@ An output carries no role. cbs's explain JSON gives `{name, main, files, require
 ## Decision
 
 1. **A declared build tool composes its package's main and every output of the same recipe, at the same version.** `tool "openssl"` means the whole build product of the openssl recipe, which is what it meant before the split. The outputs are listed from the stored recipe at the chosen version, through `recipe_outputs()`, not from the newest recipe. Each output is added as `name@version` through the same `buildenv_add_tool()` path, so its runtime dependencies follow as they do for any tool.
-2. **The version chosen is the newest at which the main and every output are installed somewhere.** Composition copies installed file lists and never the cache (ADR-0199). A main that rolled into one image before its outputs reached another therefore does not refuse a build. It resolves to the newest complete set. A version-pinned tool (`tool "openssl@3.0.20-8"`) with an output missing at that version is refused, naming the output.
+2. **The version chosen is the newest at which the main and every output are installed somewhere.** This applies to every package the walk resolves, not only declared tools. Otherwise a tool first pulled in as another tool's runtime dependency could settle on a version its outputs have not reached. Then what the environment holds would depend on the order the tools were written, and a declared tool that is already present still brings its outputs. Composition copies installed file lists and never the cache (ADR-0199). A main that rolled into one image before its outputs reached another therefore does not refuse a build. It resolves to the newest complete set. A version-pinned tool (`tool "openssl@3.0.20-8"`) with an output missing at that version is refused, naming the output.
 3. **The rule applies to tools, not runtime dependencies.** A runtime `requires` names exactly the package it means, so `package "openssl"` at runtime stays the libraries alone. An output named directly as a tool (`tool "cixctl"`) is that output alone. "Whole build" is a property of naming a recipe's main package.
 4. **The dev outputs are installed in `cix-builder`**, which follows its recipe, so they roll with their main packages. One image is enough, because composition takes a package from any image.
 5. **Order.** This ships in a cixd release, gated by a `test_pkg` composition case (a tool whose recipe has an output, whose files must be in the environment). Only after that release is live do the split recipes reach cix-recipes, in the same commit as the `cix-builder` recipe that installs their dev outputs. A split published first would break the 47 builds at their next rebuild.

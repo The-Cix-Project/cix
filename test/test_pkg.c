@@ -892,6 +892,44 @@ static int write_multiout_recipe(const struct cix_client *c, const char *name, c
 	return publish_cpdl_content(c, name, version, content);
 }
 
+/*
+ * A recipe whose only route to <tool>-tool is declaring `tool "<tool>"`
+ * (ADR-0372): its build tests for both of that recipe's packages in the
+ * composed environment, so it builds only when a tool brings its whole
+ * build.
+ */
+static int write_wholebuild_recipe(const struct cix_client *c, const char *name,
+                                   const char *version, const char *tarball_path,
+                                   const char *sha256, const char *tool)
+{
+	char srcdir[160];
+	char tools[512], build_body[768], install_body[512];
+	char content[4096];
+
+	fixture_srcdir(tarball_path, srcdir, sizeof(srcdir));
+	snprintf(tools, sizeof(tools), CPDL_STD_TOOLS "            tool \"%s\"\n", tool);
+	snprintf(build_body, sizeof(build_body),
+	         "        run \"test\" {\n"
+	         "            \"-x\" \"/usr/bin/%s\"\n"
+	         "        }\n"
+	         "        run \"test\" {\n"
+	         "            \"-x\" \"/usr/bin/%s-tool\"\n"
+	         "        }\n"
+	         "        cd \"${src}/%s/%s\" {\n"
+	         "            run \"tcc\" {\n"
+	         "                \"-o\" \"hello\" \"hello.c\"\n"
+	         "            }\n"
+	         "        }\n",
+	         tool, tool, name, srcdir);
+	snprintf(install_body, sizeof(install_body),
+	         "        mkdir \"${dest}/usr/bin\" parents chmod 0755\n"
+	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s\"\n",
+	         name, srcdir, name);
+	cpdl_recipe_text_decl(content, sizeof(content), name, version, test_http_src(tarball_path),
+	                      sha256, NULL, tools, NULL, NULL, build_body, install_body);
+	return publish_cpdl_content(c, name, version, content);
+}
+
 /* Whether GET /v1/pkg/<name> lists rel among its files: 1, 0, or -1
  * when the package could not be read. */
 static int pkg_lists_file(const struct cix_client *c, const char *name, const char *rel)
@@ -7444,6 +7482,47 @@ skip_resume:
 			fprintf(stderr, "FAIL: ADR-0367 multiout-tool must install exactly its own "
 			                "usr/bin/multiout-tool\n");
 			ok = 0;
+		}
+		/*
+		 * ADR-0372: a declared tool brings its whole build. usesmultiout
+		 * declares tool "multiout" alone and its build tests for
+		 * /usr/bin/multiout-tool, which only the output carries -- as
+		 * openssl's headers will be only in openssl-dev, for 47 recipes
+		 * that compose `tool "openssl"`, `"curl"` and `"ncurses"`.
+		 */
+		if (stage_ok) {
+			char sha_u[65];
+			char tarball_u[PATH_MAX];
+			char st_u[64];
+			int u_ok;
+
+			u_ok = stage_fixture_tarball(scratch_dir, "usesmultiout", "1.0", tarball_u,
+			                             sizeof(tarball_u), sha_u, sizeof(sha_u)) == 0 &&
+			       write_wholebuild_recipe(&client, "usesmultiout", "1.0", tarball_u, sha_u,
+			                               "multiout") == 0;
+			if (!u_ok) {
+				fprintf(stderr, "FAIL: ADR-0372 could not publish usesmultiout\n");
+				ok = 0;
+			}
+			if (u_ok) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/pkg/install",
+				                       "{\"name\":\"usesmultiout\"}", &r) != 0 ||
+				    (r.status != 202 && r.status != 200)) {
+					fprintf(stderr, "FAIL: ADR-0372 install usesmultiout status=%d\n", r.status);
+					ok = 0;
+					u_ok = 0;
+				}
+				cix_response_free(&r);
+			}
+			if (u_ok && (poll_pkg_state(&client, "usesmultiout", st_u, sizeof(st_u), 240) != 0 ||
+			             !str_eq(st_u, "installed"))) {
+				fprintf(stderr,
+				        "FAIL: ADR-0372 usesmultiout did not build (state=%s) -- tool "
+				        "\"multiout\" did not bring its output multiout-tool into the build\n",
+				        st_u);
+				ok = 0;
+			}
 		}
 		/*
 		 * An output rolls with its recipe: a newer multiout makes
