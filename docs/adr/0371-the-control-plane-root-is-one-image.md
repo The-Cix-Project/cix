@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-11-03, for #350. This is [ADR-0291](0291-the-control-plane-root-is-an-image.md)'s proposal restated against the root as it is assembled today. ADR-0291 described a root that no longer exists: build-host tools copied by `shelled_bins[]`, a library table, an elfcheck tension. [ADR-0337](0337-the-root-is-derived-from-one-list-with-no-build-host-fallback.md) and [ADR-0303](0303-a-hostbuild-carries-pkg-depends-it-does-not-resolve-it.md) removed all three. ADR-0291 stays as written, because an ADR is append-only. It becomes Superseded if this one is accepted.
+Accepted by the owner on 2026-11-03, for #350, with both decisions below taken: wait for ADR-0367 outputs, and `cix` is followed like any entry. Not built yet; the phases are in order, and phase 1 waits on ADR-0367's next step. This is [ADR-0291](0291-the-control-plane-root-is-an-image.md)'s proposal restated against the root as it is assembled today. ADR-0291 described a root that no longer exists: build-host tools copied by `shelled_bins[]`, a library table, an elfcheck tension. [ADR-0337](0337-the-root-is-derived-from-one-list-with-no-build-host-fallback.md) and [ADR-0303](0303-a-hostbuild-carries-pkg-depends-it-does-not-resolve-it.md) removed all three. ADR-0291 stays as written, because an ADR is append-only, and is Superseded by this one.
 
 ## Context
 
@@ -61,6 +61,8 @@ An image's content is whole packages and nothing else ([ADR-0333](0333-an-images
 5. **`cix-hosttools`, `cix-firmware` and `cix-kmod` retire.** Nothing else reads them (`daemon/src/main.c`, 2026-11-02).
 
 ## Decisions for the owner
+
+Both taken on 2026-11-03: **A is "wait for outputs"** and **B is "followed"**. So `cix` rolls in `cix-root`, and an assembly runs when `cix-root` gains a version, not when a cix hostbuild finishes. The options are kept below as they were put.
 
 - **A. Wait for outputs, or accept the growth.** With ADR-0367 outputs for curl, openssl, ncurses and kernel, the root stays the size it is today: 13,275,136 bytes as squashed for 0.2.57-654. Without them, it also carries the headers, the terminfo database, a second bzImage and four extra command-line tools. ADR-0367 is already in progress for #378.
 - **B. How `cix-root` gets the cix that was just built.**
