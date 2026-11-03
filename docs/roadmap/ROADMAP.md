@@ -2445,6 +2445,19 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 355: a build tool brings its whole build, and three libraries keep their headers out of images (#350, ADR-0371, ADR-0372, 0.2.57-655)
+
+The first step of ADR-0371, which makes the control-plane root one image without letting it grow. curl, openssl and ncurses moved their headers and pkg-config files into `-dev` outputs. 47 recipes compose those headers through `tool "openssl"`, `"curl"` or `"ncurses"`, so cixd learned first that a declared tool brings every output of its recipe, at the newest version where all of them are installed (`buildenv_add_tool()`).
+
+**Measured on 192.168.15.95, 2026-11-03:**
+
+- **Release:** probe 698 passed with the code. The first 655 hostbuild failed only `test_container_stats` (#671, intermittent). The rerun passed, and 655 booted on slot b.
+- **The splits:** openssl 3.0.20-8, curl 8.21.0-8 and ncurses 6.6-12 were published after 655 was live, and `cix-builder` 6.3.0 installs their dev outputs.
+- **Where the headers are:** the main packages list no `usr/include` file, and openssl-dev, curl-dev and ncurses-dev list 135, 12 and 11.
+- **The proof:** `probe-tooldev@2-1` pins all three tools to the split versions, whose main packages carry no headers, and tests for `openssl/ssl.h`, `openssl.pc`, `curl/curl.h`, `curses.h` and `ncursesw.pc`. It built and installed. 1-1, unpinned, passed its build too, but that alone could not prove which version had composed while 3.0.20-7 was still installed elsewhere.
+
+Not done yet: the kernel's modules output, the `cixd` output of `cix`, and the `cix-root` image itself (ADR-0371 phases 1 to 4).
+
 ## Part 354: MCP step 5, work that parks is served and a file answers in base64; 341 tools (#391, ADR-0368, 0.2.57-652)
 
 A tool's work may park, as ADR-0368 decision 3 sketched. The ten park entry points find their connection through `request_conn()`, which is the MCP request's own while `api_run()` runs a handler for the gateway. A parked call sends nothing, and the whole `POST /v1/mcp` is served again when the work is done. An answer that is not JSON is an embedded resource whose `blob` is the bytes in base64 (the owner's choice). 341 of 356 operations are tools. The 15 that are not are 3 WebSockets, 4 `authenticated`, 4 credential parks (one credential verdict per connection, ADR-0340), 2 header reads and 2 in-process runs.

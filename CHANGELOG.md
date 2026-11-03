@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### ADR-0372 verified on 0.2.57-655; curl, openssl and ncurses split their headers out (#350)
+
+- **Release:** 655 booted on .95. Its first hostbuild failed only `test_container_stats` (#671), and the rerun passed.
+- **Splits:** openssl 3.0.20-8, curl 8.21.0-8 and ncurses 6.6-12 move headers and pkg-config files into `-dev` outputs. `cix-builder` 6.3.0 installs them. The main packages now list no headers, and the three dev outputs list 135, 12 and 11.
+- **Proof:** `probe-tooldev@2-1` pins `tool "openssl@3.0.20-8"`, `curl@8.21.0-8` and `ncurses@6.6-12`. Their main packages carry no headers, so its build's five `test -f` checks can pass only on files the dev outputs brought, and it built and installed. ROADMAP Part 355.
+
 ### vpn-1 down after hibr 0.99.432 rolled: longwire rebuilt as 0.5.39-2 (#672)
 
 - **What happened:** cixd rolled hibr to 0.99.432-1 on 2026-11-03, and the `vpn` image followed. That hibr expects module ABI 17. longwire's module had been compiled against hibr 0.99.431's header, so it was ABI 16. vpn-1 then exited at every start (`hibr: mod: longwire: abi 16, shell expects 17`) and restarted every ~15 s.
