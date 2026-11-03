@@ -161,6 +161,17 @@ int cbs_explain_output_requires(const struct cbs_explain *ex, int index, const c
                                 const char *kind, char *out, size_t out_size);
 
 /*
+ * ADR-0373: the ABI the package named `name` offers its dependents
+ * (cbs v0.1.129, cix-build-system#312) -- the recipe's own top-level
+ * `abi` when name is the recipe's package, an output's own `abi` when
+ * name is one of its outputs. An output never inherits the package's
+ * value, so reading the exact entry a build composed cannot return
+ * another entry's. NULL when that entry declares none, when the name is
+ * neither, and for a document from an older engine.
+ */
+const char *cbs_explain_abi(const struct cbs_explain *ex, const char *name);
+
+/*
  * The artifact format the recipe declares (ADR-0307): "cixpkg" or
  * "tar.gz", CPDL's only two legal values, exactly one of which every
  * package must declare (cix-build-system `src/validate.c:698`).

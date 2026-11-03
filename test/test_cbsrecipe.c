@@ -643,10 +643,57 @@ static void test_outputs(void)
 	cbs_explain_free(ex);
 }
 
+/*
+ * ADR-0373: the ABI each entry offers, in the shape cbs v0.1.129's
+ * explain writes (cix-build-system#312): the package's own `abi` at the
+ * top level and on its main entry, and each output's own or null. The
+ * fixture is the one the cbs session used to verify it: the package
+ * declares 17, `cixctl` declares 2, `cix-tools` declares none.
+ */
+static void test_abi(void)
+{
+	static const char *const ABI =
+	    "{\"name\":\"cix\",\"version\":\"0.2.57\",\"release\":1,\"format\":\"cixpkg\","
+	    "\"abi\":\"17\","
+	    "\"outputs\":["
+	    "{\"name\":\"cix\",\"main\":true,\"abi\":\"17\",\"files\":[]},"
+	    "{\"name\":\"cixctl\",\"main\":false,\"abi\":\"2\","
+	    "\"files\":[{\"pattern\":\"usr/bin/cixctl\",\"glob\":false}]},"
+	    "{\"name\":\"cix-tools\",\"main\":false,\"abi\":null,"
+	    "\"files\":[{\"pattern\":\"usr/bin/mkbootroot\",\"glob\":false}]}],"
+	    "\"sources\":[{\"name\":\"cix\",\"urls\":[\"https://e/c.tar.gz\"],\"sha256\":\"aa\"}]}";
+	static const char *const OLD =
+	    "{\"name\":\"p\",\"version\":\"1\",\"release\":1,\"format\":\"cixpkg\","
+	    "\"sources\":[{\"name\":\"p\",\"urls\":[\"https://e/p.tar.gz\"],\"sha256\":\"aa\"}]}";
+	char err[256];
+	struct cbs_explain *ex;
+
+	ex = cbs_explain_parse(ABI, strlen(ABI), err, sizeof(err));
+	if (ex == NULL) {
+		fail("a document with abi failed to parse");
+		return;
+	}
+	expect_str("the package's own abi", cbs_explain_abi(ex, "cix"), "17");
+	expect_str("an output's own abi", cbs_explain_abi(ex, "cixctl"), "2");
+	expect_int("an output with none does not inherit the package's",
+	           cbs_explain_abi(ex, "cix-tools") == NULL, 1);
+	expect_int("no such entry", cbs_explain_abi(ex, "nosuch") == NULL, 1);
+	cbs_explain_free(ex);
+
+	ex = cbs_explain_parse(OLD, strlen(OLD), err, sizeof(err));
+	if (ex == NULL) {
+		fail("a document with no abi failed to parse");
+		return;
+	}
+	expect_int("an older engine's document declares none", cbs_explain_abi(ex, "p") == NULL, 1);
+	cbs_explain_free(ex);
+}
+
 int main(void)
 {
 	printf("=== CBS recipe identity (ADR-0305) ===\n");
 	test_outputs();
+	test_abi();
 	test_happy_path();
 	test_release_and_runtime();
 	test_legacy_capability_count();

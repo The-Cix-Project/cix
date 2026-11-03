@@ -327,6 +327,22 @@ int cbs_explain_output_requires(const struct cbs_explain *ex, int index, const c
 	                     out, out_size);
 }
 
+const char *cbs_explain_abi(const struct cbs_explain *ex, const char *name)
+{
+	const struct json_value *outs = outputs_of(ex);
+	const char *own = cbs_explain_name(ex);
+	int i;
+
+	if (ex == NULL || name == NULL)
+		return NULL;
+	if (own != NULL && strcmp(own, name) == 0)
+		return json_as_string(json_object_get(ex->root, "abi"));
+	i = cbs_explain_output_find(ex, name);
+	if (outs == NULL || i < 0)
+		return NULL;
+	return json_as_string(json_object_get(outs->u.array.items[i], "abi"));
+}
+
 int cbs_explain_replaces(const struct cbs_explain *ex, char *out, size_t out_size)
 {
 	const struct json_value *items;
