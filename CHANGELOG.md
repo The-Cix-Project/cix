@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cix 0.2.57-657 declares output cixd, and the root is assembled from it (#350)
+
+- **Recipe:** `cix@0.2.57-657` adds `output "cixd"` (`bin/cixd`, `bin/cix-init`, `web`, needing glibc, openssl, libarchive and curl at runtime) and installs both binaries under `bin/`. The main package keeps only the build-side tools.
+- **Verified:** the 656 daemon assembled the root from the output. 657 booted on slot b with the dashboard answering, 14 containers running and vpn-1 online. ROADMAP Part 356.
+
 ### The root takes cixd from the cixd output of its build (ADR-0371, #350)
 
 - **What changed (0.2.57-656):** `spawn_cix_bootroot_assembly()` unpacks every output the root takes, listed once in `g_root_outputs`: `cixd` for `/bin/cixd`, `/bin/cix-init` and `/web`, and `cixctl` for `/bin/cixctl`. There is one `cbs extract` wait, in a loop, so `test_blocking_waits`' count is unchanged.

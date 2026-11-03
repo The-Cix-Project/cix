@@ -2445,6 +2445,18 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 356: the daemon, its init and the dashboard are their own package, and the root takes them from it (#350, ADR-0371, 0.2.57-656 and 0.2.57-657)
+
+The second step of ADR-0371 phase 1. `cix` gains an output, `cixd`, holding `bin/cixd`, `bin/cix-init` and `web` at the paths the control-plane root has them. Assembly takes all three from it, as it takes `/bin/cixctl` from the `cixctl` output. The main `cix` package keeps only the build-side tools: `mkbootroot`, `cix-install`, `cix-recover`, `mkinstalleriso`, `cix-xorriso` and `cix-boot.efi`. It took two releases because the daemon that assembles a release is the one already running, the same order `cixctl` took (637, 639).
+
+**Measured on 192.168.15.95, 2026-11-03:**
+
+- **656:** the code. Probe 699 failed only on `test_pkg_cache`'s cache-hit fixture, which served `cixctl` alone, and probe 700 passed. Its flat recipe was assembled by the 655 daemon, and it booted on slot a.
+- **657:** the recipe declares `output "cixd"`. The 656 daemon's assembly log reads `extracted .../bootroot/cixd` and `extracted .../bootroot/cixctl`, then `succeeded`.
+- **657 booted on slot b:** the dashboard answered 200 from the output's `web`. All 14 containers run with the output's `cix-init`, and vpn-1 reached its dial tone.
+
+Not done yet: the kernel's modules output, which needs a kernel rebuild, and the `cix-root` image itself (ADR-0371 phases 2 to 4).
+
 ## Part 355: a build tool brings its whole build, and three libraries keep their headers out of images (#350, ADR-0371, ADR-0372, 0.2.57-655)
 
 The first step of ADR-0371, which makes the control-plane root one image without letting it grow. curl, openssl and ncurses moved their headers and pkg-config files into `-dev` outputs. 47 recipes compose those headers through `tool "openssl"`, `"curl"` or `"ncurses"`, so cixd learned first that a declared tool brings every output of its recipe, at the newest version where all of them are installed (`buildenv_add_tool()`).
