@@ -10502,13 +10502,30 @@ static void resolve_kmod_bin_dir(char *out, size_t out_size)
 		out[0] = '\0';
 }
 
+/*
+ * The outputs of the cix build that the root takes, and the file each
+ * must hold once unpacked (ADR-0367 decision 5, ADR-0371). Neither is in
+ * the `cix` package: each is its own package, cached beside `cix` by
+ * cache_sibling_outputs(), at the same version as the cix hostbuild, so
+ * the root's daemon, init, dashboard and client are always one build.
+ */
+static const struct {
+	const char *name;
+	const char *probe;
+} g_root_outputs[] = {
+	{ "cixd", "bin/cixd" },
+	{ "cixctl", "usr/bin/cixctl" },
+};
+#define ROOT_OUTPUT_COUNT ((int)(sizeof(g_root_outputs) / sizeof(g_root_outputs[0])))
+
 static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 {
 	char mkbootroot_bin[PATH_MAX];
 	char cixd_bin[PATH_MAX];
 	char cixctl_bin[PATH_MAX];
-	char cixctl_artifact[PATH_MAX] = "";
-	char cixctl_out_dir[PATH_MAX];
+	char out_artifact[ROOT_OUTPUT_COUNT][PATH_MAX];
+	char out_dir[ROOT_OUTPUT_COUNT][PATH_MAX];
+	char out_probe[ROOT_OUTPUT_COUNT][PATH_MAX];
 	char web_dir[PATH_MAX];
 	char out_squashfs[PATH_MAX];
 	char stage_dir[PATH_MAX];
@@ -10523,34 +10540,39 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 	int output_pipe[2];
 
 	snprintf(mkbootroot_bin, sizeof(mkbootroot_bin), "%s/mkbootroot", artifact_dir);
-	snprintf(cixd_bin, sizeof(cixd_bin), "%s/cixd", artifact_dir);
-	snprintf(web_dir, sizeof(web_dir), "%s/web", artifact_dir);
 	/*
-	 * ADR-0367 decision 5: /bin/cixctl comes from the `cixctl` output of
-	 * the same cix build -- the `cixctl` package, cached beside `cix` by
-	 * cache_sibling_outputs() -- and the `cix` package does not carry
-	 * it. Same version as the cix hostbuild, so the root's client and
-	 * daemon are always one build. Extracted in the child below, off the
-	 * loop. No fallback to a copy in `cix`: a root assembled without its
-	 * own build's client is refused, and the reason names the artifact.
+	 * /bin/cixd, /bin/cix-init and /web come from the `cixd` output and
+	 * /bin/cixctl from the `cixctl` output (g_root_outputs), extracted in
+	 * the child below, off the loop. No fallback to a copy in `cix`: a
+	 * root assembled without its own build's outputs is refused, and the
+	 * reason names the artifact.
 	 */
 	{
 		char cix_version[PKG_VERSION_MAX];
+		int k;
 
 		g_bootroot_assembly_refused[0] = '\0';
 		if (pkg_installed_version("cix", PKG_HOSTBUILD_IMAGE, cix_version,
 		                          sizeof(cix_version)) != 0)
 			snprintf(g_bootroot_assembly_refused, sizeof(g_bootroot_assembly_refused),
-			         "no cix hostbuild is installed, so there is no cixctl package of the "
-			         "same build to take /bin/cixctl from (ADR-0367)");
-		else if (pkg_artifact_cache_has("cixctl", cix_version))
-			pkg_artifact_cache_path("cixctl", cix_version, cixctl_artifact,
-			                        sizeof(cixctl_artifact));
-		else
-			snprintf(g_bootroot_assembly_refused, sizeof(g_bootroot_assembly_refused),
-			         "cixctl@%s, the client the cix@%s build produced, is not in the local "
-			         "cache; the root takes /bin/cixctl from it (ADR-0367)",
-			         cix_version, cix_version);
+			         "no cix hostbuild is installed, so there are no cixd and cixctl packages "
+			         "of the same build to take the root's programs from (ADR-0367, ADR-0371)");
+		for (k = 0; k < ROOT_OUTPUT_COUNT && g_bootroot_assembly_refused[0] == '\0'; k++) {
+			if (!pkg_artifact_cache_has(g_root_outputs[k].name, cix_version)) {
+				snprintf(g_bootroot_assembly_refused, sizeof(g_bootroot_assembly_refused),
+				         "%s@%s, an output of the cix@%s build, is not in the local cache; "
+				         "the root takes /%s from it (ADR-0367, ADR-0371)",
+				         g_root_outputs[k].name, cix_version, cix_version,
+				         g_root_outputs[k].probe);
+				break;
+			}
+			pkg_artifact_cache_path(g_root_outputs[k].name, cix_version, out_artifact[k],
+			                        sizeof(out_artifact[k]));
+			snprintf(out_dir[k], sizeof(out_dir[k]), "%s/%s", BOOTROOT_DIR,
+			         g_root_outputs[k].name);
+			snprintf(out_probe[k], sizeof(out_probe[k]), "%s/%s", out_dir[k],
+			         g_root_outputs[k].probe);
+		}
 		if (g_bootroot_assembly_refused[0] != '\0') {
 			logstore_write("cixd", "error", "cix bootroot assembly: not started -- %s",
 			               g_bootroot_assembly_refused);
@@ -10558,8 +10580,9 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 			return;
 		}
 	}
-	snprintf(cixctl_out_dir, sizeof(cixctl_out_dir), "%s/cixctl", BOOTROOT_DIR);
-	snprintf(cixctl_bin, sizeof(cixctl_bin), "%s/usr/bin/cixctl", cixctl_out_dir);
+	snprintf(cixd_bin, sizeof(cixd_bin), "%s", out_probe[0]);
+	snprintf(web_dir, sizeof(web_dir), "%s/web", out_dir[0]);
+	snprintf(cixctl_bin, sizeof(cixctl_bin), "%s", out_probe[1]);
 	/*
 	 * BOOTROOT_DIR, not artifact_dir (#178). These are build OUTPUT:
 	 * the artifact directory is tarred wholesale when the package is
@@ -10774,27 +10797,32 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 	if (pid == 0) {
 		pid_t xp;
 		int xstatus = 0;
+		int k;
 
 		if (output_pipe[1] >= 0) {
 			dup2(output_pipe[1], STDOUT_FILENO);
 			dup2(output_pipe[1], STDERR_FILENO);
 		}
-		/* ADR-0367: the cixctl output, unpacked where cixctl_bin points.
-		 * `cbs extract` refuses an existing destination (#233), so the
-		 * previous assembly's copy goes first. In this child, never on
-		 * the loop; the wait is the child's own. */
-		persist_remove_tree(cixctl_out_dir);
-		xp = fork();
-		if (xp == 0) {
-			execl(PKG_CBS_BIN, "cbs", "extract", cixctl_artifact, "--into", cixctl_out_dir,
-			      (char *)NULL);
-			_exit(127);
-		}
-		if (xp < 0 || waitpid(xp, &xstatus, 0) != xp || !WIFEXITED(xstatus) ||
-		    WEXITSTATUS(xstatus) != 0 || access(cixctl_bin, X_OK) != 0) {
-			fprintf(stderr, "cix bootroot assembly: could not unpack %s to %s (ADR-0367)\n",
-			        cixctl_artifact, cixctl_bin);
-			_exit(1);
+		/* The root's outputs (g_root_outputs), each unpacked where its
+		 * probe points. `cbs extract` refuses an existing destination
+		 * (#233), so the previous assembly's copy goes first. In this
+		 * child, never on the loop; the wait is the child's own. */
+		for (k = 0; k < ROOT_OUTPUT_COUNT; k++) {
+			persist_remove_tree(out_dir[k]);
+			xp = fork();
+			if (xp == 0) {
+				execl(PKG_CBS_BIN, "cbs", "extract", out_artifact[k], "--into", out_dir[k],
+				      (char *)NULL);
+				_exit(127);
+			}
+			if (xp < 0 || waitpid(xp, &xstatus, 0) != xp || !WIFEXITED(xstatus) ||
+			    WEXITSTATUS(xstatus) != 0 || access(out_probe[k], X_OK) != 0) {
+				fprintf(stderr,
+				        "cix bootroot assembly: could not unpack %s to %s (ADR-0367, "
+				        "ADR-0371)\n",
+				        out_artifact[k], out_probe[k]);
+				_exit(1);
+			}
 		}
 		execve(mkbootroot_bin, argv, environ);
 		perror("child: execve mkbootroot");
