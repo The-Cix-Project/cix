@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### ADR-0372 proposed: a build tool brings its whole build (#350)
+
+- **Why:** ADR-0371's "wait for outputs" moves curl's, openssl's and ncurses' build-time files into `-dev` outputs. 47 recipes compose those headers through `tool "openssl"`, `tool "curl"` and `tool "ncurses"`. The owner chose a composition rule over revising them.
+- **The rule:** a tool composes its recipe's main package and every output, at the newest version where all of them are installed. Runtime dependencies are untouched. It ships in cixd before any split is published.
+- **ADR-0371 refined:** only build-time files move. CLIs and terminfo stay in the main package, because images use them at runtime.
+
 ### ADR-0371 accepted: the control-plane root is one image (#350)
 
 - **Accepted by the owner on 2026-11-03.** curl, openssl, ncurses and kernel get ADR-0367 outputs before anything is built, so the root does not grow. `cix` is followed in `cix-root` like any other entry, so an assembly runs when the image changes. ADR-0291 is Superseded. CLAUDE.md carries the direction. The entry below is the proposal as first written.

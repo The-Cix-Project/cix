@@ -62,7 +62,7 @@ An image's content is whole packages and nothing else ([ADR-0333](0333-an-images
 
 ## Decisions for the owner
 
-Both taken on 2026-11-03: **A is "wait for outputs"** and **B is "followed"**. So `cix` rolls in `cix-root`, and an assembly runs when `cix-root` gains a version, not when a cix hostbuild finishes. The options are kept below as they were put.
+Both taken on 2026-11-03: **A is "wait for outputs"** and **B is "followed"**. So `cix` rolls in `cix-root`, and an assembly runs when `cix-root` gains a version, not when a cix hostbuild finishes. The options are kept below as they were put. **A was refined the same day**, once its cost was measured: 25 recipes declare `tool "openssl"`, 10 `tool "curl"` and 12 `tool "ncurses"` to get headers into their builds, so moving headers into an output would break them. The owner chose to split the libraries as well and to add a composition rule so that a `tool` brings its package's outputs with it. That rule is [ADR-0372](0372-a-build-tool-brings-its-whole-build.md). The other choices offered were splitting the kernel only, or also revising the 47 recipes.
 
 - **A. Wait for outputs, or accept the growth.** With ADR-0367 outputs for curl, openssl, ncurses and kernel, the root stays the size it is today: 13,275,136 bytes as squashed for 0.2.57-654. Without them, it also carries the headers, the terminfo database, a second bzImage and four extra command-line tools. cixd installs a named output into an image already (0.2.57-635; `cixctl` is installed that way in `agent`), so waiting costs recipe work, not daemon work.
 - **B. How `cix-root` gets the cix that was just built.**
@@ -78,7 +78,12 @@ Both taken on 2026-11-03: **A is "wait for outputs"** and **B is "followed"**. S
 
 Priced in builds and releases, in order. Each phase is verified on 192.168.15.95: chroot-run the assembled root before any boot, then boot it.
 
-1. **Outputs** (if A is "wait"): a `cixd` output in the `cix` recipe (a routine hostbuild), a modules output in `kernel` (**a kernel rebuild, which is asked for first**), and library outputs for curl, openssl and ncurses (three ordinary rebuilds, which roll the images that follow them). No cixd change: outputs install as packages since 0.2.57-635. The split keeps the libraries in the main package and moves headers, CLIs and terminfo into outputs, so no consumer's `requires` changes.
+1. **Outputs:**
+   - a `cixd` output in the `cix` recipe (a routine hostbuild);
+   - a modules output in `kernel`, with `bzImage` staying in the main package so the hostbuild harvest and cix#568's pairing are untouched (**one kernel rebuild, run alone**);
+   - `-dev` outputs for curl, openssl and ncurses (three ordinary rebuilds).
+   
+   Only build-time parts move: `usr/include`, pkg-config files and `*-config` scripts. CLIs and terminfo stay in the main package, because images use them at runtime (`agent` carries curl for the binary, and interactive images need terminfo), so the root carries them. The bytes that adds are not measured. ADR-0372's rule must ship in a cixd release **before** any split reaches cix-recipes, or the 47 builds that compose these tools lose their headers.
 2. **`cix-root` image recipe**, created on .95. A probe compares its tree with the current assembled root, path by path and hash by hash. No cixd code changes.
 3. **One release:** `mkbootroot` takes one tree, `spawn_cix_bootroot_assembly()` passes the image version, and the deletions above are made. The tests that build a root pass a fixture tree.
 4. **Retire the three images** on .95, and update the documents that name them.
