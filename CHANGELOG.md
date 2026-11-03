@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The root and the installer take the module tree from kernel-modules (ADR-0371, #350)
+
+- **cixd (0.2.57-658):** `g_root_outputs` gains an owner and a `kernel-modules` row. `root_output_resolve()` and `root_output_unpack()` serve the root assembly and the installer ISO build, each under its own directory. `resolve_kernel_modules_dir()`, which read the kernel hostbuild's artifact directory, is gone.
+  - With no kernel hostbuild there are no modules, as before. A kernel hostbuild without the output is refused.
+  - The cix#568 release record is read from the unpacked tree after the assembly succeeds.
+  - An ISO child that cannot unpack the modules exits 125 and says so.
+- **Kernel (7.3.1-2):** `lib/modules` moves into `output "kernel-modules"`, and `bzImage` stays in the main package. It was hostbuilt alone, at the owner's instruction.
+- **Verified on .95:** the assembly staged from `bootroot/kernel-modules/lib/modules`. The root booted on slot b with modules loaded (`rtw88_8822bu`, `tg3`, `r8169`). An ISO build staged all 6 declared NIC drivers. 14 containers ran, and vpn-1 had its dial tone. ROADMAP Part 357.
+
 ### ADR-0373 accepted: a provider declares its ABI, and its consumers follow it (#672)
 
 - **What it decides:** a provider such as hibr declares the ABI it offers. cixd records the ABI each build was built against, beside its artifact approval. It holds a provider's roll in an image whose consumers were built against another ABI, and authors rebuild revisions of those consumers. That is the hold that would have kept vpn-1 up, and the rebuild that was done by hand with longwire 0.5.39-2.

@@ -2445,6 +2445,22 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 357: the kernel's modules are their own package, and the root and the installer take them from it (#350, ADR-0371, 0.2.57-658, kernel 7.3.1-2)
+
+The last step of ADR-0371 phase 1. kernel 7.3.1-2 is the same kernel with `lib/modules` moved into a `kernel-modules` output, and `bzImage` stays in the main package for the hostbuild artifact and `do_system_update()`.
+
+On the cixd side, `g_root_outputs` gained an owner. `root_output_resolve()` names an output of the installed hostbuild of its owner, and `root_output_unpack()` unpacks it in a helper child. Both the root assembly and the installer ISO build use them, each under its own directory. With no kernel hostbuild there are no modules, as before. A kernel hostbuild without its `kernel-modules` output is refused, so a root can never be assembled without the modules its kernel needs. The releases recorded beside the root (cix#568) are read from the unpacked tree once the assembly succeeds.
+
+**Measured on 192.168.15.95, 2026-11-03:**
+
+- **Release:** probe 701 passed. 0.2.57-658 was assembled by the 657 daemon and booted on slot a.
+- **Kernel:** kernel 7.3.1-2 was hostbuilt alone, at the owner's instruction.
+- **Assembly:** the next assembly logged `staging kernel modules from .../bootroot/kernel-modules/lib/modules`. That root booted on slot b with kernel 7.3.1, and `GET /v1/system/kmod` listed modules loaded from it (`rtw88_8822bu`, `tg3`, `r8169` among them), which is the #347 failure checked live.
+- **Installer ISO:** `cixctl iso build` unpacked `iso/kernel-modules` and staged `12 NIC module files for kernel 7.3.1, all 6 declared drivers present: e1000e igb igc ixgbe r8169 tg3`.
+- **Workloads:** all 14 containers were running and vpn-1 had its dial tone.
+
+With this, ADR-0371 phase 1 is done: curl, openssl and ncurses have `-dev` outputs (Part 355), `cix` has a `cixd` output (Part 356), and `kernel` has `kernel-modules`. Next is phase 2, the `cix-root` image.
+
 ## Part 356: the daemon, its init and the dashboard are their own package, and the root takes them from it (#350, ADR-0371, 0.2.57-656 and 0.2.57-657)
 
 The second step of ADR-0371 phase 1. `cix` gains an output, `cixd`, holding `bin/cixd`, `bin/cix-init` and `web` at the paths the control-plane root has them. Assembly takes all three from it, as it takes `/bin/cixctl` from the `cixctl` output. The main `cix` package keeps only the build-side tools: `mkbootroot`, `cix-install`, `cix-recover`, `mkinstalleriso`, `cix-xorriso` and `cix-boot.efi`. It took two releases because the daemon that assembles a release is the one already running, the same order `cixctl` took (637, 639).
