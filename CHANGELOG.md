@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A build tool brings its whole build (ADR-0372, #350)
+
+- **Accepted by the owner on 2026-11-03, and implemented in `buildenv_add_tool()` (`daemon/src/pkg.c`).**
+- **Version choice:** every package the composer resolves now takes the newest version at which its recipe's outputs are installed too (`buildenv_newest_installed()`, `buildenv_outputs_installed()`). A package with no outputs resolves as before.
+- **Outputs come along:** a declared tool also adds those outputs (`buildenv_add_outputs()`). That includes a declared tool that was already present as another tool's runtime dependency.
+- **Refusal:** a tool whose output is installed nowhere at any of its versions is refused, naming the output and the version to install.
+- **Test:** `test_pkg`'s new `usesmultiout` recipe declares `tool "multiout"` alone, and its build runs `test -x /usr/bin/multiout-tool`. That file exists only in the output.
+- **What is next:** this is what lets curl, openssl and ncurses move their headers into `-dev` outputs without touching the 47 recipes that build with them. No split is published until this release is live on .95.
+
 ### ADR-0372 proposed: a build tool brings its whole build (#350)
 
 - **Why:** ADR-0371's "wait for outputs" moves curl's, openssl's and ncurses' build-time files into `-dev` outputs. 47 recipes compose those headers through `tool "openssl"`, `tool "curl"` and `tool "ncurses"`. The owner chose a composition rule over revising them.

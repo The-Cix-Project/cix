@@ -174,6 +174,8 @@ requires {
 
 Declare what you *use*. Each declared tool arrives with its own runtime requirements, resolved recursively, so you never enumerate the shared libraries of a tool you named — `binutils` brings `zlib` because `ar` links against it, and that is binutils' business, not yours.
 
+**A declared tool brings its whole build** ([ADR-0372](../adr/0372-a-build-tool-brings-its-whole-build.md)). If its recipe declares outputs, every output comes too, at the same version: `tool "openssl"` composes openssl's libraries and its `-dev` headers alike. Name the main package. Naming an output directly brings that output alone. A runtime requirement is different: it names exactly one package and brings only that. Each package resolves to the newest version at which all its outputs are installed somewhere, so an output that has not yet rolled into any image holds the tool at the previous version and does not fail the build.
+
 A declared tool that cannot be provided — installed in no image, or with no recorded files to compose from — **fails the build and names it**. The artifact cache is necessary and not sufficient: a cached artifact nobody has installed composes nothing. There is deliberately no fallback to a fuller environment.
 
 **A recipe that declares no build requirements is refused** before its build starts (`daemon/src/pkg.c`).
