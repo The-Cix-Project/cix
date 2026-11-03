@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### ADR-0371 proposed: the control-plane root is one image (#350)
+
+- **What changed:** [ADR-0371](docs/adr/0371-the-control-plane-root-is-one-image.md) restates ADR-0291's proposal against the root as it is assembled today. ADR-0291 described `shelled_bins[]`, build-host tools and an elfcheck tension, all removed since by ADR-0337 and ADR-0303. It stays Proposed with a pointer, because ADRs are append-only.
+- **What it finds:** the root's content is defined in six places: the `cix` and `kernel` hostbuild harvests, the `cixctl` output, the `cix-hosttools`, `cix-firmware` and `cix-kmod` images, and `controlplane_programs.h`. Four of those inputs are positional arguments that a caller may leave empty. The root's glibc still starts as the build host's, and a later copy overwrites it.
+- **What it measured on 192.168.15.95 (2026-11-02):**
+  - The tool packages ship 4 programs beyond what the root stages.
+  - No runtime closure reaches bash, perl or coreutils.
+  - curl, openssl, ncurses and kernel carry headers, terminfo, CLIs and a `bzImage` that a whole-package root would include. ADR-0367 outputs would split those out.
+- **Nothing is built yet.** Two decisions are the owner's: whether to wait for those outputs, and how the image gets the cix that was just built.
+
 ### A fetched source is flushed to disk by the fetch child, so build prep clones it at metadata cost (#646)
 
 - **What changed:**
