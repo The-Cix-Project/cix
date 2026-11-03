@@ -6,6 +6,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The root takes cixd from the cixd output of its build (ADR-0371, #350)
+
+- **What changed (0.2.57-656):** `spawn_cix_bootroot_assembly()` unpacks every output the root takes, listed once in `g_root_outputs`: `cixd` for `/bin/cixd`, `/bin/cix-init` and `/web`, and `cixctl` for `/bin/cixctl`. There is one `cbs extract` wait, in a loop, so `test_blocking_waits`' count is unchanged.
+- **Refusal:** an assembly whose cix build lacks either output is refused, naming the output and the file the root takes from it.
+- **Test fixture:** `test_pkg_cache`'s cache-hit cix hostbuild now serves both outputs, and `publish_approved_recipe()` takes a list. Compile probe 699 failed on that fixture alone, and 700 passed.
+- **Release order:** 656's own recipe is still flat, and the 655 daemon assembled it. 656 booted on slot a. 657's recipe declares `output "cixd"`, so the 656 daemon assembles 657 from that output, the same two-release order `cixctl` took (637, 639).
+
 ### ADR-0372 verified on 0.2.57-655; curl, openssl and ncurses split their headers out (#350)
 
 - **Release:** 655 booted on .95. Its first hostbuild failed only `test_container_stats` (#671), and the rerun passed.
