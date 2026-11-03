@@ -1980,12 +1980,15 @@ static char g_bootroot_assembly_refused[320];
  * for the reason #481 gives above: the counters reset at the restart
  * that a deploy ends in, and the record has to describe the file.
  *
- * Collected when the assembly starts and written only when it succeeds,
- * the moment its root is renamed into place; an assembly that staged
- * no modules removes it, since that root pairs with any kernel.
+ * Read from the module tree the assembly staged (the unpacked
+ * kernel-modules output, ADR-0371, named when the assembly starts) and
+ * written only when it succeeds, the moment its root is renamed into
+ * place; an assembly that staged no modules removes it, since that root
+ * pairs with any kernel.
  */
 #define ROOT_KERNEL_RELEASES_SUFFIX ".kernel-releases"
 static char g_bootroot_assembly_kernel_releases[512];
+static char g_bootroot_assembly_modules_dir[PATH_MAX];
 
 /*
  * The kernel releases a module tree holds: the names of the
@@ -10451,41 +10454,14 @@ static void pkg_completion_followup(int next, pid_t pkg_pid, int pkg_pidfd, int 
 }
 
 /*
- * Where the kernel's module tree is, and where the module tools are.
- *
- * Two callers need the identical answers: the bootroot assembly, which
- * stages them onto the control-plane root, and the installer-ISO build,
- * which stages the NIC subset onto the media so cix-install can list a
- * real machine's built-in Ethernet at all (#429 follow-on). They were
- * resolved inline in the first, and a second copy in the second would
- * be two places that know where a kernel artifact keeps its modules --
- * free to drift, and drifting silently, since the failure is an empty
- * interface list rather than an error.
- *
- * Both leave out empty when the thing is not there, which every caller
- * treats as "stage nothing" rather than as a failure: a control plane
- * with no module tree still boots, and an ISO with none still installs
- * on virtio.
+ * Where the module tools are. Two callers need the identical answer:
+ * the bootroot assembly, which stages them onto the control-plane root,
+ * and the installer-ISO build, which stages them onto the media so
+ * cix-install can load a real machine's NIC driver (#429 follow-on).
+ * Empty when the image is absent, which both treat as "stage nothing".
+ * The module tree they load from is the kernel-modules output, resolved
+ * through root_output_resolve() below.
  */
-static void resolve_kernel_modules_dir(char *out, size_t out_size)
-{
-	struct stat st;
-
-	out[0] = '\0';
-	/*
-	 * ARTIFACTS_DIR/kernel is the kernel package's own hostbuild
-	 * artifact directory, a sibling of the "cix" package's.
-	 * kernel.recipe's pkg_install() runs modules_install followed by
-	 * depmod -b, so this is a complete, dependency-indexed tree --
-	 * modules.dep and its .bin indexes included -- rather than a bag
-	 * of .ko files modprobe cannot resolve.
-	 */
-	if (snprintf(out, out_size, "%s/kernel/lib/modules", ARTIFACTS_DIR) >= (int)out_size)
-		out[0] = '\0';
-	else if (stat(out, &st) != 0 || !S_ISDIR(st.st_mode))
-		out[0] = '\0';
-}
-
 static void resolve_kmod_bin_dir(char *out, size_t out_size)
 {
 	char kmod_version[IMAGE_VERSION_MAX];
@@ -10503,20 +10479,90 @@ static void resolve_kmod_bin_dir(char *out, size_t out_size)
 }
 
 /*
- * The outputs of the cix build that the root takes, and the file each
- * must hold once unpacked (ADR-0367 decision 5, ADR-0371). Neither is in
- * the `cix` package: each is its own package, cached beside `cix` by
- * cache_sibling_outputs(), at the same version as the cix hostbuild, so
- * the root's daemon, init, dashboard and client are always one build.
+ * The outputs the root takes, the hostbuild whose version names each,
+ * and the path each must hold once unpacked (ADR-0367 decision 5,
+ * ADR-0371). None is in its owner's main package. Each is its own
+ * package, cached beside the owner by cache_sibling_outputs() at the
+ * owner's hostbuild version, so the root's daemon, init, dashboard and
+ * client are one build, and its modules are the booting kernel's.
+ *
+ * An optional owner that is not installed means the root has none of
+ * that part: with no kernel hostbuild there is no module tree, as a
+ * QEMU test boots. An installed owner without its output is refused,
+ * never staged without, because a root without its modules boots and
+ * then cannot load a bare-metal host's NIC driver (#347).
  */
 static const struct {
+	const char *owner;
 	const char *name;
 	const char *probe;
+	int owner_optional;
 } g_root_outputs[] = {
-	{ "cixd", "bin/cixd" },
-	{ "cixctl", "usr/bin/cixctl" },
+	{ "cix", "cixd", "bin/cixd", 0 },
+	{ "cix", "cixctl", "usr/bin/cixctl", 0 },
+	{ "kernel", "kernel-modules", "lib/modules", 1 },
 };
 #define ROOT_OUTPUT_COUNT ((int)(sizeof(g_root_outputs) / sizeof(g_root_outputs[0])))
+#define ROOT_OUTPUT_KERNEL_MODULES 2
+
+/*
+ * Output k of g_root_outputs, to be unpacked under base: 1 with
+ * artifact, dir and probe filled (each PATH_MAX), 0 when its optional
+ * owner is not installed, -1 with reason when it cannot be had.
+ */
+static int root_output_resolve(int k, const char *base, char *artifact, char *dir, char *probe,
+                               char *reason, size_t reason_size)
+{
+	char version[PKG_VERSION_MAX];
+
+	if (pkg_installed_version(g_root_outputs[k].owner, PKG_HOSTBUILD_IMAGE, version,
+	                          sizeof(version)) != 0) {
+		if (g_root_outputs[k].owner_optional)
+			return 0;
+		snprintf(reason, reason_size,
+		         "no %s hostbuild is installed, so there is no %s package of the same build "
+		         "to take /%s from (ADR-0367, ADR-0371)",
+		         g_root_outputs[k].owner, g_root_outputs[k].name, g_root_outputs[k].probe);
+		return -1;
+	}
+	if (!pkg_artifact_cache_has(g_root_outputs[k].name, version)) {
+		snprintf(reason, reason_size,
+		         "%s@%s, an output of the %s@%s build, is not in the local cache, and /%s "
+		         "comes only from it (ADR-0367, ADR-0371)",
+		         g_root_outputs[k].name, version, g_root_outputs[k].owner, version,
+		         g_root_outputs[k].probe);
+		return -1;
+	}
+	pkg_artifact_cache_path(g_root_outputs[k].name, version, artifact, PATH_MAX);
+	snprintf(dir, PATH_MAX, "%s/%s", base, g_root_outputs[k].name);
+	snprintf(probe, PATH_MAX, "%s/%s", dir, g_root_outputs[k].probe);
+	return 1;
+}
+
+/*
+ * In a helper child only: unpack a resolved output into dir and check
+ * that probe is there. `cbs extract` refuses an existing destination
+ * (#233), so the previous copy goes first. The wait is the child's own,
+ * never the loop's.
+ */
+static int root_output_unpack(const char *artifact, const char *dir, const char *probe)
+{
+	pid_t xp;
+	int xstatus = 0;
+
+	persist_remove_tree(dir);
+	xp = fork();
+	if (xp == 0) {
+		execl(PKG_CBS_BIN, "cbs", "extract", artifact, "--into", dir, (char *)NULL);
+		_exit(127);
+	}
+	if (xp < 0 || waitpid(xp, &xstatus, 0) != xp || !WIFEXITED(xstatus) ||
+	    WEXITSTATUS(xstatus) != 0 || access(probe, X_OK) != 0) {
+		fprintf(stderr, "could not unpack %s to %s (ADR-0367, ADR-0371)\n", artifact, probe);
+		return -1;
+	}
+	return 0;
+}
 
 static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 {
@@ -10526,6 +10572,7 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 	char out_artifact[ROOT_OUTPUT_COUNT][PATH_MAX];
 	char out_dir[ROOT_OUTPUT_COUNT][PATH_MAX];
 	char out_probe[ROOT_OUTPUT_COUNT][PATH_MAX];
+	int out_have[ROOT_OUTPUT_COUNT];
 	char web_dir[PATH_MAX];
 	char out_squashfs[PATH_MAX];
 	char stage_dir[PATH_MAX];
@@ -10541,37 +10588,23 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 
 	snprintf(mkbootroot_bin, sizeof(mkbootroot_bin), "%s/mkbootroot", artifact_dir);
 	/*
-	 * /bin/cixd, /bin/cix-init and /web come from the `cixd` output and
-	 * /bin/cixctl from the `cixctl` output (g_root_outputs), extracted in
-	 * the child below, off the loop. No fallback to a copy in `cix`: a
-	 * root assembled without its own build's outputs is refused, and the
+	 * /bin/cixd, /bin/cix-init and /web come from the `cixd` output,
+	 * /bin/cixctl from the `cixctl` output and /lib/modules from the
+	 * `kernel-modules` output (g_root_outputs), extracted in the child
+	 * below, off the loop. No fallback to a copy in a main package: a
+	 * root assembled without its own builds' outputs is refused, and the
 	 * reason names the artifact.
 	 */
 	{
-		char cix_version[PKG_VERSION_MAX];
 		int k;
 
 		g_bootroot_assembly_refused[0] = '\0';
-		if (pkg_installed_version("cix", PKG_HOSTBUILD_IMAGE, cix_version,
-		                          sizeof(cix_version)) != 0)
-			snprintf(g_bootroot_assembly_refused, sizeof(g_bootroot_assembly_refused),
-			         "no cix hostbuild is installed, so there are no cixd and cixctl packages "
-			         "of the same build to take the root's programs from (ADR-0367, ADR-0371)");
-		for (k = 0; k < ROOT_OUTPUT_COUNT && g_bootroot_assembly_refused[0] == '\0'; k++) {
-			if (!pkg_artifact_cache_has(g_root_outputs[k].name, cix_version)) {
-				snprintf(g_bootroot_assembly_refused, sizeof(g_bootroot_assembly_refused),
-				         "%s@%s, an output of the cix@%s build, is not in the local cache; "
-				         "the root takes /%s from it (ADR-0367, ADR-0371)",
-				         g_root_outputs[k].name, cix_version, cix_version,
-				         g_root_outputs[k].probe);
+		for (k = 0; k < ROOT_OUTPUT_COUNT; k++) {
+			out_have[k] = root_output_resolve(k, BOOTROOT_DIR, out_artifact[k], out_dir[k],
+			                                  out_probe[k], g_bootroot_assembly_refused,
+			                                  sizeof(g_bootroot_assembly_refused));
+			if (out_have[k] < 0)
 				break;
-			}
-			pkg_artifact_cache_path(g_root_outputs[k].name, cix_version, out_artifact[k],
-			                        sizeof(out_artifact[k]));
-			snprintf(out_dir[k], sizeof(out_dir[k]), "%s/%s", BOOTROOT_DIR,
-			         g_root_outputs[k].name);
-			snprintf(out_probe[k], sizeof(out_probe[k]), "%s/%s", out_dir[k],
-			         g_root_outputs[k].probe);
 		}
 		if (g_bootroot_assembly_refused[0] != '\0') {
 			logstore_write("cixd", "error", "cix bootroot assembly: not started -- %s",
@@ -10674,13 +10707,14 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 	}
 
 	/*
-	 * #347: the kernel module tree, taken from the kernel package's own
-	 * artifact directory -- ARTIFACTS_DIR/kernel, a SIBLING of the
-	 * artifact_dir parameter above, which is the "cix" package's.
-	 * kernel.recipe's own pkg_install() runs modules_install followed
-	 * by depmod -b, so what is staged here is a complete,
-	 * dependency-indexed tree (modules.dep and friends), not a bag of
-	 * .ko files modprobe cannot resolve.
+	 * #347: the kernel module tree, from the kernel-modules output of
+	 * the installed kernel hostbuild (ADR-0371), unpacked by the child
+	 * below. The kernel recipe runs modules_install, which runs depmod,
+	 * so what is staged here is a complete, dependency-indexed tree
+	 * (modules.dep and friends), not a bag of .ko files modprobe cannot
+	 * resolve. It used to be read from the kernel hostbuild's artifact
+	 * directory, which holds only the main package since the modules
+	 * became their own.
 	 *
 	 * This argument used to be a hardcoded "" whose comment said a
 	 * control-plane-only rebuild touches no module tree. That is the
@@ -10704,22 +10738,21 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 	 * here are recorded beside the root and do_system_update() pairs
 	 * the root with a kernel of that release (cix#568).
 	 */
-	resolve_kernel_modules_dir(modules_dir, sizeof(modules_dir));
-	{
-		if (modules_dir[0] != '\0')
-			logstore_write("cixd", "info", "cix bootroot assembly: staging kernel modules from %s",
-			               modules_dir);
-		else
-			logstore_write("cixd", "info",
-			               "cix bootroot assembly: no kernel modules to stage -- no module tree "
-			               "at %s/kernel/lib/modules; nothing will be loadable on the assembled "
-			               "host",
-			               ARTIFACTS_DIR);
-	}
-	/* cix#568: the releases this root's modules are for, recorded
-	 * beside it when the assembly succeeds. */
-	module_releases_in(modules_dir, g_bootroot_assembly_kernel_releases,
-	                   sizeof(g_bootroot_assembly_kernel_releases));
+	modules_dir[0] = '\0';
+	if (out_have[ROOT_OUTPUT_KERNEL_MODULES] == 1)
+		snprintf(modules_dir, sizeof(modules_dir), "%s", out_probe[ROOT_OUTPUT_KERNEL_MODULES]);
+	if (modules_dir[0] != '\0')
+		logstore_write("cixd", "info", "cix bootroot assembly: staging kernel modules from %s",
+		               modules_dir);
+	else
+		logstore_write("cixd", "info",
+		               "cix bootroot assembly: no kernel modules to stage -- no kernel hostbuild "
+		               "is installed; nothing will be loadable on the assembled host");
+	/* cix#568: the releases this root's modules are for are read from
+	 * the unpacked tree when the assembly succeeds, since the child
+	 * unpacks it. */
+	snprintf(g_bootroot_assembly_modules_dir, sizeof(g_bootroot_assembly_modules_dir), "%s",
+	         modules_dir);
 
 	/*
 	 * #347: the module tools, resolved exactly the way firmware_dir
@@ -10795,8 +10828,6 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 		return;
 	}
 	if (pid == 0) {
-		pid_t xp;
-		int xstatus = 0;
 		int k;
 
 		if (output_pipe[1] >= 0) {
@@ -10804,25 +10835,11 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 			dup2(output_pipe[1], STDERR_FILENO);
 		}
 		/* The root's outputs (g_root_outputs), each unpacked where its
-		 * probe points. `cbs extract` refuses an existing destination
-		 * (#233), so the previous assembly's copy goes first. In this
-		 * child, never on the loop; the wait is the child's own. */
+		 * probe points; one whose optional owner is absent is skipped. */
 		for (k = 0; k < ROOT_OUTPUT_COUNT; k++) {
-			persist_remove_tree(out_dir[k]);
-			xp = fork();
-			if (xp == 0) {
-				execl(PKG_CBS_BIN, "cbs", "extract", out_artifact[k], "--into", out_dir[k],
-				      (char *)NULL);
-				_exit(127);
-			}
-			if (xp < 0 || waitpid(xp, &xstatus, 0) != xp || !WIFEXITED(xstatus) ||
-			    WEXITSTATUS(xstatus) != 0 || access(out_probe[k], X_OK) != 0) {
-				fprintf(stderr,
-				        "cix bootroot assembly: could not unpack %s to %s (ADR-0367, "
-				        "ADR-0371)\n",
-				        out_artifact[k], out_probe[k]);
+			if (out_have[k] == 1 &&
+			    root_output_unpack(out_artifact[k], out_dir[k], out_probe[k]) != 0)
 				_exit(1);
-			}
 		}
 		execve(mkbootroot_bin, argv, environ);
 		perror("child: execve mkbootroot");
@@ -11990,6 +12007,9 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	char stage_dir[PATH_MAX];
 	char kernel_args[512];
 	char iso_modules_dir[PATH_MAX];
+	char iso_modules_artifact[PATH_MAX];
+	char iso_modules_unpack[PATH_MAX];
+	int iso_modules_have;
 	char iso_kmod_bin_dir[PATH_MAX];
 	char iso_disk_guid[40];
 	/*
@@ -12199,7 +12219,16 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	 * mkinstalleriso's usage text -- an error message made of
 	 * documentation.
 	 */
-	resolve_kernel_modules_dir(iso_modules_dir, sizeof(iso_modules_dir));
+	/* The kernel-modules output, unpacked by the child below under
+	 * ISO_DIR rather than BOOTROOT_DIR, so an ISO build and an assembly
+	 * never unpack into one directory (ADR-0371). */
+	iso_modules_have = root_output_resolve(ROOT_OUTPUT_KERNEL_MODULES, ISO_DIR,
+	                                       iso_modules_artifact, iso_modules_unpack,
+	                                       iso_modules_dir, err_msg, err_msg_size);
+	if (iso_modules_have < 0)
+		return -1;
+	if (iso_modules_have == 0)
+		iso_modules_dir[0] = '\0';
 	resolve_kmod_bin_dir(iso_kmod_bin_dir, sizeof(iso_kmod_bin_dir));
 	/*
 	 * The package seed directory (#189 part 2), "" for none -- the same
@@ -12302,6 +12331,9 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 		 * not 127: the reaper tells the two apart, and 127 already
 		 * means "mkinstalleriso could not be executed".
 		 */
+		if (iso_modules_have == 1 &&
+		    root_output_unpack(iso_modules_artifact, iso_modules_unpack, iso_modules_dir) != 0)
+			_exit(125);
 		seed_err[0] = '\0';
 		/* Last build's seed goes with the rest of the staging work:
 		 * removing a directory of this size is I/O the event loop
@@ -12353,6 +12385,8 @@ static const char *iso_child_failure_what(int status)
 {
 	if (!WIFEXITED(status))
 		return "the ISO build child died";
+	if (WEXITSTATUS(status) == 125)
+		return "unpacking the kernel-modules package failed";
 	if (WEXITSTATUS(status) == 126)
 		return "staging the installer package seed failed";
 	if (WEXITSTATUS(status) == 127)
@@ -37465,6 +37499,9 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 
 			snprintf(record, sizeof(record), "%s/cixd-root.squashfs%s", BOOTROOT_DIR,
 			         ROOT_KERNEL_RELEASES_SUFFIX);
+			module_releases_in(g_bootroot_assembly_modules_dir,
+			                   g_bootroot_assembly_kernel_releases,
+			                   sizeof(g_bootroot_assembly_kernel_releases));
 			if (g_bootroot_assembly_kernel_releases[0] == '\0')
 				unlink(record);
 			else if (persist_atomic_write(record, g_bootroot_assembly_kernel_releases,
