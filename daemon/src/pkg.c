@@ -11610,6 +11610,15 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
  * the log carry it whole. 256 bytes cut the first live one short. */
 static char g_abi_hold_why[1024];
 
+/*
+ * ADR-0373 decision 4: the author is wanted. Set when a package that
+ * declares an ABI finishes installing, so the next package-job followup
+ * authors at once rather than at the next discovery run, and cleared by
+ * pkg_abi_author_next() once a pass was not cut short by a commit
+ * already in flight.
+ */
+static int g_abi_author_wanted;
+
 /* pkg's target version in image, into out; 1 when it has one. */
 static int image_target_version(const char *image, const struct image_manifest_entry *m, int mn,
                                 const char *pkg, char *out, size_t out_size)
@@ -11702,6 +11711,21 @@ static int abi_hold_verdict(const char *name, const char *version, const char *i
 		    !image_target_version(image, m, mn, c, tv, sizeof(tv)))
 			continue;
 		entry_record(c, tv, record, sizeof(record));
+		/*
+		 * ADR-0373 release D: a target revision not built yet has no
+		 * record, and taken alone that would let the provider move
+		 * ahead of a consumer that may never build. Until it has
+		 * one, the consumer is judged by the revision it runs.
+		 */
+		if (record[0] == '\0') {
+			struct pkg_entry *ce = pkg_find(c, image);
+
+			if (ce != NULL && ce->state == PKG_STATE_INSTALLED &&
+			    strcmp(ce->version, tv) != 0) {
+				entry_record(c, ce->version, record, sizeof(record));
+				snprintf(tv, sizeof(tv), "%s", ce->version);
+			}
+		}
 		if (record_abi_of(record, name, other, sizeof(other)) && strcmp(other, offers) != 0) {
 			snprintf(why, why_size,
 			         "%s@%s offers ABI %s; %s@%s in image %s was built against ABI %s. Move "
@@ -16465,6 +16489,14 @@ static int install_after_produce(int chain_idx, struct pkg_entry *e)
 	 * rolling rebuild installs exactly the pin and needs nothing. */
 	if (strcmp(g_chains[chain_idx].run_trigger, PKG_RUN_TRIGGER_REQUEST) == 0)
 		pin_follows_install(g_chains[chain_idx].image, e->name, e->version);
+	/* ADR-0373 decision 4: a provider's version is now composable, so
+	 * consumers built against another of its ABIs may need a rebuild. */
+	{
+		char abi[PKG_ABI_MAX];
+
+		if (entry_abi(e->name, e->version, abi, sizeof(abi)) > 0)
+			g_abi_author_wanted = 1;
+	}
 	/* cix#553: paths this package declared it takes over change owner. */
 	transfer_replaced_paths(normalize_image(g_chains[chain_idx].image), e,
 	                        g_chains[chain_idx].fetch_resolved_replaces);
@@ -18380,6 +18412,48 @@ enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, co
  */
 #define PKG_REVISE_MAX 262144
 
+/* cbs, revise, the path, five --set pairs, and two --unset pairs plus
+ * one per output: the most either writer passes. */
+#define REVISE_ARGV_MAX (18 + 2 * PKG_RECIPE_OUTPUTS_MAX)
+
+/*
+ * Appends to argv, from n, an --unset for every line one build wrote
+ * into the recipe at `path`: the main approval, each output's
+ * (ADR-0367), and the built_against record (ADR-0373). None is ever
+ * carried into another revision (ADR-0307 clause 5), and revise refuses
+ * to unset what is absent, so only those present. unset_out holds the
+ * output keys' strings. Returns the new n.
+ */
+static int revise_unset_build_lines(const char *path, char **argv, int n,
+                                    char unset_out[][PKG_NAME_MAX + 32])
+{
+	char outs[PKG_RECIPE_OUTPUTS_MAX][PKG_NAME_MAX];
+	struct pkg_recipe recipe;
+	int out_n, oi;
+
+	if (parse_recipe(path, &recipe) != 0)
+		recipe.artifact_sha256[0] = recipe.built_against[0] = '\0';
+	if (recipe.artifact_sha256[0] != '\0') {
+		argv[n++] = (char *)"--unset";
+		argv[n++] = (char *)"metadata.artifact_sha256";
+	}
+	if (recipe.built_against[0] != '\0') {
+		argv[n++] = (char *)"--unset";
+		argv[n++] = (char *)"metadata." PKG_BUILT_AGAINST_KEY;
+	}
+	out_n = recipe_outputs(path, outs, PKG_RECIPE_OUTPUTS_MAX);
+	for (oi = 0; oi < out_n; oi++) {
+		struct pkg_recipe ov;
+
+		if (parse_recipe_for(path, outs[oi], &ov) != 0 || ov.artifact_sha256[0] == '\0')
+			continue;
+		snprintf(unset_out[oi], PKG_NAME_MAX + 32, "metadata.artifact_sha256.%s", outs[oi]);
+		argv[n++] = (char *)"--unset";
+		argv[n++] = unset_out[oi];
+	}
+	return n;
+}
+
 /*
  * The revision says what it was asked to: every field cbs revise was
  * told to set, read back from `cbs explain` of the revised text. revise
@@ -18388,9 +18462,12 @@ enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, co
  * its own metadata KEY (cix-build-system#279), and the result validated
  * and published as hibr@0.99.4-1. A revision that fails this is refused,
  * naming the field, rather than committed. 0, or -1 with why in err.
+ * `release` is the release asked for; a NULL url leaves the source as
+ * it was (an ABI rebuild, ADR-0373), and is not checked.
  */
-static int revision_says(const char *text, size_t len, const char *version, const char *url,
-                         const char *sha256, const char *changelog, char *err, size_t err_size)
+static int revision_says(const char *text, size_t len, const char *version, long long want_release,
+                         const char *url, const char *sha256, const char *changelog, char *err,
+                         size_t err_size)
 {
 	char path[PATH_MAX], why[PKG_ERROR_MAX];
 	char got_version[PKG_VERSION_MAX], got_url[PKG_URL_MAX], got_sha[PKG_SHA256_MAX];
@@ -18426,12 +18503,13 @@ static int revision_says(const char *text, size_t len, const char *version, cons
 	if (cbs_explain_version_parts(ex, got_version, sizeof(got_version), &release) != 0 ||
 	    strcmp(got_version, version) != 0)
 		wrong = "version";
-	else if (release != 1)
+	else if (release != want_release)
 		wrong = "release";
-	else if (cbs_explain_source(ex, 0, got_url, sizeof(got_url), got_sha, sizeof(got_sha)) != 0 ||
-	         strcmp(got_url, url) != 0)
+	else if (url != NULL &&
+	         (cbs_explain_source(ex, 0, got_url, sizeof(got_url), got_sha, sizeof(got_sha)) != 0 ||
+	          strcmp(got_url, url) != 0))
 		wrong = "the main source's url";
-	else if (strcmp(got_sha, sha256) != 0)
+	else if (url != NULL && strcmp(got_sha, sha256) != 0)
 		wrong = "the main source's sha256";
 	else if (cbs_explain_metadata(ex, "changelog", got_changelog, sizeof(got_changelog)) != 0 ||
 	         strcmp(got_changelog, changelog) != 0)
@@ -18574,11 +18652,8 @@ enum pkg_error pkg_recipe_revise_start(const char *name, const char *version, co
 	char set_version[PKG_VERSION_MAX + 16], set_url[PKG_URL_MAX + 32];
 	char set_sha[PKG_SHA256_MAX + 32], set_changelog[PKG_CHANGELOG_MAX + 32];
 	char changelog[PKG_CHANGELOG_MAX], old_upstream[PKG_VERSION_MAX];
-	char *argv[18 + 2 * PKG_RECIPE_OUTPUTS_MAX];
-	char outs[PKG_RECIPE_OUTPUTS_MAX][PKG_NAME_MAX];
+	char *argv[REVISE_ARGV_MAX];
 	char unset_out[PKG_RECIPE_OUTPUTS_MAX][PKG_NAME_MAX + 32];
-	int out_n, oi;
-	struct pkg_recipe recipe;
 	char *revised;
 	size_t revised_len = 0, i;
 	int n = 0;
@@ -18659,31 +18734,7 @@ enum pkg_error pkg_recipe_revise_start(const char *name, const char *version, co
 	argv[n++] = set_sha;
 	argv[n++] = (char *)"--set";
 	argv[n++] = set_changelog;
-	/* revise refuses to unset what is absent, so only when there is one. */
-	if (parse_recipe(path, &recipe) != 0)
-		recipe.artifact_sha256[0] = recipe.built_against[0] = '\0';
-	if (recipe.artifact_sha256[0] != '\0') {
-		argv[n++] = (char *)"--unset";
-		argv[n++] = (char *)"metadata.artifact_sha256";
-	}
-	/* ADR-0373: nor what that build was built against, which the next
-	 * revision's own build records. */
-	if (recipe.built_against[0] != '\0') {
-		argv[n++] = (char *)"--unset";
-		argv[n++] = (char *)"metadata." PKG_BUILT_AGAINST_KEY;
-	}
-	/* ADR-0367: each output's approval names one build's bytes too, so
-	 * none is carried into the next revision either (ADR-0307 clause 5). */
-	out_n = recipe_outputs(path, outs, PKG_RECIPE_OUTPUTS_MAX);
-	for (oi = 0; oi < out_n; oi++) {
-		struct pkg_recipe ov;
-
-		if (parse_recipe_for(path, outs[oi], &ov) != 0 || ov.artifact_sha256[0] == '\0')
-			continue;
-		snprintf(unset_out[oi], sizeof(unset_out[oi]), "metadata.artifact_sha256.%s", outs[oi]);
-		argv[n++] = (char *)"--unset";
-		argv[n++] = unset_out[oi];
-	}
+	n = revise_unset_build_lines(path, argv, n, unset_out);
 	argv[n] = NULL;
 
 	revised = malloc(PKG_REVISE_MAX);
@@ -18702,7 +18753,8 @@ enum pkg_error pkg_recipe_revise_start(const char *name, const char *version, co
 			return PKG_ERR_INVALID_RECIPE;
 		}
 
-	if (revision_says(revised, revised_len, version, url, sha256, changelog, err, err_size) != 0) {
+	if (revision_says(revised, revised_len, version, 1, url, sha256, changelog, err, err_size) !=
+	    0) {
 		free(revised);
 		return PKG_ERR_INVALID_RECIPE;
 	}
@@ -18720,6 +18772,185 @@ enum pkg_error pkg_recipe_revise_start(const char *name, const char *version, co
 		               "it before publishing (ADR-0323)",
 		               name, candidate, name, prev, sha256, verification);
 	return perr;
+}
+
+/*
+ * ADR-0373 decision 4: a rebuild revision of `name` -- its newest
+ * revision at the next release, the same version and source, every
+ * approval and the built_against record removed, and a changelog naming
+ * the provider and the ABI it now offers. Committed to git before it is
+ * published, as every authored revision is (ADR-0323). The build that
+ * follows composes the provider's newest installed version and records
+ * its ABI, which is what lifts the hold.
+ */
+static enum pkg_error pkg_recipe_rebuild_start(const char *name, const char *provider,
+                                               const char *abi, char *err, size_t err_size)
+{
+	char prev[PKG_VERSION_MAX], path[PATH_MAX], candidate[PKG_VERSION_MAX + 24];
+	char set_release[40], set_changelog[PKG_CHANGELOG_MAX + 32];
+	char changelog[PKG_CHANGELOG_MAX];
+	char *argv[REVISE_ARGV_MAX];
+	char unset_out[PKG_RECIPE_OUTPUTS_MAX][PKG_NAME_MAX + 32];
+	struct pkg_recipe r;
+	char *revised, *end;
+	size_t revised_len = 0, blen, i;
+	long long release;
+	int n = 0;
+	enum pkg_error perr;
+
+	err[0] = '\0';
+	if (recipe_latest_version(name, prev, sizeof(prev)) != 0 ||
+	    find_recipe_path(name, prev, path, sizeof(path)) != 0 ||
+	    parse_recipe_for(path, name, &r) != 0) {
+		snprintf(err, err_size, "%s has no recipe to rebuild", name);
+		return PKG_ERR_NOT_FOUND;
+	}
+	if (!recipe_path_is_cbs(path)) {
+		snprintf(err, err_size, "%s@%s is not a CPDL recipe, so cbs cannot revise it", name,
+		         prev);
+		return PKG_ERR_INVALID_RECIPE;
+	}
+	/* The release is what follows "<bare_version>-" in the version. */
+	blen = strlen(r.bare_version);
+	if (strncmp(r.version, r.bare_version, blen) != 0 || r.version[blen] != '-' ||
+	    (release = strtoll(r.version + blen + 1, &end, 10)) < 1 || *end != '\0') {
+		snprintf(err, err_size, "%s@%s does not read as <version>-<release>", name, r.version);
+		return PKG_ERR_INVALID_RECIPE;
+	}
+	snprintf(candidate, sizeof(candidate), "%s-%lld", r.bare_version, release + 1);
+	if ((size_t)snprintf(changelog, sizeof(changelog),
+	                     "%s: rebuilt from %s@%s, unchanged, because %s's newest installed "
+	                     "version offers ABI %s and %s@%s was built against another. Written by "
+	                     "cixd (ADR-0373).",
+	                     candidate, name, prev, provider, abi, name, prev) >= sizeof(changelog)) {
+		snprintf(err, err_size, "the rebuild's changelog is longer than %d bytes",
+		         PKG_CHANGELOG_MAX - 1);
+		return PKG_ERR_INVALID_RECIPE;
+	}
+	snprintf(set_release, sizeof(set_release), "release=%lld", release + 1);
+	snprintf(set_changelog, sizeof(set_changelog), "metadata.changelog=%s", changelog);
+	argv[n++] = (char *)"cbs";
+	argv[n++] = (char *)"revise";
+	argv[n++] = path;
+	argv[n++] = (char *)"--set";
+	argv[n++] = set_release;
+	argv[n++] = (char *)"--set";
+	argv[n++] = set_changelog;
+	n = revise_unset_build_lines(path, argv, n, unset_out);
+	argv[n] = NULL;
+
+	revised = malloc(PKG_REVISE_MAX);
+	if (revised == NULL) {
+		snprintf(err, err_size, "out of memory");
+		return PKG_ERR_PERSIST_FAILED;
+	}
+	if (run_cbs(argv, "revise", revised, PKG_REVISE_MAX, &revised_len, err, err_size) != 0) {
+		free(revised);
+		return PKG_ERR_INVALID_RECIPE;
+	}
+	for (i = 0; i < revised_len; i++)
+		if (revised[i] == '\0') {
+			free(revised);
+			snprintf(err, err_size, "cbs revise wrote a NUL byte into the recipe");
+			return PKG_ERR_INVALID_RECIPE;
+		}
+	if (revision_says(revised, revised_len, r.bare_version, release + 1, NULL, NULL, changelog,
+	                  err, err_size) != 0) {
+		free(revised);
+		return PKG_ERR_INVALID_RECIPE;
+	}
+	perr = pkg_recipe_commit_start(name, revised, NULL, err, err_size);
+	free(revised);
+	if (perr == PKG_OK)
+		logstore_write("cixd", "info",
+		               "pkg: wrote %s@%s from %s@%s, to be rebuilt against %s ABI %s -- "
+		               "committing it before publishing (ADR-0373)",
+		               name, candidate, name, prev, provider, abi);
+	return perr;
+}
+
+int pkg_abi_author_wanted(void)
+{
+	return g_abi_author_wanted;
+}
+
+/*
+ * The first recipe whose newest revision was built against an ABI that
+ * the newest installed version of that provider -- what a rebuild
+ * composes (ADR-0372) -- no longer offers gets a rebuild revision. One
+ * per call, because a recipe commit is one at a time. Derived from the
+ * recipes and the installed set each time, never queued, so it cannot
+ * drift from them: an authored revision has no record until it is
+ * built, and a provider installed nowhere new authors nothing. 1 when a
+ * commit was staged (the caller runs its helper), 0 when none.
+ */
+int pkg_abi_author_next(void)
+{
+	static char names[1024][PKG_IMAGE_NAME_MAX];
+	struct timespec t0, t1;
+	long long ms;
+	int n, i, staged = 0, busy = 0;
+
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	n = pkg_recipe_list_names(names, 1024);
+	for (i = 0; i < n && !staged && !busy; i++) {
+		char newest[PKG_VERSION_MAX], record[PKG_BUILT_AGAINST_MAX];
+		const char *p;
+
+		if (recipe_latest_version(names[i], newest, sizeof(newest)) != 0)
+			continue;
+		entry_record(names[i], newest, record, sizeof(record));
+		for (p = record; *p != '\0';) {
+			const char *w, *eq, *unusable = NULL;
+			char provider[PKG_NAME_MAX], built[PKG_ABI_MAX], offers[PKG_ABI_MAX];
+			char err[PKG_ERROR_MAX], upstream[PKG_VERSION_MAX];
+			struct pkg_entry *pe;
+			enum pkg_error perr;
+
+			while (*p == ' ')
+				p++;
+			w = p;
+			while (*p != '\0' && *p != ' ')
+				p++;
+			eq = memchr(w, '=', (size_t)(p - w));
+			if (eq == NULL || (size_t)(eq - w) >= sizeof(provider) ||
+			    (size_t)(p - eq - 1) >= sizeof(built))
+				continue;
+			snprintf(provider, sizeof(provider), "%.*s", (int)(eq - w), w);
+			snprintf(built, sizeof(built), "%.*s", (int)(p - eq - 1), eq + 1);
+			pe = buildenv_newest_installed(provider, NULL, NULL, &unusable);
+			if (pe == NULL || entry_abi(provider, pe->version, offers, sizeof(offers)) <= 0 ||
+			    strcmp(offers, built) == 0)
+				continue;
+			srcresolve_upstream_of(newest, upstream, sizeof(upstream));
+			perr = pkg_recipe_rebuild_start(names[i], provider, offers, err, sizeof(err));
+			if (perr == PKG_OK) {
+				store_note(names[i], upstream, "author", "ok",
+				           "a rebuild against the provider's new ABI is being committed "
+				           "(ADR-0373)");
+				staged = 1;
+			} else if (perr == PKG_ERR_BUSY) {
+				busy = 1; /* another commit is in flight; the next pass */
+			} else {
+				store_note(names[i], upstream, "author", "blocked", err);
+				logstore_write("cixd", "warn",
+				               "pkg: %s@%s was built against %s ABI %s, and %s@%s offers %s, "
+				               "but its rebuild could not be written: %s (ADR-0373)",
+				               names[i], newest, provider, built, provider, pe->version, offers,
+				               err);
+			}
+			break;
+		}
+	}
+	if (!busy)
+		g_abi_author_wanted = 0;
+	/* Runs on the loop; said whenever it costs, so .95 measures it. */
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	ms = (long long)(t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+	if (ms >= 100)
+		logstore_write("cixd", "info",
+		               "pkg: the ABI author pass over %d recipes took %lld ms (ADR-0373)", n, ms);
+	return staged;
 }
 
 /* Called when the helper could not be started, so `done` never runs. */

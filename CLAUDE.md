@@ -472,6 +472,8 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Never let a follower roll mid-converge.** One install is one image version, so a two-package change such as hibr plus longwire has a version between its two jobs that holds half of it. vpn-1 crash-looped on exactly that shape on 2026-11-03.
 - **The ADR-0373 hold judges the target set:** what the drain would install for a rolling entry, the pin for a pinned one, and the installed version for anything else. That is why a provider and its consumer can move in either order. Never judge it on installed state alone, which deadlocks the joint move.
 - **One verdict function, asked in `pkg_install_start()` after version resolution.** A request gets a 409 naming both packages and both ABIs; the drain notes it on the catalogue row as `install`/`blocked`. Never add a second ABI check elsewhere.
+- **A consumer whose target revision has no record yet is judged by its installed revision's record** (ADR-0373 release D). So a provider waits for its consumer's rebuild rather than moving ahead of one that may never build.
+- **The author is derived, never queued** (ADR-0373 decision 4). `pkg_abi_author_next()` writes a rebuild revision of a consumer when its newest revision's record names an ABI that the provider's newest installed version no longer offers. That installed version is what a rebuild composes. It runs from discovery's author stage and after a package declaring an ABI installs, one commit at a time. Never add a queue of pending rebuilds beside the recipes and the installed set.
 
 ## The control-plane root is one image (accepted, not built yet)
 

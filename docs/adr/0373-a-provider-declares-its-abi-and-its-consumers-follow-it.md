@@ -28,6 +28,14 @@ Two things repaired it, and neither was a mechanism:
 
 **How decision 2 was built (release B, 2026-11-05).** The record is one metadata line per build, `"built_against" "hibr=17 ..."`, not one per output: one build produces every output of its recipe, so all of them were built against the same tools. It is captured when the build environment is resolved, reading each entry's own `abi` at the version it resolved to. It is written in the same edit as the first of that build's approvals, when a repository accepts the artifact. So a host with no repository marked push writes no record, as it writes no approval. A copy of a recipe that keeps its record and drops its approval is refused at publish, and the ADR-0323 writer drops the record with the approvals.
 
+**How decision 4 was built (release D, 2026-11-05).**
+
+1. **When.** A consumer needs a rebuild when its newest revision's record names provider P at ABI M, while the newest installed version of P offers ABI N ≠ M. "Newest installed" means installed in any image, which is exactly what a rebuild composes (ADR-0372). So the rebuild records N, and a provider not yet installed anywhere triggers nothing, since its rebuild would compose the old provider and record M again. The condition is computed from recipes and installed packages each time, with no queue beside them. That also makes it idempotent: the authored revision has no record until it is built.
+2. **Where.** It runs in discovery's author stage, one revision per pass, because a recipe commit is one at a time (ADR-0323). It also runs promptly when a package that declares an ABI finishes installing. A consumer that no writable source owns is noted `author`/`blocked` and not written (ADR-0324).
+3. **What.** The revision is the newest one at the next release, written by `cbs revise`: the same version and source, every approval and the record removed, and a changelog naming P and N. It is committed to git, then published, like every authored revision.
+4. **The hold's provider side judges a consumer that has no record yet by its installed revision's record.** That closes ADR-0374's first gap. The provider then waits until the consumer's rebuild exists, and the rebuild composes the provider from an image where it is not held.
+5. **A provider installed only in images that hold its consumers stays held**, because it is installed nowhere else for a rebuild to compose. It moves once it is installed somewhere else, a build image for example.
+
 ## Alternatives
 
 - **Rebuild every consumer whenever any of its build tools gets a new version.** Rejected: a glibc, coreutils or bash roll would rebuild the corpus.

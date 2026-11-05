@@ -538,6 +538,17 @@ int pkg_upstream_refresh_running(void);
  */
 int pkg_discover_author_next(void);
 
+/*
+ * ADR-0373 decision 4: authors one rebuild revision of a consumer whose
+ * newest revision was built against an ABI its provider's newest
+ * installed version no longer offers. 1 when a recipe commit was
+ * staged, and the caller then runs pkg_recipe_commit_work() in a helper,
+ * as for pkg_discover_author_next(); 0 when none. Wanted is 1 once a
+ * package declaring an ABI has installed, until a pass has run.
+ */
+int pkg_abi_author_next(void);
+int pkg_abi_author_wanted(void);
+
 /* Scans pkg_dir/recipes/<name>/<version>/build.cbs (ADR-0107's
  * version-keyed layout) and writes one {name,version,depends} object
  * per (name,version) pair that parses -- metadata only, never

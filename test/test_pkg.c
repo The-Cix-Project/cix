@@ -7834,7 +7834,8 @@ skip_resume:
 			if (a_ok) {
 				memset(&r, 0, sizeof(r));
 				if (cix_client_request(&client, "POST", "/v1/pkg/install",
-				                       "{\"name\":\"abicons\",\"image\":\"abiscratch\"}",
+				                       "{\"name\":\"abicons\",\"version\":\"1.0-1\","
+				                       "\"image\":\"abiscratch\"}",
 				                       &r) != 0 ||
 				    r.status != 409 || r.body == NULL ||
 				    strstr(r.body, "held by the ABI check") == NULL ||
@@ -7842,6 +7843,104 @@ skip_resume:
 					fprintf(stderr,
 					        "FAIL: ADR-0373 abicons (built against ABI 1) into abiscratch, "
 					        "whose abiprov offers 2, must be a 409: status=%d %.300s\n",
+					        r.status, r.body != NULL ? r.body : "");
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
+			/*
+			 * ADR-0373 decision 4: abiprov 2.0 is now installed
+			 * somewhere, so the author picks abicons, whose newest
+			 * revision was built against ABI 1. No source this
+			 * daemon may write owns it, so the rebuild is refused,
+			 * and the refusal names what was selected.
+			 */
+			if (a_ok) {
+				int seen = 0, t;
+
+				for (t = 0; t < 20 && !seen; t++) {
+					memset(&r, 0, sizeof(r));
+					seen = cix_client_request(&client, "GET",
+					                          "/v1/system/logs?source=cixd&regex=its%20rebuild"
+					                          "&tail=20",
+					                          NULL, &r) == 0 &&
+					       r.body != NULL &&
+					       strstr(r.body, "abicons@1.0-1 was built against abiprov ABI 1, and "
+					                      "abiprov@2.0-1 offers 2, but its rebuild could not "
+					                      "be written") != NULL;
+					cix_response_free(&r);
+					if (!seen)
+						usleep(500000);
+				}
+				if (!seen) {
+					fprintf(stderr, "FAIL: ADR-0373 the author did not select abicons for a "
+					                "rebuild once abiprov 2.0 (ABI 2) was installed\n");
+					ok = 0;
+				}
+			}
+		} else if (a_ok) {
+			ok = 0;
+		}
+		/*
+		 * ADR-0373 release D, the hold's fallback: in abiroll, abicons
+		 * rolls, and its target revision 1.1 has no record yet. Taken
+		 * alone, that would let abiprov 2.0 move ahead of a consumer
+		 * that may never build; judged by the installed 1.0-1's
+		 * record, it is held.
+		 */
+		if (a_ok && create_image(&client, "abiroll") == 0) {
+			static const char *const steps[2] = {
+				"{\"name\":\"abiprov\",\"version\":\"1.0-1\",\"image\":\"abiroll\"}",
+				"{\"name\":\"abicons\",\"version\":\"1.0-1\",\"image\":\"abiroll\"}"
+			};
+			static const char *const polls[2] = { "abiprov@abiroll", "abicons@abiroll" };
+
+			for (v = 0; a_ok && v < 2; v++) {
+				int status;
+
+				memset(&r, 0, sizeof(r));
+				status = cix_client_request(&client, "POST", "/v1/pkg/install", steps[v], &r) == 0
+				             ? r.status
+				             : 0;
+				cix_response_free(&r);
+				snprintf(st, sizeof(st), "%s", "(not polled)");
+				if ((status != 202 && status != 200) ||
+				    poll_pkg_state(&client, polls[v], st, sizeof(st), 240) != 0 ||
+				    !str_eq(st, "installed")) {
+					fprintf(stderr, "FAIL: ADR-0373 %s did not install (status=%d state=%s)\n",
+					        polls[v], status, st);
+					a_ok = 0;
+					ok = 0;
+				}
+			}
+			a_ok = a_ok &&
+			       stage_fixture_tarball(scratch_dir, "abicons", "1.1", tarball, sizeof(tarball),
+			                             sha, sizeof(sha)) == 0 &&
+			       write_abi_recipe(&client, "abicons", "1.1", tarball, sha, NULL, NULL) == 0;
+			if (a_ok) {
+				memset(&r, 0, sizeof(r));
+				a_ok = cix_client_request(&client, "POST", "/v1/images/abiroll/manifest",
+				                          "{\"package\":\"abicons\",\"mode\":\"rolling\","
+				                          "\"version\":\"1.0\"}",
+				                          &r) == 0 &&
+				       r.status == 204;
+				cix_response_free(&r);
+			}
+			if (!a_ok) {
+				fprintf(stderr, "FAIL: ADR-0373 could not set up abiroll's rolling abicons\n");
+				ok = 0;
+			} else {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/pkg/install",
+				                       "{\"name\":\"abiprov\",\"version\":\"2.0-1\","
+				                       "\"image\":\"abiroll\",\"upgrade\":true}",
+				                       &r) != 0 ||
+				    r.status != 409 || r.body == NULL ||
+				    strstr(r.body, "abicons@1.0-1") == NULL) {
+					fprintf(stderr,
+					        "FAIL: ADR-0373 abiprov 2.0 into abiroll, where abicons rolls to "
+					        "1.1 (no record yet) but runs 1.0-1 (built against ABI 1), must be "
+					        "held naming 1.0-1: status=%d %.300s\n",
 					        r.status, r.body != NULL ? r.body : "");
 					ok = 0;
 				}

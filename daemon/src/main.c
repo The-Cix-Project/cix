@@ -7289,19 +7289,26 @@ static int kernel_releases_fetch_start(char *err_msg, size_t err_msg_size);
  * job: the first candidate is written and its commit helper started --
  * one per run.
  */
-static void discover_done(int exit_status, void *ctx)
+/* The commit helper for a revision an author stage has just staged. */
+static void start_authored_commit(const char *who)
 {
-	pkg_upstream_refresh_done(exit_status, ctx);
-	if (pkg_discover_author_next() != 1)
-		return;
 	if (helper_run(pkg_recipe_commit_work, NULL, pkg_recipe_commit_done, NULL,
 	               "pkg recipe commit") != 0) {
 		char err[160];
 
 		snprintf(err, sizeof(err), "could not start the commit helper: %s", strerror(errno));
 		pkg_recipe_commit_abort(err);
-		logstore_write("cixd", "error", "pkg discover: %s", err);
+		logstore_write("cixd", "error", "%s: %s", who, err);
 	}
+}
+
+static void discover_done(int exit_status, void *ctx)
+{
+	pkg_upstream_refresh_done(exit_status, ctx);
+	/* ADR-0373: a discovered release first, then an ABI rebuild; one
+	 * commit either way. */
+	if (pkg_discover_author_next() == 1 || pkg_abi_author_next() == 1)
+		start_authored_commit("pkg discover");
 }
 
 /*
@@ -9593,6 +9600,9 @@ static void try_start_queued_pkg_rebuild(void)
 	else if (started == 2)
 		register_pkg_produce_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
 	report_default_image_seed_result(); /* #189 -- says once when the default image became runnable */
+	/* ADR-0373 decision 4: a provider declaring an ABI just installed. */
+	if (pkg_abi_author_wanted() && pkg_abi_author_next() == 1)
+		start_authored_commit("pkg abi author");
 	apply_rolling_container_restarts();
 	apply_pending_deployments(); /* ADR-0270 -- same moment, same reason */
 	start_queued_approval_writeback(); /* ADR-0324 -- same moment, same reason */
