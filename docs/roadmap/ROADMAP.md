@@ -2445,6 +2445,21 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 359: a provider's ABI change is held where its consumers would break, and containers roll once their image settles (#672, ADR-0373 release C, ADR-0374, 0.2.57-661 and 0.2.57-662)
+
+The third of ADR-0373's four releases, with the rolling change it needed, which the owner chose on 2026-11-05 as ADR-0374.
+
+- **Containers roll once the image settles:** a follower container no longer rolls onto every image version as it is produced, only once the image's converge is done. So a change spanning two packages reaches it whole.
+- **The hold:** an install that would put a provider and a consumer built against another of its ABIs into one image's target set is refused. The 409 names both packages and both ABIs. The drain records the same on the package's catalogue row. Because the hold judges the target set, the pair can still move together in either order.
+
+**Measured on 192.168.15.95, 2026-11-05:**
+
+- **Release:** probes 704 and 705 passed. 0.2.57-661 and 0.2.57-662 each booted with 14 containers running and vpn-1 on its dial tone.
+- **Live, provider side:** `probe-abi@3-1` offers ABI 2. Installing it into `base`, where `probe-abiuse@1-1` was built against ABI 1, answered: `probe-abi@3-1 offers ABI 2; probe-abiuse@1-1 in image base was built against ABI 1`. `base` stayed on 2-1.
+- **Live, consumer side:** in the scratch image `abiprobe` it installed. `probe-abiuse` was then refused there: `probe-abiuse@1-1 was built against probe-abi ABI 1; image abiprobe holds probe-abi@3-1, which offers ABI 2. Move both in the image's recipe (ADR-0373, ADR-0374)`, whole since 662.
+
+Release D, authoring the consumer's rebuild, is what remains. hibr declares no ABI yet, so none of this acts on vpn-1 until its recipe does.
+
 ## Part 358: a build records the ABIs it was built against (#672, ADR-0373 release B, 0.2.57-659 and 0.2.57-660)
 
 The second of ADR-0373's four releases. 0.2.57-659 read the `abi` an entry declares (cbs v0.1.129). 0.2.57-660 records it.

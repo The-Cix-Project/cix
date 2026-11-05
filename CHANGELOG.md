@@ -6,6 +6,21 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The ABI hold, and containers roll once their image settles (ADR-0373 release C, ADR-0374, #672, 0.2.57-661 and 0.2.57-662)
+
+- **ADR-0374, accepted by the owner today:** a follower container rolls onto its image only once the image has settled, with no package job in flight for it and nothing queued. One install is one image version. So without this, a provider and its consumer moving as two jobs reached their containers half done, which is what vpn-1 crash-looped on on 2026-11-03.
+- **The hold:** `pkg_install_start()` asks one verdict for every package a chain would add. It judges the image's target set: a rolling entry counts at what the drain would install, a pinned one at its pin, and anything else at its installed version. Both directions are covered:
+  - a provider whose new ABI a consumer there was not built against;
+  - a consumer built against an ABI the image's provider does not offer.
+
+  Because it judges the target set, a pair declared together in the image's recipe moves in either order. A request gets a `409`, "held by the ABI check", naming both packages and both ABIs. The drain notes it on the package's catalogue row as `install`/`blocked`, and clears that note when the hold lifts.
+- **662:** 661's consumer-side 409 ended at `(ADR-0373`, cut at a 256-byte buffer. The sentence is shorter now, and the buffers hold it whole.
+- **Verified on .95:**
+  - Probes 704 and 705 passed. The new `test_pkg` case holds a provider from `base`, lets it into a scratch image, and holds the consumer from there.
+  - 661 and then 662 booted with 14 containers running, and vpn-1 kept its dial tone.
+  - Live: `probe-abi@3-1` (ABI 2) into `base`, where `probe-abiuse@1-1` was built against ABI 1, is refused naming both, and `base` stays on 2-1. Into the scratch image `abiprobe` it installs, and `probe-abiuse` is then refused from there.
+- **Limit:** a published consumer revision whose build fails holds nothing, so the provider can move without it. ADR-0374 records this, and release D is where it closes.
+
 ### cixd records what each build was built against (ADR-0373 release B, #672, 0.2.57-660)
 
 - **What changed:** when cixd composes a build environment, it reads the `abi` each composed entry offers, at the version that entry resolved to. An output's own `abi` is read, never its package's. A fresh build keeps that record, and the first of its approvals writes it into the recipe in the same edit, as `"built_against" "hibr=17 ..."`. One line per build, since one build produces every output.
