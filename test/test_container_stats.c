@@ -14,6 +14,7 @@
 #include "test_image_fixture.h"
 #include "test_drift.h"
 
+#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
@@ -117,8 +118,31 @@ static int fetch_stats(const struct cix_client *c, const char *name, struct cix_
  * in exactly the way the API is weaker, and pretending otherwise by
  * measuring inline is the bug this replaced.
  */
+/*
+ * #671: on btrfs with quotas the figure is the rootfs subvolume's qgroup
+ * EXCL bytes (main.c's stats handler, `source: "qgroup"`), which settles
+ * at transaction commit -- ~30 s apart -- and a fresh snapshot shares all
+ * of its image, so it reads 0 until a commit accounts the appends. The
+ * release selftest runs on btrfs ($TMPDIR, ADR-0360), and 0.2.57-655's
+ * run read 0 for all 15 s; the walk could never answer 0, since it sums
+ * the whole tree, /bin/stats_child included. So each read is preceded by
+ * syncfs() on the data directory, which commits the transaction: the
+ * test asserts the measurement, not where the commit timer happened to
+ * be. A no-op on tmpfs, where the walk answers.
+ */
+static void commit_data_dir(void)
+{
+	int fd = open(g_data_dir, O_RDONLY | O_DIRECTORY);
+
+	if (fd >= 0) {
+		(void)syncfs(fd);
+		close(fd);
+	}
+}
+
 static long long poll_usage_bytes(const struct cix_client *client, const char *name,
-                                  long long more_than, int timeout_ms)
+                                  long long more_than, int timeout_ms, char *source,
+                                  size_t source_size)
 {
 	int waited = 0;
 
@@ -126,15 +150,18 @@ static long long poll_usage_bytes(const struct cix_client *client, const char *n
 		struct cix_response r;
 		long long v = -1;
 
+		commit_data_dir();
 		memset(&r, 0, sizeof(r));
 		if (fetch_stats(client, name, &r) == 0 && r.status == 200) {
 			const struct json_value *disk = json_object_get(r.json, "disk");
 			const struct json_value *usage = json_object_get(disk, "usage");
 			const struct json_value *ub = json_object_get(usage, "bytes");
+			const char *src = json_as_string(json_object_get(usage, "source"));
 
 			/* null while unmeasured -- distinct from a real 0. */
 			if (ub != NULL && ub->type == JSON_NUMBER)
 				v = (long long)ub->u.number;
+			snprintf(source, source_size, "%s", src != NULL ? src : "(none)");
 		}
 		cix_response_free(&r);
 		if (v > more_than)
@@ -153,6 +180,7 @@ int main(void)
 	pid_t daemon_pid;
 	int ok = 1;
 	long long cpu1, cpu2, disk1, disk2, mem1;
+	char disk_source[32] = "(no response)";
 
 	if (test_data_dir_create(g_data_dir, sizeof(g_data_dir)) != 0)
 		return 1;
@@ -243,7 +271,8 @@ int main(void)
 		/* Waits for the first background measurement rather than
 		 * reading this response, which is legitimately null. */
 		(void)disk;
-		disk1 = poll_usage_bytes(&client, "statsctr", 0, 15000);
+		disk1 = poll_usage_bytes(&client, "statsctr", 0, 15000, disk_source,
+		                         sizeof(disk_source));
 
 		if (cpu1 <= 0) {
 			fprintf(stderr, "FAIL: cpu.usage_usec should already be > 0 after a real CPU burn, got %lld\n",
@@ -258,8 +287,9 @@ int main(void)
 		if (disk1 <= 0) {
 			fprintf(stderr,
 			        "FAIL: disk.usage.bytes should be > 0 within 15s (/statsdata.bin was "
-			        "appended to, and the measurement is a background one), got %lld\n",
-			        disk1);
+			        "appended to, and the data directory committed before each read), got "
+			        "%lld from source %s\n",
+			        disk1, disk_source);
 			ok = 0;
 		}
 		if (json_num_field(mem, "max") != 67108864) {
@@ -307,7 +337,8 @@ int main(void)
 		 * appended to, so a figure that never moves is a figure that
 		 * is not being re-measured. */
 		(void)disk;
-		disk2 = poll_usage_bytes(&client, "statsctr", disk1, 15000);
+		disk2 = poll_usage_bytes(&client, "statsctr", disk1, 15000, disk_source,
+		                         sizeof(disk_source));
 
 		if (cpu2 <= cpu1) {
 			fprintf(stderr, "FAIL: cpu.usage_usec did not advance (%lld -> %lld)\n", cpu1, cpu2);
@@ -315,10 +346,10 @@ int main(void)
 		}
 		if (disk2 <= disk1) {
 			fprintf(stderr,
-			        "FAIL: disk.usage.bytes did not advance within 15s (%lld -> %lld) -- the "
-			        "background measurement is not re-running, so a growing container "
+			        "FAIL: disk.usage.bytes did not advance within 15s (%lld -> %lld, source "
+			        "%s) -- the measurement is not re-running, so a growing container "
 			        "would report a size frozen at whatever it was first measured at\n",
-			        disk1, disk2);
+			        disk1, disk2, disk_source);
 			ok = 0;
 		}
 	}
