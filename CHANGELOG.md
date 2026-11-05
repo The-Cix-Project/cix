@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### test_container_stats no longer depends on btrfs's commit timer (#671)
+
+- **Cause:** in the release selftest the data directory is on btrfs, so a container's `disk.usage.bytes` is its rootfs qgroup's exclusive bytes. Those settle at transaction commit, about 30 s apart. A fresh snapshot reads 0 until a commit accounts its writes, and the test waited 15 s, which is how 0.2.57-655's run failed.
+- **Fix:** each read now follows `syncfs()` on the data directory, and a failure names the figure's source. This is a test change only; the API already documents the lag.
+- **Verified:** probe 706 passed, with `test_container_stats PASS`.
+
 ### The ABI hold, and containers roll once their image settles (ADR-0373 release C, ADR-0374, #672, 0.2.57-661 and 0.2.57-662)
 
 - **ADR-0374, accepted by the owner today:** a follower container rolls onto its image only once the image has settled, with no package job in flight for it and nothing queued. One install is one image version. So without this, a provider and its consumer moving as two jobs reached their containers half done, which is what vpn-1 crash-looped on on 2026-11-03.
