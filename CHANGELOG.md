@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cixd authors a consumer's rebuild when its provider's ABI moves (ADR-0373 release D, #672; in master, not yet released)
+
+- **The author:** a consumer gets its next release, written by `cbs revise`, when its newest revision's record names an ABI that the newest installed copy of the provider no longer offers. That copy is what a rebuild composes. The revision keeps the same version and source, drops every approval and the record, and has a changelog naming the provider and the ABI. It is committed before it is published.
+  - It runs from discovery's author stage, and after any package declaring an ABI installs. It writes one revision at a time.
+  - It is computed from the recipes and the installed set each time, so there is no queue to drift.
+  - A consumer no writable source owns is noted `author`/`blocked`.
+- **The hold's fallback:** a consumer whose target revision has no record yet is judged by its installed revision's record. A provider therefore waits for its consumer's rebuild, which closes ADR-0374's first gap.
+- **Verified:** probe 707 passed. Its `test_pkg` checks that the author selects `abicons` once `abiprov` ABI 2 is installed, and that the fallback holds `abiprov` from an image where `abicons` rolls to a revision with no record.
+- **Not yet released:** .95 is not rebooted while the owner relies on vpn-1 remotely (2026-11-05). The live gate waits for them.
+
 ### test_container_stats no longer depends on btrfs's commit timer (#671)
 
 - **Cause:** in the release selftest the data directory is on btrfs, so a container's `disk.usage.bytes` is its rootfs qgroup's exclusive bytes. Those settle at transaction commit, about 30 s apart. A fresh snapshot reads 0 until a commit accounts its writes, and the test waited 15 s, which is how 0.2.57-655's run failed.
