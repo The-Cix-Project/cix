@@ -9496,7 +9496,7 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 				refused++;
 				{
 					const char *phrase;
-					char msg[512];
+					char msg[1100]; /* the ABI hold's sentence, whole (ADR-0373) */
 
 					pkg_error_describe(perr, &phrase, msg, sizeof(msg));
 					logstore_write("cixd", "warn",
@@ -11606,7 +11606,9 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
  * (ADR-0374). A revision not built yet has no record and constrains
  * nothing (ADR-0373 decision 5).
  */
-static char g_abi_hold_why[PKG_ERROR_MAX];
+/* Four names, two versions and two ABIs at their limits: the 409 and
+ * the log carry it whole. 256 bytes cut the first live one short. */
+static char g_abi_hold_why[1024];
 
 /* pkg's target version in image, into out; 1 when it has one. */
 static int image_target_version(const char *image, const struct image_manifest_entry *m, int mn,
@@ -11702,10 +11704,9 @@ static int abi_hold_verdict(const char *name, const char *version, const char *i
 		entry_record(c, tv, record, sizeof(record));
 		if (record_abi_of(record, name, other, sizeof(other)) && strcmp(other, offers) != 0) {
 			snprintf(why, why_size,
-			         "%s@%s offers ABI %s, and %s@%s in image %s was built against %s ABI %s -- "
-			         "move them together: a revision of %s built against ABI %s, beside %s in "
-			         "the image's recipe (ADR-0373, ADR-0374)",
-			         name, version, offers, c, tv, image, name, other, c, offers, name);
+			         "%s@%s offers ABI %s; %s@%s in image %s was built against ABI %s. Move "
+			         "both in the image's recipe (ADR-0373, ADR-0374)",
+			         name, version, offers, c, tv, image, other);
 			return 1;
 		}
 	}
@@ -11733,12 +11734,9 @@ static int abi_hold_verdict(const char *name, const char *version, const char *i
 			continue;
 		if (entry_abi(provider, tv, other, sizeof(other)) > 0 && strcmp(other, built) != 0) {
 			snprintf(why, why_size,
-			         "%s@%s was built against %s ABI %s, and image %s holds %s@%s, which offers "
-			         "ABI %s -- move them together: a revision of %s built against ABI %s, or "
-			         "%s at a version offering ABI %s, in the image's recipe (ADR-0373, "
-			         "ADR-0374)",
-			         name, version, provider, built, image, provider, tv, other, name, other,
-			         provider, built);
+			         "%s@%s was built against %s ABI %s; image %s holds %s@%s, which offers "
+			         "ABI %s. Move both in the image's recipe (ADR-0373, ADR-0374)",
+			         name, version, provider, built, image, provider, tv, other);
 			return 1;
 		}
 	}

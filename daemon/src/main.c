@@ -22484,7 +22484,9 @@ static void handle_container_recipe_apply(int fd, const char *name, const char *
 static void respond_pkg_error(int fd, enum pkg_error err)
 {
 	const char *phrase;
-	char msg[640];
+	/* Sized for the longest describer, the ABI hold's 1024-byte sentence
+	 * behind its prefix (ADR-0373). */
+	char msg[1100];
 	int status = pkg_error_describe(err, &phrase, msg, sizeof(msg));
 
 	respond_error(fd, status, phrase, msg);
