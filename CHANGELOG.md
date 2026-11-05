@@ -6,6 +6,20 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cixd records what each build was built against (ADR-0373 release B, #672, 0.2.57-660)
+
+- **What changed:** when cixd composes a build environment, it reads the `abi` each composed entry offers, at the version that entry resolved to. An output's own `abi` is read, never its package's. A fresh build keeps that record, and the first of its approvals writes it into the recipe in the same edit, as `"built_against" "hibr=17 ..."`. One line per build, since one build produces every output.
+- **The record is treated like an approval:**
+  - The sync and write-back classifier sets it aside, so a copy differing only by it refreshes and writes back rather than diverging.
+  - The ADR-0323 writer drops it from the revision it derives, and the revision check refuses one that keeps it.
+  - A publish carrying a record with no approval is refused, because that is a copy whose approval was dropped by hand and whose record was not.
+- **Limit:** a host with no repository marked push writes no record, as it writes no approval.
+- **Verified on .95:**
+  - Probe 703 passed, `test_pkg` included. That covers the record in the log, the record's sync and write-back, and the refused copy.
+  - 660 booted on slot a with 14 containers running, and vpn-1 had its dial tone.
+  - `probe-abi@2-1` declares `abi "1"`. Its build composes nothing that declares an ABI, so it got its approval only.
+  - `probe-abiuse@1-1` composes it. It logged `built against probe-abi=1`, and on push, `wrote artifact_sha256,built_against into its metadata block`. Both lines reached cix-recipes by write-back (`9b8ca2e`).
+
 ### cbs v0.1.129 everywhere, and cixd reads the ABI an entry offers (ADR-0373, #672)
 
 - **cbs v0.1.129-1:** authored from v0.1.122-1. Its archive hash was measured by `probe-cbs-tarball@129-1`. It was built on .95, and `cix-builder` and `cix-hosttools` rolled onto it.

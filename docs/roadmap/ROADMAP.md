@@ -2445,6 +2445,21 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 358: a build records the ABIs it was built against (#672, ADR-0373 release B, 0.2.57-659 and 0.2.57-660)
+
+The second of ADR-0373's four releases. 0.2.57-659 read the `abi` an entry declares (cbs v0.1.129). 0.2.57-660 records it.
+
+- **Capture:** when cixd composes a build, it notes the ABI each composed entry offers. That is read at the version the entry resolved to, and for an output it is the output's own.
+- **Where it is written:** the first approval of that build writes the record into the recipe in the same edit, as `"built_against" "name=abi ..."`. Git learns it by the same write-back as the approval.
+- **Never carried forward:** sync, write-back and the ADR-0323 writer treat the record as they treat an approval. A record that arrives at publish without an approval is refused.
+
+**Measured on 192.168.15.95, 2026-11-05:**
+
+- **Release:** probe 703 passed, `test_pkg` and its new cases included. 0.2.57-660 was assembled by its own hostbuild and booted on slot a, with 14 containers running and vpn-1 on its dial tone.
+- **Live:** `probe-abiuse@1-1` composes `probe-abi@2-1`, which declares `abi "1"`. Its build logged `built against probe-abi=1`. When its artifact was pushed, cixd wrote `artifact_sha256` and `built_against` in one edit, and both reached cix-recipes (`9b8ca2e`). `probe-abi` itself got its approval and no record.
+
+Nothing acts on the record yet. Release C holds a provider's roll where a consumer was built against another ABI, and release D authors the rebuild. Neither acts on hibr until hibr's recipe declares `abi "17"` and checks it against `hibr.h`, per decision 6.
+
 ## Part 357: the kernel's modules are their own package, and the root and the installer take them from it (#350, ADR-0371, 0.2.57-658, kernel 7.3.1-2)
 
 The last step of ADR-0371 phase 1. kernel 7.3.1-2 is the same kernel with `lib/modules` moved into a `kernel-modules` output, and `bzImage` stays in the main package for the hostbuild artifact and `do_system_update()`.
