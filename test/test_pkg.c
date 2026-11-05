@@ -876,9 +876,12 @@ static int write_multiout_recipe(const struct cix_client *c, const char *name, c
 	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s\"\n"
 	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s-tool\"\n",
 	         name, srcdir, name, name, srcdir, name);
+	/* ADR-0373: the package and its output each offer an ABI of their
+	 * own, so a build composing both records "<name>=7 <name>-tool=3". */
 	snprintf(decls, sizeof(decls),
 	         "    output \"%s-tool\" {\n"
 	         "        files { \"usr/bin/%s-tool\" }\n"
+	         "        abi \"3\"\n"
 	         "    }\n\n",
 	         name, name);
 	cpdl_recipe_text_decl(content, sizeof(content), name, version, test_http_src(tarball_path),
@@ -889,6 +892,19 @@ static int write_multiout_recipe(const struct cix_client *c, const char *name, c
 	                      "            tool \"coreutils\"\n"
 	                      "            tool \"binutils\"\n",
 	                      NULL, decls, build_body, install_body);
+	{
+		static const char format_line[] = "    format \"cixpkg\"\n";
+		static const char abi_line[] = "    abi \"7\"\n";
+		char *at = strstr(content, format_line);
+		size_t tail;
+
+		if (at == NULL || strlen(content) + sizeof(abi_line) > sizeof(content))
+			return -1;
+		at += sizeof(format_line) - 1;
+		tail = strlen(at) + 1;
+		memmove(at + sizeof(abi_line) - 1, at, tail);
+		memcpy(at, abi_line, sizeof(abi_line) - 1);
+	}
 	return publish_cpdl_content(c, name, version, content);
 }
 
@@ -7523,6 +7539,28 @@ skip_resume:
 				        st_u);
 				ok = 0;
 			}
+			/*
+			 * ADR-0373 decision 2: the build records the ABI each
+			 * composed entry offers -- the package's 7 and its
+			 * output's own 3, never the package's inherited -- and
+			 * nothing for the tools that declare none.
+			 */
+			if (u_ok) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET",
+				                       "/v1/system/logs?source=cixd&regex=built%20against&tail=20",
+				                       NULL, &r) != 0 ||
+				    r.body == NULL ||
+				    strstr(r.body, "pkg usesmultiout@1.0-1: built against multiout=7 "
+				                   "multiout-tool=3 (ADR-0373)") == NULL) {
+					fprintf(stderr,
+					        "FAIL: ADR-0373 usesmultiout's build must record \"multiout=7 "
+					        "multiout-tool=3\": %s\n",
+					        r.body != NULL ? r.body : "(no body)");
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
 		}
 		/*
 		 * An output rolls with its recipe: a newer multiout makes
@@ -7560,14 +7598,18 @@ skip_resume:
 		 * revision is refused, as the main package's is (#525). 1.2
 		 * declares one for multiout-tool; 1.3, copied from it, declares
 		 * the same and must be refused naming the output's key.
+		 *
+		 * ADR-0373: 1.4 carries a built_against record with no approval
+		 * at all, the shape of a copy whose approval was dropped by
+		 * hand and whose record was not, and must be refused for it.
 		 */
 		if (stage_ok) {
-			static const char *const vers[2] = { "1.2", "1.3" };
+			static const char *const vers[3] = { "1.2", "1.3", "1.4" };
 			const char *approval =
 			    "aaaabbbbccccddddeeeeffff0000111122223333444455556666777788889999";
 			int v;
 
-			for (v = 0; v < 2; v++) {
+			for (v = 0; v < 3; v++) {
 				char sha_v[65], tarball_v[PATH_MAX], srcdir_v[160];
 				char build_v[512], install_v[512], decls_v[512], content_v[4096];
 				char *body_v;
@@ -7592,14 +7634,23 @@ skip_resume:
 				         "        copy \"${src}/multiout/%s/hello\" to "
 				         "\"${dest}/usr/bin/multiout-tool\"\n",
 				         srcdir_v, srcdir_v);
-				snprintf(decls_v, sizeof(decls_v),
-				         "    metadata {\n"
-				         "        \"artifact_sha256.multiout-tool\" \"%s\"\n"
-				         "    }\n\n"
-				         "    output \"multiout-tool\" {\n"
-				         "        files { \"usr/bin/multiout-tool\" }\n"
-				         "    }\n\n",
-				         approval);
+				if (v < 2)
+					snprintf(decls_v, sizeof(decls_v),
+					         "    metadata {\n"
+					         "        \"artifact_sha256.multiout-tool\" \"%s\"\n"
+					         "    }\n\n"
+					         "    output \"multiout-tool\" {\n"
+					         "        files { \"usr/bin/multiout-tool\" }\n"
+					         "    }\n\n",
+					         approval);
+				else
+					snprintf(decls_v, sizeof(decls_v),
+					         "    metadata {\n"
+					         "        \"built_against\" \"probe-tool=7\"\n"
+					         "    }\n\n"
+					         "    output \"multiout-tool\" {\n"
+					         "        files { \"usr/bin/multiout-tool\" }\n"
+					         "    }\n\n");
 				cpdl_recipe_text_decl(content_v, sizeof(content_v), "multiout", vers[v],
 				                      test_http_src(tarball_v), sha_v, NULL,
 				                      "            compiler \"tcc\"\n"
@@ -7624,6 +7675,13 @@ skip_resume:
 				                      strstr(r.body, "multiout@1.2-1") == NULL)) {
 					fprintf(stderr, "FAIL: #668 multiout 1.3 carried 1.2's multiout-tool "
 					                "approval forward and was not refused naming it: "
+					                "status=%d %.200s\n",
+					        r.status, r.body != NULL ? r.body : "");
+					ok = 0;
+				} else if (v == 2 && (r.status == 204 || r.body == NULL ||
+				                      strstr(r.body, "built_against record") == NULL)) {
+					fprintf(stderr, "FAIL: ADR-0373 multiout 1.4 carried a built_against "
+					                "record with no approval and was not refused for it: "
 					                "status=%d %.200s\n",
 					        r.status, r.body != NULL ? r.body : "");
 					ok = 0;
@@ -9430,6 +9488,9 @@ skip_resume:
 			{
 				static const char approval[] =
 				    "abababababababababababababababababababababababababababababababab";
+				/* ADR-0373: the build's record travels beside its
+				 * approval, and is set aside with it. */
+				static const char record[] = "\"built_against\" \"probe-tool=7\"";
 				char gitfile[PATH_MAX], served[PATH_MAX], req_path[PATH_MAX];
 				char *text = NULL, *posted_req = NULL, *b64 = NULL;
 				size_t text_len = 0, posted_len = 0;
@@ -9441,6 +9502,7 @@ skip_resume:
 				         forge_dir, repos[1][1]);
 				if (run_cmd("sed -i '/^    metadata {$/a\\        \"artifact_sha256\" \"%s\"' '%s'",
 				            approval, gitfile) != 0 ||
+				    run_cmd("sed -i '/^    metadata {$/a\\        %s' '%s'", record, gitfile) != 0 ||
 				    run_cmd("tar -cf '%s/api/v1/repos/%s/archive/main.tar.gz' -C '%s/tree/%.2s' "
 				            "'%s'",
 				            forge_dir, repos[1][1], forge_dir, repos[1][1], repos[1][1] + 3) != 0) {
@@ -9457,16 +9519,17 @@ skip_resume:
 				cix_response_free(&r);
 				memset(&r, 0, sizeof(r));
 				if (cix_client_request(&client, "GET", "/v1/pkg/recipes/shared", NULL, &r) != 0 ||
-				    r.body == NULL || strstr(r.body, approval) == NULL) {
-					fprintf(stderr, "FAIL: ADR-0324 the adopted approval must be in the stored "
-					                "recipe: %s\n",
+				    r.body == NULL || strstr(r.body, approval) == NULL ||
+				    strstr(r.body, "probe-tool=7") == NULL) {
+					fprintf(stderr, "FAIL: ADR-0324/ADR-0373 the adopted approval and record "
+					                "must be in the stored recipe: %s\n",
 					        r.body != NULL ? r.body : "(no body)");
 					ok = 0;
 				}
 				cix_response_free(&r);
 
 				/* Git loses it; srcb becomes writable; the forge serves the file. */
-				if (run_cmd("sed -i '/artifact_sha256/d' '%s'", gitfile) != 0 ||
+				if (run_cmd("sed -i '/artifact_sha256/d;/built_against/d' '%s'", gitfile) != 0 ||
 				    run_cmd("tar -cf '%s/api/v1/repos/%s/archive/main.tar.gz' -C '%s/tree/%.2s' "
 				            "'%s'",
 				            forge_dir, repos[1][1], forge_dir, repos[1][1], repos[1][1] + 3) != 0 ||
@@ -9553,9 +9616,10 @@ skip_resume:
 					if (dn >= 0)
 						decoded[dn] = '\0';
 					if (dn < 0 || strstr((char *)decoded, approval) == NULL ||
+					    strstr((char *)decoded, record) == NULL ||
 					    strstr((char *)decoded, "shared-from-srcb") == NULL) {
-						fprintf(stderr, "FAIL: ADR-0324 the written-back text must be the stored "
-						                "recipe carrying its approval\n");
+						fprintf(stderr, "FAIL: ADR-0324/ADR-0373 the written-back text must be "
+						                "the stored recipe carrying its approval and record\n");
 						ok = 0;
 					}
 				}

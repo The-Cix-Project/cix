@@ -425,6 +425,15 @@ static void pkg_job_set_state(struct pkg_entry *e, enum pkg_state s)
  * declaration" while 64 packages were allowed.
  */
 #define PKG_BUILD_DEPENDS_MAX (PKG_BUILDENV_MAX_TOOLS * (PKG_NAME_MAX + PKG_VERSION_MAX + 1))
+/*
+ * ADR-0373 decision 2: what one build was built against, as
+ * "name=abi" words, one per composed entry that declares an ABI, in
+ * the composer's sorted order. A build whose record would not fit is
+ * refused rather than recorded short: a record missing a provider
+ * reads as "not built against it", which the hold would trust.
+ */
+#define PKG_BUILT_AGAINST_MAX 1024
+#define PKG_BUILT_AGAINST_KEY "built_against"
 
 struct pkg_recipe {
 	char name[PKG_NAME_MAX];
@@ -578,6 +587,10 @@ struct pkg_recipe {
 	char artifact_sha256[PKG_SHA256_MAX];
 	/* ADR-0176: optional, empty for any recipe that doesn't set it. */
 	char changelog[PKG_CHANGELOG_MAX];
+	/* ADR-0373 decision 2: what the build of this version was built
+	 * against, written by cixd beside its approval; the recipe's, so
+	 * the same in every output's view. Empty when there is none. */
+	char built_against[PKG_BUILT_AGAINST_MAX];
 };
 
 static struct pkg_entry g_packages[PKG_MAX_PACKAGES];
@@ -903,6 +916,13 @@ struct pkg_chain {
 	 */
 	char buildenv_image[PKG_IMAGE_NAME_MAX];
 	/*
+	 * ADR-0373 decision 2: the ABIs buildenv_image's entries offer,
+	 * set by buildenv_image_for() each time it resolves this chain's
+	 * tools and kept by a fresh build's completion until its
+	 * artifact's approval is written. "" when no entry declares one.
+	 */
+	char built_against[PKG_BUILT_AGAINST_MAX];
+	/*
 	 * #618: the child this chain is waiting on to compose
 	 * buildenv_image -- its own composer, or a waiter on another
 	 * chain's -- and 0 when there is none. It is what lets a second
@@ -1164,6 +1184,7 @@ static void chain_release(int chain_idx)
 		g_chains[chain_idx].events_open = 0;
 	}
 	g_chains[chain_idx].name[0] = '\0';
+	g_chains[chain_idx].built_against[0] = '\0';
 	g_chains[chain_idx].dep_queue_count = 0;
 	g_chains[chain_idx].buildenv_composer = 0;
 	g_chains[chain_idx].producer = 0;
@@ -3200,7 +3221,9 @@ static int parse_cbs_recipe(const char *path, const char *want, struct pkg_recip
 
 	if (cbs_explain_metadata(ex, "artifact_sha256", out->artifact_sha256,
 	                          sizeof(out->artifact_sha256)) != 0 ||
-	    cbs_explain_metadata(ex, "changelog", out->changelog, sizeof(out->changelog)) != 0) {
+	    cbs_explain_metadata(ex, "changelog", out->changelog, sizeof(out->changelog)) != 0 ||
+	    cbs_explain_metadata(ex, PKG_BUILT_AGAINST_KEY, out->built_against,
+	                         sizeof(out->built_against)) != 0) {
 		/* The same limits as the publish path's own message (#493).
 		 * Unreachable in practice, since publish refuses such a
 		 * recipe before it is ever stored -- but this reads a
@@ -3208,8 +3231,9 @@ static int parse_cbs_recipe(const char *path, const char *want, struct pkg_recip
 		 * what put it there. */
 		logstore_write("cixd", "error",
 		               "pkg: %s: a metadata value does not fit (artifact_sha256 max %d "
-		               "bytes, changelog max %d)",
-		               explain_path, PKG_SHA256_MAX - 1, PKG_CHANGELOG_MAX - 1);
+		               "bytes, changelog max %d, built_against max %d)",
+		               explain_path, PKG_SHA256_MAX - 1, PKG_CHANGELOG_MAX - 1,
+		               PKG_BUILT_AGAINST_MAX - 1);
 		cbs_explain_free(ex);
 		return -1;
 	}
@@ -8468,6 +8492,99 @@ static long long buildenv_idle_seconds(const char *env_image)
  * handover: it calls this function a second time and takes the
  * already-composed fast path above.
  */
+/*
+ * ADR-0373 decision 2: the ABI each resolved entry offers, as
+ * "name=abi" words in the order of tools. Read from that entry's own
+ * explain at the version it resolved to, never the newest, since
+ * hibr's 16u and 17u differ by version; and for an output, its own
+ * declaration, which cbs never inherits from the package. 0, or -1
+ * with err set when the record does not fit.
+ */
+static int buildenv_abi_record(const struct buildenv_tool *tools, int count, char *out,
+                               size_t out_size, char *err, size_t err_size)
+{
+	size_t off = 0;
+	int i;
+
+	out[0] = '\0';
+	for (i = 0; i < count; i++) {
+		char path[PATH_MAX], explain_path[PATH_MAX], perr[128];
+		char *buf = NULL;
+		size_t len = 0;
+		struct cbs_explain *ex;
+		const char *abi;
+		int n = 0;
+
+		if (find_recipe_path(tools[i].name, tools[i].version, path, sizeof(path)) != 0)
+			continue;
+		cbs_explain_path(path, explain_path, sizeof(explain_path));
+		if (persist_read_file(explain_path, &buf, &len) != 0 || buf == NULL)
+			continue;
+		ex = cbs_explain_parse(buf, len, perr, sizeof(perr));
+		free(buf);
+		if (ex == NULL)
+			continue;
+		abi = cbs_explain_abi(ex, tools[i].name);
+		if (abi != NULL && abi[0] != '\0')
+			n = snprintf(out + off, out_size - off, "%s%s=%s", off > 0 ? " " : "",
+			             tools[i].name, abi);
+		cbs_explain_free(ex);
+		if (n < 0 || (size_t)n >= out_size - off) {
+			out[0] = '\0';
+			snprintf(err, err_size,
+			         "the ABIs this build's tools declare do not fit its built-against record "
+			         "(%d bytes) (ADR-0373)",
+			         PKG_BUILT_AGAINST_MAX - 1);
+			return -1;
+		}
+		off += (size_t)n;
+	}
+	return 0;
+}
+
+/*
+ * ADR-0373 decision 2: a fresh build's record, kept from its completion
+ * until approve_published_artifact() writes it into the recipe beside
+ * the approval -- the one moment the bytes are known to be built here
+ * and accepted by a repository. Keyed by the recipe that built it, at
+ * that version, since one build produces every output. A rebuild of the
+ * same version replaces it, as it replaces the cached artifact; a build
+ * whose tools declare no ABI removes it.
+ */
+static int built_against_path(const char *recipe, const char *version, char *out,
+                              size_t out_size)
+{
+	return (size_t)snprintf(out, out_size, "%s/built_against/%s@%s", g_pkg_dir, recipe,
+	                        version) >= out_size
+	           ? -1
+	           : 0;
+}
+
+static void built_against_keep(const char *name, const char *version, const char *record)
+{
+	char recipe_path[PATH_MAX], path[PATH_MAX], dir[PATH_MAX];
+	struct pkg_recipe r;
+
+	if (find_recipe_path(name, version, recipe_path, sizeof(recipe_path)) != 0 ||
+	    parse_recipe_for(recipe_path, name, &r) != 0 ||
+	    built_against_path(r.recipe_name, version, path, sizeof(path)) != 0)
+		return;
+	if (record[0] == '\0') {
+		unlink(path);
+		return;
+	}
+	snprintf(dir, sizeof(dir), "%s/built_against", g_pkg_dir);
+	if (persist_mkdir_p(dir) != 0 || persist_atomic_write(path, record, strlen(record)) != 0) {
+		logstore_write("cixd", "warn",
+		               "pkg %s@%s: built against %s, but that could not be kept for its "
+		               "approval (%s), so its recipe will not record it (ADR-0373)",
+		               name, version, record, strerror(errno));
+		return;
+	}
+	logstore_write("cixd", "info", "pkg %s@%s: built against %s (ADR-0373)", name, version,
+	               record);
+}
+
 static int buildenv_image_for(const char *declared, char *out_image, size_t out_image_size,
                                char *err, size_t err_size, pid_t *out_pid, int *out_pidfd,
                                const char *report_path, int self_chain)
@@ -8487,6 +8604,12 @@ static int buildenv_image_for(const char *declared, char *out_image, size_t out_
 	 * to be written in -- two recipes naming the same tools differently
 	 * ordered share one environment. */
 	qsort(tools, (size_t)count, sizeof(tools[0]), buildenv_tool_cmp);
+	/* On every pass, the fast path's included: the image's name is the
+	 * hash of this exact set, so the record is the same either way. */
+	if (self_chain >= 0 &&
+	    buildenv_abi_record(tools, count, g_chains[self_chain].built_against,
+	                        sizeof(g_chains[self_chain].built_against), err, err_size) != 0)
+		return -1;
 	canonical[0] = '\0';
 	for (i = 0; i < count; i++) {
 		int n = snprintf(canonical + off, sizeof(canonical) - off, "%s@%s\n", tools[i].name,
@@ -9597,41 +9720,44 @@ enum cbs_relation { CBS_SAME, CBS_COMMENTS, CBS_DIVERGENT };
 
 /*
  * A recipe's approval lines (ADR-0367 decision 4): the main package's
- * `"artifact_sha256"`, key "", and each output's
- * `"artifact_sha256.<output>"`, key <output>. One build writes one line
- * per artifact it produced, so every comparison of two copies of a
- * recipe sets all of them aside, never only the main one: an output's
- * line read as content made a copy that differed only by it look
- * divergent, and the write-back of cix@0.2.57-639 refused itself so.
+ * `"artifact_sha256"` and each output's `"artifact_sha256.<output>"`,
+ * plus, since ADR-0373, the build's `"built_against"` record written
+ * beside them. Each is kept under its whole metadata key. One build
+ * writes one line per artifact it produced and one record, so every
+ * comparison of two copies of a recipe sets all of them aside, never
+ * only the main one: an output's line read as content made a copy that
+ * differed only by it look divergent, and the write-back of
+ * cix@0.2.57-639 refused itself so. The bound is every line one build
+ * can write; a line past it would be read as content.
  */
+#define APPROVE_KEYS_MAX (PKG_RECIPE_OUTPUTS_MAX + 2)
 struct cbs_approvals {
 	int n;
-	char key[PKG_RECIPE_OUTPUTS_MAX + 1][PKG_NAME_MAX];
-	char sha[PKG_RECIPE_OUTPUTS_MAX + 1][PKG_SHA256_MAX];
+	char key[APPROVE_KEYS_MAX][PKG_NAME_MAX + 32];
+	char sha[APPROVE_KEYS_MAX][PKG_BUILT_AGAINST_MAX];
 };
 
-/* Sets *key ("" for the main package's) and *hex to an approval line's. */
+/* Sets *key to an approval line's whole metadata key and *hex to its value. */
 static int cbs_approval_line(const char *line, size_t len, const char **key, size_t *key_len,
                              const char **hex, size_t *hex_len)
 {
-	static const char prefix[] = "\"artifact_sha256";
+	static const char approval[] = "artifact_sha256";
 	const char *p = line, *end = line + len, *q;
 
 	while (p < end && (*p == ' ' || *p == '\t'))
 		p++;
-	if ((size_t)(end - p) < sizeof(prefix) - 1 || memcmp(p, prefix, sizeof(prefix) - 1) != 0)
+	if (p == end || *p != '"')
 		return 0;
-	p += sizeof(prefix) - 1;
-	*key = p;
-	*key_len = 0;
-	if (p < end && *p == '.') {
-		*key = ++p;
-		while (p < end && *p != '"')
-			p++;
-		*key_len = (size_t)(p - *key);
-		if (*key_len == 0)
-			return 0;
-	}
+	*key = ++p;
+	while (p < end && *p != '"')
+		p++;
+	*key_len = (size_t)(p - *key);
+	if (!(*key_len == sizeof(approval) - 1 && memcmp(*key, approval, *key_len) == 0) &&
+	    !(*key_len > sizeof(approval) && memcmp(*key, approval, sizeof(approval) - 1) == 0 &&
+	      (*key)[sizeof(approval) - 1] == '.') &&
+	    !(*key_len == strlen(PKG_BUILT_AGAINST_KEY) &&
+	      memcmp(*key, PKG_BUILT_AGAINST_KEY, *key_len) == 0))
+		return 0;
 	if (p == end || *p != '"')
 		return 0;
 	p++;
@@ -9717,16 +9843,15 @@ static int cbs_lines_equal(const char *a, const char *b, int loose, struct cbs_a
 				nl = strchr(*side[k], '\n');
 				len = nl != NULL ? (size_t)(nl - *side[k]) : strlen(*side[k]);
 				if (cbs_approval_line(*side[k], len, &key, &key_len, &hex, &hex_len)) {
-					char kbuf[PKG_NAME_MAX];
+					char kbuf[sizeof(set[k]->key[0])];
 					struct cbs_approvals *s = set[k];
 
-					if (key_len < sizeof(kbuf) && hex_len < PKG_SHA256_MAX) {
+					if (key_len < sizeof(kbuf) && hex_len < sizeof(s->sha[0])) {
 						snprintf(kbuf, sizeof(kbuf), "%.*s", (int)key_len, key);
-						if (cbs_approval_of(s, kbuf) == NULL &&
-						    s->n < PKG_RECIPE_OUTPUTS_MAX + 1) {
-							snprintf(s->key[s->n], PKG_NAME_MAX, "%s", kbuf);
-							snprintf(s->sha[s->n], PKG_SHA256_MAX, "%.*s", (int)hex_len,
-							         hex);
+						if (cbs_approval_of(s, kbuf) == NULL && s->n < APPROVE_KEYS_MAX) {
+							snprintf(s->key[s->n], sizeof(s->key[0]), "%s", kbuf);
+							snprintf(s->sha[s->n], sizeof(s->sha[0]), "%.*s",
+							         (int)hex_len, hex);
 							s->n++;
 						}
 					}
@@ -9788,9 +9913,9 @@ struct recipe_check {
 };
 
 static int cbs_metadata_insert_point(const char *text, size_t *out_off);
-static void approve_cbs_artifact(const char *recipe_path, const char *key, const char *name,
-                                 const char *version,
-                                 const char *sha);
+static int approve_cbs_artifact(const char *recipe_path, const char *const *keys,
+                                const char *const *values, int n, const char *name,
+                                const char *version);
 
 /* What a sync learned from publishing one recipe it carries (ADR-0324). */
 struct sync_outcome {
@@ -9846,19 +9971,20 @@ static enum pkg_error recipe_cbs_refresh(const char *name, const char *version,
 	}
 	pkg_announce_recipes();
 	/* Every approval this host held and git's copy lacked, the main
-	 * package's and each output's (ADR-0367 decision 4). */
-	for (i = 0; i < stored_set->n; i++) {
-		char key[PKG_NAME_MAX + 32];
+	 * package's and each output's (ADR-0367 decision 4), and the
+	 * build's record (ADR-0373), in one write. */
+	{
+		const char *keys[APPROVE_KEYS_MAX], *values[APPROVE_KEYS_MAX];
+		int n = 0;
 
-		if (cbs_approval_of(incoming_set, stored_set->key[i]) != NULL)
-			continue;
-		if (stored_set->key[i][0] == '\0')
-			snprintf(key, sizeof(key), "artifact_sha256");
-		else
-			snprintf(key, sizeof(key), "artifact_sha256.%s", stored_set->key[i]);
-		approve_cbs_artifact(recipe_path, key,
-		                     stored_set->key[i][0] != '\0' ? stored_set->key[i] : name, version,
-		                     stored_set->sha[i]);
+		for (i = 0; i < stored_set->n; i++) {
+			if (cbs_approval_of(incoming_set, stored_set->key[i]) != NULL)
+				continue;
+			keys[n] = stored_set->key[i];
+			values[n++] = stored_set->sha[i];
+		}
+		if (n > 0)
+			(void)approve_cbs_artifact(recipe_path, keys, values, n, name, version);
 	}
 	logstore_write("cixd", "info", "pkg: recipe %s@%s refreshed from git (%s); nothing rebuilds",
 	               name, version,
@@ -10056,7 +10182,9 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 		if (cbs_explain_metadata(ex, "artifact_sha256", parsed.artifact_sha256,
 		                          sizeof(parsed.artifact_sha256)) != 0 ||
 		    cbs_explain_metadata(ex, "changelog", parsed.changelog,
-		                          sizeof(parsed.changelog)) != 0) {
+		                          sizeof(parsed.changelog)) != 0 ||
+		    cbs_explain_metadata(ex, PKG_BUILT_AGAINST_KEY, parsed.built_against,
+		                         sizeof(parsed.built_against)) != 0) {
 			/*
 			 * #493: the caller gets this, not the generic parse
 			 * sentence. Both things that sentence names are FALSE
@@ -10074,8 +10202,8 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 			 */
 			snprintf(g_recipe_add_err, sizeof(g_recipe_add_err),
 			         "a metadata value is too long (artifact_sha256 max %d bytes, changelog "
-			         "max %d)",
-			         PKG_SHA256_MAX - 1, PKG_CHANGELOG_MAX - 1);
+			         "max %d, built_against max %d)",
+			         PKG_SHA256_MAX - 1, PKG_CHANGELOG_MAX - 1, PKG_BUILT_AGAINST_MAX - 1);
 			logstore_write("cixd", "error", "pkg: recipe %s: %s", name, g_recipe_add_err);
 			cbs_explain_free(ex);
 			unlink(staging_path);
@@ -10284,6 +10412,28 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 			               "produce (#525, #668)",
 			               name, parsed.version, keys[k][0] != '\0' ? "." : "", keys[k],
 			               shas[k], name, other_version);
+			unlink(staging_path);
+			free(explain_json);
+			return PKG_ERR_INVALID_RECIPE;
+		}
+		/*
+		 * ADR-0373: a built_against record is written beside its
+		 * build's approval, in the same edit, so a recipe carrying a
+		 * record and no approval at all had it copied from another
+		 * revision, with the approval dropped by hand and the record
+		 * not. Published, it would vouch for an ABI this version's
+		 * build never saw, and approve_cbs_artifact() never replaces a
+		 * key, so its own build could not correct it.
+		 */
+		if (parsed.built_against[0] != '\0' && shas[0][0] == '\0' && nk == 1) {
+			snprintf(g_recipe_add_err, sizeof(g_recipe_add_err),
+			         "this recipe carries a built_against record (\"%s\") but no artifact "
+			         "approval -- cixd writes the record beside the approval of the build it "
+			         "describes, so one alone was carried from another revision. Drop the "
+			         "line and let the build record its own (ADR-0373)",
+			         parsed.built_against);
+			logstore_write("cixd", "error", "pkg: recipe %s@%s refused -- %s", name,
+			               parsed.version, g_recipe_add_err);
 			unlink(staging_path);
 			free(explain_json);
 			return PKG_ERR_INVALID_RECIPE;
@@ -16176,6 +16326,7 @@ static int install_after_produce(int chain_idx, struct pkg_entry *e)
 		/* Issue #129: a fresh build is the only thing worth
 		 * publishing -- a cache/artifact hit's bytes already came
 		 * from somewhere else. */
+		built_against_keep(e->name, e->version, g_chains[chain_idx].built_against);
 		if (strcmp(e->artifact_format, PKG_ARTIFACT_FORMAT_CIXPKG) == 0)
 			pkg_artifact_push_enqueue(e->name, e->version);
 	}
@@ -17046,6 +17197,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 		 */
 		if (!e->cache_hit) {
 			e->export_wanted = 1;
+			built_against_keep(e->name, e->version, g_chains[chain_idx].built_against);
 			pkg_artifact_push_enqueue(e->name, e->version);
 			/* ADR-0367: the build's other outputs are ordinary
 			 * packages, cached and published as they came out of
@@ -18001,6 +18153,7 @@ static int revision_says(const char *text, size_t len, const char *version, cons
 	char path[PATH_MAX], why[PKG_ERROR_MAX];
 	char got_version[PKG_VERSION_MAX], got_url[PKG_URL_MAX], got_sha[PKG_SHA256_MAX];
 	char got_changelog[PKG_CHANGELOG_MAX], got_approval[PKG_SHA256_MAX];
+	char got_record[PKG_BUILT_AGAINST_MAX];
 	char *json;
 	size_t json_len = 0;
 	long long release = 0;
@@ -18044,6 +18197,10 @@ static int revision_says(const char *text, size_t len, const char *version, cons
 	else if (cbs_explain_metadata(ex, "artifact_sha256", got_approval, sizeof(got_approval)) != 0 ||
 	         got_approval[0] != '\0')
 		wrong = "metadata artifact_sha256 (it must be gone)";
+	else if (cbs_explain_metadata(ex, PKG_BUILT_AGAINST_KEY, got_record, sizeof(got_record)) !=
+	             0 ||
+	         got_record[0] != '\0')
+		wrong = "metadata " PKG_BUILT_AGAINST_KEY " (it must be gone, ADR-0373)";
 	cbs_explain_free(ex);
 	if (wrong != NULL) {
 		snprintf(err, err_size,
@@ -18175,7 +18332,7 @@ enum pkg_error pkg_recipe_revise_start(const char *name, const char *version, co
 	char set_version[PKG_VERSION_MAX + 16], set_url[PKG_URL_MAX + 32];
 	char set_sha[PKG_SHA256_MAX + 32], set_changelog[PKG_CHANGELOG_MAX + 32];
 	char changelog[PKG_CHANGELOG_MAX], old_upstream[PKG_VERSION_MAX];
-	char *argv[16 + 2 * PKG_RECIPE_OUTPUTS_MAX];
+	char *argv[18 + 2 * PKG_RECIPE_OUTPUTS_MAX];
 	char outs[PKG_RECIPE_OUTPUTS_MAX][PKG_NAME_MAX];
 	char unset_out[PKG_RECIPE_OUTPUTS_MAX][PKG_NAME_MAX + 32];
 	int out_n, oi;
@@ -18261,9 +18418,17 @@ enum pkg_error pkg_recipe_revise_start(const char *name, const char *version, co
 	argv[n++] = (char *)"--set";
 	argv[n++] = set_changelog;
 	/* revise refuses to unset what is absent, so only when there is one. */
-	if (parse_recipe(path, &recipe) == 0 && recipe.artifact_sha256[0] != '\0') {
+	if (parse_recipe(path, &recipe) != 0)
+		recipe.artifact_sha256[0] = recipe.built_against[0] = '\0';
+	if (recipe.artifact_sha256[0] != '\0') {
 		argv[n++] = (char *)"--unset";
 		argv[n++] = (char *)"metadata.artifact_sha256";
+	}
+	/* ADR-0373: nor what that build was built against, which the next
+	 * revision's own build records. */
+	if (recipe.built_against[0] != '\0') {
+		argv[n++] = (char *)"--unset";
+		argv[n++] = (char *)"metadata." PKG_BUILT_AGAINST_KEY;
 	}
 	/* ADR-0367: each output's approval names one build's bytes too, so
 	 * none is carried into the next revision either (ADR-0307 clause 5). */
@@ -22883,9 +23048,16 @@ static int cbs_metadata_insert_point(const char *text, size_t *out_off)
 	}
 }
 
-static void approve_cbs_artifact(const char *recipe_path, const char *key, const char *name,
-                                  const char *version,
-                                  const char *sha)
+/*
+ * Writes each keys[i] "values[i]" line into the metadata block in one
+ * edit: an artifact's approval, and since ADR-0373 the build's
+ * built-against record beside it. A key the derived identity already
+ * carries is left as it is, never replaced (ADR-0107). 0 when,
+ * afterwards, the identity carries every key.
+ */
+static int approve_cbs_artifact(const char *recipe_path, const char *const *keys,
+                                const char *const *values, int n, const char *name,
+                                const char *version)
 {
 	char explain_path[PATH_MAX];
 	/*
@@ -22899,12 +23071,17 @@ static void approve_cbs_artifact(const char *recipe_path, const char *key, const
 	char *stored = NULL, *updated = NULL, *old_json = NULL, *new_json = NULL;
 	size_t stored_len = 0, old_len = 0, new_len = 0, insert_off = 0;
 	struct json_value *old_root = NULL, *new_root = NULL;
-	char line[PKG_SHA256_MAX + PKG_NAME_MAX + 64];
-	size_t line_len;
-	int ok = 0;
+	/* The lines to insert, and the members the guard below sets aside:
+	 * exactly the keys this call writes, comma-separated. */
+	char *lines = NULL;
+	char ignore[APPROVE_KEYS_MAX * (PKG_NAME_MAX + 32)];
+	const size_t lines_size = (size_t)APPROVE_KEYS_MAX * (PKG_NAME_MAX + PKG_BUILT_AGAINST_MAX + 48);
+	size_t line_len = 0, ignore_len = 0;
+	int ok = 0, have = 0, i;
 
-	if (persist_read_file(recipe_path, &stored, &stored_len) != 0 || stored == NULL)
-		return;
+	if (n <= 0 || n > APPROVE_KEYS_MAX ||
+	    persist_read_file(recipe_path, &stored, &stored_len) != 0 || stored == NULL)
+		return -1;
 
 	/*
 	 * Already approved is asked of the derived identity, never of the
@@ -22923,8 +23100,35 @@ static void approve_cbs_artifact(const char *recipe_path, const char *key, const
 	old_root = json_parse(old_json, old_len);
 	if (old_root == NULL)
 		goto done;
-	if (json_as_string(json_object_get(json_object_get(old_root, "metadata"), key)) != NULL)
-		goto done; /* approved already -- never a replacement (ADR-0107) */
+	lines = malloc(lines_size);
+	if (lines == NULL)
+		goto done;
+	lines[0] = '\0';
+	ignore[0] = '\0';
+	for (i = 0; i < n; i++) {
+		int w;
+
+		/* present already -- never a replacement (ADR-0107) */
+		if (json_as_string(json_object_get(json_object_get(old_root, "metadata"), keys[i])) !=
+		    NULL) {
+			have++;
+			continue;
+		}
+		w = snprintf(lines + line_len, lines_size - line_len, "        \"%s\" \"%s\"\n", keys[i],
+		             values[i]);
+		if (w < 0 || (size_t)w >= lines_size - line_len)
+			goto done;
+		line_len += (size_t)w;
+		w = snprintf(ignore + ignore_len, sizeof(ignore) - ignore_len, "%s%s",
+		             ignore_len > 0 ? "," : "", keys[i]);
+		if (w < 0 || (size_t)w >= sizeof(ignore) - ignore_len)
+			goto done;
+		ignore_len += (size_t)w;
+	}
+	if (have == n) {
+		ok = 1;
+		goto done;
+	}
 
 	if (cbs_metadata_insert_point(stored, &insert_off) != 0) {
 		logstore_write("cixd", "info",
@@ -22932,16 +23136,15 @@ static void approve_cbs_artifact(const char *recipe_path, const char *key, const
 		               "line of its own, so this daemon will not write the approval and the "
 		               "package rebuilds from source on every install. Add to the recipe, "
 		               "after `requires`:  metadata {  \"%s\" \"%s\"  }  (#492)",
-		               name, version, key, sha);
+		               name, version, keys[0], values[0]);
 		goto done;
 	}
 
-	line_len = (size_t)snprintf(line, sizeof(line), "        \"%s\" \"%s\"\n", key, sha);
 	updated = malloc(stored_len + line_len + 1);
 	if (updated == NULL)
 		goto done;
 	memcpy(updated, stored, insert_off);
-	memcpy(updated + insert_off, line, line_len);
+	memcpy(updated + insert_off, lines, line_len);
 	memcpy(updated + insert_off + line_len, stored + insert_off, stored_len - insert_off);
 	updated[stored_len + line_len] = '\0';
 
@@ -22983,16 +23186,17 @@ static void approve_cbs_artifact(const char *recipe_path, const char *key, const
 	 * name two different byte sequences, which is what immutability
 	 * protects against.
 	 */
-	if (json_as_string(json_object_get(json_object_get(new_root, "metadata"),
-	                                    key)) == NULL) {
-		logstore_write("cixd", "warn",
-		               "pkg: %s@%s: the approval did not reach the recipe's metadata block "
-		               "-- recipe left untouched (#492)",
-		               name, version);
-		goto done;
-	}
+	for (i = 0; i < n; i++)
+		if (json_as_string(json_object_get(json_object_get(new_root, "metadata"), keys[i])) ==
+		    NULL) {
+			logstore_write("cixd", "warn",
+			               "pkg: %s@%s: \"%s\" did not reach the recipe's metadata block "
+			               "-- recipe left untouched (#492)",
+			               name, version, keys[i]);
+			goto done;
+		}
 
-	if (jsondiff_equal_ignoring(old_root, new_root, key) != 1) {
+	if (jsondiff_equal_ignoring(old_root, new_root, ignore) != 1) {
 		logstore_write("cixd", "warn",
 		               "pkg: %s@%s: writing its approval changed more than the approval "
 		               "-- recipe left untouched (#492)",
@@ -23025,10 +23229,8 @@ static void approve_cbs_artifact(const char *recipe_path, const char *key, const
 		goto done;
 	}
 	ok = 1;
-	logstore_write("cixd", "info",
-	               "pkg: %s@%s approved its own published artifact (%.16s...) in its metadata "
-	               "block",
-	               name, version, sha);
+	logstore_write("cixd", "info", "pkg: %s@%s: wrote %s into its metadata block", name, version,
+	               ignore);
 
 done:
 	if (!ok && candidate_path[0] != '\0')
@@ -23041,12 +23243,18 @@ done:
 	free(new_json);
 	free(updated);
 	free(stored);
+	free(lines);
+	return ok ? 0 : -1;
 }
 
 static void approve_published_artifact(const char *name, const char *version)
 {
-	char artifact[PATH_MAX], cbs_path[PATH_MAX];
+	char artifact[PATH_MAX], cbs_path[PATH_MAX], record_path[PATH_MAX];
 	char sha[65], key[PKG_NAME_MAX + 32];
+	const char *keys[2], *values[2];
+	char *record = NULL;
+	size_t record_len = 0;
+	int n = 1;
 	struct pkg_recipe r;
 
 	(void)cache_artifact_path_existing(name, version, artifact, sizeof(artifact));
@@ -23064,7 +23272,24 @@ static void approve_published_artifact(const char *name, const char *version)
 		snprintf(key, sizeof(key), "artifact_sha256");
 	else
 		snprintf(key, sizeof(key), "artifact_sha256.%s", name);
-	approve_cbs_artifact(cbs_path, key, name, version, sha);
+	keys[0] = key;
+	values[0] = sha;
+	/*
+	 * ADR-0373 decision 2: what the build was built against goes in
+	 * beside the first of its approvals, the main package's or an
+	 * output's, whichever is pushed first; the others find it there.
+	 * Kept until it is in the recipe, so a refused write leaves it for
+	 * the next approval.
+	 */
+	if (built_against_path(r.recipe_name, version, record_path, sizeof(record_path)) == 0 &&
+	    persist_read_file(record_path, &record, &record_len) == 0 && record != NULL &&
+	    record[0] != '\0') {
+		keys[n] = PKG_BUILT_AGAINST_KEY;
+		values[n++] = record;
+	}
+	if (approve_cbs_artifact(cbs_path, keys, values, n, name, version) == 0 && n > 1)
+		unlink(record_path);
+	free(record);
 	writeback_after_approval(r.recipe_name, version); /* ADR-0324: git learns it too */
 }
 

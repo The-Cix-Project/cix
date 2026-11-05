@@ -26,6 +26,8 @@ Two things repaired it, and neither was a mechanism:
 5. **No declaration means no inference.** A provider without an `abi` behaves exactly as today.
 6. **A declaration is checked against the source, so it cannot go stale.** hibr's recipes are written by rolling discovery, each copied from the previous revision. A declared `abi "17"` would therefore be copied unchanged into the revision where hibr moves to 18. The hold would then read 17 against 17, and vpn-1 would break exactly as before, this time with a mechanism vouching for it. So a provider's recipe asserts its declaration in its build: hibr's checks `usr/include/hibr/hibr.h` for `#define HIBR_ABI 17u`. A discovery-written revision whose source has moved fails its build and rolls nothing (ADR-0323), until a person updates the number. An ABI change becomes a deliberate act on the provider's side.
 
+**How decision 2 was built (release B, 2026-11-05).** The record is one metadata line per build, `"built_against" "hibr=17 ..."`, not one per output: one build produces every output of its recipe, so all of them were built against the same tools. It is captured when the build environment is resolved, reading each entry's own `abi` at the version it resolved to. It is written in the same edit as the first of that build's approvals, when a repository accepts the artifact. So a host with no repository marked push writes no record, as it writes no approval. A copy of a recipe that keeps its record and drops its approval is refused at publish, and the ADR-0323 writer drops the record with the approvals.
+
 ## Alternatives
 
 - **Rebuild every consumer whenever any of its build tools gets a new version.** Rejected: a glibc, coreutils or bash roll would rebuild the corpus.
