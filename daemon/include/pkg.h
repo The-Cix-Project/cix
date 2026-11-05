@@ -407,7 +407,14 @@ enum pkg_error {
 	 * a time. Its own code rather than PKG_ERR_BUSY, which means every
 	 * job slot is taken -- a different cause with a different remedy.
 	 */
-	PKG_ERR_HOSTBUILD_RUNNING
+	PKG_ERR_HOSTBUILD_RUNNING,
+	/*
+	 * ADR-0373 decision 3, ADR-0374: installing this package, or a
+	 * dependency it brings, would leave a provider and a consumer built
+	 * against another of its ABIs in one image's target set. Nothing
+	 * was started; the message names both packages and both ABIs.
+	 */
+	PKG_ERR_ABI_HOLD
 };
 
 /*
@@ -1343,6 +1350,10 @@ int pkg_active_chain_indices(int *out_indices);
 /* Images waiting for a rolling rebuild. Lets the event loop check
  * whether there is work before calling the expensive drain (#236). */
 int pkg_rebuild_queue_depth(void);
+
+/* ADR-0374: 1 when no package job is in flight for image and it is not
+ * queued for a rebuild, so its follower containers may roll onto it. */
+int pkg_image_settled(const char *image);
 
 /*
  * ADR-0270: enqueue an image for convergence from outside pkg.c, which

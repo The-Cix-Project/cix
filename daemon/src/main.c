@@ -36844,6 +36844,19 @@ static void apply_rolling_container_restarts(void)
 			json_free(root);
 			continue;
 		}
+		/*
+		 * ADR-0374: never onto an image whose converge is still under
+		 * way. One install is one image version, so a change spanning
+		 * two packages (a provider and its consumer, ADR-0373) has a
+		 * version between its jobs holding half of it -- what vpn-1
+		 * crash-looped on, 2026-11-03. This runs again after every
+		 * package job, so the follower rolls at the first one that
+		 * finds the image settled.
+		 */
+		if (!pkg_image_settled(image)) {
+			json_free(root);
+			continue;
+		}
 
 		if (strcmp(pinned_version, current_version) != 0) {
 			/* Part 5 follow-up: this container's own explicit

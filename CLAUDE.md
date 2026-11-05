@@ -465,6 +465,14 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **A test that installs into its own image creates it first** (`create_image()` in `test_pkg`; the loop in `test_pkg_cache`). An omitted image is `base`, which the daemon creates at boot.
 
 
+## A container rolls once its image has settled; the ABI hold judges the target set
+
+**A follower container moves onto its image only when the image has settled: no package job in flight for it, and it is not in the rebuild queue** -- [ADR-0374](docs/adr/0374-a-container-rolls-once-its-image-has-settled.md), the owner's choice of 2026-11-05 for #672, over a job that installs a provider and its consumers together and over a hold judged on installed state.
+
+- **Never let a follower roll mid-converge.** One install is one image version, so a two-package change such as hibr plus longwire has a version between its two jobs that holds half of it. vpn-1 crash-looped on exactly that shape on 2026-11-03.
+- **The ADR-0373 hold judges the target set:** what the drain would install for a rolling entry, the pin for a pinned one, and the installed version for anything else. That is why a provider and its consumer can move in either order. Never judge it on installed state alone, which deadlocks the joint move.
+- **One verdict function, asked in `pkg_install_start()` after version resolution.** A request gets a 409 naming both packages and both ABIs; the drain notes it on the catalogue row as `install`/`blocked`. Never add a second ABI check elsewhere.
+
 ## The control-plane root is one image (accepted, not built yet)
 
 **The root becomes the current version of one image, `cix-root`, plus mount points, `resolv.conf` and `os-release`** -- [ADR-0371](docs/adr/0371-the-control-plane-root-is-one-image.md), accepted by the owner on 2026-11-03 for #350. It supersedes ADR-0291, which was never accepted.

@@ -13869,7 +13869,12 @@ paths:
             Already installed (see upgrade); another install is already in progress; or
             (#384) a job for this same package and image is already running -- a second
             one would take another build slot to do the same work, so it is refused
-            rather than accepted
+            rather than accepted; or (ADR-0373, ADR-0374) held by the ABI check: the
+            package, or a dependency it brings, would leave a provider and a consumer
+            built against another of its ABIs in the image's target set. The message
+            names both packages and both ABIs and how to move them together: declare
+            both in the image's recipe, so its converge moves them before its
+            followers roll
           content:
             application/json:
               schema:

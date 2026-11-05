@@ -1600,6 +1600,26 @@ static char g_rebuild_queue[PKG_REBUILD_QUEUE_MAX][PKG_IMAGE_NAME_MAX];
 static int g_rebuild_queue_count;
 
 /*
+ * ADR-0374: has this image settled -- no package job in flight for it
+ * and nothing queued for it -- so that its followers may roll? A pure
+ * read of the slots and the queue: it never reaps (chain_reap_stale()
+ * can fail entries, and an observer must not), and the drain that runs
+ * at the same moment, just before the followers are asked, reaps.
+ */
+int pkg_image_settled(const char *image)
+{
+	int i;
+
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++)
+		if (g_chains[i].name[0] != '\0' && strcmp(g_chains[i].image, image) == 0)
+			return 0;
+	for (i = 0; i < g_rebuild_queue_count; i++)
+		if (strcmp(g_rebuild_queue[i], image) == 0)
+			return 0;
+	return 1;
+}
+
+/*
  * The queue, for GET /v1/pkg/rebuilds (#236).
  *
  * Publishing a recipe is documented as a metadata write and also
@@ -8500,6 +8520,42 @@ static long long buildenv_idle_seconds(const char *env_image)
  * declaration, which cbs never inherits from the package. 0, or -1
  * with err set when the record does not fit.
  */
+/*
+ * ADR-0373: the ABI entry `name` offers at `version` -- its own `abi`,
+ * the package's or an output's, never inherited -- into out. 1 when it
+ * declares one, 0 when it does not or its recipe cannot be read, and -1
+ * when it declares one too long to hold: read as none, it would make a
+ * record or a hold silently miss a provider.
+ */
+#define PKG_ABI_MAX 128
+static int entry_abi(const char *name, const char *version, char *out, size_t out_size)
+{
+	char path[PATH_MAX], explain_path[PATH_MAX], perr[128];
+	char *buf = NULL;
+	size_t len = 0;
+	struct cbs_explain *ex;
+	const char *abi;
+	int found = 0;
+
+	out[0] = '\0';
+	if (find_recipe_path(name, version, path, sizeof(path)) != 0)
+		return 0;
+	cbs_explain_path(path, explain_path, sizeof(explain_path));
+	if (persist_read_file(explain_path, &buf, &len) != 0 || buf == NULL)
+		return 0;
+	ex = cbs_explain_parse(buf, len, perr, sizeof(perr));
+	free(buf);
+	if (ex == NULL)
+		return 0;
+	abi = cbs_explain_abi(ex, name);
+	if (abi != NULL && abi[0] != '\0')
+		found = snprintf(out, out_size, "%s", abi) < (int)out_size ? 1 : -1;
+	cbs_explain_free(ex);
+	if (found < 0)
+		out[0] = '\0';
+	return found;
+}
+
 static int buildenv_abi_record(const struct buildenv_tool *tools, int count, char *out,
                                size_t out_size, char *err, size_t err_size)
 {
@@ -8508,27 +8564,19 @@ static int buildenv_abi_record(const struct buildenv_tool *tools, int count, cha
 
 	out[0] = '\0';
 	for (i = 0; i < count; i++) {
-		char path[PATH_MAX], explain_path[PATH_MAX], perr[128];
-		char *buf = NULL;
-		size_t len = 0;
-		struct cbs_explain *ex;
-		const char *abi;
-		int n = 0;
+		char abi[PKG_ABI_MAX];
+		int n = 0, have = entry_abi(tools[i].name, tools[i].version, abi, sizeof(abi));
 
-		if (find_recipe_path(tools[i].name, tools[i].version, path, sizeof(path)) != 0)
-			continue;
-		cbs_explain_path(path, explain_path, sizeof(explain_path));
-		if (persist_read_file(explain_path, &buf, &len) != 0 || buf == NULL)
-			continue;
-		ex = cbs_explain_parse(buf, len, perr, sizeof(perr));
-		free(buf);
-		if (ex == NULL)
-			continue;
-		abi = cbs_explain_abi(ex, tools[i].name);
-		if (abi != NULL && abi[0] != '\0')
+		if (have < 0) {
+			out[0] = '\0';
+			snprintf(err, err_size,
+			         "build tool %s@%s declares an abi longer than %d bytes (ADR-0373)",
+			         tools[i].name, tools[i].version, PKG_ABI_MAX - 1);
+			return -1;
+		}
+		if (have)
 			n = snprintf(out + off, out_size - off, "%s%s=%s", off > 0 ? " " : "",
 			             tools[i].name, abi);
-		cbs_explain_free(ex);
 		if (n < 0 || (size_t)n >= out_size - off) {
 			out[0] = '\0';
 			snprintf(err, err_size,
@@ -11546,6 +11594,185 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 	return PKG_OK;
 }
 
+/*
+ * ADR-0373 decision 3, ADR-0374: the ABI hold.
+ *
+ * Judged over the image's TARGET set, never over what is installed: a
+ * rolling manifest entry counts at the version the drain would install,
+ * a pinned one at its pin, and anything else at its installed version.
+ * That is what lets a provider and a consumer built against its new ABI
+ * move into one image in either order -- the version between their two
+ * jobs is never run, because followers roll only onto a settled image
+ * (ADR-0374). A revision not built yet has no record and constrains
+ * nothing (ADR-0373 decision 5).
+ */
+static char g_abi_hold_why[PKG_ERROR_MAX];
+
+/* pkg's target version in image, into out; 1 when it has one. */
+static int image_target_version(const char *image, const struct image_manifest_entry *m, int mn,
+                                const char *pkg, char *out, size_t out_size)
+{
+	struct pkg_entry *e;
+	int i;
+
+	for (i = 0; i < mn; i++)
+		if (strcmp(m[i].package, pkg) == 0) {
+			if (m[i].mode == IMAGE_PKG_PINNED) {
+				snprintf(out, out_size, "%s", m[i].version);
+				return 1;
+			}
+			return recipe_latest_version(pkg, out, out_size) == 0;
+		}
+	e = pkg_find(pkg, image);
+	if (e == NULL || e->state != PKG_STATE_INSTALLED)
+		return 0;
+	snprintf(out, out_size, "%s", e->version);
+	return 1;
+}
+
+/* The ABI `provider` has in a built_against record, into out; 1 when named. */
+static int record_abi_of(const char *record, const char *provider, char *out, size_t out_size)
+{
+	size_t plen = strlen(provider);
+	const char *p = record;
+
+	while (*p != '\0') {
+		const char *w;
+
+		while (*p == ' ')
+			p++;
+		w = p;
+		while (*p != '\0' && *p != ' ')
+			p++;
+		if ((size_t)(p - w) > plen + 1 && memcmp(w, provider, plen) == 0 && w[plen] == '=') {
+			snprintf(out, out_size, "%.*s", (int)(p - w) - (int)plen - 1, w + plen + 1);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/* name@version's built_against record, into out ("" when none). */
+static void entry_record(const char *name, const char *version, char *out, size_t out_size)
+{
+	char path[PATH_MAX];
+	struct pkg_recipe r;
+
+	out[0] = '\0';
+	if (find_recipe_path(name, version, path, sizeof(path)) == 0 &&
+	    parse_recipe_for(path, name, &r) == 0)
+		snprintf(out, out_size, "%s", r.built_against);
+}
+
+/* 1, with why written, when installing name@version into image is held. */
+static int abi_hold_verdict(const char *name, const char *version, const char *image, char *why,
+                            size_t why_size)
+{
+	struct image_manifest_entry m[IMAGE_MANIFEST_MAX_PACKAGES];
+	char offers[PKG_ABI_MAX], record[PKG_BUILT_AGAINST_MAX];
+	char tv[PKG_VERSION_MAX], other[PKG_ABI_MAX];
+	int mn = 0, have, i;
+	const char *p;
+
+	if (image_manifest_read(image, m, &mn, IMAGE_MANIFEST_MAX_PACKAGES) != IMAGE_OK)
+		mn = 0;
+
+	/* As a provider: every other package the image will hold, as a
+	 * consumer of this one. */
+	have = entry_abi(name, version, offers, sizeof(offers));
+	if (have < 0) {
+		snprintf(why, why_size, "%s@%s declares an abi longer than %d bytes (ADR-0373)", name,
+		         version, PKG_ABI_MAX - 1);
+		return 1;
+	}
+	for (i = 0; have > 0 && i < PKG_MAX_PACKAGES + mn; i++) {
+		const char *c;
+
+		if (i < PKG_MAX_PACKAGES) {
+			if (!g_packages[i].in_use || g_packages[i].state != PKG_STATE_INSTALLED ||
+			    strcmp(g_packages[i].image, image) != 0)
+				continue;
+			c = g_packages[i].name;
+		} else {
+			c = m[i - PKG_MAX_PACKAGES].package;
+		}
+		if (strcmp(c, name) == 0 ||
+		    !image_target_version(image, m, mn, c, tv, sizeof(tv)))
+			continue;
+		entry_record(c, tv, record, sizeof(record));
+		if (record_abi_of(record, name, other, sizeof(other)) && strcmp(other, offers) != 0) {
+			snprintf(why, why_size,
+			         "%s@%s offers ABI %s, and %s@%s in image %s was built against %s ABI %s -- "
+			         "move them together: a revision of %s built against ABI %s, beside %s in "
+			         "the image's recipe (ADR-0373, ADR-0374)",
+			         name, version, offers, c, tv, image, name, other, c, offers, name);
+			return 1;
+		}
+	}
+
+	/* As a consumer: every provider its build was built against that
+	 * the image will hold. */
+	entry_record(name, version, record, sizeof(record));
+	for (p = record; *p != '\0';) {
+		const char *w, *eq;
+		char provider[PKG_NAME_MAX], built[PKG_ABI_MAX];
+
+		while (*p == ' ')
+			p++;
+		w = p;
+		while (*p != '\0' && *p != ' ')
+			p++;
+		eq = memchr(w, '=', (size_t)(p - w));
+		if (eq == NULL || (size_t)(eq - w) >= sizeof(provider) ||
+		    (size_t)(p - eq - 1) >= sizeof(built))
+			continue;
+		snprintf(provider, sizeof(provider), "%.*s", (int)(eq - w), w);
+		snprintf(built, sizeof(built), "%.*s", (int)(p - eq - 1), eq + 1);
+		if (strcmp(provider, name) == 0 ||
+		    !image_target_version(image, m, mn, provider, tv, sizeof(tv)))
+			continue;
+		if (entry_abi(provider, tv, other, sizeof(other)) > 0 && strcmp(other, built) != 0) {
+			snprintf(why, why_size,
+			         "%s@%s was built against %s ABI %s, and image %s holds %s@%s, which offers "
+			         "ABI %s -- move them together: a revision of %s built against ABI %s, or "
+			         "%s at a version offering ABI %s, in the image's recipe (ADR-0373, "
+			         "ADR-0374)",
+			         name, version, provider, built, image, provider, tv, other, name, other,
+			         provider, built);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/*
+ * The hold for one package the chain would install, said where it is
+ * read: the log, and the package's catalogue row as install/blocked for
+ * its release (ADR-0323's one vocabulary). A row this hold blocked
+ * before is cleared once it lifts, so it does not outlive its cause.
+ */
+static int abi_hold_check(const char *name, const char *version, const char *image)
+{
+	char path[PATH_MAX];
+	struct pkg_recipe r;
+	struct srcrecord_note note;
+
+	if (find_recipe_path(name, version, path, sizeof(path)) != 0 ||
+	    parse_recipe_for(path, name, &r) != 0)
+		return 0;
+	if (abi_hold_verdict(name, r.version, image, g_abi_hold_why, sizeof(g_abi_hold_why))) {
+		logstore_write("cixd", "warn", "pkg %s@%s: held by the ABI check: %s", name, image,
+		               g_abi_hold_why);
+		store_note(name, r.bare_version, "install", "blocked", g_abi_hold_why);
+		return 1;
+	}
+	if (srcrecord_note(name, &note) == 0 && strcmp(note.version, r.bare_version) == 0 &&
+	    strcmp(note.stage, "install") == 0 && strcmp(note.status, "blocked") == 0)
+		store_note(name, r.bare_version, "install", "ok",
+		           "the ABI hold that stopped this release has lifted (ADR-0373)");
+	return 0;
+}
+
 enum pkg_error pkg_install_start(const char *name, const char *image, const char *version,
                                   int upgrade, int keep_on_failure, char *out_started_name,
                                   size_t out_started_name_size, pid_t *out_pid, int *out_pidfd,
@@ -11674,6 +11901,23 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
 		logstore_write("cixd", "error", "pkg install %s@%s: %s", name,
 		                g_chains[chain_idx].image, err);
 		return PKG_ERR_DEP_UNRESOLVABLE;
+	}
+
+	/* ADR-0373/ADR-0374: every package this chain would put into the
+	 * image -- the one asked for at its resolved version, and each
+	 * dependency it adds at the version that resolves for it. */
+	{
+		int q;
+
+		for (q = 0; q < g_chains[chain_idx].dep_queue_count; q++) {
+			const char *qn = g_chains[chain_idx].dep_queue[q];
+
+			if (abi_hold_check(qn, strcmp(qn, name) == 0 ? recipe.version : NULL,
+			                   g_chains[chain_idx].image)) {
+				g_chains[chain_idx].dep_queue_count = 0;
+				return PKG_ERR_ABI_HOLD;
+			}
+		}
 	}
 
 	g_chains[chain_idx].dep_queue_pos = 0;
@@ -24694,6 +24938,10 @@ int pkg_error_describe(enum pkg_error err, const char **phrase, char *msg, size_
 		 */
 		*phrase = "Conflict";
 		snprintf(msg, msg_size, "no build is in flight for that package and image");
+		return 409;
+	case PKG_ERR_ABI_HOLD:
+		*phrase = "Conflict";
+		snprintf(msg, msg_size, "held by the ABI check: %s", g_abi_hold_why);
 		return 409;
 	case PKG_ERR_BUILD_MEMORY_OVER_CEILING:
 		*phrase = "Conflict";

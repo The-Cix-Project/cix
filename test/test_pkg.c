@@ -856,6 +856,25 @@ static int write_suid_recipe(const struct cix_client *c, const char *name, const
  * usr/bin/<name>, and output "<name>-tool" claims usr/bin/<name>-tool.
  * One build stages both; each package must install only its own.
  */
+/* ADR-0373: puts `abi "<abi>"` after the format line, where CPDL's
+ * order puts a package's ABI. 0, or -1 when it does not fit. */
+static int cpdl_insert_abi(char *content, size_t content_size, const char *abi)
+{
+	static const char format_line[] = "    format \"cixpkg\"\n";
+	char abi_line[96];
+	char *at = strstr(content, format_line);
+	size_t alen, tail;
+
+	alen = (size_t)snprintf(abi_line, sizeof(abi_line), "    abi \"%s\"\n", abi);
+	if (at == NULL || alen >= sizeof(abi_line) || strlen(content) + alen + 1 > content_size)
+		return -1;
+	at += sizeof(format_line) - 1;
+	tail = strlen(at) + 1;
+	memmove(at + alen, at, tail);
+	memcpy(at, abi_line, alen);
+	return 0;
+}
+
 static int write_multiout_recipe(const struct cix_client *c, const char *name, const char *version,
                                  const char *tarball_path, const char *sha256)
 {
@@ -892,19 +911,44 @@ static int write_multiout_recipe(const struct cix_client *c, const char *name, c
 	                      "            tool \"coreutils\"\n"
 	                      "            tool \"binutils\"\n",
 	                      NULL, decls, build_body, install_body);
-	{
-		static const char format_line[] = "    format \"cixpkg\"\n";
-		static const char abi_line[] = "    abi \"7\"\n";
-		char *at = strstr(content, format_line);
-		size_t tail;
+	if (cpdl_insert_abi(content, sizeof(content), "7") != 0)
+		return -1;
+	return publish_cpdl_content(c, name, version, content);
+}
 
-		if (at == NULL || strlen(content) + sizeof(abi_line) > sizeof(content))
-			return -1;
-		at += sizeof(format_line) - 1;
-		tail = strlen(at) + 1;
-		memmove(at + sizeof(abi_line) - 1, at, tail);
-		memcpy(at, abi_line, sizeof(abi_line) - 1);
-	}
+/*
+ * ADR-0373: a small package for the ABI hold, compiled like every
+ * fixture here. `abi` (or NULL) is the ABI it offers; `metadata` (or
+ * NULL) is a whole metadata block's lines, which is how a consumer is
+ * given a built_against record: the test daemon pushes nowhere, so no
+ * build of its own earns one.
+ */
+static int write_abi_recipe(const struct cix_client *c, const char *name, const char *version,
+                            const char *tarball_path, const char *sha256, const char *abi,
+                            const char *metadata)
+{
+	char srcdir[160];
+	char build_body[512], install_body[512], decls[512];
+	char content[4096];
+
+	fixture_srcdir(tarball_path, srcdir, sizeof(srcdir));
+	snprintf(build_body, sizeof(build_body),
+	         "        cd \"${src}/%s/%s\" {\n"
+	         "            run \"tcc\" {\n"
+	         "                \"-o\" \"hello\" \"hello.c\"\n"
+	         "            }\n"
+	         "        }\n",
+	         name, srcdir);
+	snprintf(install_body, sizeof(install_body),
+	         "        mkdir \"${dest}/usr/bin\" parents chmod 0755\n"
+	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s\"\n",
+	         name, srcdir, name);
+	snprintf(decls, sizeof(decls), "%s%s%s", metadata != NULL ? "    metadata {\n" : "",
+	         metadata != NULL ? metadata : "", metadata != NULL ? "    }\n\n" : "");
+	cpdl_recipe_text_decl(content, sizeof(content), name, version, test_http_src(tarball_path),
+	                      sha256, NULL, CPDL_STD_TOOLS, NULL, decls, build_body, install_body);
+	if (abi != NULL && cpdl_insert_abi(content, sizeof(content), abi) != 0)
+		return -1;
 	return publish_cpdl_content(c, name, version, content);
 }
 
@@ -7689,6 +7733,122 @@ skip_resume:
 				cix_response_free(&r);
 				free(body_v);
 			}
+		}
+	}
+
+	/*
+	 * ADR-0373 decision 3, ADR-0374: the ABI hold. abiprov 1.0 offers
+	 * ABI 1 and abicons 1.0 was built against it, both in base. abiprov
+	 * 2.0 offers ABI 2, so installing it into base is held, naming both;
+	 * into an image with no consumer it is not. And abicons, built
+	 * against ABI 1, is held from that image, whose abiprov offers 2.
+	 * abicons' record is in its recipe text beside an approval, the
+	 * shape a pushed build leaves, because this daemon pushes nowhere.
+	 */
+	{
+		static const char *const pv[2] = { "1.0", "2.0" };
+		static const char *const pabi[2] = { "1", "2" };
+		char sha[65], tarball[PATH_MAX], st[64];
+		int a_ok = 1, v;
+
+		for (v = 0; a_ok && v < 2; v++)
+			a_ok = stage_fixture_tarball(scratch_dir, "abiprov", pv[v], tarball, sizeof(tarball),
+			                             sha, sizeof(sha)) == 0 &&
+			       write_abi_recipe(&client, "abiprov", pv[v], tarball, sha, pabi[v], NULL) == 0;
+		a_ok = a_ok &&
+		       stage_fixture_tarball(scratch_dir, "abicons", "1.0", tarball, sizeof(tarball), sha,
+		                             sizeof(sha)) == 0 &&
+		       write_abi_recipe(&client, "abicons", "1.0", tarball, sha, NULL,
+		                        "        \"artifact_sha256\" "
+		                        "\"abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd\"\n"
+		                        "        \"built_against\" \"abiprov=1\"\n") == 0;
+		if (!a_ok) {
+			fprintf(stderr, "FAIL: ADR-0373 could not publish the ABI hold fixtures\n");
+			ok = 0;
+		}
+		/* abiprov 1.0, then abicons, into base: consistent, so both install. */
+		if (a_ok) {
+			static const char *const first[2][2] = { { "abiprov", "{\"name\":\"abiprov\",\"version\":\"1.0-1\"}" },
+			                                         { "abicons", "{\"name\":\"abicons\"}" } };
+
+			for (v = 0; a_ok && v < 2; v++) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/pkg/install", first[v][1], &r) != 0 ||
+				    (r.status != 202 && r.status != 200)) {
+					fprintf(stderr, "FAIL: ADR-0373 install %s status=%d %.300s\n",
+					        first[v][0], r.status, r.body != NULL ? r.body : "");
+					a_ok = 0;
+				}
+				cix_response_free(&r);
+				if (a_ok && (poll_pkg_state(&client, first[v][0], st, sizeof(st), 240) != 0 ||
+				             !str_eq(st, "installed"))) {
+					fprintf(stderr, "FAIL: ADR-0373 %s did not install (state=%s)\n",
+					        first[v][0], st);
+					a_ok = 0;
+				}
+			}
+			if (!a_ok)
+				ok = 0;
+		}
+		/* abiprov 2.0 into base: held, naming the consumer and both ABIs. */
+		if (a_ok) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install",
+			                       "{\"name\":\"abiprov\",\"version\":\"2.0-1\",\"upgrade\":true}",
+			                       &r) != 0 ||
+			    r.status != 409 || r.body == NULL ||
+			    strstr(r.body, "held by the ABI check") == NULL ||
+			    strstr(r.body, "abicons@1.0-1") == NULL || strstr(r.body, "ABI 2") == NULL) {
+				fprintf(stderr,
+				        "FAIL: ADR-0373 abiprov 2.0 (ABI 2) into base, where abicons was built "
+				        "against ABI 1, must be a 409 naming both: status=%d %.300s\n",
+				        r.status, r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+		/* Into an image with no consumer, it installs; abicons is then
+		 * held from that image by its own record. */
+		if (a_ok && create_image(&client, "abiscratch") == 0) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install",
+			                       "{\"name\":\"abiprov\",\"version\":\"2.0-1\","
+			                       "\"image\":\"abiscratch\"}",
+			                       &r) != 0 ||
+			    (r.status != 202 && r.status != 200)) {
+				fprintf(stderr, "FAIL: ADR-0373 abiprov 2.0 into abiscratch must not be held: "
+				                "status=%d %.300s\n",
+				        r.status, r.body != NULL ? r.body : "");
+				ok = 0;
+				a_ok = 0;
+			}
+			cix_response_free(&r);
+			if (a_ok && (poll_pkg_state(&client, "abiprov@abiscratch", st, sizeof(st), 240) != 0 ||
+			             !str_eq(st, "installed"))) {
+				fprintf(stderr, "FAIL: ADR-0373 abiprov 2.0 did not install into abiscratch "
+				                "(state=%s)\n",
+				        st);
+				ok = 0;
+				a_ok = 0;
+			}
+			if (a_ok) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/pkg/install",
+				                       "{\"name\":\"abicons\",\"image\":\"abiscratch\"}",
+				                       &r) != 0 ||
+				    r.status != 409 || r.body == NULL ||
+				    strstr(r.body, "held by the ABI check") == NULL ||
+				    strstr(r.body, "abiprov ABI 1") == NULL) {
+					fprintf(stderr,
+					        "FAIL: ADR-0373 abicons (built against ABI 1) into abiscratch, "
+					        "whose abiprov offers 2, must be a 409: status=%d %.300s\n",
+					        r.status, r.body != NULL ? r.body : "");
+					ok = 0;
+				}
+				cix_response_free(&r);
+			}
+		} else if (a_ok) {
+			ok = 0;
 		}
 	}
 
