@@ -1,0 +1,64 @@
+# 0375 — The control plane upgrades in place
+
+## Status
+
+Proposed, 2026-11-05, for the owner's decision. Asked for by the owner the same day, after a day of releases had restarted vpn-1 at every reboot: *"it's senseless for this to happen every upgrade?"*, and then *"Continue with what's bar raising"*. It builds on [ADR-0247](0247-the-reactor-does-not-block-and-that-is-the-defence.md), which removed the last attempt to keep containers across a cixd restart and named the prerequisite this ADR takes as its first phase. It changes how [ADR-0327](0327-the-host-follows-its-rolling-packages-in-a-nightly-window.md)'s host roll ends. It changes nothing about the A/B slots or the boot counter.
+
+## Context
+
+**Every cix release reboots the host.** The control-plane root is an image in an A/B slot, and the only way onto a new one today is to reboot into it. A reboot stops every container. So an update to cixd, which runs no workload, takes down every workload: vpn-1, which the owner reaches their network through; dns-1 and dns-2; ldap-1; the agents. Kernel updates are rarer, and cannot avoid it.
+
+**It was tried once and removed, and the reason still holds.** [ADR-0246](0246-the-control-plane-is-one-process-doing-five-jobs.md) built a supervisor that restarted a cixd worker and re-adopted its containers. ADR-0247 removed it, `container_adopt()` included, because *"the whole `--init-mode` startup path assumes a fresh kernel"*: `boot_init()`, the disk remounts, `network_init()` and a dozen `boot_subsystem_init()` calls had never run twice in one kernel's life. Its closing words are this ADR's starting point: *"If a restartable control plane is wanted again, the prerequisite is unchanged and now unencumbered: `--init-mode` startup has to become idempotent first."*
+
+**What a running container is tied to, read from the code on 2026-11-05:**
+
+- **Held only as an open descriptor, with no path to reopen:**
+  - each container's cix-init control and report sockets, an anonymous socketpair (`main.c:9007`). cix-init drops the control socket for good on EOF (`init/src/cix_init.c:1428`);
+  - the service output pipes, dup2'd onto every service's stdout and stderr (`main.c:9020`);
+  - the capture pipe (`main.c:17895`);
+  - the device-policy BPF program's descriptor (`container_dev.c:177`).
+
+  Losing any of these breaks the container, or its control.
+- **Recoverable by path from a recorded pid:** the cgroup (`/sys/fs/cgroup/cix-workload/<name>`), the pidfd (`pidfd_open`), the network namespace (`/proc/<pid>/ns/net`), and the veth names, which encode the pid (`container_net.c:68`).
+- **Held only in memory:** the registry (`registry.c:54`), so the IP allocations and service states as well, and the package chains (`pkg.c:1071`).
+- **Inconsistent with an empty registry at start:** autostart *creates* every defined container (`containerdef_autostart_all()`, `main.c:38003`). Run beside live containers, it would clone duplicates into their populated cgroups. It would also hand out their IP addresses (`registry_alloc_ip`).
+- **Children that own shared anonymous memory:** procfuse's server (its load page, `procfuse.c:1160`) and stallwatch (its heartbeat page, `stallwatch.c:1016`). Neither page survives an exec.
+
+**What the kernel gives for free:** `execve` keeps the PID. cixd's children stay its children, and a container armed with `PR_SET_PDEATHSIG` sees no parent die. A descriptor survives an exec when `FD_CLOEXEC` is cleared on it, and the repository already passes descriptors that way to cix-init (`keep_fds`, `container.h:593`). cixd is single-threaded: no `pthread_create` in the daemon.
+
+## Decision
+
+**When the staged root carries the kernel that is running, the host roll switches to it in place, and every container keeps running.** When the kernel changes, it reboots in the window as today.
+
+1. **Startup becomes idempotent first** (ADR-0247's prerequisite). Every `--init-mode` step is classified, and the classification is a table a gate reads, not a comment:
+   - **once per kernel**, skipped on a handover: kernel mounts, module loads, sysctls, the management network, the uevent socket, console shells, boot confirmation;
+   - **idempotent**, run again: bridges, which already tolerate `EEXIST`;
+   - **per process**, rebuilt: the reactor, the listeners.
+2. **Handover, not adoption.** Before it execs, the running cixd drains:
+   - no package job, helper child, park or teardown is in flight, and the roll waits for that;
+   - stallwatch is stopped;
+   - procfuse's page moves to a memfd, so it can be handed over.
+
+   It then writes one handover record, `STATE_DIR/handover.json`: each container's registry entry with its pid, IP allocations and service states, and the descriptor numbers it is passing, with `FD_CLOEXEC` cleared on each. The new cixd reads the record and takes each container over. It reacquires the cgroup, pidfd and namespace by path, takes the passed descriptors as they are, and then deletes the record. Autostart runs only for definitions the record does not name. **A container is never created twice and never adopted blind:** a record that disagrees with the kernel (no such pid, a cgroup without it) is a failed handover, and the host reboots instead.
+3. **The root switch.** The new cixd lives in the staged slot's image, built against that image's glibc, and mixing two glibc builds panics a root (CLAUDE.md records it twice). So the old cixd mounts the staged slot, moves the live mounts into it (data, config, ESP, cgroup, proc, sys, disks), switches root into it, and execs `/bin/cixd --handover` from there. Containers have their own mount namespaces and rootfs, so they are not disturbed. The old root stays referenced until nothing holds it.
+4. **The rollback stays the boot counter.** A live switch does not change the default boot entry until the new cixd has run its probation and confirms, as a booted one does today (`confirm_boot()`). If the new PID 1 dies, the kernel panics and reboots into the default entry, which is still the old slot. **A failed switch costs one reboot, which is today's cost for every release.** It can never cost more.
+5. **One path.** The host roll is the only caller (ADR-0327, and CLAUDE.md since 2026-11-05: releases reach a host through the window). Its last step becomes "switch when the kernel is unchanged, otherwise reboot". There is no second endpoint and no hand route.
+
+## Alternatives
+
+- **Keep rebooting, in the window.** That is today's state, and it is the floor this improves on. It also stays the path for every kernel change.
+- **A supervisor above cixd (ADR-0246).** Removed by ADR-0247, and it needed the same idempotent startup. The handover needs no second process at PID 1.
+- **Exec the staged cixd without switching root, with its own loader.** Rejected: cbs, curl, mkbootroot and every tool cixd runs would stay the old root's versions. That is CLAUDE.md's four-places-cbs trap applied to the whole root.
+- **kexec.** Rejected: a kexec restarts the kernel, which ends every container. It saves firmware time, not workloads.
+
+## Consequences and cost
+
+- **Phases, each one release verified on .95** through the window:
+  1. The startup table, and a test that starts a test daemon twice in one data directory with containers running.
+  2. The handover record, descriptor passing and takeover, with a test that re-execs a test daemon under a running container and finds it alive and controllable.
+  3. The drain: helpers, stallwatch re-forked, procfuse's page as a memfd.
+  4. The root switch and the deferred confirmation, verified live by a real roll on .95.
+  5. The host roll's last step chooses.
+- **All of it is PID 1 code**, where a fault is a kernel panic. That is why rule 4's floor matters: the worst outcome of each phase is the reboot every release costs today.
+- **A kernel update still reboots,** in the window. A box whose kernel rolls as often as cix gains less.
+- **vpn-1 still restarts when the `vpn` image itself rolls.** A second instance with staggered rolls is the answer to that, and it is a separate decision.
