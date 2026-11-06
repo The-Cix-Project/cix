@@ -298,7 +298,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Git first.** A written revision is committed to cix-recipes, and only then published.
 - **Build failure undoes nothing; runtime failure rolls back.** A failed build never moved the image. A container that crash-loops, never becomes ready, or fails its health check on a rolled image goes back to its previous image, and that package version is marked bad until a newer one arrives or an operator clears it.
 - **The host rolls too, nightly at 03:00** (the owner, 2026-10-03, [ADR-0327](docs/adr/0327-the-host-follows-its-rolling-packages-in-a-nightly-window.md)): `system.roll` (the `host-roll` schedule, daily 03:00 for 3h) hostbuilds what is newer of the kernel and cix (kernel first; the root carries its modules), assembles, stages root and kernel together, and reboots inside the window. The boot counter is the rollback. Do not add a manual step back into this path.
-- **A cix release reaches .95 through that window, never through a hand reboot** (the owner, 2026-11-05: *"Continue with what's bar raising and no parallels and maintains our single source of truth"*, after a day of releases had restarted vpn-1, which they reach their network through). Verify with a compile probe, tag, publish `cix@...` (git first), and stop: at 03:00 the host roll hostbuilds it if it is not built, assembles, stages and reboots, and the next morning's checks verify it live. Hand-run `pkg hostbuild`, `update` and `reboot` were a second update path beside the host roll, and each reboot dropped every container. Until the control plane can upgrade without a reboot (the ADR for it is proposed), the window is the only time the box goes down.
+- **A cix release reaches .95 through that window, never through a hand reboot** (the owner, 2026-11-05: *"Continue with what's bar raising and no parallels and maintains our single source of truth"*, after a day of releases had restarted vpn-1, which they reach their network through). Verify with a compile probe, tag, publish `cix@...` (git first), and stop: at 03:00 the host roll hostbuilds it if it is not built, assembles, stages and reboots, and the next morning's checks verify it live. Hand-run `pkg hostbuild`, `update` and `reboot` were a second update path beside the host roll, and each reboot dropped every container. Until the control plane can upgrade without a reboot ([ADR-0375](docs/adr/0375-the-control-plane-upgrades-in-place.md), accepted, being built), the window is the only time the box goes down.
 - **Every stage reports into `cixctl pkg source-catalogue`.** A roll that stops says where and why. One hourly `pkg.discover` schedule; .95 has a saved schedule file, so it is created there explicitly.
 
 ## Many sources and repositories; the public catalogue is the owner's
@@ -465,6 +465,15 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **The refusal belongs to the request, not to `pkg_install_start()`.** Dependencies, hostbuild, build environments, image-recipe apply and the rolling drain pass images the daemon chose; do not move the check down into them.
 - **A test that installs into its own image creates it first** (`create_image()` in `test_pkg`; the loop in `test_pkg_cache`). An omitted image is `base`, which the daemon creates at boot.
 
+
+## The control plane upgrades in place (accepted, being built)
+
+**When the staged root carries the running kernel, the host roll switches to it in place and every container keeps running** -- [ADR-0375](docs/adr/0375-the-control-plane-upgrades-in-place.md), accepted by the owner on 2026-11-06 (*"Accept ADR-0375, go ahead"*). It is five phases: idempotent startup, the handover, the drain, the root switch, then the roll's choice.
+
+- **Idempotent startup comes first** (ADR-0247's prerequisite). Every `--init-mode` step is classified as once per kernel, idempotent, or per process, in a table a gate reads. Never add a startup step without its class.
+- **Handover, never blind adoption.** A container is taken over only from the handover record together with the descriptors passed across `execve`. A record the kernel contradicts is a failed handover, and the host reboots. Never create a container twice, and never adopt one from the kernel alone (ADR-0246's removed path).
+- **The rollback stays the boot counter.** A live switch confirms its slot only after its probation. A failed switch costs one reboot, never more.
+- **One path:** the host roll is the only caller. Never add an endpoint or a hand route for it.
 
 ## A container rolls once its image has settled; the ABI hold judges the target set
 
