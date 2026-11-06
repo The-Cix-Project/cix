@@ -102,6 +102,14 @@ static void registry_announce(void)
 	events_announce(EV_listDeviceMaps); /* a mapping's state is the devices' (ADR-0345) */
 }
 
+static void registry_fill(struct registry_entry *e, const char *name, const char *image,
+                          const char *image_version, const struct container_spec *spec,
+                          const struct registry_network_attachment *nets, int net_count,
+                          int ip_forward, const struct registry_device_attachment *devices,
+                          int device_count, const char file_paths[][CONTAINER_FILE_PATH_MAX],
+                          int file_count, const char dns_server_ips[][RESOLV_IP_STRLEN],
+                          int dns_server_count);
+
 enum registry_error registry_create(const char *name, const char *image,
                                      const char *image_version, const struct container_spec *spec,
                                      const struct registry_network_attachment *nets, int net_count,
@@ -132,6 +140,27 @@ enum registry_error registry_create(const char *name, const char *image,
 	e = &g_entries[slot];
 	if (container_create(spec, &e->handle) != 0)
 		return REGISTRY_ERR_CREATE_FAILED;
+	registry_fill(e, name, image, image_version, spec, nets, net_count, ip_forward, devices,
+	              device_count, file_paths, file_count, dns_server_ips, dns_server_count);
+	*out = e;
+	return REGISTRY_OK;
+}
+
+/*
+ * ADR-0375 phase 2a: everything a new entry records about the container
+ * once its handle exists, apart from the handle. One fill, so the
+ * create path and phase 2's takeover of a container that is already
+ * running can never come to record different things.
+ */
+static void registry_fill(struct registry_entry *e, const char *name, const char *image,
+                          const char *image_version, const struct container_spec *spec,
+                          const struct registry_network_attachment *nets, int net_count,
+                          int ip_forward, const struct registry_device_attachment *devices,
+                          int device_count, const char file_paths[][CONTAINER_FILE_PATH_MAX],
+                          int file_count, const char dns_server_ips[][RESOLV_IP_STRLEN],
+                          int dns_server_count)
+{
+	int i;
 
 	/*
 	 * Did the procfuse binds actually land? (#336)
@@ -249,9 +278,6 @@ enum registry_error registry_create(const char *name, const char *image,
 	e->dns_server_count = dns_server_count;
 	for (i = 0; i < dns_server_count; i++)
 		strncpy(e->dns_server_ips[i], dns_server_ips[i], sizeof(e->dns_server_ips[i]) - 1);
-
-	*out = e;
-	return REGISTRY_OK;
 }
 
 int registry_network_in_use(const char *network_name)
