@@ -12,6 +12,8 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - reports load figures again;
   - gives new containers their binds;
   - stops the server at shutdown (it used to leak it).
+
+  The resume is built, but no probe has shown it run yet. Build containers have no `/dev/fuse`, and `test_boot` does not yet print whether a server was handed over. Phase 4's first probe adds that assertion.
 - **Console shells:** cixd keeps a table of them, carried by tty and pid. The new cixd watches each one again, and arms any pending respawn again.
 - **Half-written lines:** a line a container's output pipe has started but not ended is carried for each service and for cix-init's stdio. A line no longer splits across a handover.
 - **Parentage:** every pid in the record (containers, console shells, procfuse's server) must be a child of the new process.
@@ -20,7 +22,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - the image a waiting definition needs is queued for rebuild again.
 - **Record:** `restart_at` is gone. Format 1 has not shipped, so these are changes to format 1, not a format 2.
 - **Tests:**
-  - `test_handover` now covers an exited container, a pending restart, a line split by the handover, the load figure, and a record naming a dead pid, which makes `cixd --handover` exit 1.
+  - `test_handover` now covers an exited container, a pending restart, a line split by the handover, the load figure where procfuse runs (not in a build container), and a record naming a dead pid, which makes `cixd --handover` exit 1.
   - `test_boot` waits for the takeover line and checks a console shell was carried.
 
 ### cixd hands its running containers to its successor across an in-place exec (ADR-0375 phase 2, #673; in master, not yet released)
