@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cixd hands its running containers to its successor across an in-place exec (ADR-0375 phase 2, #673; in master, not yet released)
+
+- **The record** (`handover.c`, format 1, schema in `handover.h`): every registry entry's runtime state that neither its persisted body nor the kernel gives back, and the numbers of the descriptors passed across `execve`. These are cix-init's socket pair, the service and capture pipes, and the device program.
+- **The old side:** `handover_exec()` waits for quiescence: no helper, package job, assembly, host roll, push, sync, ISO build or upload, export or kernel fetch, and no teardown in flight. It then builds the record, clears `FD_CLOEXEC` on the passed descriptors, writes the record (always, even with no containers), and execs. If anything fails, every step is undone.
+- **The new side, in three steps:**
+  - E1: the record is checked against the kernel before anything trusts it. Each running pid must be alive and in its cgroup, each descriptor open and of its type, and no running container may be missing from the record. A refusal is a failed start.
+  - E2: right after `registry_init()`, and before the sweeps that would take an empty registry as the truth, each container is entered through `registry_adopt()` (sharing `registry_fill()`), its plan and the record.
+  - E3: where autostart would run, each running container's exit, cix-init reports and output are watched again, pending restarts are re-armed from their definitions, and the record is removed.
+- **The rule:** a handover changes nothing about which containers run, so autostart is replaced by the record (`include/startup_steps.h`). A first start in a kernel removes a record left by an unfinished handover.
+- **Verified:** probe 713 passed, with `test_handover_record` and `test_handover`. In the latter, a running container keeps its pid, address and stats across the exec, refuses its address to a new container, and stops over the passed socket.
+
 ### A container's create is split into its plan and its side effects (ADR-0375 phase 2a, #673; in master, not yet released)
 
 - **What changed:** everything a takeover recomputes from a container's persisted body is now its own function, and create calls each one:

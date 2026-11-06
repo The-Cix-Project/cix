@@ -144,6 +144,14 @@ sequenceDiagram
 
 Each is one probe; the second is budgeted for two.
 
+*Two refinements made while building it, both simpler than the plan above:*
+- **A pending crash restart is re-armed, not carried.** The record's `restart_at` is always 0. In E3 the new cixd re-arms every definition that has no entry, is not stopped, and whose policy would restart it (`always`, or `on-failure` after a failure), each with its own backoff. That is the definitions' own answer, with no timer deadline to carry.
+- **A stop in progress is waited out, not carried.** Quiescence requires every entry's `teardown_kind` to be none. A stop's grace is seconds, and carrying it would mean re-arming an escalation timer across the exec.
+
+*Built and proven, 2026-11-06 (probe-cix-compile@0.2.57-713):*
+- **`test_handover_record`:** writing and reading back, and every refusal.
+- **`test_handover`:** a daemon-linked test, with the handover triggered after 12 s. A running container keeps its pid, its address and its stats. A new container on the same network gets a different address. A stop through the API reaches cix-init over the passed socket, and the exit is reaped through the reacquired pidfd.
+
 *What phase 2 leaves for phase 3:*
 - no per-container load figure until procfuse's page is a memfd;
 - console shells that survive the exec but are unwatched;
