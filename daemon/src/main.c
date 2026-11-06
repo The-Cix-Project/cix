@@ -40856,6 +40856,24 @@ int main(int argc, char **argv)
 	if (!g_pid1_mode)
 		return rc;
 
+	/*
+	 * ADR-0375: a cixd started by a handover that cannot run (a record the
+	 * kernel contradicts, a takeover refused) reboots rather than parks.
+	 * Containers are running and nothing else serves the API, so parking
+	 * would leave the host unreachable with no way back; the ADR's floor
+	 * is one reboot. After a root switch the held entry makes that reboot
+	 * boot the slot that was running (esp_entry_hold()); after an
+	 * in-place handover the slot is unchanged. The cause is printed and
+	 * logged above.
+	 */
+	if (g_handover && rc != 0) {
+		fprintf(stderr, "\ncixd could not start after a handover (exit status %d) -- syncing and "
+		                "rebooting (ADR-0375)\n",
+		        rc);
+		sync();
+		reboot(RB_AUTOBOOT);
+	}
+
 	fprintf(stderr,
 	        "\n=====================================================================\n"
 	        "  cixd could not start, and this machine is running it as PID 1.\n"

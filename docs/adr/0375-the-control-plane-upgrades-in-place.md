@@ -213,6 +213,8 @@ Each is one probe; the second is budgeted for two.
 - **failed after the pivot:** a reboot into the slot that was running (phase 4);
 - **work still in flight at the bound:** the roll reboots as before. The bound is the window's end less a minute, or `HOSTROLL_SWITCH_WAIT_SECONDS` with no window.
 
+**A handed-over cixd that cannot start reboots; it does not park.** Until phase 5, a non-zero return from `cixd_main()` as PID 1 parked behind its banner (#131), whether the start was a boot or a handover. For a handover that broke rule 4's floor: after a refused record or takeover, containers would still be running with no API and no way back. `main()` now syncs and reboots after a failed `--handover` start. After a switch, the held entry boots the slot that was running. After an in-place handover, the slot is unchanged.
+
 A kernel change still reboots. The roll is the only caller, as rule 5 says. The decision has no QEMU test of its own, because the roll needs a hostbuild. Its parts are tested: the switch by `test_boot_update`, the refusals by `test_rootswitch`. Its live proof needs two releases. The first release carrying phase 4 reaches .95 by reboot, because the root running there has no `/run/nextroot`. The release after it is the first the roll can switch into.
 
 ## Alternatives

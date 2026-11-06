@@ -6,14 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
-### The host roll switches the root in place when the kernel is unchanged (ADR-0375 phase 5, #673; in master, not yet released)
+### The host roll switches the root in place when the kernel is unchanged (ADR-0375 phase 5, #673, 0.2.57-664)
 
 - **What changed:** when the nightly roll stages a root with the running kernel, it no longer reboots. It waits until nothing is in flight, then switches into the staged slot in place, and every container keeps running.
 - **Fallback:** a switch that is refused or fails before its pivot reboots into the staged slot, as every release did before. So does work still in flight at the bound, which is the window's end less a minute.
 - **Unchanged:** a kernel change still reboots.
+- **A cixd that cannot start after a handover now reboots instead of parking.** Parking would leave the host with running containers and no API. After a switch, the reboot boots the slot that was running.
 - **When it first runs live:** the first release carrying this code reaches a host by reboot; the next is the first the roll can switch.
 
-### cixd switches its root into the staged slot in place (ADR-0375 phase 4, #673; in master, not yet released)
+### cixd switches its root into the staged slot in place (ADR-0375 phase 4, #673, 0.2.57-664)
 
 - **The switch:** `handover_exec()` takes a target slot.
   - It checks first: init mode; the other slot's partition; `/run/nextroot`, which `mkbootroot` now ships empty; and that the staged kernel's release is `uname -r`.
@@ -36,7 +37,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **Verified by:** probe 716. `test_rootswitch` is new. `test_boot_update` now updates B, switches into it in place, confirms it, and cold-boots B.
 - **First switch:** the first release with this code still reaches a host by a reboot, because the root it is running has no `/run/nextroot` yet. The release after that is the first that can switch.
 
-### A handover carries procfuse, console shells and half-written lines (ADR-0375 phase 3, #673; in master, not yet released)
+### A handover carries procfuse, console shells and half-written lines (ADR-0375 phase 3, #673, 0.2.57-664)
 
 - **procfuse:** its load page is now a memfd, which crosses `execve`. The new cixd checks the server is its child and the mount and memfd are what they should be, then maps the page. A handed-over cixd now:
   - reports load figures again;
@@ -55,7 +56,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - `test_handover` now covers an exited container, a pending restart, a line split by the handover, the load figure where procfuse runs (not in a build container), and a record naming a dead pid, which makes `cixd --handover` exit 1.
   - `test_boot` waits for the takeover line and checks a console shell was carried.
 
-### cixd hands its running containers to its successor across an in-place exec (ADR-0375 phase 2, #673; in master, not yet released)
+### cixd hands its running containers to its successor across an in-place exec (ADR-0375 phase 2, #673, 0.2.57-664)
 
 - **The record** (`handover.c`, format 1, schema in `handover.h`): every registry entry's runtime state that neither its persisted body nor the kernel gives back, and the numbers of the descriptors passed across `execve`. These are cix-init's socket pair, the service and capture pipes, and the device program.
 - **The old side:** `handover_exec()` waits for quiescence: no helper, package job, assembly, host roll, push, sync, ISO build or upload, export or kernel fetch, and no teardown in flight. It then builds the record, clears `FD_CLOEXEC` on the passed descriptors, writes the record (always, even with no containers), and execs. If anything fails, every step is undone.
@@ -66,7 +67,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **The rule:** a handover changes nothing about which containers run, so autostart is replaced by the record (`include/startup_steps.h`). A first start in a kernel removes a record left by an unfinished handover.
 - **Verified:** probe 713 passed, with `test_handover_record` and `test_handover`. In the latter, a running container keeps its pid, address and stats across the exec, refuses its address to a new container, and stops over the passed socket.
 
-### A container's create is split into its plan and its side effects (ADR-0375 phase 2a, #673; in master, not yet released)
+### A container's create is split into its plan and its side effects (ADR-0375 phase 2a, #673, 0.2.57-664)
 
 - **What changed:** everything a takeover recomputes from a container's persisted body is now its own function, and create calls each one:
   - `plan_cap_add`, `plan_consoles`, `plan_dns_servers`, `plan_sysctls`, `plan_env`;
@@ -77,7 +78,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **What does not change:** messages and refusals are the same. One reporting order changed: a body with several interface errors now reports every name error before any grant error.
 - **Verified:** probes 709, 710 and 711 passed, one per slice.
 
-### cixd can start again in the kernel it is running in (ADR-0375 phase 1, #673; in master, not yet released)
+### cixd can start again in the kernel it is running in (ADR-0375 phase 1, #673, 0.2.57-664)
 
 - **The prerequisite ADR-0247 named:** startup becomes idempotent. `include/startup_steps.h` names the steps that run once per kernel, and they run only when `first_in_kernel()` says so: `boot_init`, the boot modules, the sysctls, the management network, the module sweep, boot confirmation and the console shells. A start with `--handover` runs everything else again. The steps that touch the kernel were each checked for running twice:
   - the disk remount skips a mounted disk;
@@ -90,7 +91,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **The exec:** `handover_exec()` stops stallwatch, whose watchdog would otherwise watch a page the new image no longer maps. It then execs argv[0] with the same arguments plus `--handover`, but only once nothing is in flight: no helper, package job, assembly, host roll or container. The data directory's tmpfs fault is recomputed from the kernel.
 - **Gated:** `test_startup_steps` holds `cixd_main()` to the table. Every listed step must sit behind `first_in_kernel()`, and only four classified bare `init_mode` tests may remain. `test_boot` now boots init-mode under QEMU with the test-only `--test-handover-after=5`, and requires the handed-over cixd to serve again, with the slot line, the exec and the second start each printed exactly once.
 
-### cixd authors a consumer's rebuild when its provider's ABI moves (ADR-0373 release D, #672; in master, not yet released)
+### cixd authors a consumer's rebuild when its provider's ABI moves (ADR-0373 release D, #672, 0.2.57-663)
 
 - **The author:** a consumer gets its next release, written by `cbs revise`, when its newest revision's record names an ABI that the newest installed copy of the provider no longer offers. That copy is what a rebuild composes. The revision keeps the same version and source, drops every approval and the record, and has a changelog naming the provider and the ABI. It is committed before it is published.
   - It runs from discovery's author stage, and after any package declaring an ABI installs. It writes one revision at a time.
