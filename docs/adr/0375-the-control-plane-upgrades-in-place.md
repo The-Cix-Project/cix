@@ -70,6 +70,86 @@ Accepted by the owner on 2026-11-06: *"Accept ADR-0375, go ahead"*. Proposed 202
 5. **Where takeover runs:** the record is validated first: every pid alive, each pid in its cgroup, every descriptor typed. A record that fails validation is a refusal. It is applied right after `registry_init()`, before the orphan-base and rootfs sweeps, image retention and autostart, each of which treats an empty registry as the truth. Allocated IPs are marked taken before anything can allocate, and autostart skips the recorded names.
 6. **The handover path runs for any `--handover`, not only `--init-mode`.** A daemon-linked test then proves it with a real container: same pid, stats, service output written after the handover, a stop, a crash observed and restarted, and a non-colliding IP for a new container. A record naming a dead pid refuses to start. Outside init mode, that refusal is a nonzero exit, not a reboot.
 
+**Phase 2's build plan, validated 2026-11-06.**
+
+*The rule that settles the open questions:* **a handover changes nothing about which containers run.**
+- A running container stays running with the same pid.
+- An exited container that is kept stays exited, with its exit status.
+- A container the operator stopped stays stopped.
+- A crash-restart that was pending still happens.
+
+So `containerdef_autostart_all()` joins `include/startup_steps.h` as once per kernel, and the record carries every registry entry, running or not. `rearm_roll_watches()` stays per process, because the roll state is in the persisted definition.
+
+*Corrections to phase 1:*
+1. The handover checks run for any `--handover`, not only `--init-mode`. Outside init mode a refusal is exit 1.
+2. **Quiescence means every entry is steady.** No teardown in flight, no helper, no package job, assembly or host roll. Every `fork()` that is not `helper_run()` is checked too: the artifact push, the write-back, discovery, the discard queue's delete, the ISO build, the backup. A stop in progress is excluded by quiescence, not carried.
+3. **The record is always written**, even with no containers. On the new side, `--handover` without a record is a refusal, and so is a populated `cix-workload` cgroup without one.
+4. A first start in a kernel deletes a record left over from an interrupted handover, and says so.
+5. The record lives at `STATE_DIR/handover.json`.
+
+*The record (format 1)*, schema in `daemon/include/handover.h`:
+- **Top level:** `format`, `written_by`, `written_at`, `procfuse_pid`, and `containers[]`.
+- **Per container:**
+  - identity: `name`, `image`, `image_version`;
+  - run state: `running`, `pid` (0 when exited), `started_at`, `paused`, and the exit fields when it exited;
+  - `restart_at`, the deadline of an armed crash restart (0 for none);
+  - flags: `userns_enabled`, `disk_quota_bytes`, `reserve_devices`, `ip_forward`, `capture_requested`, `procfuse_expected`, `init_up`, `ready`;
+  - every field of each network attachment, device, pending device and interface record;
+  - `file_paths[]` and `dns_servers[]`;
+  - each service's runtime state and output descriptor;
+  - the descriptors `init_control`, `init_report`, `capture` and `bpf_prog`;
+  - `captured_output`.
+- **Reader rules:** unknown keys are ignored. A missing required key, or a format newer than this build's, is a refusal.
+
+*The sequence:*
+
+```mermaid
+sequenceDiagram
+    participant R as host roll / test trigger
+    participant O as cixd (old image)
+    participant K as kernel
+    participant N as cixd (new image, same PID)
+    R->>O: hand over
+    O->>O: quiescent? (entries steady, no job/helper/fork in flight)
+    O->>O: stallwatch_stop()
+    O->>K: clear FD_CLOEXEC on cix-init sockets, service and capture pipes, BPF fd
+    O->>O: write STATE_DIR/handover.json (always, even empty)
+    O->>K: execv(cixd --handover)
+    K-->>N: same PID; children, passed fds and mounts intact
+    N->>N: E1 validate: format, keys; pidfd_open(pid); pid in its cgroup; each fd typed; FD_CLOEXEC set back
+    N->>N: skip once-per-kernel steps (startup_steps.h), autostart included
+    N->>N: E2 after registry_init(): per container, plan_*() from the body + record values, registry_adopt(), registry_restore_runtime()
+    N->>N: orphan/rootfs sweeps, image retention (registry now populated)
+    N->>K: E3 after the epoll fd exists: watch pidfd, cix-init report, output pipes; re-arm pending restarts
+    N->>N: unlink the record; log "took over N containers"
+```
+
+*If the exec fails*, the old cixd sets `FD_CLOEXEC` back, removes the record, restarts stallwatch, and carries on.
+
+*Files:*
+- `daemon/src/handover.c` and `.h`: the record as plain fields, with its writer, reader and kernel validation. It is unit-tested by `test_handover_record`, and the architecture diagram names it.
+- `registry.c`: `registry_adopt()`, sharing `registry_fill()`, and `registry_restore_runtime()`. Every write stays in `registry.c`.
+- `main.c`: builds the record from the registry, `handover_takeover_one()`, the three call sites, the autostart gate and quiescence.
+- `test/test_handover.c`, daemon-linked. Before the handover it sets up:
+  - A, running, with a service printing every 500 ms, capture on and a `/dev/null` device;
+  - B, an exited oneshot;
+  - C, `restart:"always"` with its service killed just before the handover.
+
+  After the handover it asserts A has the same pid, its stats answer, its capture contains a line written after the handover, a stop works, and a new container gets a different IP from A's. B is still exited with its status, and C is restarted. It ends with `test_assert_no_drift()`. Negative case: a record naming a dead pid makes the daemon exit 1.
+
+*Order:*
+1. `handover.c` and its unit test.
+2. The adoption, the glue and the daemon-linked test.
+3. The docs.
+
+Each is one probe; the second is budgeted for two.
+
+*What phase 2 leaves for phase 3:*
+- no per-container load figure until procfuse's page is a memfd;
+- console shells that survive the exec but are unwatched;
+- a partial output line in flight is lost;
+- event streams and open consoles reconnect.
+
 ## Alternatives
 
 - **Keep rebooting, in the window.** That is today's state, and it is the floor this improves on. It also stays the path for every kernel change.
