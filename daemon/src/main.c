@@ -1520,9 +1520,11 @@ struct conn {
 	 * grown unboundedly -- the same "generous but bounded" posture
 	 * every other capture buffer in this daemon already has.
 	 */
-	char output_line_buf[1024];             /* CONN_CONTAINER_OUTPUT only */
+	char output_line_buf[HANDOVER_OUTPUT_LINE_MAX]; /* CONN_CONTAINER_OUTPUT only */
 	int output_line_len;                    /* CONN_CONTAINER_OUTPUT only */
 	int service_index;                      /* CONN_CONTAINER_OUTPUT only: which service's pipe, -1 = cix-init's own stdio */
+	struct conn *output_next;               /* CONN_CONTAINER_OUTPUT only: g_output_conns, so a
+	                                         * handover can carry a line not yet ended (ADR-0375) */
 	time_t escalate_started_at;             /* CONN_STOP_ESCALATE_TIMER only: the incarnation it was armed for */
 	pid_t pkg_fetch_pid;                    /* CONN_PKG_FETCH / CONN_BOOTROOT_ASSEMBLE / CONN_ISO_ASSEMBLE / CONN_DISK_FORMAT / CONN_STORAGE_MIGRATE / CONN_CONSOLE_EXEC_REAP */
 	int pkg_chain_idx;                      /* CONN_PKG_FETCH / CONN_PKG_BUILD_OUTPUT / CONN_PKG_BUILD_LOG_WS -- ADR-0157 Phase 2: which g_chains[] slot this conn belongs to */
@@ -9856,6 +9858,33 @@ static void handle_pkg_build_output_event(struct conn *cc)
  * unavailable, the container still runs, exactly like pkg.c's own
  * build path degrades on the same failure).
  */
+/* Every CONN_CONTAINER_OUTPUT conn, so a handover can find a line that
+ * has been read but not yet ended and carry it (ADR-0375). */
+static struct conn *g_output_conns;
+
+static void output_conn_unlink(struct conn *cc)
+{
+	struct conn **p;
+
+	for (p = &g_output_conns; *p != NULL; p = &(*p)->output_next)
+		if (*p == cc) {
+			*p = cc->output_next;
+			return;
+		}
+}
+
+/* The live output conn for entry's service (-1: cix-init's own stdio). */
+static struct conn *output_conn_find(const struct registry_entry *entry, int service_index)
+{
+	struct conn *cc;
+	int fd = service_index < 0 ? entry->output_fd : entry->services[service_index].output_fd;
+
+	for (cc = g_output_conns; cc != NULL; cc = cc->output_next)
+		if (cc->entry == entry && cc->service_index == service_index && cc->fd == fd)
+			return cc;
+	return NULL;
+}
+
 static void register_container_output_fd(struct registry_entry *entry, int fd, int service_index)
 {
 	struct conn *cc;
@@ -9882,6 +9911,26 @@ static void register_container_output_fd(struct registry_entry *entry, int fd, i
 		perror("epoll_ctl ADD container output fd");
 		abort();
 	}
+	cc->output_next = g_output_conns;
+	g_output_conns = cc;
+}
+
+/* ADR-0375: a handed-over output pipe, with the line the old cixd had
+ * read and not yet seen the end of. */
+static void register_container_output_resumed(struct registry_entry *entry, int fd,
+                                              int service_index, const char *partial)
+{
+	struct conn *cc;
+	size_t n = strlen(partial);
+
+	register_container_output_fd(entry, fd, service_index);
+	cc = output_conn_find(entry, service_index);
+	if (cc == NULL || n == 0)
+		return;
+	if (n >= sizeof(cc->output_line_buf))
+		n = sizeof(cc->output_line_buf) - 1;
+	memcpy(cc->output_line_buf, partial, n);
+	cc->output_line_len = (int)n;
 }
 
 static void register_container_output(struct registry_entry *entry)
@@ -10046,6 +10095,7 @@ static void handle_container_output_event(struct conn *cc)
 		           cc->entry->services[cc->service_index].output_fd == cc->fd) {
 			cc->entry->services[cc->service_index].output_fd = -1;
 		}
+		output_conn_unlink(cc);
 		free(cc);
 	}
 }
@@ -37699,6 +37749,30 @@ static void handle_bootroot_assemble_event(struct conn *cc)
  * epoll" treatment, not a blocking wait or a SIGCHLD handler this
  * reactor has never needed before.
  */
+/*
+ * The console shells, by tty: what a handover record carries of them
+ * (ADR-0375). A shell's pid while one runs, 0 while its respawn is
+ * pending. Written only by console_shell_note().
+ */
+static struct handover_console g_console_shells[HANDOVER_CONSOLES_MAX];
+static int g_console_shell_count;
+
+static void console_shell_note(const char *tty_path, pid_t pid)
+{
+	int i;
+
+	for (i = 0; i < g_console_shell_count; i++)
+		if (strcmp(g_console_shells[i].tty, tty_path) == 0)
+			break;
+	if (i == g_console_shell_count) {
+		if (i == HANDOVER_CONSOLES_MAX)
+			return;
+		snprintf(g_console_shells[i].tty, sizeof(g_console_shells[i].tty), "%s", tty_path);
+		g_console_shell_count++;
+	}
+	g_console_shells[i].pid = pid;
+}
+
 static void register_console_shell_pidfd(pid_t pid, int pidfd, const char *tty_path)
 {
 	struct conn *cc;
@@ -37789,6 +37863,7 @@ static void spawn_console_shell(const char *tty_path)
 		_exit(127);
 	}
 
+	console_shell_note(tty_path, pid);
 	pidfd = sys_pidfd_open(pid, 0);
 	if (pidfd < 0) {
 		perror("pidfd_open (console shell)");
@@ -37860,6 +37935,7 @@ static void handle_console_shell_event(struct conn *cc)
 	snprintf(tty_path, sizeof(tty_path), "%s", cc->console_tty);
 	free(cc);
 
+	console_shell_note(tty_path, 0);
 	arm_console_respawn_timer(tty_path, 2);
 }
 
@@ -38088,6 +38164,48 @@ static void accept_loop(struct conn *listener)
  * daemon restart). See ADR-0027.
  */
 /*
+ * Should a definition with no registry entry be brought up now? One rule,
+ * for boot autostart (after_reboot 1) and for a handover (0, ADR-0375).
+ *
+ * ADR-0270: a deployment still waiting for its image is tested BEFORE
+ * restart_policy and before any attempt to create. Both orderings
+ * matter. Policy first would skip every waiting restart:"no" definition
+ * forever, and a first create is not a restart -- "never auto-restart"
+ * cannot be the thing that suppresses a container that has never run at
+ * all. Attempting the create first would mean learning from a 400 what
+ * awaiting_image already says, and logging a failure for a situation
+ * that is proceeding exactly as designed. The caller re-enqueues the
+ * image: the rebuild queue is in-memory (#373), so a new process has no
+ * idea it was ever queued, and apply_pending_deployments() picks the
+ * definition up once that build lands. An image that became runnable
+ * while no cixd was watching is created, as apply_pending_deployments()
+ * would have.
+ *
+ * ADR-0181 (#73): restart:"no" is a persisted policy meaning "never
+ * auto-restart", boot included. It stays a kept-but-down definition,
+ * brought up only by an explicit `container start`.
+ *
+ * A stop: after a reboot it holds only for "unless-stopped" -- for
+ * "always"/"on-failure" a reboot is a fresh chance, matching Docker's
+ * --restart=always (ADR-0027). A handover is not a reboot and changes
+ * nothing about which containers run, so after one every stop holds.
+ */
+enum def_bringup { DEF_BRINGUP_SKIP, DEF_BRINGUP_AWAIT_IMAGE, DEF_BRINGUP_START };
+
+static enum def_bringup def_bringup_decision(const struct container_def *def, int after_reboot)
+{
+	if (def->awaiting_image[0] != '\0') {
+		if (!deployment_image_can_run(def->awaiting_image))
+			return DEF_BRINGUP_AWAIT_IMAGE;
+	} else if (strcmp(def->restart_policy, "no") == 0) {
+		return DEF_BRINGUP_SKIP;
+	}
+	if (def->stopped && (!after_reboot || strcmp(def->restart_policy, "unless-stopped") == 0))
+		return DEF_BRINGUP_SKIP;
+	return DEF_BRINGUP_START;
+}
+
+/*
  * Does any definition in this autostart order list `name` in its own
  * depends_on? Only then is there anything to hold the boot for.
  */
@@ -38128,49 +38246,16 @@ static void containerdef_autostart_all(void)
 		if (def == NULL)
 			continue; /* can't happen -- resolve_order() only ever names known defs */
 
-		/*
-		 * ADR-0270: a deployment still waiting for its image, tested
-		 * BEFORE restart_policy and before any attempt to create.
-		 *
-		 * Both orderings matter. Policy first would skip every waiting
-		 * restart:"no" definition forever, and a first create is not a
-		 * restart -- "never auto-restart" cannot be the thing that
-		 * suppresses a container that has never run at all. Attempting
-		 * the create first would mean learning from a 400 what
-		 * awaiting_image already says, and logging a failure for a
-		 * situation that is proceeding exactly as designed.
-		 *
-		 * Re-enqueueing is the whole point of doing anything here: the
-		 * rebuild queue is in-memory (#373), so this daemon has no idea
-		 * an image was ever queued. apply_pending_deployments() picks
-		 * the definition up once that build lands.
-		 */
-		if (def->awaiting_image[0] != '\0') {
-			if (!deployment_image_can_run(def->awaiting_image)) {
-				pkg_rebuild_queue_add(def->awaiting_image);
-				fprintf(stderr, "%s: waiting for image %s -- re-queued it for a build\n", order[i],
-				        def->awaiting_image);
-				continue;
-			}
-			/* Realized while this daemon was down. Fall through and
-			 * create it, exactly as apply_pending_deployments() would
-			 * have done had the image landed while we were running. */
-		}
-
-		else if (strcmp(def->restart_policy, "no") == 0) {
-			/*
-			 * ADR-0181 (#73): restart:"no" is now a persisted policy
-			 * meaning "never auto-restart", boot included. It stays a
-			 * kept-but-down definition, brought up only by an explicit
-			 * `container start`.
-			 */
+		switch (def_bringup_decision(def, 1)) {
+		case DEF_BRINGUP_AWAIT_IMAGE:
+			pkg_rebuild_queue_add(def->awaiting_image);
+			fprintf(stderr, "%s: waiting for image %s -- re-queued it for a build\n", order[i],
+			        def->awaiting_image);
 			continue;
-		}
-
-		if (def->stopped && strcmp(def->restart_policy, "unless-stopped") == 0) {
-			fprintf(stderr, "%s: unless-stopped, explicitly stopped -- not autostarting\n",
-			        order[i]);
+		case DEF_BRINGUP_SKIP:
 			continue;
+		case DEF_BRINGUP_START:
+			break;
 		}
 
 		status = create_container_from_body(def->body, def->body_len, &entry, restart_policy,
@@ -38413,6 +38498,19 @@ static int handover_quiescent(void)
 }
 
 /* Every registry entry into rec, the descriptors it passes by number. */
+/* The line a running container's output pipe has started and not ended,
+ * into out[HANDOVER_OUTPUT_LINE_MAX]; "" for none. */
+static void handover_output_partial(const struct registry_entry *e, int service_index, char *out)
+{
+	const struct conn *cc = e->running ? output_conn_find(e, service_index) : NULL;
+
+	out[0] = '\0';
+	if (cc != NULL && cc->output_line_len > 0) {
+		memcpy(out, cc->output_line_buf, (size_t)cc->output_line_len);
+		out[cc->output_line_len] = '\0';
+	}
+}
+
 static int handover_build_record(struct handover_record *rec)
 {
 	static char names[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
@@ -38423,7 +38521,10 @@ static int handover_build_record(struct handover_record *rec)
 		return -1;
 	snprintf(rec->written_by, sizeof(rec->written_by), "%s", CIX_BUILD_VERSION);
 	rec->written_at = (long long)time(NULL);
-	rec->procfuse_pid = 0;
+	procfuse_handover_state(&rec->procfuse_pid, &rec->procfuse_load_fd);
+	rec->console_count = g_console_shell_count;
+	for (i = 0; i < g_console_shell_count; i++)
+		rec->consoles[i] = g_console_shells[i];
 	for (i = 0; i < n; i++) {
 		const struct registry_entry *e = registry_find(names[i]);
 		struct handover_container *c;
@@ -38442,7 +38543,6 @@ static int handover_build_record(struct handover_record *rec)
 		c->exit_status = e->exit_status;
 		c->term_signal = e->term_signal;
 		snprintf(c->last_exit_reason, sizeof(c->last_exit_reason), "%s", e->last_exit_reason);
-		c->restart_at = 0; /* a pending restart is re-armed from its definition */
 		c->userns_enabled = e->userns_enabled;
 		c->disk_quota_bytes = e->disk_quota_bytes;
 		c->reserve_devices = e->reserve_devices;
@@ -38485,11 +38585,13 @@ static int handover_build_record(struct handover_record *rec)
 			c->services[k].fail_reason = s->fail_reason;
 			c->services[k].fail_detail = s->fail_detail;
 			c->services[k].output_fd = e->running ? s->output_fd : -1;
+			handover_output_partial(e, k, c->services[k].output_partial);
 		}
 		c->fd_init_control = e->running ? e->init_control_fd : -1;
 		c->fd_init_report = e->running ? e->init_report_fd : -1;
 		c->fd_capture = e->running ? e->output_fd : -1;
 		c->fd_bpf_prog = e->running ? e->handle.bpf_prog_fd : -1;
+		handover_output_partial(e, -1, c->init_output_partial);
 		snprintf(c->captured_output, sizeof(c->captured_output), "%s", e->captured_output);
 	}
 	return 0;
@@ -38501,6 +38603,8 @@ static void handover_set_cloexec(const struct handover_record *rec, int cloexec)
 {
 	int i, k;
 
+	if (rec->procfuse_load_fd >= 0)
+		fcntl(rec->procfuse_load_fd, F_SETFD, cloexec ? FD_CLOEXEC : 0);
 	for (i = 0; i < rec->count; i++) {
 		const struct handover_container *c = &rec->containers[i];
 		int fds[4 + REGISTRY_MAX_SERVICES];
@@ -38604,6 +38708,22 @@ static int handover_load(void)
 		        "to start (ADR-0375)\n",
 		        stray);
 		return -1;
+	}
+	/* procfuse's server outlived the exec and still serves the mount every
+	 * container binds from: take it back, never start a second one over it. */
+	if (g_handover_rec.procfuse_pid > 0) {
+		if (!handover_pid_is_child(g_handover_rec.procfuse_pid)) {
+			fprintf(stderr,
+			        "handover: procfuse's server (pid %d) is not a child of this cixd; refusing "
+			        "to start (ADR-0375)\n",
+			        (int)g_handover_rec.procfuse_pid);
+			return -1;
+		}
+		if (procfuse_resume(STATE_DIR, g_handover_rec.procfuse_pid,
+		                    g_handover_rec.procfuse_load_fd, err, sizeof(err)) != 0) {
+			fprintf(stderr, "%s; refusing to start\n", err);
+			return -1;
+		}
 	}
 	handover_recompute_data_dir_fault();
 	return 0;
@@ -38784,9 +38904,10 @@ static void handover_watch_all(void)
 {
 	char order[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
 	char path[PATH_MAX];
-	int i, k, count, rearmed = 0;
+	int i, k, count, rearmed = 0, shells = 0;
 
 	for (i = 0; i < g_handover_rec.count; i++) {
+		const struct handover_container *c = &g_handover_rec.containers[i];
 		struct registry_entry *e = g_handover_entries[i];
 
 		if (e == NULL || !e->running)
@@ -38794,28 +38915,67 @@ static void handover_watch_all(void)
 		register_container_pidfd(e);
 		register_container_init(e);
 		if (e->output_fd >= 0)
-			register_container_output(e);
+			register_container_output_resumed(e, e->output_fd, -1, c->init_output_partial);
 		for (k = 0; k < e->service_count; k++)
-			register_container_output_fd(e, e->services[k].output_fd, k);
+			register_container_output_resumed(e, e->services[k].output_fd, k,
+			                                  c->services[k].output_partial);
 	}
+
+	/* Console shells: watched again, and a respawn that was pending is
+	 * armed again on its usual delay. */
+	for (i = 0; i < g_handover_rec.console_count; i++) {
+		const struct handover_console *s = &g_handover_rec.consoles[i];
+		int pidfd;
+
+		console_shell_note(s->tty, s->pid);
+		if (s->pid == 0) {
+			arm_console_respawn_timer(s->tty, 2);
+			continue;
+		}
+		pidfd = sys_pidfd_open(s->pid, 0);
+		if (pidfd < 0) {
+			/* It ended between the check and here: respawn it. */
+			console_shell_note(s->tty, 0);
+			arm_console_respawn_timer(s->tty, 2);
+			continue;
+		}
+		register_console_shell_pidfd(s->pid, pidfd, s->tty);
+		shells++;
+	}
+
+	/* A definition with no entry is brought up by the rule boot autostart
+	 * uses, except that a handover is not a reboot, so a stop holds. */
 	count = containerdef_resolve_order(order);
 	for (i = 0; i < count; i++) {
 		struct container_def *def = containerdef_find(order[i]);
 
-		if (def == NULL || def->stopped || registry_find(def->name) != NULL)
+		if (def == NULL || registry_find(def->name) != NULL)
 			continue;
-		if (strcmp(def->restart_policy, "always") != 0 &&
-		    !(strcmp(def->restart_policy, "on-failure") == 0 && def->consecutive_failures > 0))
-			continue;
-		arm_restart_timer(def->name, restart_backoff_delay(def));
-		rearmed++;
+		switch (def_bringup_decision(def, 0)) {
+		case DEF_BRINGUP_AWAIT_IMAGE:
+			pkg_rebuild_queue_add(def->awaiting_image);
+			break;
+		case DEF_BRINGUP_START:
+			arm_restart_timer(def->name, restart_backoff_delay(def));
+			rearmed++;
+			break;
+		case DEF_BRINGUP_SKIP:
+			break;
+		}
 	}
 	handover_path(path, sizeof(path));
 	unlink(path);
 	logstore_write("cixd", "info",
-	               "handover: took over %d containers from cixd %s, %d pending restarts re-armed "
-	               "(ADR-0375)",
-	               g_handover_rec.count, g_handover_rec.written_by, rearmed);
+	               "handover: took over %d containers and %d console shells from cixd %s, %d "
+	               "pending restarts re-armed%s (ADR-0375)",
+	               g_handover_rec.count, shells, g_handover_rec.written_by, rearmed,
+	               procfuse_mount_path() != NULL
+	                   ? (procfuse_has_load_page() ? ", procfuse resumed with its load page"
+	                                               : ", procfuse resumed")
+	                   : "");
+	printf("handover: took over %d containers and %d console shells (ADR-0375)\n",
+	       g_handover_rec.count, shells);
+	fflush(stdout);
 	handover_record_free(&g_handover_rec);
 	free(g_handover_pidfds);
 	free(g_handover_entries);
@@ -39893,13 +40053,20 @@ static int cixd_main(int argc, char **argv)
 	 * /proc, which is what they read before this existed. The reason is
 	 * logged with a real errno rather than left to be guessed at.
 	 *
-	 * ADR-0375: not on a handover. The server is a child that survives
-	 * the exec and still serves the mount, and a second one would mount
-	 * over it (STARTUP_SURVIVES_HANDOVER). Until phase 3 passes its
-	 * load page as a memfd, a handed-over cixd reports no load figure.
+	 * ADR-0375: not again on a handover that carried a server. That
+	 * server is a child that survived the exec and still serves the
+	 * mount, and handover_load() took it back with its load page; a
+	 * second one would mount over it (STARTUP_SURVIVES_HANDOVER). A
+	 * handover from a cixd that had none starts one as a boot does.
 	 */
-	if (!g_handover)
+	if (procfuse_mount_path() == NULL)
 		procfuse_start(STATE_DIR, CGROUP_WORKLOAD_PARENT);
+	else
+		logstore_write("cixd", "info",
+		               "procfuse: serving at %s again, from the server handed over (pid %d)%s "
+		               "(ADR-0375)",
+		               procfuse_mount_path(), (int)g_handover_rec.procfuse_pid,
+		               procfuse_has_load_page() ? ", with its load page" : "");
 
 	{
 		/* #551: trees set aside because a reused version was wrong. No

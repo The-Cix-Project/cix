@@ -14,12 +14,15 @@
  *   format          1; a reader refuses a newer one
  *   written_by      the writing build (CIX_BUILD_VERSION)
  *   written_at      seconds since the epoch
- *   procfuse_pid    procfuse's server, which survives the exec
+ *   procfuse_pid    procfuse's server, which survives the exec; 0 for none
+ *   procfuse_load_fd  the memfd holding its load page (ADR-0349), passed
+ *                   across execve; -1 for none
+ *   consoles[]      tty, pid: each console shell, which survives the
+ *                   exec; pid 0 is a respawn that was pending
  *   containers[]    every registry entry, running or not:
  *     name, image, image_version
  *     running, pid (0 when exited), started_at, paused
  *     exit_status, term_signal, last_exit_reason   (when exited)
- *     restart_at      an armed crash restart's deadline, 0 for none
  *     userns_enabled, disk_quota_bytes, reserve_devices, ip_forward,
  *     capture_requested, procfuse_expected, init_up, ready
  *     nets[]          every field of struct registry_network_attachment
@@ -28,10 +31,16 @@
  *     devices[], pending_devices[], interfaces[]
  *                     every field of their registry structs
  *     services[]      state, pid, has_exit, exit_kind, exit_value,
- *                     restarts, fail_reason, fail_detail, output_fd
+ *                     restarts, fail_reason, fail_detail, output_fd,
+ *                     output_partial (a line read but not yet ended)
  *     fds             init_control, init_report, capture, bpf_prog
  *                     (descriptor numbers passed across execve, -1 absent)
+ *     init_output_partial   the same, for cix-init's own stdio
  *     captured_output
+ *
+ * A pending crash restart is not carried: the new cixd re-arms it from
+ * the container's definition. A stop in progress is not carried either:
+ * the old cixd waits it out before it hands over.
  *
  * Unknown keys are ignored; a missing required key is a refusal.
  *
@@ -47,6 +56,20 @@
 #define HANDOVER_FORMAT 1
 #define HANDOVER_FILE "handover.json"
 
+/* The longest line cixd holds back while it waits for the line's end:
+ * the size of a container output conn's line buffer, and of what the
+ * record carries of it. */
+#define HANDOVER_OUTPUT_LINE_MAX 1024
+
+/* Console shells cixd runs (tty0 and ttyS0 today). */
+#define HANDOVER_CONSOLES_MAX 4
+#define HANDOVER_CONSOLE_TTY_MAX 32
+
+struct handover_console {
+	char tty[HANDOVER_CONSOLE_TTY_MAX];
+	pid_t pid; /* 0: a respawn was pending */
+};
+
 struct handover_service {
 	int state;
 	pid_t pid;
@@ -57,6 +80,7 @@ struct handover_service {
 	int fail_reason;
 	int fail_detail;
 	int output_fd;
+	char output_partial[HANDOVER_OUTPUT_LINE_MAX];
 };
 
 struct handover_container {
@@ -70,7 +94,6 @@ struct handover_container {
 	int exit_status;
 	int term_signal;
 	char last_exit_reason[256];
-	long long restart_at;
 	int userns_enabled;
 	long long disk_quota_bytes;
 	int reserve_devices;
@@ -98,6 +121,7 @@ struct handover_container {
 	int fd_init_report;
 	int fd_capture;
 	int fd_bpf_prog;
+	char init_output_partial[HANDOVER_OUTPUT_LINE_MAX];
 	char captured_output[REGISTRY_CAPTURED_OUTPUT_MAX];
 	int captured_output_len;
 };
@@ -107,6 +131,9 @@ struct handover_record {
 	char written_by[64];
 	long long written_at;
 	pid_t procfuse_pid;
+	int procfuse_load_fd;
+	struct handover_console consoles[HANDOVER_CONSOLES_MAX];
+	int console_count;
 	int count;
 	struct handover_container *containers; /* count entries, heap */
 };
@@ -134,5 +161,10 @@ int handover_read(const char *path, struct handover_record *rec, char *err, size
  */
 int handover_validate(const struct handover_record *rec, const char *cgroup_root, int *pidfds,
                       char *err, size_t err_size);
+
+/* Is pid alive and a child of this process? A handover keeps the pid
+ * across execve, so whatever the old cixd forked is still ours to reap;
+ * anything else is not ours, whatever the record says. 1 or 0. */
+int handover_pid_is_child(pid_t pid);
 
 #endif

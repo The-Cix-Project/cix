@@ -23,6 +23,7 @@ int handover_record_init(struct handover_record *rec, int max)
 {
 	memset(rec, 0, sizeof(*rec));
 	rec->format = HANDOVER_FORMAT;
+	rec->procfuse_load_fd = -1;
 	if (max <= 0)
 		return 0;
 	rec->containers = calloc((size_t)max, sizeof(*rec->containers));
@@ -74,8 +75,6 @@ static void put_container(struct json_writer *w, const struct handover_container
 	jw_int(w, c->term_signal);
 	jw_key(w, "last_exit_reason");
 	jw_str(w, c->last_exit_reason);
-	jw_key(w, "restart_at");
-	jw_int(w, c->restart_at);
 	jw_key(w, "userns_enabled");
 	jw_bool(w, c->userns_enabled);
 	jw_key(w, "disk_quota_bytes");
@@ -219,6 +218,8 @@ static void put_container(struct json_writer *w, const struct handover_container
 		jw_int(w, s->fail_detail);
 		jw_key(w, "output_fd");
 		jw_int(w, s->output_fd);
+		jw_key(w, "output_partial");
+		jw_str(w, s->output_partial);
 		jw_obj_close(w);
 	}
 	jw_arr_close(w);
@@ -235,6 +236,8 @@ static void put_container(struct json_writer *w, const struct handover_container
 	jw_int(w, c->fd_bpf_prog);
 	jw_obj_close(w);
 
+	jw_key(w, "init_output_partial");
+	jw_str(w, c->init_output_partial);
 	jw_key(w, "captured_output");
 	jw_str(w, c->captured_output);
 	jw_obj_close(w);
@@ -256,6 +259,19 @@ int handover_write(const char *path, const struct handover_record *rec, char *er
 	jw_int(&w, rec->written_at);
 	jw_key(&w, "procfuse_pid");
 	jw_int(&w, rec->procfuse_pid);
+	jw_key(&w, "procfuse_load_fd");
+	jw_int(&w, rec->procfuse_load_fd);
+	jw_key(&w, "consoles");
+	jw_arr_open(&w);
+	for (i = 0; i < rec->console_count; i++) {
+		jw_obj_open(&w);
+		jw_key(&w, "tty");
+		jw_str(&w, rec->consoles[i].tty);
+		jw_key(&w, "pid");
+		jw_int(&w, rec->consoles[i].pid);
+		jw_obj_close(&w);
+	}
+	jw_arr_close(&w);
 	jw_key(&w, "containers");
 	jw_arr_open(&w);
 	for (i = 0; i < rec->count; i++)
@@ -334,7 +350,6 @@ static void get_container(const struct json_value *o, struct handover_container 
 	c->exit_status = (int)get_int(o, "exit_status", missing);
 	c->term_signal = (int)get_int(o, "term_signal", missing);
 	get_str(o, "last_exit_reason", c->last_exit_reason, sizeof(c->last_exit_reason), missing);
-	c->restart_at = get_int(o, "restart_at", missing);
 	c->userns_enabled = (int)get_int(o, "userns_enabled", missing);
 	c->disk_quota_bytes = get_int(o, "disk_quota_bytes", missing);
 	c->reserve_devices = (int)get_int(o, "reserve_devices", missing);
@@ -439,6 +454,7 @@ static void get_container(const struct json_value *o, struct handover_container 
 		t->fail_reason = (int)get_int(s, "fail_reason", missing);
 		t->fail_detail = (int)get_int(s, "fail_detail", missing);
 		t->output_fd = (int)get_int(s, "output_fd", missing);
+		get_str(s, "output_partial", t->output_partial, sizeof(t->output_partial), missing);
 		c->service_count++;
 	}
 
@@ -448,8 +464,32 @@ static void get_container(const struct json_value *o, struct handover_container 
 	c->fd_capture = fds != NULL ? (int)get_int(fds, "capture", missing) : -1;
 	c->fd_bpf_prog = fds != NULL ? (int)get_int(fds, "bpf_prog", missing) : -1;
 
+	get_str(o, "init_output_partial", c->init_output_partial, sizeof(c->init_output_partial),
+	        missing);
 	get_str(o, "captured_output", c->captured_output, sizeof(c->captured_output), missing);
 	c->captured_output_len = (int)strlen(c->captured_output);
+}
+
+/* Everything above the containers. */
+static void get_top(const struct json_value *root, struct handover_record *rec,
+                    const char **missing)
+{
+	const struct json_value *a;
+	size_t i;
+
+	get_str(root, "written_by", rec->written_by, sizeof(rec->written_by), missing);
+	rec->written_at = get_int(root, "written_at", missing);
+	rec->procfuse_pid = (pid_t)get_int(root, "procfuse_pid", missing);
+	rec->procfuse_load_fd = (int)get_int(root, "procfuse_load_fd", missing);
+	rec->console_count = 0;
+	a = get_arr(root, "consoles", HANDOVER_CONSOLES_MAX, missing);
+	for (i = 0; a != NULL && i < a->u.array.count; i++) {
+		const struct json_value *o = a->u.array.items[i];
+
+		get_str(o, "tty", rec->consoles[i].tty, sizeof(rec->consoles[i].tty), missing);
+		rec->consoles[i].pid = (pid_t)get_int(o, "pid", missing);
+		rec->console_count++;
+	}
 }
 
 int handover_read(const char *path, struct handover_record *rec, char *err, size_t err_size)
@@ -483,10 +523,7 @@ int handover_read(const char *path, struct handover_record *rec, char *err, size
 		         HANDOVER_FORMAT);
 		return -1;
 	}
-	rec->format = (int)format;
-	get_str(root, "written_by", rec->written_by, sizeof(rec->written_by), &missing);
-	rec->written_at = get_int(root, "written_at", &missing);
-	rec->procfuse_pid = (pid_t)get_int(root, "procfuse_pid", &missing);
+	get_top(root, rec, &missing);
 	arr = get_arr(root, "containers", REGISTRY_MAX_CONTAINERS, &missing);
 	if (missing != NULL) {
 		json_free(root);
@@ -499,9 +536,7 @@ int handover_read(const char *path, struct handover_record *rec, char *err, size
 		return -1;
 	}
 	rec->format = (int)format;
-	get_str(root, "written_by", rec->written_by, sizeof(rec->written_by), &missing);
-	rec->written_at = get_int(root, "written_at", &missing);
-	rec->procfuse_pid = (pid_t)get_int(root, "procfuse_pid", &missing);
+	get_top(root, rec, &missing);
 	for (i = 0; i < arr->u.array.count; i++) {
 		get_container(arr->u.array.items[i], &rec->containers[i], &missing);
 		if (missing != NULL) {
@@ -565,6 +600,32 @@ static int pid_in_cgroup(const char *cgroup_root, const char *name, pid_t pid)
 	return found;
 }
 
+int handover_pid_is_child(pid_t pid)
+{
+	char path[64], buf[512];
+	const char *p;
+	ssize_t n;
+	int fd;
+
+	if (pid <= 0)
+		return 0;
+	snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return 0;
+	buf[n] = '\0';
+	/* "pid (comm) state ppid ...": comm may hold spaces and parentheses,
+	 * so the fields after it start at its last ')'. */
+	p = strrchr(buf, ')');
+	if (p == NULL || p[1] != ' ' || p[2] == '\0' || p[3] != ' ')
+		return 0;
+	return atol(p + 4) == (long)getpid();
+}
+
 int handover_validate(const struct handover_record *rec, const char *cgroup_root, int *pidfds,
                       char *err, size_t err_size)
 {
@@ -572,6 +633,14 @@ int handover_validate(const struct handover_record *rec, const char *cgroup_root
 
 	for (i = 0; i < rec->count; i++)
 		pidfds[i] = -1;
+	for (i = 0; i < rec->console_count; i++)
+		if (rec->consoles[i].pid != 0 && !handover_pid_is_child(rec->consoles[i].pid)) {
+			snprintf(err, err_size,
+			         "handover: the console shell on %s (pid %d) is not a child of this cixd "
+			         "(ADR-0375)",
+			         rec->consoles[i].tty, (int)rec->consoles[i].pid);
+			return -1;
+		}
 	for (i = 0; i < rec->count; i++) {
 		const struct handover_container *c = &rec->containers[i];
 		const char *why = NULL;
@@ -580,6 +649,8 @@ int handover_validate(const struct handover_record *rec, const char *cgroup_root
 			continue;
 		if (c->pid <= 0 || (pidfds[i] = sys_pidfd_open(c->pid, 0)) < 0)
 			why = "its pid is not alive";
+		else if (!handover_pid_is_child(c->pid))
+			why = "its pid is not a child of this cixd";
 		else if (!pid_in_cgroup(cgroup_root, c->name, c->pid))
 			why = "its pid is not in its cgroup";
 		else if (check_fd(c->fd_init_control, 1) != 0 || check_fd(c->fd_init_report, 1) != 0)

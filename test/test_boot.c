@@ -45,12 +45,15 @@
  * ADR-0375 phase 1: the booted cixd hands over to itself in place,
  * HANDOVER_AFTER seconds after it starts serving and once nothing is in
  * flight, and the boot is healthy only when the cixd it exec'd serves
- * again. 120 s was the budget for one boot under TCG; the handover adds
- * a second start of cixd in the same kernel, without the kernel's.
+ * again and has taken over what the first one ran -- the console shells,
+ * here (phase 3). The takeover line is printed after the listeners come
+ * up, so it is the last of the handover's lines and the one to wait for.
+ * 120 s was the budget for one boot under TCG; the handover adds a
+ * second start of cixd in the same kernel, without the kernel's.
  */
 #define BOOT_TIMEOUT_SECONDS 180
 #define HANDOVER_AFTER "5"
-#define SUCCESS_MARKER "handover: serving again"
+#define SUCCESS_MARKER "handover: took over 0 containers and "
 #define PANIC_MARKER "Kernel panic"
 
 /* Builds the ESP as a standalone FAT32 file via mtools -- the boot manager
@@ -280,9 +283,20 @@ int main(void)
 			{ "init-mode: slot=", 1 },
 			{ "handover: executing", 1 },
 			{ "handover: cixd started again in this kernel", 1 },
+			{ "handover: serving again", 1 },
+			{ SUCCESS_MARKER, 1 },
 		};
 		size_t k;
 		int bad = 0;
+		const char *took = strstr(captured, SUCCESS_MARKER);
+
+		/* Phase 3: the console shell on ttyS0 at least -- the one this
+		 * boot's console is -- was carried and is watched again. tty0
+		 * may be between respawns, so it is not counted on. */
+		if (took == NULL || atoi(took + strlen(SUCCESS_MARKER)) < 1) {
+			fprintf(stderr, "FAIL: the handover took over no console shell (ADR-0375)\n");
+			bad = 1;
+		}
 
 		for (k = 0; k < sizeof(counts) / sizeof(counts[0]); k++) {
 			const char *p = captured;

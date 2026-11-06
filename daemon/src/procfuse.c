@@ -37,6 +37,7 @@
 #include <sys/mount.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -1149,19 +1150,39 @@ static int vpath_eq(const volatile char *a, const char *b)
 	return 0;
 }
 
+/*
+ * The page is a memfd rather than anonymous memory so it can outlive an
+ * exec: a handover (ADR-0375) passes the descriptor across execve and
+ * the new cixd maps the same page the server still writes. The server
+ * inherits the mapping at fork; closing its copy of the descriptor
+ * there changes nothing.
+ */
+static int g_load_fd = -1;
+
 int procfuse_load_attach(const char *cgroup_base)
 {
 	void *p;
+	int fd;
 
 	if (g_load != NULL)
 		return 0;
 	if (snprintf(g_load_base, sizeof(g_load_base), "%s", cgroup_base) >= (int)sizeof(g_load_base))
 		return -1;
-	p = mmap(NULL, sizeof(*g_load), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-	if (p == MAP_FAILED)
+	fd = memfd_create("cixd-procfuse-load", MFD_CLOEXEC);
+	if (fd < 0)
 		return -1;
+	if (ftruncate(fd, (off_t)sizeof(*g_load)) != 0) {
+		close(fd);
+		return -1;
+	}
+	p = mmap(NULL, sizeof(*g_load), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if (p == MAP_FAILED) {
+		close(fd);
+		return -1;
+	}
 	memset(p, 0, sizeof(*g_load));
 	g_load = p;
+	g_load_fd = fd;
 	return 0;
 }
 
@@ -2085,6 +2106,62 @@ int procfuse_start(const char *state_dir, const char *load_top)
 	logstore_write("cixd", "info", "procfuse: serving %d virtualised /proc files at %s (pid %d)",
 	                PROCFUSE_FILE_COUNT, g_mount_path, (int)pid);
 	return 0;
+}
+
+void procfuse_handover_state(pid_t *server_pid, int *load_fd)
+{
+	*server_pid = g_mounted && g_server_pid > 0 ? g_server_pid : 0;
+	*load_fd = *server_pid > 0 ? g_load_fd : -1;
+}
+
+#ifndef FUSE_SUPER_MAGIC
+#define FUSE_SUPER_MAGIC 0x65735546
+#endif
+
+int procfuse_resume(const char *state_dir, pid_t server_pid, int load_fd, char *err,
+                    size_t err_size)
+{
+	struct statfs sfs;
+	struct stat st;
+	void *p;
+
+	if (snprintf(g_mount_path, sizeof(g_mount_path), "%s/%s", state_dir,
+	              PROCFUSE_MOUNT_DIRNAME) >= (int)sizeof(g_mount_path)) {
+		snprintf(err, err_size, "handover: procfuse's mount path is too long (ADR-0375)");
+		return -1;
+	}
+	if (statfs(g_mount_path, &sfs) != 0 || (unsigned long)sfs.f_type != FUSE_SUPER_MAGIC) {
+		snprintf(err, err_size, "handover: %s is not procfuse's FUSE mount (ADR-0375)",
+		         g_mount_path);
+		return -1;
+	}
+	if (load_fd >= 0) {
+		/* F_GET_SEALS answers only for a memfd. */
+		if (fcntl(load_fd, F_GET_SEALS) < 0 || fstat(load_fd, &st) != 0 ||
+		    st.st_size != (off_t)sizeof(*g_load) ||
+		    fcntl(load_fd, F_SETFD, FD_CLOEXEC) != 0) {
+			snprintf(err, err_size,
+			         "handover: descriptor %d is not procfuse's load page (ADR-0375)", load_fd);
+			return -1;
+		}
+		p = mmap(NULL, sizeof(*g_load), PROT_READ | PROT_WRITE, MAP_SHARED, load_fd, 0);
+		if (p == MAP_FAILED) {
+			snprintf(err, err_size, "handover: cannot map procfuse's load page: %s (ADR-0375)",
+			         strerror(errno));
+			return -1;
+		}
+		snprintf(g_load_base, sizeof(g_load_base), "%s", CGROUP_ROOT);
+		g_load = p;
+		g_load_fd = load_fd;
+	}
+	g_server_pid = server_pid;
+	g_mounted = 1;
+	return 0;
+}
+
+int procfuse_has_load_page(void)
+{
+	return g_load != NULL;
 }
 
 void procfuse_stop(void)

@@ -160,6 +160,28 @@ const char *procfuse_mount_path(void);
 void procfuse_stop(void);
 
 /*
+ * ADR-0375: what a handover record carries of procfuse. The server pid
+ * (0 when no server is running) and the memfd of its load page (-1 when
+ * there is none). The caller clears FD_CLOEXEC on the memfd itself.
+ */
+void procfuse_handover_state(pid_t *server_pid, int *load_fd);
+
+/*
+ * The other side: the server the old cixd started is still running and
+ * still serves the mount, so take it back rather than start a second
+ * one over it. The caller has already checked that server_pid is its
+ * child. Checks that STATE_DIR/procfuse is a FUSE mount and that load_fd
+ * (when >= 0) is a memfd of the page's size, sets FD_CLOEXEC back, and
+ * maps it. It logs nothing, because it runs before the log store opens.
+ * 0, or -1 with err written.
+ */
+int procfuse_resume(const char *state_dir, pid_t server_pid, int load_fd, char *err,
+                    size_t err_size);
+
+/* Is the load page mapped? 1 or 0. */
+int procfuse_has_load_page(void);
+
+/*
  * Renders one file of PROCFUSE_FILES (by index) as it would be served
  * to a process in cgroup directory `cg`, or as the host's own when `cg`
  * is NULL. Returns the number of bytes written.
