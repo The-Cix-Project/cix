@@ -474,6 +474,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Handover, never blind adoption.** A container is taken over only from the handover record together with the descriptors passed across `execve`. A record the kernel contradicts is a failed handover, and the host reboots. Never create a container twice, and never adopt one from the kernel alone (ADR-0246's removed path).
 - **The rollback stays the boot counter.** A live switch confirms its slot only after its probation. A failed switch costs one reboot, never more.
 - **One path:** the host roll is the only caller. Never add an endpoint or a hand route for it.
+- **A handover changes nothing about which containers run.** Running stays running with the same pid, exited stays exited, stopped stays stopped, and a pending crash restart still happens. So the record carries every registry entry, and autostart is once per kernel. The build plan, the record's fields and the takeover's three steps are ADR-0375's "Phase 2's build plan". Anything between `registry_init()` and the takeover that reads the registry reads it empty, so nothing that reads the registry goes there.
 
 ## A container rolls once its image has settled; the ABI hold judges the target set
 
