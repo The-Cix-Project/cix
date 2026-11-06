@@ -15667,6 +15667,95 @@ static void plan_networks(const struct json_value *jnetworks,
 	*count = (int)i;
 }
 
+/*
+ * interfaces: what each entry names (refs, pointing into the body) and
+ * its name inside the container. ADR-0345: an entry is a string, or
+ * {"interface": ..., "ifname": ...} the way devices[] takes {"id": ...};
+ * the string is shorthand for the object without ifname, which is every
+ * ar-1 revision ever published. The name inside is the one given, else
+ * what was referenced -- a mapping's name, or the kernel's name, which
+ * is then also the host's -- under ADR-0259's rules either way, so a
+ * passed-through "eth1" with no ifname is refused rather than colliding
+ * with the container's own eth1. Every name is checked before any grant
+ * (the caller's), so a refusal's reason does not depend on what the
+ * host holds.
+ */
+static int plan_interfaces(const struct json_value *jinterfaces, char net_chosen_names[][16],
+                           int net_chosen_count, const char **refs,
+                           char ifnames[][CONTAINER_IFNAME_MAX], int *count, char *err_msg,
+                           size_t err_msg_size)
+{
+	size_t i, j;
+	int k;
+
+	*count = 0;
+	if (jinterfaces == NULL)
+		return 0;
+	if (jinterfaces->type != JSON_ARRAY || jinterfaces->u.array.count > CONTAINER_MAX_INTERFACES) {
+		snprintf(err_msg, err_msg_size, "interfaces must be an array of at most 16 entries");
+		return 400;
+	}
+	for (i = 0; i < jinterfaces->u.array.count; i++) {
+		const struct json_value *item = jinterfaces->u.array.items[i];
+		const char *ref = NULL;
+		const char *given = NULL;
+
+		if (item->type == JSON_STRING) {
+			ref = json_as_string(item);
+		} else if (item->type == JSON_OBJECT) {
+			const struct json_value *jifname = json_object_get(item, "ifname");
+
+			ref = json_as_string(json_object_get(item, "interface"));
+			if (jifname != NULL && jifname->type != JSON_STRING) {
+				snprintf(err_msg, err_msg_size, "interfaces[%d].ifname must be a string",
+				         (int)i);
+				return 400;
+			}
+			given = jifname != NULL ? json_as_string(jifname) : NULL;
+		}
+		if (ref == NULL || ref[0] == '\0') {
+			snprintf(err_msg, err_msg_size,
+			         "interfaces entries must be a string, or {\"interface\": ..., "
+			         "\"ifname\": ...}");
+			return 400;
+		}
+		refs[i] = ref;
+		snprintf(ifnames[i], CONTAINER_IFNAME_MAX, "%s", given != NULL ? given : ref);
+		if (!container_ifname_is_valid(given != NULL ? given : ref)) {
+			/* The fix differs: a name that was given wants another one; a
+			 * default wants one given (0.2.57-562 said "give it an
+			 * ifname" to an ifname of "eth1"). */
+			snprintf(err_msg, err_msg_size,
+			         "interfaces[%d] would be named \"%s\" inside, which is not a "
+			         "valid ifname: 1-15 characters of [A-Za-z0-9._-], not \"lo\" or "
+			         "an \"eth<N>\" name -- %s",
+			         (int)i, ifnames[i],
+			         given != NULL ? "choose another ifname" : "give it an ifname");
+			return 400;
+		}
+		for (j = 0; j < i; j++) {
+			if (strcmp(ifnames[i], ifnames[j]) == 0) {
+				snprintf(err_msg, err_msg_size,
+				         "interfaces[%d] and interfaces[%d] would both be named \"%s\" "
+				         "inside -- each interface needs its own name",
+				         (int)j, (int)i, ifnames[i]);
+				return 400;
+			}
+		}
+		for (k = 0; k < net_chosen_count; k++) {
+			if (strcmp(ifnames[i], net_chosen_names[k]) == 0) {
+				snprintf(err_msg, err_msg_size,
+				         "interfaces[%d] would be named \"%s\" inside, which networks[] "
+				         "already uses -- each interface needs its own name",
+				         (int)i, ifnames[i]);
+				return 400;
+			}
+		}
+	}
+	*count = (int)jinterfaces->u.array.count;
+	return 0;
+}
+
 static int create_container_from_body(const char *body, size_t body_len,
                                        struct registry_entry **out_entry,
                                        char out_restart_policy[16], int *out_restart_delay_seconds,
@@ -15756,6 +15845,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 * names networks[] chose explicitly, which is all it can collide
 	 * with: an unnamed attachment is eth<N>, which no ifname may be. */
 	char interface_ifnames[CONTAINER_MAX_INTERFACES][CONTAINER_IFNAME_MAX];
+	const char *interface_refs[CONTAINER_MAX_INTERFACES]; /* into root; what each names */
 	char net_chosen_names[CONTAINER_MAX_NETWORKS * 2][16];
 	int net_chosen_count = 0;
 	int interface_count = 0;
@@ -16483,113 +16573,39 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 	}
 	stallwatch_step("container create: resolve the interfaces");
-	if (jinterfaces != NULL) {
-		if (jinterfaces->type != JSON_ARRAY || jinterfaces->u.array.count > CONTAINER_MAX_INTERFACES) {
+	/* Each interface's name inside (plan_interfaces()), every one checked
+	 * before any grant. */
+	plan_rc = plan_interfaces(jinterfaces, net_chosen_names, net_chosen_count, interface_refs,
+	                          interface_ifnames, &interface_count, err_msg, err_msg_size);
+	if (plan_rc != 0) {
+		json_free(root);
+		return plan_rc;
+	}
+	for (i = 0; i < (size_t)interface_count; i++) {
+		char host[CONTAINER_IFNAME_MAX];
+		int verdict;
+
+		/*
+		 * ADR-0344: the same gate as devices[], asked of the record a
+		 * grant of this interface is really of -- its PHY when it is a
+		 * radio (ADR-0265). A bridge port or the interface carrying the
+		 * management address is refused with 400, one another container
+		 * holds or reserves with 409. The record comes back for the
+		 * registry to keep, since once moved the interface is gone from
+		 * the host's walk. ADR-0345: ref may name a mac mapping, and host
+		 * is what it resolved to. Not the plan's: during a takeover the
+		 * interface is inside the container, and the handover record
+		 * says which it is (ADR-0375).
+		 */
+		verdict = devicegrant_check_interface(interface_refs[i], name, &interface_records[i],
+		                                      host, sizeof(host), err_msg, err_msg_size);
+		if (verdict != 0) {
 			json_free(root);
-			snprintf(err_msg, err_msg_size, "interfaces must be an array of at most 16 entries");
-			return 400;
+			return verdict;
 		}
-		interface_count = (int)jinterfaces->u.array.count;
-		for (i = 0; i < (size_t)interface_count; i++) {
-			const struct json_value *item = jinterfaces->u.array.items[i];
-			const char *ref = NULL;
-			const char *given = NULL;
-			char host[CONTAINER_IFNAME_MAX];
-			int verdict;
-			size_t j;
-			int k;
-
-			/*
-			 * ADR-0345: a string, or {"interface": ..., "ifname": ...}
-			 * the way devices[] takes {"id": ...}. The string is
-			 * shorthand for the object without ifname, which is every
-			 * ar-1 revision ever published.
-			 */
-			if (item->type == JSON_STRING) {
-				ref = json_as_string(item);
-			} else if (item->type == JSON_OBJECT) {
-				const struct json_value *jifname = json_object_get(item, "ifname");
-
-				ref = json_as_string(json_object_get(item, "interface"));
-				if (jifname != NULL && jifname->type != JSON_STRING) {
-					json_free(root);
-					snprintf(err_msg, err_msg_size, "interfaces[%d].ifname must be a string",
-					         (int)i);
-					return 400;
-				}
-				given = jifname != NULL ? json_as_string(jifname) : NULL;
-			}
-			if (ref == NULL || ref[0] == '\0') {
-				json_free(root);
-				snprintf(err_msg, err_msg_size,
-				         "interfaces entries must be a string, or {\"interface\": ..., "
-				         "\"ifname\": ...}");
-				return 400;
-			}
-			/*
-			 * Its name inside (ADR-0345): the one given, else what was
-			 * referenced -- a mapping's name, or the kernel's name,
-			 * which is then also the host's. Under ADR-0259's rules
-			 * either way, so a passed-through "eth1" with no ifname is
-			 * refused now, where before it collided with the
-			 * container's own eth1. Checked before the grant gate, so a
-			 * refusal's reason does not depend on what the host holds.
-			 */
-			snprintf(interface_ifnames[i], sizeof(interface_ifnames[i]), "%s",
-			         given != NULL ? given : ref);
-			if (!container_ifname_is_valid(given != NULL ? given : ref)) {
-				json_free(root);
-				/* The fix differs: a name that was given wants another
-				 * one; a default wants one given (0.2.57-562 said "give
-				 * it an ifname" to an ifname of "eth1"). */
-				snprintf(err_msg, err_msg_size,
-				         "interfaces[%d] would be named \"%s\" inside, which is not a "
-				         "valid ifname: 1-15 characters of [A-Za-z0-9._-], not \"lo\" or "
-				         "an \"eth<N>\" name -- %s",
-				         (int)i, interface_ifnames[i],
-				         given != NULL ? "choose another ifname" : "give it an ifname");
-				return 400;
-			}
-			for (j = 0; j < i; j++) {
-				if (strcmp(interface_ifnames[i], interface_ifnames[j]) == 0) {
-					json_free(root);
-					snprintf(err_msg, err_msg_size,
-					         "interfaces[%d] and interfaces[%d] would both be named \"%s\" "
-					         "inside -- each interface needs its own name",
-					         (int)j, (int)i, interface_ifnames[i]);
-					return 400;
-				}
-			}
-			for (k = 0; k < net_chosen_count; k++) {
-				if (strcmp(interface_ifnames[i], net_chosen_names[k]) == 0) {
-					json_free(root);
-					snprintf(err_msg, err_msg_size,
-					         "interfaces[%d] would be named \"%s\" inside, which networks[] "
-					         "already uses -- each interface needs its own name",
-					         (int)i, interface_ifnames[i]);
-					return 400;
-				}
-			}
-			/*
-			 * ADR-0344: the same gate as devices[], asked of the record
-			 * a grant of this interface is really of -- its PHY when it
-			 * is a radio (ADR-0265). A bridge port or the interface
-			 * carrying the management address is refused with 400, one
-			 * another container holds or reserves with 409. The record
-			 * comes back for the registry to keep, since once moved the
-			 * interface is gone from the host's walk. ADR-0345: ref may
-			 * name a mac mapping, and host is what it resolved to.
-			 */
-			verdict = devicegrant_check_interface(ref, name, &interface_records[i], host,
-			                                      sizeof(host), err_msg, err_msg_size);
-			if (verdict != 0) {
-				json_free(root);
-				return verdict;
-			}
-			snprintf(interface_records[i].ifname, sizeof(interface_records[i].ifname), "%s",
-			         interface_ifnames[i]);
-			snprintf(interface_names[i], sizeof(interface_names[i]), "%s", host);
-		}
+		snprintf(interface_records[i].ifname, sizeof(interface_records[i].ifname), "%s",
+		         interface_ifnames[i]);
+		snprintf(interface_names[i], sizeof(interface_names[i]), "%s", host);
 	}
 	plan_rc = plan_cap_add(jcap_add, cap_add_names, &cap_add_count, err_msg, err_msg_size);
 	if (plan_rc != 0) {
