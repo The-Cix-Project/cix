@@ -37,6 +37,9 @@
  */
 int stallwatch_start(const char *records_path);
 
+/* ADR-0375: stops the watchdog before cixd execs itself in place. */
+void stallwatch_stop(void);
+
 /*
  * Where the watchdog should ask whether the daemon is serving (#247).
  * Call once the bind address and port are final; until then the

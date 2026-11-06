@@ -72,6 +72,7 @@
 #include "procfuse.h"
 #include "proctitle.h"
 #include "stallwatch.h"
+#include "startup_steps.h"
 #include "exec.h"
 #include "http.h"
 #include "image.h"
@@ -181,6 +182,7 @@
 #include <sys/sysmacros.h>
 #include <sys/timerfd.h>
 #include <sys/utsname.h>
+#include <sys/vfs.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -1069,6 +1071,23 @@ static char g_bootstrap_move_note[512];
  * empty when its partition mounted. Set in boot_init(), before the log
  * store exists. */
 static char g_data_dir_fault[512];
+
+/*
+ * ADR-0375: a start is the first in its kernel unless it is a handover,
+ * a re-exec of cixd in the kernel that is already running. The steps in
+ * include/startup_steps.h run only when first_in_kernel() says so.
+ */
+static int g_init_mode;           /* --init-mode */
+static int g_handover;            /* --handover */
+static int g_test_handover_after; /* test only: re-exec this many seconds after serving */
+static int g_helpers_live;        /* helper children forked and not yet completed */
+static int g_saved_argc;          /* the argv a handover execs with, flags adjusted */
+static char **g_saved_argv;
+
+static int first_in_kernel(void)
+{
+	return g_init_mode && !g_handover;
+}
 
 static void migrate_bootstrap_files_into_state_dir(void)
 {
@@ -6066,6 +6085,9 @@ static int start_http_listener(struct conn *c, const char *bind_addr, int port)
 	snprintf(c->listen_addr, sizeof(c->listen_addr), "%s", bind_addr);
 	c->listen_port = port;
 	printf("cixd listening on %s:%d\n", bind_addr, port);
+	/* ADR-0375: the line test_boot waits for after a handover. */
+	if (g_handover)
+		printf("handover: serving again (ADR-0375)\n");
 	fflush(stdout);
 	return 0;
 }
@@ -31371,6 +31393,7 @@ static int helper_attach(struct conn *hc, pid_t pid, void (*done)(int, void *), 
 		errno = saved;
 		return -1;
 	}
+	g_helpers_live++; /* ADR-0375: a handover waits until none is running */
 	return 0;
 }
 
@@ -31557,6 +31580,7 @@ static void handle_helper_event(struct conn *hc)
 		exit_status = -1;
 	close(hc->fd);
 	free(hc);
+	g_helpers_live--;
 
 	if (exit_status != 0)
 		logstore_write("cixd", "warn", "helper for %s exited %d",
@@ -38194,6 +38218,121 @@ static int boot_subsystem_init(int init_mode, const char *name, int rc)
 	return 0;
 }
 
+/*
+ * ADR-0375: does any container's cgroup still hold a process? Read from
+ * the kernel, which is the one thing a handover start can trust before
+ * it has read anything else.
+ */
+static int handover_containers_running(void)
+{
+	char dir[PATH_MAX];
+	DIR *d;
+	struct dirent *de;
+	int running = 0;
+
+	snprintf(dir, sizeof(dir), "/sys/fs/cgroup/%s", CGROUP_WORKLOAD_PARENT);
+	d = opendir(dir);
+	if (d == NULL)
+		return 0;
+	while (!running && (de = readdir(d)) != NULL) {
+		char path[PATH_MAX], buf[256];
+		ssize_t n;
+		int fd;
+
+		if (de->d_name[0] == '.' || de->d_type != DT_DIR ||
+		    (size_t)snprintf(path, sizeof(path), "%s/%s/cgroup.events", dir, de->d_name) >=
+		        sizeof(path))
+			continue;
+		fd = open(path, O_RDONLY | O_CLOEXEC);
+		if (fd < 0)
+			continue;
+		n = read(fd, buf, sizeof(buf) - 1);
+		close(fd);
+		if (n > 0) {
+			buf[n] = '\0';
+			running = strstr(buf, "populated 1") != NULL;
+		}
+	}
+	closedir(d);
+	return running;
+}
+
+/*
+ * ADR-0375: boot_init() records a data directory that fell back to a
+ * tmpfs, and a handover does not run boot_init(). The fact it recorded
+ * is still the kernel's, so it is read from there.
+ */
+static void handover_recompute_data_dir_fault(void)
+{
+	struct statfs sf;
+
+	if (statfs(g_base_dir, &sf) == 0 && sf.f_type == 0x01021994 /* TMPFS_MAGIC */)
+		snprintf(g_data_dir_fault, sizeof(g_data_dir_fault),
+		         "%s is a tmpfs this boot (found when this cixd started by a handover): logs, "
+		         "volumes with no disk, swap and anything else placed there are lost at the "
+		         "next reboot",
+		         g_base_dir);
+}
+
+/*
+ * ADR-0375 phase 1: nothing is in flight that the exec would orphan. A
+ * helper's completion is a function in this image, a package job is
+ * this process's memory, and the host roll and the root assembly are
+ * steps of one. Containers wait for phase 2's record: until it exists,
+ * a handover is only ever made with none running.
+ */
+static int handover_quiescent(void)
+{
+	char names[1][REGISTRY_NAME_MAX];
+
+	return g_helpers_live == 0 && !pkg_job_in_flight_for(NULL, NULL, 1) &&
+	       !g_bootroot_assembly_running && g_hostroll.step == HOSTROLL_IDLE &&
+	       registry_list_names(names, 1) == 0 && !handover_containers_running();
+}
+
+/*
+ * ADR-0375: execs cixd again, in place, with the argv this one started
+ * with and --handover added. The path is argv[0], what the boot entry
+ * named (init=/bin/cixd); phase 4 changes only which root it resolves
+ * in. Returns only when the exec failed, and then this cixd carries on.
+ */
+static void handover_exec(void)
+{
+	char *argv[64];
+	const char *path = g_saved_argv[0];
+	int i, n = 0;
+
+	if (path == NULL || path[0] != '/')
+		path = "/proc/self/exe";
+	for (i = 0; i < g_saved_argc && n < 62; i++) {
+		if (strncmp(g_saved_argv[i], "--test-handover-after=", 22) == 0 ||
+		    strcmp(g_saved_argv[i], "--handover") == 0)
+			continue;
+		argv[n++] = g_saved_argv[i];
+	}
+	argv[n++] = (char *)"--handover";
+	argv[n] = NULL;
+	logstore_write("cixd", "info", "handover: executing %s in place (ADR-0375)", path);
+	printf("handover: executing %s in place (ADR-0375)\n", path);
+	fflush(stdout);
+	stallwatch_stop();
+	execv(path, argv);
+	logstore_write("cixd", "error", "handover: exec of %s failed (%s); this cixd carries on",
+	               path, strerror(errno));
+	stallwatch_start(STALLWATCH_RECORDS_PATH);
+}
+
+/* ADR-0375 phase 1's test trigger (--test-handover-after=N): once the
+ * daemon has served N seconds and is quiescent, it hands over. Once. */
+static void handover_test_tick(void)
+{
+	if (g_test_handover_after <= 0 || time(NULL) - g_daemon_started_at < g_test_handover_after ||
+	    !handover_quiescent())
+		return;
+	g_test_handover_after = 0;
+	handover_exec();
+}
+
 static int cixd_main(int argc, char **argv)
 {
 	int port = DEFAULT_PORT;
@@ -38212,6 +38351,8 @@ static int cixd_main(int argc, char **argv)
 	/* Stamped before anything else so a slow startup (image scan, state
 	 * replay) counts as uptime rather than being invisible. */
 	g_daemon_started_at = time(NULL);
+	g_saved_argc = argc;
+	g_saved_argv = argv;
 
 	for (i = 1; i < argc; i++) {
 		if (strncmp(argv[i], "--port=", 7) == 0) {
@@ -38224,8 +38365,13 @@ static int cixd_main(int argc, char **argv)
 			web_root = argv[i] + 11;
 		else if (strcmp(argv[i], "--init-mode") == 0) {
 			init_mode = 1;
+			g_init_mode = 1;
 			g_pid1_mode = 1; /* issue #131: never return from main() below */
-		} else if (strncmp(argv[i], "--slot=", 7) == 0)
+		} else if (strcmp(argv[i], "--handover") == 0)
+			g_handover = 1;
+		else if (strncmp(argv[i], "--test-handover-after=", 22) == 0)
+			g_test_handover_after = atoi(argv[i] + 22);
+		else if (strncmp(argv[i], "--slot=", 7) == 0)
 			slot = argv[i] + 7;
 		else if (strcmp(argv[i], "--simulate-unhealthy-boot") == 0)
 			simulate_unhealthy = 1;
@@ -38251,7 +38397,30 @@ static int cixd_main(int argc, char **argv)
 	 * chance to apply a persisted port override (Part 0.5) -- nothing
 	 * between here and there reads it. */
 
-	if (init_mode) {
+	if (init_mode && g_handover) {
+		/*
+		 * ADR-0375: cixd again, in the kernel that is running. Nothing
+		 * in include/startup_steps.h runs. A handover takes containers
+		 * over only from a handover record (phase 2); until that
+		 * exists, one with containers running would be the blind
+		 * adoption ADR-0246 removed, so it is refused and the host
+		 * parks, which is any PID 1 start failure's path.
+		 */
+#define STARTUP_STEP_NAME(step) " " #step
+		printf("handover: cixd started again in this kernel, slot=%s (ADR-0375)\n"
+		       "handover: not run again, once per kernel:" STARTUP_ONCE_PER_KERNEL(
+		           STARTUP_STEP_NAME) "; kept running:" STARTUP_SURVIVES_HANDOVER(STARTUP_STEP_NAME) "\n",
+		       slot != NULL ? slot : "(none)");
+#undef STARTUP_STEP_NAME
+		fflush(stdout);
+		if (handover_containers_running()) {
+			fprintf(stderr, "handover: containers are running and there is no handover "
+			                "record to take them over from (ADR-0375)\n");
+			return 1;
+		}
+		handover_recompute_data_dir_fault();
+	}
+	if (first_in_kernel()) {
 		/* The only observable serial-console signal for which slot
 		 * actually booted this attempt (Phase 11 part 2's rollback
 		 * test) -- --simulate-unhealthy-boot still reaches the normal
@@ -38567,7 +38736,7 @@ static int cixd_main(int argc, char **argv)
 	 * attach below) may be a module -- must run before bootstrap_
 	 * management_network(), not after. Same init_mode gate: a plain/
 	 * test invocation has no real /usr/bin/modprobe to run at all. */
-	if (init_mode)
+	if (first_in_kernel())
 		load_boot_modules();
 	/* ADR-0160: same init_mode gate as its neighbors -- a persisted
 	 * sysctl config is real, ordinary daemon state (safely test-
@@ -38579,7 +38748,7 @@ static int cixd_main(int argc, char **argv)
 	 * run before bootstrap_management_network(): a net.* sysctl (e.g.
 	 * net.ipv4.ip_forward) can affect how that bootstrap itself
 	 * behaves. */
-	if (init_mode)
+	if (first_in_kernel())
 		apply_configured_sysctls();
 	/*
 	 * daemon_config MUST be initialized before bootstrap_management_network()
@@ -38600,7 +38769,7 @@ static int cixd_main(int argc, char **argv)
 	/* Only a real --init-mode boot has a GRUB-supplied net.conf to
 	 * bootstrap from (Part 0.5) -- a plain/test invocation has no
 	 * management network and simply keeps whatever --bind= it was given. */
-	if (init_mode && bootstrap_management_network() != 0)
+	if (first_in_kernel() && bootstrap_management_network() != 0)
 		return 1;
 	/* ADR-0159 Phase A: last of the four boot-time module/sysctl steps
 	 * (see load_configured_modules()'s own comment for why it runs
@@ -38616,10 +38785,16 @@ static int cixd_main(int argc, char **argv)
 	 * device that appears behind a driver the sweep loads is queued
 	 * there and handled once the loop runs (open_uevent_socket()).
 	 */
-	if (init_mode) {
+	/* The uevent socket is this process's; the boot's module loads are
+	 * the kernel's, and ran at its first start (ADR-0375). */
+	if (init_mode)
 		open_uevent_socket();
+	if (first_in_kernel()) {
 		kmodscan_boot_sweep();
 		load_configured_modules();
+	} else if (g_handover) {
+		kmodscan_not_run("the boot's module loads ran at this kernel's first start; this cixd "
+		                 "was started by a handover (ADR-0375)");
 	} else {
 		kmodscan_not_run("start-up module loads run only on a real boot (--init-mode)");
 	}
@@ -39173,7 +39348,7 @@ static int cixd_main(int argc, char **argv)
 	 * confirms -- everything above (mounts, network bring-up, the full
 	 * existing state-init sequence, the listening socket itself) had to
 	 * genuinely succeed to reach this line. */
-	if (init_mode && slot != NULL && !simulate_unhealthy)
+	if (first_in_kernel() && slot != NULL && !simulate_unhealthy)
 		maybe_confirm_boot(slot);
 
 	/*
@@ -39197,8 +39372,14 @@ static int cixd_main(int argc, char **argv)
 	 * other capability untouched and containers reading the host's own
 	 * /proc, which is what they read before this existed. The reason is
 	 * logged with a real errno rather than left to be guessed at.
+	 *
+	 * ADR-0375: not on a handover. The server is a child that survives
+	 * the exec and still serves the mount, and a second one would mount
+	 * over it (STARTUP_SURVIVES_HANDOVER). Until phase 3 passes its
+	 * load page as a memfd, a handed-over cixd reports no load figure.
 	 */
-	procfuse_start(STATE_DIR, CGROUP_WORKLOAD_PARENT);
+	if (!g_handover)
+		procfuse_start(STATE_DIR, CGROUP_WORKLOAD_PARENT);
 
 	{
 		/* #551: trees set aside because a reused version was wrong. No
@@ -39291,7 +39472,7 @@ static int cixd_main(int argc, char **argv)
 	 * developer's own terminal and must never fork a second process to
 	 * fight it over. Both consoles get an independent instance -- either
 	 * could be the one an operator is actually watching. */
-	if (init_mode) {
+	if (first_in_kernel()) {
 		spawn_console_shell("/dev/tty0");
 		spawn_console_shell("/dev/ttyS0");
 	}
@@ -39532,6 +39713,10 @@ static int cixd_main(int argc, char **argv)
 		 * stream -- after the batch for the same reason. */
 		events_ws_flush_all();
 		conn_out_sweep();
+
+		/* ADR-0375: after the pass's output is flushed, never in the
+		 * middle of serving one. */
+		handover_test_tick();
 
 		drain_pending_free();
 

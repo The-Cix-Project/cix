@@ -6,6 +6,19 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cixd can start again in the kernel it is running in (ADR-0375 phase 1, #673; in master, not yet released)
+
+- **The prerequisite ADR-0247 named:** startup becomes idempotent. `include/startup_steps.h` names the steps that run once per kernel, and they run only when `first_in_kernel()` says so: `boot_init`, the boot modules, the sysctls, the management network, the module sweep, boot confirmation and the console shells. A start with `--handover` runs everything else again. The steps that touch the kernel were each checked for running twice:
+  - the disk remount skips a mounted disk;
+  - bridges tolerate `EEXIST`;
+  - the cgroup controller write and the move into `cix.daemon` are idempotent;
+  - the listeners' ports come free because their sockets are `CLOEXEC`.
+
+  procfuse's server survives the exec, so a handover does not start a second one.
+- **Guard:** a handover with containers running is refused, and PID 1 parks, until phase 2's handover record exists. Adopting containers from the kernel alone is what ADR-0246 removed.
+- **The exec:** `handover_exec()` stops stallwatch, whose watchdog would otherwise watch a page the new image no longer maps. It then execs argv[0] with the same arguments plus `--handover`, but only once nothing is in flight: no helper, package job, assembly, host roll or container. The data directory's tmpfs fault is recomputed from the kernel.
+- **Gated:** `test_startup_steps` holds `cixd_main()` to the table. Every listed step must sit behind `first_in_kernel()`, and only four classified bare `init_mode` tests may remain. `test_boot` now boots init-mode under QEMU with the test-only `--test-handover-after=5`, and requires the handed-over cixd to serve again, with the slot line, the exec and the second start each printed exactly once.
+
 ### cixd authors a consumer's rebuild when its provider's ABI moves (ADR-0373 release D, #672; in master, not yet released)
 
 - **The author:** a consumer gets its next release, written by `cbs revise`, when its newest revision's record names an ABI that the newest installed copy of the provider no longer offers. That copy is what a rebuild composes. The revision keeps the same version and source, drops every approval and the record, and has a changelog naming the provider and the ABI. It is committed before it is published.

@@ -21,6 +21,7 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/wait.h>
 
 /*
  * How long the loop may go without a heartbeat before it counts as a
@@ -1042,6 +1043,29 @@ int stallwatch_start(const char *records_path)
 	}
 	g_watchdog_pid = pid;
 	return 0;
+}
+
+/*
+ * ADR-0375: before cixd execs itself in place. The watchdog survives an
+ * exec -- execve keeps cixd's pid, so its PR_SET_PDEATHSIG never fires
+ * -- and would go on watching a heartbeat page the new image no longer
+ * maps, writing false stalls beside the new watchdog's records. Bounded
+ * and non-blocking: it polls for the exit for at most two seconds, and
+ * an unreaped one is left to the new cixd, which inherits it as a child.
+ */
+void stallwatch_stop(void)
+{
+	int i;
+
+	if (g_watchdog_pid <= 0)
+		return;
+	kill(g_watchdog_pid, SIGKILL);
+	for (i = 0; i < 200; i++) {
+		if (waitpid(g_watchdog_pid, NULL, WNOHANG) != 0)
+			break;
+		usleep(10000);
+	}
+	g_watchdog_pid = -1;
 }
 
 /*

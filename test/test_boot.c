@@ -41,8 +41,16 @@
 #define ROOT_SIZE_MIB 256
 #define SECTOR_SIZE 512
 
-#define BOOT_TIMEOUT_SECONDS 120
-#define SUCCESS_MARKER "cixd listening on"
+/*
+ * ADR-0375 phase 1: the booted cixd hands over to itself in place,
+ * HANDOVER_AFTER seconds after it starts serving and once nothing is in
+ * flight, and the boot is healthy only when the cixd it exec'd serves
+ * again. 120 s was the budget for one boot under TCG; the handover adds
+ * a second start of cixd in the same kernel, without the kernel's.
+ */
+#define BOOT_TIMEOUT_SECONDS 180
+#define HANDOVER_AFTER "5"
+#define SUCCESS_MARKER "handover: serving again"
 #define PANIC_MARKER "Kernel panic"
 
 /* Builds the ESP as a standalone FAT32 file via mtools -- the boot manager
@@ -77,7 +85,8 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 	snprintf(loader_conf, sizeof(loader_conf),
 	         "title Cix\n"
 	         "linux /cix-bzImage-a\n"
-	         "options console=ttyS0 root=/dev/vda2 rw init=/bin/cixd -- --init-mode\n");
+	         "options console=ttyS0 root=/dev/vda2 rw init=/bin/cixd -- --init-mode "
+	         "--test-handover-after=" HANDOVER_AFTER "\n");
 	if (write_text_file(loader_conf_path, loader_conf) != 0)
 		return -1;
 	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/entries/cix.conf") != 0)
@@ -250,8 +259,50 @@ int main(void)
 		outcome = qemu_boot_capture(&opts, captured, sizeof(captured));
 	}
 	if (outcome != QEMU_BOOT_SUCCESS) {
-		fprintf(stderr, "boot did not reach a healthy state (outcome=%d)\n", (int)outcome);
+		size_t len = strlen(captured);
+
+		fprintf(stderr, "boot did not reach a healthy state after its handover (outcome=%d)\n"
+		                "--- console, last 6000 bytes ---\n%s\n--- end ---\n",
+		        (int)outcome, len > 6000 ? captured + len - 6000 : captured);
 		return 1;
+	}
+
+	/*
+	 * ADR-0375 phase 1: the kernel's once-per-boot preparation ran once,
+	 * the handover exec'd once, and the second cixd skipped what the
+	 * first had done (include/startup_steps.h).
+	 */
+	{
+		static const struct {
+			const char *line;
+			int want;
+		} counts[] = {
+			{ "init-mode: slot=", 1 },
+			{ "handover: executing", 1 },
+			{ "handover: cixd started again in this kernel", 1 },
+		};
+		size_t k;
+		int bad = 0;
+
+		for (k = 0; k < sizeof(counts) / sizeof(counts[0]); k++) {
+			const char *p = captured;
+			int n = 0;
+
+			while ((p = strstr(p, counts[k].line)) != NULL) {
+				n++;
+				p++;
+			}
+			if (n != counts[k].want) {
+				fprintf(stderr, "FAIL: \"%s\" appears %d times on the console, expected %d "
+				                "(ADR-0375)\n",
+				        counts[k].line, n, counts[k].want);
+				bad = 1;
+			}
+		}
+		if (bad) {
+			fprintf(stderr, "--- console ---\n%s\n--- end ---\n", captured);
+			return 1;
+		}
 	}
 
 	rm_tree(workdir); /* only on success -- a failure's artifacts are worth keeping to debug */
