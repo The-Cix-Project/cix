@@ -11001,6 +11001,12 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
  * is staged), and reboot. The A/B boot counter is the rollback: a slot
  * that does not confirm its boot falls back to the one that ran.
  *
+ * ADR-0375 phase 5: when the staged kernel is the one running, the roll
+ * switches the root in place instead (HOSTROLL_SWITCH, handover_exec()),
+ * and every container keeps running. A switch that is refused, fails
+ * before its pivot, or waits past its bound for nothing to be in flight
+ * falls back to the reboot, so a release never costs more than it did.
+ *
  * A host that is current but not running what it built (a roll that
  * missed its window, or a hostbuild nobody deployed) is staged and
  * rebooted too. Outside the window nothing reboots; the next night
@@ -11010,8 +11016,14 @@ enum hostroll_step {
 	HOSTROLL_IDLE = 0,
 	HOSTROLL_BUILD,    /* waiting for g_hostroll.building's hostbuild */
 	HOSTROLL_ASSEMBLE, /* waiting for the root assembly */
-	HOSTROLL_STAGE     /* waiting for the slot to be written (#631) */
+	HOSTROLL_STAGE,    /* waiting for the slot to be written (#631) */
+	HOSTROLL_SWITCH    /* staged with the running kernel: waiting for nothing to be in
+	                    * flight, to switch into it in place (ADR-0375 phase 5) */
 };
+
+/* With no window to bound it, how long a roll waits for nothing to be in
+ * flight before it reboots instead of switching. */
+#define HOSTROLL_SWITCH_WAIT_SECONDS 1800
 
 static struct {
 	enum hostroll_step step;
@@ -11019,7 +11031,12 @@ static struct {
 	int stage_kernel;   /* the kernel artifact differs from what runs */
 	int then_cix;       /* cix is still to build after the kernel */
 	char building[PKG_NAME_MAX];
+	char slot[8];       /* HOSTROLL_SWITCH: the slot staged */
+	long switch_by;     /* HOSTROLL_SWITCH: reboot instead once this passes */
 } g_hostroll;
+
+static int handover_quiescent(void);
+static void handover_exec(const char *target);
 
 static void hostroll_stop(const char *level, const char *fmt, const char *a, const char *b)
 {
@@ -11153,9 +11170,62 @@ static void hostroll_staged(int status, const char *slot, int updated_kernel, co
 		              slot, "");
 		return;
 	}
+	/*
+	 * ADR-0375 phase 5: the kernel is the one running, so the root can be
+	 * switched in place and every container keeps running. The switch
+	 * needs nothing in flight, which the roll's own steps have just
+	 * stopped being; anything else in flight is waited for, inside the
+	 * window. A kernel change reboots, as before.
+	 */
+	if (!g_hostroll.stage_kernel) {
+		g_hostroll.step = HOSTROLL_SWITCH;
+		snprintf(g_hostroll.slot, sizeof(g_hostroll.slot), "%s", slot);
+		g_hostroll.switch_by = g_hostroll.reboot_by != 0 ? g_hostroll.reboot_by - 60
+		                                                 : now + HOSTROLL_SWITCH_WAIT_SECONDS;
+		logstore_write("system", "info",
+		               "host roll: staged root on slot %s with the running kernel -- switching "
+		               "into it in place once nothing is in flight (ADR-0375)",
+		               slot);
+		return;
+	}
 	logstore_write("system", "warn",
 	               "host roll: staged root%s on slot %s -- rebooting into it (ADR-0327)",
 	               updated_kernel ? " and kernel" : "", slot);
+	memset(&g_hostroll, 0, sizeof(g_hostroll));
+	g_shutdown_action = SHUTDOWN_ACTION_REBOOT;
+	g_stop = 1;
+}
+
+/*
+ * From the loop, while a roll waits to switch (ADR-0375 phase 5): once
+ * nothing is in flight, switch in place. handover_exec() returns only
+ * when the switch did not happen, having undone every step, and then
+ * the roll reboots into the staged slot as it did before phase 5, so a
+ * refused switch costs exactly what every release cost before it. So
+ * does a wait for quiescence that outlasts its bound.
+ */
+static void hostroll_switch_tick(void)
+{
+	char slot[8];
+
+	if (g_hostroll.step != HOSTROLL_SWITCH)
+		return;
+	snprintf(slot, sizeof(slot), "%s", g_hostroll.slot);
+	if (!handover_quiescent()) {
+		if ((long)time(NULL) < g_hostroll.switch_by)
+			return;
+		logstore_write("system", "warn",
+		               "host roll: work stayed in flight past the wait -- rebooting into slot %s "
+		               "instead of switching (ADR-0375)",
+		               slot);
+	} else {
+		memset(&g_hostroll, 0, sizeof(g_hostroll));
+		handover_exec(slot);
+		logstore_write("system", "warn",
+		               "host roll: the in-place switch to slot %s did not happen -- rebooting "
+		               "into it instead (ADR-0375)",
+		               slot);
+	}
 	memset(&g_hostroll, 0, sizeof(g_hostroll));
 	g_shutdown_action = SHUTDOWN_ACTION_REBOOT;
 	g_stop = 1;
@@ -11191,6 +11261,7 @@ static int action_system_roll(const char *params, char *reason, size_t reason_si
 		snprintf(reason, reason_size, "a host roll is already in progress (%s)",
 		         g_hostroll.step == HOSTROLL_BUILD   ? g_hostroll.building
 		         : g_hostroll.step == HOSTROLL_STAGE ? "staging"
+		         : g_hostroll.step == HOSTROLL_SWITCH ? "waiting to switch in place"
 		                                             : "assembling");
 		return 0;
 	}
@@ -38503,7 +38574,8 @@ static int handover_quiescent(void)
 	int n, i;
 
 	if (g_helpers_live != 0 || pkg_job_in_flight_for(NULL, NULL, 1) ||
-	    g_bootroot_assembly_running || g_hostroll.step != HOSTROLL_IDLE ||
+	    g_bootroot_assembly_running ||
+	    (g_hostroll.step != HOSTROLL_IDLE && g_hostroll.step != HOSTROLL_SWITCH) ||
 	    pkg_push_in_flight() || pkg_sync_in_progress() ||
 	    g_iso_build_state == ISO_BUILD_BUILDING || g_iso_publish_state == ISO_PUB_RUNNING ||
 	    g_artifact_export_state == ARTIFACT_EXPORT_BUILDING || g_kernel_releases_fetching)
@@ -40638,6 +40710,7 @@ static int cixd_main(int argc, char **argv)
 		/* ADR-0375: after the pass's output is flushed, never in the
 		 * middle of serving one. */
 		handover_test_tick();
+		hostroll_switch_tick();
 
 		drain_pending_free();
 
