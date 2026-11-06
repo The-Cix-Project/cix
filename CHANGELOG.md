@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container's create is split into its plan and its side effects (ADR-0375 phase 2a, #673; in master, not yet released)
+
+- **What changed:** everything a takeover recomputes from a container's persisted body is now its own function, and create calls each one:
+  - `plan_cap_add`, `plan_consoles`, `plan_dns_servers`, `plan_sysctls`, `plan_env`;
+  - `plan_networks`, which names each attachment and leaves undeclared addresses for create to allocate;
+  - `plan_interfaces`, which gives each interface's name inside the container and leaves the host-side grant check in create.
+
+  `registry_create()` now clones and then calls one `registry_fill()`, which the takeover will share. The cix-init table was already one call fed by the plan.
+- **What does not change:** messages and refusals are the same. One reporting order changed: a body with several interface errors now reports every name error before any grant error.
+- **Verified:** probes 709, 710 and 711 passed, one per slice.
+
 ### cixd can start again in the kernel it is running in (ADR-0375 phase 1, #673; in master, not yet released)
 
 - **The prerequisite ADR-0247 named:** startup becomes idempotent. `include/startup_steps.h` names the steps that run once per kernel, and they run only when `first_in_kernel()` says so: `boot_init`, the boot modules, the sysctls, the management network, the module sweep, boot confirmation and the console shells. A start with `--handover` runs everything else again. The steps that touch the kernel were each checked for running twice:
