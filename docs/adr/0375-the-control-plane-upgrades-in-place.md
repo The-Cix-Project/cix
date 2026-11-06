@@ -158,6 +158,15 @@ Each is one probe; the second is budgeted for two.
 - a partial output line in flight is lost;
 - event streams and open consoles reconnect.
 
+**Phase 3, the drain completed (2026-11-06).** Two of the three items the phase list below names were already done by phase 2: quiescence waits for every helper child, and stallwatch is stopped before the exec and started again by the new cixd. What remained were the phase 2 limits above, and each is now carried in the record. Format 1 had not shipped, so these are changes to format 1, not a format 2.
+- **procfuse.** The load page is a memfd (`memfd_create`, then `MAP_SHARED` of it) rather than anonymous memory, which an exec drops. The record names the server's pid and the memfd, with `FD_CLOEXEC` cleared on the memfd. In E1 the new cixd checks four things: the server is its child, `STATE_DIR/procfuse` is a FUSE mount, the descriptor answers `F_GET_SEALS` (only a memfd does), and its size is the page's. It then maps the page and records the server as its own. A handed-over cixd reports load figures again, gives new containers their binds, and stops the server at shutdown. Before this it leaked the server. A record with no server makes the new cixd start one, as a boot does.
+- **Console shells.** They were reachable only through their epoll conns, so cixd now keeps a table of them by tty. A pid of 0 there means a respawn is pending. The record carries the table. The new cixd checks each pid is its child, watches it again, and arms a pending respawn on its usual delay. They exist only in init mode, so `test_boot` is their gate: its success marker is now the takeover line, which reports the shells taken over.
+- **A line half read.** Output conns are kept on a list, so the record can carry, per service and for cix-init's own stdio, the bytes read since the last newline. Those bytes seed the new conn's buffer. The conn stays the buffer's owner. Moving the buffer into the registry entry would have cost 1 KiB for every service of every container, for a state that matters for the one instant of an exec.
+- **Every pid the record names must be a child of the new process**: containers, console shells and procfuse's server. `pidfd_open` succeeding proves only that the pid is alive. Parentage is what makes it ours to reap, and the exec keeps it.
+- **A definition with no entry is brought up by autostart's own rule**, `def_bringup_decision()`, with one difference: a stop holds across a handover, because a handover is not a reboot. Before this, phase 2 had its own test. That test missed two cases. An `on-failure` container whose crash came after a stable run has `consecutive_failures` 0, and it was not re-armed. A definition waiting for its image had the image's place in the in-memory rebuild queue dropped.
+
+*Built and proven:* `test_handover_record` round-trips the new fields, including bytes that are not UTF-8, and refuses a pid that is not a child. `test_handover` now covers the three containers phase 2's plan named (A running with capture, B exited, C with its restart pending), a line split by the handover, the load figure, and the negative case. A record naming a dead pid makes `cixd --handover` exit 1. `test_boot` asserts a console shell was carried.
+
 ## Alternatives
 
 - **Keep rebooting, in the window.** That is today's state, and it is the floor this improves on. It also stays the path for every kernel change.
@@ -170,9 +179,10 @@ Each is one probe; the second is budgeted for two.
 - **Phases, each one release verified on .95** through the window:
   1. The startup table, and a test that starts a test daemon twice in one data directory with containers running.
   2. The handover record, descriptor passing and takeover, with a test that re-execs a test daemon under a running container and finds it alive and controllable.
-  3. The drain: helpers, stallwatch re-forked, procfuse's page as a memfd.
+  3. The drain: helpers, stallwatch re-forked, procfuse's page as a memfd. Done with phase 3 above; the first two had come with phase 2.
   4. The root switch and the deferred confirmation, verified live by a real roll on .95.
   5. The host roll's last step chooses.
 - **All of it is PID 1 code**, where a fault is a kernel panic. That is why rule 4's floor matters: the worst outcome of each phase is the reboot every release costs today.
+- **Connections to cixd do not survive the exec.** An event stream or an open container console drops and its client reconnects; the containers behind them carry on. A console shell on the host's own console survives, because it is a process cixd watches, not a connection.
 - **A kernel update still reboots,** in the window. A box whose kernel rolls as often as cix gains less.
 - **vpn-1 still restarts when the `vpn` image itself rolls.** A second instance with staggered rolls is the answer to that, and it is a separate decision.

@@ -475,6 +475,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **The rollback stays the boot counter.** A live switch confirms its slot only after its probation. A failed switch costs one reboot, never more.
 - **One path:** the host roll is the only caller. Never add an endpoint or a hand route for it.
 - **A handover changes nothing about which containers run.** Running stays running with the same pid, exited stays exited, stopped stays stopped, and a pending crash restart still happens. So the record carries every registry entry, and autostart is once per kernel. The build plan, the record's fields and the takeover's three steps are ADR-0375's "Phase 2's build plan". Anything between `registry_init()` and the takeover that reads the registry reads it empty, so nothing that reads the registry goes there.
+- **Whatever cixd holds only in its own memory is carried in the record, or the exec loses it** (phase 3): procfuse's server and its load page (a memfd), the console shells, a half-read output line. A new child process or in-memory state that must outlive a handover gets its own record field and its own E1 check. Every pid the record names must be a child of the new process, checked through `handover_pid_is_child()`. A definition with no entry is brought up by `def_bringup_decision()`, the rule autostart uses. Never write a second rule for it.
 
 ## A container rolls once its image has settled; the ABI hold judges the target set
 

@@ -6,6 +6,23 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A handover carries procfuse, console shells and half-written lines (ADR-0375 phase 3, #673; in master, not yet released)
+
+- **procfuse:** its load page is now a memfd, which crosses `execve`. The new cixd checks the server is its child and the mount and memfd are what they should be, then maps the page. A handed-over cixd now:
+  - reports load figures again;
+  - gives new containers their binds;
+  - stops the server at shutdown (it used to leak it).
+- **Console shells:** cixd keeps a table of them, carried by tty and pid. The new cixd watches each one again, and arms any pending respawn again.
+- **Half-written lines:** a line a container's output pipe has started but not ended is carried for each service and for cix-init's stdio. A line no longer splits across a handover.
+- **Parentage:** every pid in the record (containers, console shells, procfuse's server) must be a child of the new process.
+- **Re-armed restarts:** these now follow autostart's own rule, `def_bringup_decision()`, except that a stop holds. That fixes two phase 2 gaps:
+  - an `on-failure` container that crashed after a stable run is now re-armed;
+  - the image a waiting definition needs is queued for rebuild again.
+- **Record:** `restart_at` is gone. Format 1 has not shipped, so these are changes to format 1, not a format 2.
+- **Tests:**
+  - `test_handover` now covers an exited container, a pending restart, a line split by the handover, the load figure, and a record naming a dead pid, which makes `cixd --handover` exit 1.
+  - `test_boot` waits for the takeover line and checks a console shell was carried.
+
 ### cixd hands its running containers to its successor across an in-place exec (ADR-0375 phase 2, #673; in master, not yet released)
 
 - **The record** (`handover.c`, format 1, schema in `handover.h`): every registry entry's runtime state that neither its persisted body nor the kernel gives back, and the numbers of the descriptors passed across `execve`. These are cix-init's socket pair, the service and capture pipes, and the device program.
