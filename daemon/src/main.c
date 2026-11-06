@@ -15630,6 +15630,43 @@ static int plan_env(const struct json_value *jenv, char env_buf[][CONTAINER_ENV_
 	return 0;
 }
 
+/*
+ * networks: each attachment's name, its in-container interface name
+ * (ADR-0259, eth<i> unless chosen) and bridge (ADR-0264), and its
+ * address when the body declares one, flagged in has_ip. An undeclared
+ * address is the caller's to fill: create allocates one, a takeover
+ * takes the one the container holds from the handover record. The body
+ * was validated by the time this runs (parse_network_entry()'s answer is
+ * checked earlier in the create), so it cannot fail.
+ */
+static void plan_networks(const struct json_value *jnetworks,
+                          struct registry_network_attachment *atts, int *has_ip, int *count)
+{
+	size_t i;
+
+	*count = 0;
+	if (jnetworks == NULL)
+		return;
+	for (i = 0; i < jnetworks->u.array.count && i < CONTAINER_MAX_NETWORKS; i++) {
+		char n[NETWORK_NAME_MAX] = "";
+		char ifname[16] = "", bridge[16] = "";
+		uint32_t ip_be = 0;
+
+		has_ip[i] = 0;
+		parse_network_entry(jnetworks->u.array.items[i], n, sizeof(n), &ip_be, &has_ip[i], ifname,
+		                    sizeof(ifname), bridge, sizeof(bridge));
+		memset(&atts[i], 0, sizeof(atts[i]));
+		strncpy(atts[i].name, n, sizeof(atts[i].name) - 1);
+		atts[i].ip_be = has_ip[i] ? ip_be : 0;
+		snprintf(atts[i].container_bridge, sizeof(atts[i].container_bridge), "%s", bridge);
+		if (ifname[0] != '\0')
+			snprintf(atts[i].ifname, sizeof(atts[i].ifname), "%s", ifname);
+		else
+			snprintf(atts[i].ifname, sizeof(atts[i].ifname), "eth%d", (int)i);
+	}
+	*count = (int)i;
+}
+
 static int create_container_from_body(const char *body, size_t body_len,
                                        struct registry_entry **out_entry,
                                        char out_restart_policy[16], int *out_restart_delay_seconds,
@@ -15679,8 +15716,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	int env_count = 0;
 	size_t i;
 	struct registry_network_attachment net_attachments[CONTAINER_MAX_NETWORKS];
-	char chosen_ifname[16]; /* ADR-0259: this attachment's operator-chosen name, "" if none */
-	char chosen_bridge[16]; /* ADR-0264: in-container bridge this attachment joins, "" if none */
+	int net_has_ip[CONTAINER_MAX_NETWORKS]; /* declared in the body, not allocated */
 	int net_count = 0;
 	int ip_forward = 0;
 	int ksm = 0;
@@ -16813,61 +16849,38 @@ static int create_container_from_body(const char *body, size_t body_len,
 	}
 
 	stallwatch_step("container create: attach networks");
-	if (jnetworks != NULL) {
-		net_count = (int)jnetworks->u.array.count;
-		for (i = 0; i < (size_t)net_count; i++) {
-			char n[NETWORK_NAME_MAX];
-			uint32_t ip_be;
-			int has_ip;
+	/*
+	 * The plan names each attachment (plan_networks()); create allocates
+	 * the address of any the body does not declare, in the same order as
+	 * before, and a takeover will take them from the handover record.
+	 * veth_host stays empty -- only a live attachment (task #861) ever
+	 * needs a standalone detach path; see its own comment in registry.h.
+	 */
+	plan_networks(jnetworks, net_attachments, net_has_ip, &net_count);
+	for (i = 0; i < (size_t)net_count; i++) {
+		int arc;
 
-			/* Already validated above (name exists; a given ip is
-			 * in-range and free) -- re-parsed only to recover the
-			 * values, no new failure mode expected here. */
-			parse_network_entry(jnetworks->u.array.items[i], n, sizeof(n), &ip_be, &has_ip,
-			                     chosen_ifname, sizeof(chosen_ifname), chosen_bridge,
-			                     sizeof(chosen_bridge));
-			if (!has_ip) {
-				int arc = network_alloc_ip(n, &ip_be);
-
-				if (arc == -2) {
-					/* Issue #137: a deliberate refusal, not an
-					 * exhausted range -- so it is a 409 naming the two
-					 * safe ways forward, never a bare 500. */
-					json_free(root);
-					snprintf(err_msg, err_msg_size,
-					         "network \"%s\" is bridged to a physical interface and has no "
-					         "declared allocation pool, so auto-allocating an address could "
-					         "collide with equipment on that LAN. Either give this container "
-					         "an explicit ip, or declare the pool this platform may use "
-					         "(network create --alloc-start=/--alloc-end=).",
-					         n);
-					return 409;
-				}
-				if (arc != 0) {
-					json_free(root);
-					snprintf(err_msg, err_msg_size, "no free IP addresses");
-					return 500;
-				}
-			}
-			memset(&net_attachments[i], 0, sizeof(net_attachments[i]));
-			strncpy(net_attachments[i].name, n, sizeof(net_attachments[i].name) - 1);
-			net_attachments[i].ip_be = ip_be;
-			/*
-			 * ADR-0259: the operator's name when one was given, the
-			 * positional default otherwise. Validated in the pass
-			 * above, so nothing here can fail.
-			 */
-			snprintf(net_attachments[i].container_bridge,
-			         sizeof(net_attachments[i].container_bridge), "%s", chosen_bridge);
-			if (chosen_ifname[0] != '\0')
-				snprintf(net_attachments[i].ifname, sizeof(net_attachments[i].ifname), "%s",
-				         chosen_ifname);
-			else
-				snprintf(net_attachments[i].ifname, sizeof(net_attachments[i].ifname), "eth%d",
-				         (int)i);
-			/* veth_host stays empty -- only a live attachment (task #861)
-			 * ever needs a standalone detach path; see its own comment
-			 * in registry.h. */
+		if (net_has_ip[i])
+			continue;
+		arc = network_alloc_ip(net_attachments[i].name, &net_attachments[i].ip_be);
+		if (arc == -2) {
+			/* Issue #137: a deliberate refusal, not an exhausted range --
+			 * so it is a 409 naming the two safe ways forward, never a
+			 * bare 500. Message before the free (#421). */
+			snprintf(err_msg, err_msg_size,
+			         "network \"%s\" is bridged to a physical interface and has no "
+			         "declared allocation pool, so auto-allocating an address could "
+			         "collide with equipment on that LAN. Either give this container "
+			         "an explicit ip, or declare the pool this platform may use "
+			         "(network create --alloc-start=/--alloc-end=).",
+			         net_attachments[i].name);
+			json_free(root);
+			return 409;
+		}
+		if (arc != 0) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "no free IP addresses");
+			return 500;
 		}
 	}
 
