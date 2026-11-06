@@ -207,6 +207,14 @@ Each is one probe; the second is budgeted for two.
 
 *Built and proven, 2026-11-06 (probe-cix-compile@0.2.57-716, commits 24c4eabf and 0d3c4f56).* `test_rootswitch`, `test_handover`, `test_boot`, `test_boot_ab` and `test_boot_update` all pass. Under QEMU, slot A updated slot B, switched its root into B in place under the same kernel, and B's cixd started with `slot=b`. It took over two console shells, resumed procfuse with its load page, and confirmed B: the ESP held `cix-b.conf` with its content and no counted B entry. A cold power-on then booted B. Probe 715 had shown everything up to the confirmation and an empty `cix-b.conf`, which is the vfat finding above. `test_boot` now asserts that procfuse is resumed with its load page, so phase 3's resume, which no probe had shown, is measured.
 
+**Phase 5: the host roll chooses (2026-11-06).** `hostroll_staged()` rebooted after every stage. When the roll staged the running kernel (`stage_kernel` 0, so `do_system_update()` copied the active kernel forward), it now enters `HOSTROLL_SWITCH`. `hostroll_switch_tick()`, run from the loop where the test trigger runs, waits for quiescence and calls `handover_exec(slot)`. Four outcomes, and none costs more than a release did before:
+- **switched:** the containers keep running, and the new cixd confirms its slot;
+- **refused or failed before the pivot:** everything is undone, and the roll reboots into the staged slot as before;
+- **failed after the pivot:** a reboot into the slot that was running (phase 4);
+- **work still in flight at the bound:** the roll reboots as before. The bound is the window's end less a minute, or `HOSTROLL_SWITCH_WAIT_SECONDS` with no window.
+
+A kernel change still reboots. The roll is the only caller, as rule 5 says. The decision has no QEMU test of its own, because the roll needs a hostbuild. Its parts are tested: the switch by `test_boot_update`, the refusals by `test_rootswitch`. Its live proof needs two releases. The first release carrying phase 4 reaches .95 by reboot, because the root running there has no `/run/nextroot`. The release after it is the first the roll can switch into.
+
 ## Alternatives
 
 - **Keep rebooting, in the window.** That is today's state, and it is the floor this improves on. It also stays the path for every kernel change.

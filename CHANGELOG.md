@@ -6,6 +6,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The host roll switches the root in place when the kernel is unchanged (ADR-0375 phase 5, #673; in master, not yet released)
+
+- **What changed:** when the nightly roll stages a root with the running kernel, it no longer reboots. It waits until nothing is in flight, then switches into the staged slot in place, and every container keeps running.
+- **Fallback:** a switch that is refused or fails before its pivot reboots into the staged slot, as every release did before. So does work still in flight at the bound, which is the window's end less a minute.
+- **Unchanged:** a kernel change still reboots.
+- **When it first runs live:** the first release carrying this code reaches a host by reboot; the next is the first the roll can switch.
+
 ### cixd switches its root into the staged slot in place (ADR-0375 phase 4, #673; in master, not yet released)
 
 - **The switch:** `handover_exec()` takes a target slot.
