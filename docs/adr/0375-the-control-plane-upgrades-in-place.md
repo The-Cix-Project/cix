@@ -44,6 +44,28 @@ Accepted by the owner on 2026-11-06: *"Accept ADR-0375, go ahead"*. Proposed 202
 4. **The rollback stays the boot counter.** A live switch does not change the default boot entry until the new cixd has run its probation and confirms, as a booted one does today (`confirm_boot()`). If the new PID 1 dies, the kernel panics and reboots into the default entry, which is still the old slot. **A failed switch costs one reboot, which is today's cost for every release.** It can never cost more.
 5. **One path.** The host roll is the only caller (ADR-0327, and CLAUDE.md since 2026-11-05: releases reach a host through the window). Its last step becomes "switch when the kernel is unchanged, otherwise reboot". There is no second endpoint and no hand route.
 
+**Phase 2's design, read from the code on 2026-11-06.**
+
+1. **ADR-0247's objection does not apply.** It removed `container_adopt()` because a process that is not a container's parent cannot see that container exit. A handover keeps the PID across `execve`, so the containers stay children of the same process. The new cixd reaps them as the old one did.
+2. **A container is rebuilt through the create path, not deserialized.** A hand-written dump of the ~300-line `registry_entry` would be a second definition of that struct, and it would drift the first time a field is added. So:
+   - `registry_create()` (`registry.c:105`), which finds a slot, clones through `container_create()` and fills the entry, gets an adopt twin that takes the existing `struct container_handle` instead of cloning. Both share one fill.
+   - `create_container_from_body()` (`main.c:15412`, ~2,900 lines) is split into three parts: computing the spec from the body, the host side effects (rootfs seed and snapshot, file staging, PKI, LDAP, the cix-init transport, the clone), and recording. Takeover runs the first and third. Seeding again would discard a live rootfs, so it must never run.
+   - That split is phase 2a. It changes no behaviour, is held by the existing daemon tests, and gets its own probe before any handover code.
+3. **The record carries only what neither the definition nor the kernel can give**, as a cross-build contract: JSON, a `format` number, the writing build's version, and unknown keys ignored. Per container:
+   - its pid and whether it is running or exited (exited-but-kept entries too);
+   - `started_at`;
+   - the auto-allocated IPs, which exist only in the entry;
+   - each service's state, pid and restart count, because cix-init has no status query;
+   - a stop in progress (`teardown_kind`, with the escalation re-armed for the grace that remains);
+   - the live and pending device grants;
+   - the captured output;
+   - the descriptor number of each passed role: cix-init control and report, each service pipe, the capture pipe, the BPF program.
+
+   The cgroup, pidfd and network namespace are reacquired by path. The init table is recomputed from the body and not sent again.
+4. **Descriptor order:** wait for quiescence, clear `FD_CLOEXEC` on each passed descriptor, write the record last, then exec. On takeover, check each descriptor's type before trusting it (a SEQPACKET socket, a FIFO), and set `FD_CLOEXEC` again.
+5. **Where takeover runs:** the record is validated first: every pid alive, each pid in its cgroup, every descriptor typed. A record that fails validation is a refusal. It is applied right after `registry_init()`, before the orphan-base and rootfs sweeps, image retention and autostart, each of which treats an empty registry as the truth. Allocated IPs are marked taken before anything can allocate, and autostart skips the recorded names.
+6. **The handover path runs for any `--handover`, not only `--init-mode`.** A daemon-linked test then proves it with a real container: same pid, stats, service output written after the handover, a stop, a crash observed and restarted, and a non-colliding IP for a new container. A record naming a dead pid refuses to start. Outside init mode, that refusal is a nonzero exit, not a reboot.
+
 ## Alternatives
 
 - **Keep rebooting, in the window.** That is today's state, and it is the floor this improves on. It also stays the path for every kernel change.
