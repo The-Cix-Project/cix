@@ -169,6 +169,42 @@ Each is one probe; the second is budgeted for two.
 
 *Not yet shown: procfuse's resume.* It runs only when the old cixd had a FUSE server. A build container has no `/dev/fuse` (`CIX_BASELINE_DEVICES`), so `test_handover`'s daemons had none and that test checks no load figure. `test_boot`'s kernel carries `CONFIG_FUSE_FS=y`, so its init-mode cixd most likely had a server. A failed resume refuses the start, so its pass suggests the resume worked. But no line on the console says a server was handed over, so this is inferred, not measured. Phase 4's first probe adds the procfuse state to the printed takeover line and asserts it in `test_boot`.
 
+**Phase 4's build plan: the root switch and the deferred confirmation (2026-11-06).** Read from the code before writing any.
+
+*What there is to switch to.* A slot is a raw squashfs on its own partition (`ROOT_A_DEVICE`, `ROOT_B_DEVICE`). `do_system_update()` writes the inactive one, its kernel to `/boot/cix-bzImage-<slot>`, and a counted entry `cix-<slot>+3.conf` with the newest version. So after an update the next boot tries the new slot three times before falling back. `confirm_boot()` renames the counted entry to `cix-<slot>.conf` once a boot is serving. cix-boot passes over an entry whose tries-left is 0 unless nothing else can boot (`pick_entry()`).
+
+*Preconditions*, all checked before anything is touched. A refusal leaves this cixd running as it was:
+- init mode, with `--slot=` set, and the target is the other slot;
+- the target has a counted entry, so an update staged it and nothing confirmed it since;
+- the staged kernel is the running one: `bzimage_release()` of `/boot/cix-bzImage-<target>` equals `uname -r`. Phase 5 makes this choice, and the mechanism refuses anything else itself;
+- quiescence, as phase 2.
+
+*The switch, in a new module `rootswitch.c`.* It is unit-tested where it can be, since PID 1 is where a fault is a panic.
+1. **Plan the moves** from `/proc/self/mountinfo`: every mount whose parent is the root mount. Today those are `/dev`, `/proc`, `/sys`, `/config`, `/boot`, `/var/lib/cix`, `/mnt/cix` and the `/etc/resolv.conf` bind. Each carries its submounts, such as devpts, cgroup2, efivarfs, procfuse and volumes. Two mounts on one mount point are refused: a move would take only the top one. The list is read from the kernel, not written down, so a mount added later moves without anyone remembering it.
+2. **Mount the target** read-only at `/run/nextroot`. `mkbootroot` stages that empty directory, so every root carrying this code has it. Then check that the new root has `/bin/cixd`, that every planned mount point exists in it as a directory or a file, and that it has `/lib/modules/<release>` whenever the old root had them.
+3. **Hold the staged entry**: rename `cix-<target>+N[-M].conf` to `cix-<target>+0-<N+M>.conf` (`esp_entry_hold()`). Until the new cixd confirms, a reboot boots the old slot, so rule 4 holds as written: a failed switch costs exactly one reboot, into the slot that was running. Today's counted reboot would instead retry the new slot three times.
+4. **Write the record**, which now also carries the writer's `slot`. It lives in `/config/state`, which is the same path before and after the moves.
+5. **Move each planned mount** with `MS_MOVE` under `/run/nextroot`. Host mounts are private (only container namespaces are made private, and nothing marks a host mount shared), so the moves are allowed. If a move fails, the ones already made are moved back, the target is unmounted, the entry is renamed back and the record removed, and this cixd carries on.
+6. **Pivot**: `chdir("/run/nextroot")`, `pivot_root(".", ".")`, `umount2(".", MNT_DETACH)`, `chdir("/")`. `pivot_root` moves every process in the namespace whose root or working directory was the old root, which covers procfuse's server and the console shells. A container's processes have their own root and are untouched. The old root stays referenced by whatever still maps a binary from it and goes when they do.
+7. **Exec `/bin/cixd`** from the new root, with `--slot=<target>` and `--handover`. The one-shot test triggers (`--test-handover-after=`, `--test-switch-after=`, `--test-update-image=`, `--test-update-kernel=`) are dropped, because each belongs to the process it was given to. A test's configuration, such as `--test-esp-entries-dir=`, passes on. An exec that fails after the pivot cannot be undone, so it syncs and reboots, which boots the old slot (step 3).
+
+*The new side.* A handover whose record names a different slot than this cixd's is a switch. A switched cixd runs `maybe_confirm_boot()` at the point a boot does, with the same definition of healthy: about to serve, management address bound. `esp_entry_to_confirm()` already ranks a counted entry first, so the held `+0` entry is the one renamed to `cix-<target>.conf`. If confirmation never comes, the existing retry timer ends in a reboot, and the held entry makes that a reboot into the old slot.
+
+*What review found before any code, and what it changed:*
+- **A handed-over cixd lost three facts the boot computes once**, from phase 1 on:
+  - The platform's partitions. `resolve_platform_devices()` runs inside `boot_init()`, so after a handover `ROOT_A_DEVICE`, `ROOT_B_DEVICE` and the others were empty. The next update would have had no slot to write.
+  - The listener's address. Only `bootstrap_management_network()` sets `g_bind_addr`, so the successor would have served on loopback alone, unreachable from the network.
+  - Whether the uplink attached.
+
+  No handover had run on a host, so none of this showed. The partitions are now read again from `/sys` on every handover. The address and the uplink travel in the record (`bind_addr`, `uplink_unattached`), because only the old process knows them. The kernel module scan's report, which only the boot's sweep fills, now says it ran in the process before, rather than that no sweep ran.
+- **A rename on the ESP is fsynced** (`esp_entries_sync()`), both the hold and `confirm_boot()`'s rename. Rule 4's "one reboot, into the old slot" holds only if the hold is on disk before anything can panic.
+- **The target must have exactly one entry, and it must be counted.** A stale `cix-<target>.conf` beside a held entry would be booted instead of the slot that was running.
+- **The first release that carries this code cannot switch.** The switch runs in the root that is running, and only a root built by this release's `mkbootroot` has `/run/nextroot`. A missing one is a stated refusal. So the first release with phase 4 reaches a host by the window's reboot, and the release after it is the first that can switch.
+
+*Accepted limits.* procfuse's server and the console shells run the old build's code until they next exit. The server's page layout is checked by its size and by a format number now kept at the start of the page. A console shell is a REST client, and its next respawn runs the new `cixctl`.
+
+*Tests.* `test_esp` covers `esp_entry_hold()`, and a new `test_rootswitch` covers the mount planner against crafted `mountinfo` text. In `test_boot_update`, slot A updates slot B and is then told `--test-switch-after=5`. It switches into B in place, under the same kernel, and B confirms. The console must show each of these once: the update, the switch, the second start with `slot=b`, and the confirmation. The ESP must then hold `cix-b.conf` and no counted B entry. A cold power-on boots B, as before. The phase 3 leftovers ride along: the takeover line prints procfuse's state and `test_boot` asserts it, `container_output_line()` sizes its buffer from `HANDOVER_OUTPUT_LINE_MAX`, and the dead-pid case asserts its reason.
+
 ## Alternatives
 
 - **Keep rebooting, in the window.** That is today's state, and it is the floor this improves on. It also stays the path for every kernel change.

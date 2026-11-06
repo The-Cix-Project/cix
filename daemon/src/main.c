@@ -74,6 +74,7 @@
 #include "stallwatch.h"
 #include "startup_steps.h"
 #include "handover.h"
+#include "rootswitch.h"
 #include "exec.h"
 #include "http.h"
 #include "image.h"
@@ -1081,6 +1082,9 @@ static char g_data_dir_fault[512];
 static int g_init_mode;           /* --init-mode */
 static int g_handover;            /* --handover */
 static int g_test_handover_after; /* test only: re-exec this many seconds after serving */
+static int g_test_switch_after;   /* test only: switch root in place this many seconds after
+                                   * serving (ADR-0375 phase 4) */
+static int g_handover_switched;   /* this cixd's handover was a root switch: confirm its slot */
 static int g_helpers_live;        /* helper children forked and not yet completed */
 static int g_saved_argc;          /* the argv a handover execs with, flags adjusted */
 static char **g_saved_argv;
@@ -3214,6 +3218,10 @@ static int confirm_boot(const char *slot)
 		perror("confirm_boot rename");
 		return -1;
 	}
+	/* On disk before anything reports it: a power loss after a rename
+	 * still in the page cache would boot the old entry's counter. */
+	if (esp_entries_sync(g_esp_entries_dir) != 0)
+		fprintf(stderr, "confirm_boot: syncing %s: %s\n", g_esp_entries_dir, strerror(errno));
 	/* ADR-0339: the booted entry is confirmed some minutes after boot,
 	 * by the daemon and no API call -- the ESP and boot reads show it,
 	 * and the pipeline's deploy stage through getEsp (composed-of). */
@@ -7169,6 +7177,10 @@ static void handle_boot_confirm_timer_event(struct conn *cc)
 		if (confirm_boot(g_boot_confirm_slot) != 0)
 			fprintf(stderr, "confirm_boot failed for slot %s (continuing anyway)\n",
 			        g_boot_confirm_slot);
+		else if (g_handover_switched)
+			logstore_write("cixd", "info",
+			               "handover: slot %s confirmed after the root switch (ADR-0375)",
+			               g_boot_confirm_slot);
 		stop_boot_confirm_timer();
 		return;
 	}
@@ -7264,6 +7276,12 @@ static void maybe_confirm_boot(const char *slot)
 	if (why[0] == '\0') {
 		if (confirm_boot(slot) != 0)
 			fprintf(stderr, "confirm_boot failed for slot %s (continuing anyway)\n", slot);
+		else if (g_handover_switched) {
+			logstore_write("cixd", "info",
+			               "handover: slot %s confirmed after the root switch (ADR-0375)", slot);
+			printf("handover: slot %s confirmed after the root switch (ADR-0375)\n", slot);
+			fflush(stdout);
+		}
 		return;
 	}
 	if (!boot_is_unconfirmed(slot)) {
@@ -10003,7 +10021,7 @@ static void container_output_line(struct conn *cc, const char *line)
 {
 	struct registry_entry *e = cc->entry;
 	const char *svc = cc->service_index >= 0 ? e->services[cc->service_index].def.name : "cix-init";
-	char tagged[1024 + CIXINIT_NAME_MAX + 4];
+	char tagged[HANDOVER_OUTPUT_LINE_MAX + CIXINIT_NAME_MAX + 4];
 
 	snprintf(tagged, sizeof(tagged), "%s: %s", svc, line);
 	logstore_write_container(e->name, "info", "%s", tagged);
@@ -38521,6 +38539,9 @@ static int handover_build_record(struct handover_record *rec)
 		return -1;
 	snprintf(rec->written_by, sizeof(rec->written_by), "%s", CIX_BUILD_VERSION);
 	rec->written_at = (long long)time(NULL);
+	snprintf(rec->slot, sizeof(rec->slot), "%s", g_slot != NULL ? g_slot : "");
+	snprintf(rec->bind_addr, sizeof(rec->bind_addr), "%s", g_bind_addr);
+	snprintf(rec->uplink_unattached, sizeof(rec->uplink_unattached), "%s", g_uplink_unattached);
 	procfuse_handover_state(&rec->procfuse_pid, &rec->procfuse_load_fd);
 	rec->console_count = g_console_shell_count;
 	for (i = 0; i < g_console_shell_count; i++)
@@ -38623,35 +38644,163 @@ static void handover_set_cloexec(const struct handover_record *rec, int cloexec)
 }
 
 /*
- * ADR-0375: execs cixd again, in place, with the argv this one started
- * with and --handover added, after writing the record (always, even with
- * no containers). The path is argv[0], what the boot entry named
- * (init=/bin/cixd); phase 4 changes only which root it resolves in.
- * Returns only when the handover failed, having undone every step, and
- * then this cixd carries on.
+ * An argument the exec does not pass on: --handover, which it adds, and
+ * the one-shot test triggers, which belong to the process they were
+ * given to. A test's configuration (--test-esp-entries-dir=) passes on.
  */
-static void handover_exec(void)
+static int handover_drops_arg(const char *a)
+{
+	static const char *const triggers[] = {
+		"--test-handover-after=",
+		"--test-switch-after=",
+		"--test-update-image=",
+		"--test-update-kernel=",
+	};
+	size_t i;
+
+	if (strcmp(a, "--handover") == 0)
+		return 1;
+	for (i = 0; i < sizeof(triggers) / sizeof(triggers[0]); i++)
+		if (strncmp(a, triggers[i], strlen(triggers[i])) == 0)
+			return 1;
+	return 0;
+}
+
+/*
+ * Phase 4's preconditions, then the target slot mounted read-only at
+ * ROOTSWITCH_DIR and checked (ADR-0375). The plan is read first, while
+ * /proc is still at /proc and before the target is a mount of its own.
+ * 0 with the plan filled and the target mounted, or -1 with err written
+ * and nothing to undo.
+ */
+static int handover_switch_prepare(const char *target, struct rootswitch_plan *plan, char *err,
+                                   size_t err_size)
+{
+	struct utsname u;
+	struct stat st;
+	char staged_kernel[PATH_MAX], release[BZIMAGE_RELEASE_MAX];
+	const char *dev;
+
+	if (!g_init_mode || g_slot == NULL) {
+		snprintf(err, err_size, "only an init-mode cixd with a --slot= switches its root");
+		return -1;
+	}
+	if (strcmp(target, g_slot) == 0 || (strcmp(target, "a") != 0 && strcmp(target, "b") != 0)) {
+		snprintf(err, err_size, "slot %s is not the other slot of %s", target, g_slot);
+		return -1;
+	}
+	dev = strcmp(target, "a") == 0 ? ROOT_A_DEVICE : ROOT_B_DEVICE;
+	if (dev[0] == '\0') {
+		snprintf(err, err_size, "no partition is labelled for slot %s", target);
+		return -1;
+	}
+	if (stat(ROOTSWITCH_DIR, &st) != 0 || !S_ISDIR(st.st_mode)) {
+		snprintf(err, err_size,
+		         "this root has no %s: it predates the root switch, so the release it runs "
+		         "reaches the host by a reboot",
+		         ROOTSWITCH_DIR);
+		return -1;
+	}
+	if (uname(&u) != 0) {
+		snprintf(err, err_size, "uname: %s", strerror(errno));
+		return -1;
+	}
+	snprintf(staged_kernel, sizeof(staged_kernel), "%s/cix-bzImage-%s", ESP_DIR, target);
+	if (bzimage_release(staged_kernel, release, sizeof(release)) != 0) {
+		snprintf(err, err_size, "%s is not a readable kernel image", staged_kernel);
+		return -1;
+	}
+	if (strcmp(release, u.release) != 0) {
+		snprintf(err, err_size,
+		         "slot %s carries kernel %s and %s is running: a kernel change reboots", target,
+		         release, u.release);
+		return -1;
+	}
+	if (rootswitch_plan_read(plan, err, err_size) != 0)
+		return -1;
+	if (mount(dev, ROOTSWITCH_DIR, "squashfs", MS_RDONLY, NULL) != 0) {
+		snprintf(err, err_size, "cannot mount slot %s (%s) at %s: %s", target, dev,
+		         ROOTSWITCH_DIR, strerror(errno));
+		return -1;
+	}
+	if (rootswitch_check_target(ROOTSWITCH_DIR, plan, u.release, err, err_size) != 0) {
+		umount2(ROOTSWITCH_DIR, 0);
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * ADR-0375: execs cixd again, in place, with the argv this one started
+ * with, --handover added and the one-shot test triggers dropped, after
+ * writing the record (always, even with no containers).
+ *
+ * With target NULL the exec is of this root's cixd: argv[0], what the
+ * boot entry named (init=/bin/cixd). With a target slot (phase 4) it is
+ * a root switch: the target is mounted and checked, its staged entry is
+ * held at a spent counter (esp_entry_hold()), the record is written,
+ * every mount off the running root moves into the target, the pivot
+ * makes it the root, and its /bin/cixd is exec'd with --slot=<target>.
+ *
+ * Returns only when the handover failed, having undone every step, and
+ * then this cixd carries on. The one failure that cannot be undone is
+ * an exec that fails after the pivot: that syncs and reboots, and the
+ * held entry makes the reboot boot the slot that was running.
+ */
+static void handover_exec(const char *target)
 {
 	struct handover_record rec;
+	struct rootswitch_plan plan;
+	static char slot_arg[16];
 	char *argv[64];
-	char path[PATH_MAX], err[512];
+	char path[PATH_MAX], err[512], held_from[64] = "", held_to[64] = "";
 	const char *exe = g_saved_argv[0];
 	int i, n = 0;
 
 	if (exe == NULL || exe[0] != '/')
 		exe = "/proc/self/exe";
+	if (target != NULL) {
+		exe = "/bin/cixd";
+		snprintf(slot_arg, sizeof(slot_arg), "--slot=%s", target);
+	}
 	for (i = 0; i < g_saved_argc && n < 62; i++) {
-		if (strncmp(g_saved_argv[i], "--test-handover-after=", 22) == 0 ||
-		    strcmp(g_saved_argv[i], "--handover") == 0)
+		if (handover_drops_arg(g_saved_argv[i]))
 			continue;
+		if (target != NULL && strncmp(g_saved_argv[i], "--slot=", 7) == 0) {
+			argv[n++] = slot_arg;
+			continue;
+		}
 		argv[n++] = g_saved_argv[i];
 	}
 	argv[n++] = (char *)"--handover";
 	argv[n] = NULL;
 
+	if (target != NULL) {
+		if (handover_switch_prepare(target, &plan, err, sizeof(err)) != 0) {
+			logstore_write("cixd", "error",
+			               "handover: not switching to slot %s: %s; this cixd carries on "
+			               "(ADR-0375)",
+			               target, err);
+			printf("handover: not switching to slot %s: %s\n", target, err);
+			fflush(stdout);
+			return;
+		}
+		if (esp_entry_hold(g_esp_entries_dir, target, held_from, held_to, sizeof(held_from), err,
+		                   sizeof(err)) != 0) {
+			umount2(ROOTSWITCH_DIR, 0);
+			logstore_write("cixd", "error",
+			               "handover: not switching to slot %s: %s; this cixd carries on "
+			               "(ADR-0375)",
+			               target, err);
+			printf("handover: not switching to slot %s: %s\n", target, err);
+			fflush(stdout);
+			return;
+		}
+	}
+
 	if (handover_build_record(&rec) != 0) {
-		logstore_write("cixd", "error", "handover: out of memory building the record");
-		return;
+		snprintf(err, sizeof(err), "out of memory building the record");
+		goto undo_switch;
 	}
 	handover_path(path, sizeof(path));
 	stallwatch_stop();
@@ -38660,20 +38809,58 @@ static void handover_exec(void)
 		handover_set_cloexec(&rec, 1);
 		handover_record_free(&rec);
 		stallwatch_start(STALLWATCH_RECORDS_PATH);
-		logstore_write("cixd", "error", "handover: %s; this cixd carries on (ADR-0375)", err);
-		return;
+		goto undo_switch;
 	}
-	logstore_write("cixd", "info", "handover: executing %s in place with %d containers (ADR-0375)",
-	               exe, rec.count);
-	printf("handover: executing %s in place with %d containers (ADR-0375)\n", exe, rec.count);
+	if (target != NULL) {
+		/* The last log store line: from the first move on, its path
+		 * resolves into the target's read-only tree. */
+		logstore_write("cixd", "info",
+		               "handover: switching root to slot %s in place with %d containers "
+		               "(ADR-0375)",
+		               target, rec.count);
+		printf("handover: switching root to slot %s in place with %d containers (ADR-0375)\n",
+		       target, rec.count);
+		fflush(stdout);
+		if (rootswitch_move(ROOTSWITCH_DIR, &plan, err, sizeof(err)) != 0)
+			goto undo_record;
+		if (rootswitch_pivot(ROOTSWITCH_DIR, err, sizeof(err)) != 0) {
+			rootswitch_move_back(ROOTSWITCH_DIR, &plan);
+			goto undo_record;
+		}
+		printf("handover: root is slot %s now, executing %s (ADR-0375)\n", target, exe);
+	} else {
+		logstore_write("cixd", "info",
+		               "handover: executing %s in place with %d containers (ADR-0375)", exe,
+		               rec.count);
+		printf("handover: executing %s in place with %d containers (ADR-0375)\n", exe,
+		       rec.count);
+	}
 	fflush(stdout);
 	execv(exe, argv);
-	logstore_write("cixd", "error", "handover: exec of %s failed (%s); this cixd carries on",
-	               exe, strerror(errno));
+	if (target != NULL) {
+		fprintf(stderr,
+		        "handover: exec of %s in slot %s's root failed after the pivot (%s); syncing "
+		        "and rebooting into the slot that was running (ADR-0375)\n",
+		        exe, target, strerror(errno));
+		sync();
+		reboot(RB_AUTOBOOT);
+		_exit(1);
+	}
+	snprintf(err, sizeof(err), "exec of %s failed (%s)", exe, strerror(errno));
+
+undo_record:
 	handover_set_cloexec(&rec, 1);
 	unlink(path);
 	handover_record_free(&rec);
 	stallwatch_start(STALLWATCH_RECORDS_PATH);
+undo_switch:
+	if (target != NULL) {
+		esp_entry_unhold(g_esp_entries_dir, held_from, held_to);
+		umount2(ROOTSWITCH_DIR, 0);
+	}
+	logstore_write("cixd", "error", "handover: %s; this cixd carries on (ADR-0375)", err);
+	printf("handover: %s; this cixd carries on\n", err);
+	fflush(stdout);
 }
 
 /*
@@ -38709,6 +38896,26 @@ static int handover_load(void)
 		        stray);
 		return -1;
 	}
+	/*
+	 * Facts the boot computed once and later code reads, which the
+	 * handover must not lose (ADR-0375 phase 4). The platform's partitions
+	 * are read again from /sys, which is the kernel's and unchanged: an
+	 * update writes ROOT_A_DEVICE/ROOT_B_DEVICE, and OS-disk protection
+	 * reads them. The listener's address and the uplink's state are the
+	 * old process's and travel in the record, because only the boot's
+	 * network bootstrap computes them.
+	 */
+	if (g_init_mode)
+		resolve_platform_devices();
+	if (g_handover_rec.bind_addr[0] != '\0') {
+		snprintf(g_bind_addr_buf, sizeof(g_bind_addr_buf), "%s", g_handover_rec.bind_addr);
+		g_bind_addr = g_bind_addr_buf;
+	}
+	snprintf(g_uplink_unattached, sizeof(g_uplink_unattached), "%s",
+	         g_handover_rec.uplink_unattached);
+	g_handover_switched = g_handover_rec.slot[0] != '\0' && g_slot != NULL &&
+	                      strcmp(g_handover_rec.slot, g_slot) != 0;
+	kmodscan_note_handover();
 	/* procfuse's server outlived the exec and still serves the mount every
 	 * container binds from: take it back, never start a second one over it. */
 	if (g_handover_rec.procfuse_pid > 0) {
@@ -38973,8 +39180,15 @@ static void handover_watch_all(void)
 	                   ? (procfuse_has_load_page() ? ", procfuse resumed with its load page"
 	                                               : ", procfuse resumed")
 	                   : "");
-	printf("handover: took over %d containers and %d console shells (ADR-0375)\n",
-	       g_handover_rec.count, shells);
+	printf("handover: took over %d containers and %d console shells, procfuse %s (ADR-0375)\n",
+	       g_handover_rec.count, shells,
+	       procfuse_mount_path() == NULL ? "not running"
+	       : g_handover_rec.procfuse_pid > 0
+	           ? (procfuse_has_load_page() ? "resumed with its load page" : "resumed")
+	           : "started");
+	/* Its own line, last, so a console reader that stops at it has every
+	 * line before it whole. */
+	printf("handover: complete (ADR-0375)\n");
 	fflush(stdout);
 	handover_record_free(&g_handover_rec);
 	free(g_handover_pidfds);
@@ -38983,15 +39197,25 @@ static void handover_watch_all(void)
 	g_handover_entries = NULL;
 }
 
-/* ADR-0375 phase 1's test trigger (--test-handover-after=N): once the
- * daemon has served N seconds and is quiescent, it hands over. Once. */
+/*
+ * ADR-0375's test triggers: once the daemon has served N seconds and is
+ * quiescent, it hands over in place (--test-handover-after=N, phase 1)
+ * or switches its root into the other slot (--test-switch-after=N,
+ * phase 4). Once each. Phase 5 makes the host roll the one real caller.
+ */
 static void handover_test_tick(void)
 {
-	if (g_test_handover_after <= 0 || time(NULL) - g_daemon_started_at < g_test_handover_after ||
-	    !handover_quiescent())
+	time_t served = time(NULL) - g_daemon_started_at;
+
+	if (g_test_switch_after > 0 && served >= g_test_switch_after && handover_quiescent()) {
+		g_test_switch_after = 0;
+		handover_exec(g_slot != NULL && strcmp(g_slot, "a") == 0 ? "b" : "a");
+		return;
+	}
+	if (g_test_handover_after <= 0 || served < g_test_handover_after || !handover_quiescent())
 		return;
 	g_test_handover_after = 0;
-	handover_exec();
+	handover_exec(NULL);
 }
 
 static int cixd_main(int argc, char **argv)
@@ -39032,6 +39256,8 @@ static int cixd_main(int argc, char **argv)
 			g_handover = 1;
 		else if (strncmp(argv[i], "--test-handover-after=", 22) == 0)
 			g_test_handover_after = atoi(argv[i] + 22);
+		else if (strncmp(argv[i], "--test-switch-after=", 20) == 0)
+			g_test_switch_after = atoi(argv[i] + 20);
 		else if (strncmp(argv[i], "--slot=", 7) == 0)
 			slot = argv[i] + 7;
 		else if (strcmp(argv[i], "--simulate-unhealthy-boot") == 0)
@@ -40028,8 +40254,8 @@ static int cixd_main(int argc, char **argv)
 	 * confirms -- everything above (mounts, network bring-up, the full
 	 * existing state-init sequence, the listening socket itself) had to
 	 * genuinely succeed to reach this line. */
-	if (first_in_kernel() && slot != NULL && !simulate_unhealthy)
-		maybe_confirm_boot(slot);
+	if ((first_in_kernel() || g_handover_switched) && slot != NULL && !simulate_unhealthy)
+		maybe_confirm_boot(slot); /* ADR-0375: a root switch confirms its slot as a boot does */
 
 	/*
 	 * ADR-0262/#336: the host-side FUSE server behind a container's own

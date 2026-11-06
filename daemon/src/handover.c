@@ -257,6 +257,12 @@ int handover_write(const char *path, const struct handover_record *rec, char *er
 	jw_str(&w, rec->written_by);
 	jw_key(&w, "written_at");
 	jw_int(&w, rec->written_at);
+	jw_key(&w, "slot");
+	jw_str(&w, rec->slot);
+	jw_key(&w, "bind_addr");
+	jw_str(&w, rec->bind_addr);
+	jw_key(&w, "uplink_unattached");
+	jw_str(&w, rec->uplink_unattached);
 	jw_key(&w, "procfuse_pid");
 	jw_int(&w, rec->procfuse_pid);
 	jw_key(&w, "procfuse_load_fd");
@@ -479,6 +485,10 @@ static void get_top(const struct json_value *root, struct handover_record *rec,
 
 	get_str(root, "written_by", rec->written_by, sizeof(rec->written_by), missing);
 	rec->written_at = get_int(root, "written_at", missing);
+	get_str(root, "slot", rec->slot, sizeof(rec->slot), missing);
+	get_str(root, "bind_addr", rec->bind_addr, sizeof(rec->bind_addr), missing);
+	get_str(root, "uplink_unattached", rec->uplink_unattached, sizeof(rec->uplink_unattached),
+	        missing);
 	rec->procfuse_pid = (pid_t)get_int(root, "procfuse_pid", missing);
 	rec->procfuse_load_fd = (int)get_int(root, "procfuse_load_fd", missing);
 	rec->console_count = 0;

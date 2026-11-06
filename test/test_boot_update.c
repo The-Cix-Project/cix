@@ -24,7 +24,10 @@
  * difference to that code between the two). Slot A boots normally,
  * self-updates root AND kernel onto slot B mid-boot (root-c's content
  * -> root-b's device, kernel-scratch's content -> the ESP's own
- * cix-bzImage-b), then a second, fresh QEMU power-on against the
+ * cix-bzImage-b), switches its root into slot B in place under the same
+ * kernel, and slot B's cixd confirms slot B (ADR-0375 phase 4: the
+ * containers would keep running across this; the kernel never
+ * restarts), then a second, fresh QEMU power-on against the
  * same persistent disk (this project's existing poll-and-check style,
  * not an in-VM reboot) proves the freshly-written slot B actually
  * boots, from its own per-slot kernel file specifically -- the real
@@ -62,6 +65,13 @@
 #define SECTOR_SIZE 512
 
 #define BOOT_TIMEOUT_SECONDS 120
+/* Attempt 1 boots, updates slot B, serves, switches its root into B in
+ * place (ADR-0375 phase 4) and starts cixd a second time: one boot under
+ * TCG plus a second start, as test_boot budgets. */
+#define SWITCH_TIMEOUT_SECONDS 240
+/* The last line of the handover, printed after the takeover and the
+ * confirmation, so a capture that stops at it has both whole. */
+#define SWITCH_MARKER "handover: complete"
 /* The full expected success line, not just a prefix of it -- qemu_boot_
  * capture() stops the instant its marker substring has fully arrived,
  * so a marker that's only a prefix (e.g. "test-update: status=") stops
@@ -72,7 +82,6 @@
 #define UPDATE_MARKER "test-update: status=200 slot=b updated=root,kernel"
 #define SUCCESS_MARKER "cixd listening on"
 #define PANIC_MARKER "Kernel panic"
-#define ROOT_UPDATE_TRIES 3
 
 static int build_esp_image(const char *esp_img, const char *workdir)
 {
@@ -121,7 +130,7 @@ static int build_esp_image(const char *esp_img, const char *workdir)
 	         "linux /cix-bzImage-a\n"
 	         "options console=ttyS0 root=/dev/vda2 rw init=/bin/cixd -- "
 	         "--init-mode --slot=a --bind=127.0.0.1 --test-update-image=/dev/vda4 "
-	         "--test-update-kernel=/dev/vda5\n");
+	         "--test-update-kernel=/dev/vda5 --test-switch-after=5\n");
 	if (write_text_file(loader_conf_path, entry) != 0)
 		return -1;
 	if (esp_mcopy_in(esp_img, loader_conf_path, "::/loader/entries/cix-a.conf") != 0)
@@ -382,43 +391,72 @@ int main(void)
 	/* 3. Attempt 1: slot A boots, self-updates root AND kernel onto
 	 * slot B mid-boot via --test-update-image=/dev/vda4 and
 	 * --test-update-kernel=/dev/vda5 (do_system_update()'s real
-	 * device/ESP write + loader-entry write), stops as soon as that's
-	 * observable. */
+	 * device/ESP write + loader-entry write). Then, five seconds after it
+	 * serves (--test-switch-after=5), it switches its root into slot B in
+	 * place under the same kernel, and B's cixd confirms B (ADR-0375
+	 * phase 4). Each step's console line appears exactly once. */
 	{
 		struct qemu_boot_opts opts;
 		enum qemu_boot_outcome outcome;
+		static const char *const once[] = {
+			UPDATE_MARKER,
+			"init-mode: slot=a",
+			"handover: switching root to slot b",
+			"handover: root is slot b now",
+			"handover: cixd started again in this kernel, slot=b",
+			"handover: slot b confirmed after the root switch",
+			SWITCH_MARKER,
+		};
+		size_t k;
 
 		memset(&opts, 0, sizeof(opts));
 		opts.disk_img = disk_img;
 		opts.ovmf_vars = ovmf_vars;
-		opts.success_marker = UPDATE_MARKER;
+		opts.success_marker = SWITCH_MARKER;
 		opts.panic_marker = PANIC_MARKER;
-		opts.timeout_seconds = BOOT_TIMEOUT_SECONDS;
+		opts.timeout_seconds = SWITCH_TIMEOUT_SECONDS;
 		outcome = qemu_boot_capture(&opts, captured, sizeof(captured));
 
 		if (outcome != QEMU_BOOT_SUCCESS) {
-			fprintf(stderr, "attempt 1: did not reach the update marker (outcome=%d)\n",
-			        (int)outcome);
-			ok = 0;
-		} else if (strstr(captured, UPDATE_MARKER) == NULL) {
+			size_t len = strlen(captured);
+
 			fprintf(stderr,
-			        "attempt 1: expected \"%s\", captured output:\n%s\n", UPDATE_MARKER,
-			        captured);
+			        "attempt 1: did not complete the switch (outcome=%d)\n"
+			        "--- console, last 6000 bytes ---\n%s\n--- end ---\n",
+			        (int)outcome, len > 6000 ? captured + len - 6000 : captured);
 			ok = 0;
-		} else {
-			printf("attempt 1: self-update to slot B (root + kernel) reported success\n");
 		}
+		for (k = 0; ok && k < sizeof(once) / sizeof(once[0]); k++) {
+			const char *p = captured;
+			int n = 0;
+
+			while ((p = strstr(p, once[k])) != NULL) {
+				n++;
+				p++;
+			}
+			if (n != 1) {
+				fprintf(stderr, "attempt 1: \"%s\" appears %d times, expected once\n", once[k],
+				        n);
+				ok = 0;
+			}
+		}
+		if (!ok)
+			fprintf(stderr, "--- console ---\n%s\n--- end ---\n", captured);
+		else
+			printf("attempt 1: updated slot B, switched into it in place and confirmed it\n");
 	}
 	if (!ok) {
 		printf("BOOT UPDATE RESULT: FAIL\n");
 		return 1;
 	}
 
-	/* 4. The fresh loader entry now exists on the ESP, with a real
-	 * Automatic Boot Assessment tries-left counter, matching the very
-	 * first install's own convention -- and its own content, read back
-	 * directly, references cix-bzImage-b specifically, not the old
-	 * shared filename or slot A's own cix-bzImage-a. */
+	/* 4. The update wrote slot B's entry with a tries-left counter
+	 * (cix-b+3.conf); the switch held it at a spent counter
+	 * (cix-b+0-3.conf) while B was on probation; and B's cixd confirmed
+	 * it to the bare cix-b.conf. So the ESP holds cix-b.conf and no
+	 * counted B entry -- and that entry's content, read back directly,
+	 * references cix-bzImage-b specifically, not the old shared filename
+	 * or slot A's own cix-bzImage-a. */
 	if (list_loader_entries(disk_img, esp_start_sec, entries_listing, sizeof(entries_listing)) !=
 	    0) {
 		fprintf(stderr, "FAIL: could not list loader/entries after attempt 1\n");
@@ -426,12 +464,10 @@ int main(void)
 	} else {
 		printf("loader/entries after attempt 1:\n%s\n", entries_listing);
 		/* mdir may display an 8.3-ineligible long name in either case
-		 * depending on locale -- match case-insensitively on the
-		 * distinctive "b+3" substring rather than depending on mdir's
-		 * own display casing. */
-		if (strstr(entries_listing, "B+3") == NULL && strstr(entries_listing, "b+3") == NULL) {
-			fprintf(stderr, "FAIL: no fresh cix-b+%d.conf entry found on the ESP\n",
-			        ROOT_UPDATE_TRIES);
+		 * depending on locale -- match case-insensitively. */
+		if (strstr(entries_listing, "B+") != NULL || strstr(entries_listing, "b+") != NULL) {
+			fprintf(stderr, "FAIL: a counted slot-b entry is still on the ESP after the "
+			                "switch confirmed slot b\n");
 			ok = 0;
 		}
 	}
@@ -440,8 +476,7 @@ int main(void)
 		char entry_content[4096] = { 0 };
 		FILE *ef;
 
-		snprintf(entry_src, sizeof(entry_src), "::/loader/entries/cix-b+%d.conf",
-		         ROOT_UPDATE_TRIES);
+		snprintf(entry_src, sizeof(entry_src), "::/loader/entries/cix-b.conf");
 		if (esp_mcopy_out(esp_drive, entry_src, extracted_entry_b) != 0) {
 			fprintf(stderr, "FAIL: could not read back the fresh slot-b loader entry\n");
 			ok = 0;

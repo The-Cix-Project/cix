@@ -14,6 +14,12 @@
  *   format          1; a reader refuses a newer one
  *   written_by      the writing build (CIX_BUILD_VERSION)
  *   written_at      seconds since the epoch
+ *   slot            the writer's --slot= ("" for none); a reader whose
+ *                   own slot differs is a root switch (phase 4)
+ *   bind_addr       the address the writer's listener served on, which
+ *                   only the boot's network bootstrap computes
+ *   uplink_unattached  the uplink the boot could not attach ("" for
+ *                   none), which boot confirmation reads
  *   procfuse_pid    procfuse's server, which survives the exec; 0 for none
  *   procfuse_load_fd  the memfd holding its load page (ADR-0349), passed
  *                   across execve; -1 for none
@@ -130,6 +136,9 @@ struct handover_record {
 	int format;
 	char written_by[64];
 	long long written_at;
+	char slot[8];
+	char bind_addr[64];
+	char uplink_unattached[64];
 	pid_t procfuse_pid;
 	int procfuse_load_fd;
 	struct handover_console consoles[HANDOVER_CONSOLES_MAX];

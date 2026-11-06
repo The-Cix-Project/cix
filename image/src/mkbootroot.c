@@ -1630,6 +1630,15 @@ int main(int argc, char **argv)
 		return 1;
 	if (ensure_dir_under(image_root, "var/lib/cix") != 0)
 		return 1;
+	/* ADR-0375 phase 4: where a live root switch mounts the staged slot
+	 * before it moves the running root's mounts into it
+	 * (ROOTSWITCH_DIR, daemon/include/rootswitch.h). It has to be in
+	 * the root that runs the switch, and the root is read-only, so it
+	 * ships empty in every root. */
+	if (ensure_dir_under(image_root, "run") != 0)
+		return 1;
+	if (ensure_dir_under(image_root, "run/nextroot") != 0)
+		return 1;
 
 	/*
 	 * mksquashfs itself is a build-time-only tool (assembles image_root

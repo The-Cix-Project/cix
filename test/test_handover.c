@@ -38,6 +38,7 @@
 #include "test_drift.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
@@ -71,8 +72,9 @@ static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 	return -1;
 }
 
-/* build/cixd on this test's data dir, with extra (NULL or one argument). */
-static pid_t start_daemon(const char *extra)
+/* build/cixd on this test's data dir, with extra (NULL or one argument),
+ * its stderr to errlog when that is not NULL. */
+static pid_t start_daemon(const char *extra, const char *errlog)
 {
 	pid_t pid;
 	char *dargv[5];
@@ -90,6 +92,14 @@ static pid_t start_daemon(const char *extra)
 		return -1;
 	}
 	if (pid == 0) {
+		if (errlog != NULL) {
+			int fd = open(errlog, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+
+			if (fd >= 0) {
+				dup2(fd, STDERR_FILENO);
+				close(fd);
+			}
+		}
 		execve("build/cixd", dargv, environ);
 		perror("execve build/cixd");
 		_exit(127);
@@ -234,7 +244,7 @@ static int post(const struct cix_client *c, const char *path, const char *body, 
 static int dead_pid_refused(void)
 {
 	struct handover_record rec;
-	char path[PATH_MAX], err[256];
+	char path[PATH_MAX], err[256], errlog[PATH_MAX + 32], said[4096];
 	pid_t dead, d;
 	int status, i, ok = 0;
 
@@ -261,7 +271,8 @@ static int dead_pid_refused(void)
 	}
 	handover_record_free(&rec);
 
-	d = start_daemon("--handover");
+	snprintf(errlog, sizeof(errlog), "%s/dead-pid.stderr", g_data_dir);
+	d = start_daemon("--handover", errlog);
 	for (i = 0; i < 300; i++) {
 		pid_t w = waitpid(d, &status, WNOHANG);
 
@@ -279,6 +290,21 @@ static int dead_pid_refused(void)
 		fprintf(stderr, "FAIL: cixd --handover served on a record naming a dead pid\n");
 		kill(d, SIGKILL);
 		waitpid(d, NULL, 0);
+	}
+	/* Refused for the reason the record gives, not for any other. */
+	if (ok) {
+		FILE *f = fopen(errlog, "r");
+		size_t n = f != NULL ? fread(said, 1, sizeof(said) - 1, f) : 0;
+
+		said[n] = '\0';
+		if (f != NULL)
+			fclose(f);
+		if (strstr(said, "container ghost") == NULL || strstr(said, "not alive") == NULL) {
+			fprintf(stderr, "FAIL: a dead-pid record was refused, but not for the dead pid: "
+			                "%.600s\n",
+			        said);
+			ok = 0;
+		}
 	}
 	unlink(path);
 	return ok;
@@ -315,7 +341,7 @@ int main(void)
 			return 1;
 		}
 	}
-	daemon_pid = start_daemon(HANDOVER_AFTER);
+	daemon_pid = start_daemon(HANDOVER_AFTER, NULL);
 	if (daemon_pid < 0) {
 		test_data_dir_cleanup(g_data_dir);
 		return 1;

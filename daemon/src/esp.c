@@ -702,6 +702,114 @@ int esp_confirm_rank(const char *entry_name, const char *slot)
 	return 0;
 }
 
+int esp_entries_sync(const char *entries_dir)
+{
+	int fd = open(entries_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	int rc;
+
+	if (fd < 0)
+		return -1;
+	rc = fsync(fd);
+	close(fd);
+	return rc == 0 ? 0 : -1;
+}
+
+int esp_entry_hold(const char *entries_dir, const char *slot, char *from, char *to,
+                   size_t name_size, char *err, size_t err_size)
+{
+	char prefix[32], oldpath[PATH_MAX], newpath[PATH_MAX];
+	const char *p;
+	char *end;
+	long left, done = 0;
+	DIR *d;
+	struct dirent *de;
+	int found = 0;
+
+	from[0] = to[0] = '\0';
+	d = opendir(entries_dir);
+	if (d == NULL) {
+		snprintf(err, err_size, "cannot read %s: %s", entries_dir, strerror(errno));
+		return -1;
+	}
+	while ((de = readdir(d)) != NULL)
+		if (esp_confirm_rank(de->d_name, slot) > 0) {
+			found++;
+			snprintf(from, name_size, "%s", de->d_name);
+		}
+	closedir(d);
+	if (found != 1) {
+		snprintf(err, err_size, "slot %s has %d boot entries, and a switch needs exactly one",
+		         slot, found);
+		from[0] = '\0';
+		return -1;
+	}
+	snprintf(prefix, sizeof(prefix), "cix-%s+", slot);
+	if (strncmp(from, prefix, strlen(prefix)) != 0) {
+		snprintf(err, err_size,
+		         "slot %s's entry %s carries no boot counter, so no update staged it", slot,
+		         from);
+		from[0] = '\0';
+		return -1;
+	}
+	p = from + strlen(prefix);
+	left = strtol(p, &end, 10);
+	if (end == p) {
+		snprintf(err, err_size, "slot %s's entry %s has an unreadable counter", slot, from);
+		from[0] = '\0';
+		return -1;
+	}
+	if (*end == '-') {
+		p = end + 1;
+		done = strtol(p, &end, 10);
+		if (end == p) {
+			snprintf(err, err_size, "slot %s's entry %s has an unreadable counter", slot,
+			         from);
+			from[0] = '\0';
+			return -1;
+		}
+	}
+	if (strcmp(end, ".conf") != 0 || left < 0 || done < 0) {
+		snprintf(err, err_size, "slot %s's entry %s has an unreadable counter", slot, from);
+		from[0] = '\0';
+		return -1;
+	}
+	if (left == 0) {
+		snprintf(err, err_size, "slot %s's entry %s has no tries left", slot, from);
+		from[0] = '\0';
+		return -1;
+	}
+	snprintf(to, name_size, "cix-%s+0-%ld.conf", slot, left + done);
+	snprintf(oldpath, sizeof(oldpath), "%s/%s", entries_dir, from);
+	snprintf(newpath, sizeof(newpath), "%s/%s", entries_dir, to);
+	if (rename(oldpath, newpath) != 0) {
+		snprintf(err, err_size, "cannot rename %s to %s: %s", from, to, strerror(errno));
+		from[0] = to[0] = '\0';
+		return -1;
+	}
+	if (esp_entries_sync(entries_dir) != 0) {
+		snprintf(err, err_size, "cannot sync %s after holding %s: %s", entries_dir, from,
+		         strerror(errno));
+		rename(newpath, oldpath);
+		esp_entries_sync(entries_dir);
+		from[0] = to[0] = '\0';
+		return -1;
+	}
+	return 0;
+}
+
+int esp_entry_unhold(const char *entries_dir, const char *from, const char *to)
+{
+	char oldpath[PATH_MAX], newpath[PATH_MAX];
+
+	if (from[0] == '\0' || to[0] == '\0')
+		return 0;
+	snprintf(oldpath, sizeof(oldpath), "%s/%s", entries_dir, from);
+	snprintf(newpath, sizeof(newpath), "%s/%s", entries_dir, to);
+	if (rename(newpath, oldpath) != 0)
+		return -1;
+	return esp_entries_sync(entries_dir);
+}
+
 int esp_entry_to_confirm(const char *entries_dir, const char *slot, char *out, size_t out_size)
 {
 	DIR *d;

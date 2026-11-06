@@ -58,6 +58,9 @@ static void fill(struct handover_record *rec, pid_t pid, int ctl, int rep, int s
 
 	snprintf(rec->written_by, sizeof(rec->written_by), "0.2.57-test");
 	rec->written_at = 1793900000;
+	snprintf(rec->slot, sizeof(rec->slot), "a");
+	snprintf(rec->bind_addr, sizeof(rec->bind_addr), "192.168.15.95");
+	snprintf(rec->uplink_unattached, sizeof(rec->uplink_unattached), "eth1");
 	rec->procfuse_pid = 4242;
 	rec->procfuse_load_fd = 9;
 	rec->console_count = 2;
@@ -143,6 +146,9 @@ static void round_trip(const char *dir)
 	}
 	CHECK(r.format == HANDOVER_FORMAT, "format %d", r.format);
 	CHECK(strcmp(r.written_by, "0.2.57-test") == 0, "written_by %s", r.written_by);
+	CHECK(strcmp(r.slot, "a") == 0 && strcmp(r.bind_addr, "192.168.15.95") == 0 &&
+	          strcmp(r.uplink_unattached, "eth1") == 0,
+	      "slot %s bind_addr %s uplink_unattached %s", r.slot, r.bind_addr, r.uplink_unattached);
 	CHECK(r.procfuse_pid == 4242, "procfuse_pid %d", (int)r.procfuse_pid);
 	CHECK(r.procfuse_load_fd == 9, "procfuse_load_fd %d", r.procfuse_load_fd);
 	CHECK(r.console_count == 2 && strcmp(r.consoles[0].tty, "/dev/tty0") == 0 &&
@@ -191,7 +197,8 @@ static void refusals(const char *dir)
 	struct handover_record r;
 	char path[512], err[256];
 
-#define TOP_TAIL "\"procfuse_pid\":0,\"procfuse_load_fd\":-1,\"consoles\":[],"
+#define WHO "\"slot\":\"a\",\"bind_addr\":\"127.0.0.1\",\"uplink_unattached\":\"\","
+#define TOP_TAIL WHO "\"procfuse_pid\":0,\"procfuse_load_fd\":-1,\"consoles\":[],"
 	snprintf(path, sizeof(path), "%s/bad.json", dir);
 	write_text(path, "{\"format\":2,\"written_by\":\"x\",\"written_at\":0," TOP_TAIL
 	                 "\"containers\":[]}");
@@ -204,7 +211,7 @@ static void refusals(const char *dir)
 	write_text(path, "{\"format\":1,\"written_at\":0," TOP_TAIL "\"containers\":[]}");
 	CHECK(handover_read(path, &r, err, sizeof(err)) != 0 && strstr(err, "written_by") != NULL,
 	      "a record missing written_by must be refused, got: %s", err);
-	write_text(path, "{\"format\":1,\"written_by\":\"x\",\"written_at\":0,\"procfuse_pid\":0,"
+	write_text(path, "{\"format\":1,\"written_by\":\"x\",\"written_at\":0," WHO "\"procfuse_pid\":0,"
 	                 "\"containers\":[]}");
 	CHECK(handover_read(path, &r, err, sizeof(err)) != 0 &&
 	          strstr(err, "procfuse_load_fd") != NULL,
@@ -212,6 +219,7 @@ static void refusals(const char *dir)
 	write_text(path, "{\"format\":1,\"written_by\":\"x\",\"written_at\":0," TOP_TAIL
 	                 "\"containers\":[],\"future_key\":true}");
 #undef TOP_TAIL
+#undef WHO
 	CHECK(handover_read(path, &r, err, sizeof(err)) == 0 && r.count == 0,
 	      "an unknown key must be ignored, got: %s", err);
 	handover_record_free(&r);

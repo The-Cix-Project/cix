@@ -158,6 +158,28 @@ int esp_entry_to_confirm(const char *entries_dir, const char *slot, char *out, s
  */
 int esp_confirm_rank(const char *entry_name, const char *slot);
 
+/*
+ * ADR-0375 phase 4: holds back a slot's staged entry while a live
+ * switch into it is on probation. The slot must have exactly one entry,
+ * carrying a counter with tries left: an update staged it and nothing
+ * has confirmed it since. That entry is renamed cix-<slot>+0-<tries>.conf,
+ * a spent counter. cix-boot passes over a spent entry while any other
+ * entry can boot, so a reboot before the new cixd confirms boots the
+ * slot that was running. Confirmation renames it to cix-<slot>.conf, as
+ * after any boot (esp_entry_to_confirm() ranks a counted entry first).
+ * The directory is fsynced, so the hold is on disk before anything can
+ * panic. 0 with the old and new names in from and to (name_size each),
+ * or -1 with err written.
+ */
+int esp_entry_hold(const char *entries_dir, const char *slot, char *from, char *to,
+                   size_t name_size, char *err, size_t err_size);
+
+/* Undoes esp_entry_hold(): renames to back to from and fsyncs. 0 or -1. */
+int esp_entry_unhold(const char *entries_dir, const char *from, const char *to);
+
+/* fsyncs entries_dir, so a rename in it is on disk. 0 or -1. */
+int esp_entries_sync(const char *entries_dir);
+
 void esp_write_json(struct json_writer *w);
 
 #endif /* ESP_H */

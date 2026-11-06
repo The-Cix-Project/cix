@@ -46,14 +46,15 @@
  * HANDOVER_AFTER seconds after it starts serving and once nothing is in
  * flight, and the boot is healthy only when the cixd it exec'd serves
  * again and has taken over what the first one ran -- the console shells,
- * here (phase 3). The takeover line is printed after the listeners come
- * up, so it is the last of the handover's lines and the one to wait for.
+ * here (phase 3). "handover: complete" is printed last, after the
+ * takeover line, so a capture that stops at it has the takeover whole.
  * 120 s was the budget for one boot under TCG; the handover adds a
  * second start of cixd in the same kernel, without the kernel's.
  */
 #define BOOT_TIMEOUT_SECONDS 180
 #define HANDOVER_AFTER "5"
-#define SUCCESS_MARKER "handover: took over 0 containers and "
+#define SUCCESS_MARKER "handover: complete"
+#define TOOK_OVER "handover: took over 0 containers and "
 #define PANIC_MARKER "Kernel panic"
 
 /* Builds the ESP as a standalone FAT32 file via mtools -- the boot manager
@@ -284,17 +285,27 @@ int main(void)
 			{ "handover: executing", 1 },
 			{ "handover: cixd started again in this kernel", 1 },
 			{ "handover: serving again", 1 },
+			{ TOOK_OVER, 1 },
 			{ SUCCESS_MARKER, 1 },
 		};
 		size_t k;
 		int bad = 0;
-		const char *took = strstr(captured, SUCCESS_MARKER);
+		const char *took = strstr(captured, TOOK_OVER);
 
 		/* Phase 3: the console shell on ttyS0 at least -- the one this
 		 * boot's console is -- was carried and is watched again. tty0
 		 * may be between respawns, so it is not counted on. */
-		if (took == NULL || atoi(took + strlen(SUCCESS_MARKER)) < 1) {
+		if (took == NULL || atoi(took + strlen(TOOK_OVER)) < 1) {
 			fprintf(stderr, "FAIL: the handover took over no console shell (ADR-0375)\n");
+			bad = 1;
+		}
+		/* Phase 3: this kernel has CONFIG_FUSE_FS=y, so the first cixd
+		 * ran procfuse, and the second took its server and its load
+		 * page back rather than starting another. */
+		if (took == NULL || strstr(took, "procfuse resumed with its load page") == NULL ||
+		    strstr(took, "procfuse resumed with its load page") > strchr(took, '\n')) {
+			fprintf(stderr, "FAIL: the handover did not resume procfuse with its load page "
+			                "(ADR-0375)\n");
 			bad = 1;
 		}
 

@@ -146,6 +146,13 @@ void kmodscan_set_sweep_pending(int pending);
  */
 void kmodscan_boot_sweep(void);
 
+/*
+ * ADR-0375: this cixd was handed over in place, so the boot's sweep ran
+ * in the process before it and its report went with that process. The
+ * report says so rather than that no sweep has run.
+ */
+void kmodscan_note_handover(void);
+
 /* Records that no sweep ran at this start, and why, for a daemon whose
  * start-up loads are not run at all (not --init-mode). */
 void kmodscan_not_run(const char *why);

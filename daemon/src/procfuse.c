@@ -1121,7 +1121,15 @@ struct load_entry {
 	volatile char path[LOAD_PATH_MAX]; /* relative to the base */
 };
 
+/*
+ * The page's layout version. A handover (ADR-0375) maps a page that
+ * another build's server writes, so a change to this struct's layout
+ * changes this number, and a cixd refuses a page of another format.
+ */
+#define LOAD_PAGE_FORMAT 1u
+
 struct load_page {
+	volatile unsigned int format;
 	volatile unsigned long long passes;
 	volatile long long unrecorded;
 	volatile int used;
@@ -1182,6 +1190,7 @@ int procfuse_load_attach(const char *cgroup_base)
 	}
 	memset(p, 0, sizeof(*g_load));
 	g_load = p;
+	g_load->format = LOAD_PAGE_FORMAT;
 	g_load_fd = fd;
 	return 0;
 }
@@ -2148,6 +2157,14 @@ int procfuse_resume(const char *state_dir, pid_t server_pid, int load_fd, char *
 		if (p == MAP_FAILED) {
 			snprintf(err, err_size, "handover: cannot map procfuse's load page: %s (ADR-0375)",
 			         strerror(errno));
+			return -1;
+		}
+		if (((const struct load_page *)p)->format != LOAD_PAGE_FORMAT) {
+			snprintf(err, err_size,
+			         "handover: procfuse's load page is format %u, this build reads %u "
+			         "(ADR-0375)",
+			         ((const struct load_page *)p)->format, LOAD_PAGE_FORMAT);
+			munmap(p, sizeof(*g_load));
 			return -1;
 		}
 		snprintf(g_load_base, sizeof(g_load_base), "%s", CGROUP_ROOT);

@@ -675,6 +675,14 @@ void kmodscan_boot_sweep(void)
 	kmodscan_adopt(&r);
 }
 
+void kmodscan_note_handover(void)
+{
+	if (!g_last.ran)
+		snprintf(g_last.not_run, sizeof(g_last.not_run),
+		         "this cixd was handed over in place (ADR-0375); the boot's sweep ran in the "
+		         "cixd before it, and its report went with that process");
+}
+
 void kmodscan_write_json(struct json_writer *w)
 {
 	int i;
