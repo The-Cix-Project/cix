@@ -61,7 +61,11 @@ Accepted by the owner on 2026-11-06: *"Accept ADR-0375, go ahead"*. Proposed 202
    - the captured output;
    - the descriptor number of each passed role: cix-init control and report, each service pipe, the capture pipe, the BPF program.
 
-   The cgroup, pidfd and network namespace are reacquired by path. The init table is recomputed from the body and not sent again.
+   The cgroup, pidfd and network namespace are reacquired by path. The init table is recomputed from the body and not sent again. Two more items go in the record, refined while extracting the plan (2026-11-06):
+   - **the staged file paths**, the body's `files[]` plus whichever LDAP client files staging chose to write;
+   - **the DNS servers staged into `resolv.conf`**, which default from the DNS servers registered at the time.
+
+   Both are facts about what the old process staged. Recomputing them would copy staging's conditions into a second place. What the plan does recompute is `plan_*()` in `main.c`: capabilities, consoles, sysctls, environment, network attachments without their addresses, interface names, and from those the init table.
 4. **Descriptor order:** wait for quiescence, clear `FD_CLOEXEC` on each passed descriptor, write the record last, then exec. On takeover, check each descriptor's type before trusting it (a SEQPACKET socket, a FIFO), and set `FD_CLOEXEC` again.
 5. **Where takeover runs:** the record is validated first: every pid alive, each pid in its cgroup, every descriptor typed. A record that fails validation is a refusal. It is applied right after `registry_init()`, before the orphan-base and rootfs sweeps, image retention and autostart, each of which treats an empty registry as the truth. Allocated IPs are marked taken before anything can allocate, and autostart skips the recorded names.
 6. **The handover path runs for any `--handover`, not only `--init-mode`.** A daemon-linked test then proves it with a real container: same pid, stats, service output written after the handover, a stop, a crash observed and restarted, and a non-colliding IP for a new container. A record naming a dead pid refuses to start. Outside init mode, that refusal is a nonzero exit, not a reboot.
