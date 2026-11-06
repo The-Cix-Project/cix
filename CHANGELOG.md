@@ -6,6 +6,29 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cixd switches its root into the staged slot in place (ADR-0375 phase 4, #673; in master, not yet released)
+
+- **The switch:** `handover_exec()` takes a target slot.
+  - It checks first: init mode; the other slot's partition; `/run/nextroot`, which `mkbootroot` now ships empty; and that the staged kernel's release is `uname -r`.
+  - It then plans the moves from `/proc/self/mountinfo`, mounts the target read-only, and checks it carries `/bin/cixd`, every mount point, and the running kernel's modules.
+  - It holds the target's one counted boot entry at a spent counter (`esp_entry_hold()`).
+  - It writes the record, moves every mount off the root (`rootswitch.c`), pivots, and execs the new root's `/bin/cixd` with `--slot=<target>`.
+  - Any failure before the pivot is undone. A failed exec after it reboots, and the held entry makes that reboot boot the slot that was running.
+- **Deferred confirmation:** a cixd whose record names another slot confirms its own slot as a boot does.
+- **Durable ESP renames:** every rename on the ESP (the hold, its undo, the confirmation) now fsyncs the renamed file as well as the directory. On vfat a rename otherwise leaves the new entry at 0 bytes until writeback, so a confirmed boot that lost power in that window left an empty entry.
+- **Handover gaps fixed:** a handed-over cixd lost three things.
+  - The platform partitions: now read again from `/sys`.
+  - The address it serves on: it served only on loopback. It now travels in the record (`bind_addr`).
+  - Whether the uplink attached: now travels in the record (`uplink_unattached`).
+
+  The kernel-module scan's report now says the sweep ran in the process before.
+- **Phase 3 follow-ups:**
+  - the takeover line prints procfuse's state, and `test_boot` asserts procfuse is resumed with its load page;
+  - a dead-pid refusal is checked for its reason;
+  - procfuse's page carries a format number.
+- **Verified by:** probe 716. `test_rootswitch` is new. `test_boot_update` now updates B, switches into it in place, confirms it, and cold-boots B.
+- **First switch:** the first release with this code still reaches a host by a reboot, because the root it is running has no `/run/nextroot` yet. The release after that is the first that can switch.
+
 ### A handover carries procfuse, console shells and half-written lines (ADR-0375 phase 3, #673; in master, not yet released)
 
 - **procfuse:** its load page is now a memfd, which crosses `execve`. The new cixd checks the server is its child and the mount and memfd are what they should be, then maps the page. A handed-over cixd now:
