@@ -15409,6 +15409,227 @@ static int body_reference_gone(const struct json_value *root, int ldap_client,
 	return 0;
 }
 
+/*
+ * ADR-0375 phase 2a: the container plan, the parts of a create a
+ * takeover recomputes from the persisted body rather than carrying in
+ * the handover record. Each plan_*() reads one field of the body and
+ * answers 0, or the HTTP status to answer with err_msg written. It never
+ * frees the body, so a message may point into it: the caller frees after
+ * (#421). Create calls each of them, so none is dormant.
+ */
+
+/* cap_add: capabilities restored beyond the default set. */
+static int plan_cap_add(const struct json_value *jcap_add,
+                        char names[][CONTAINER_CAP_NAME_MAX], int *count, char *err_msg,
+                        size_t err_msg_size)
+{
+	size_t i;
+
+	*count = 0;
+	if (jcap_add == NULL)
+		return 0;
+	if (jcap_add->type != JSON_ARRAY || jcap_add->u.array.count > CONTAINER_MAX_CAP_ADD) {
+		snprintf(err_msg, err_msg_size, "cap_add must be an array of at most 8 entries");
+		return 400;
+	}
+	for (i = 0; i < jcap_add->u.array.count; i++) {
+		const char *cap_name = json_as_string(jcap_add->u.array.items[i]);
+
+		if (cap_name == NULL || !container_cap_name_valid(cap_name)) {
+			snprintf(err_msg, err_msg_size,
+			         "cap_add entries must be a recognized capability name "
+			         "that's actually on the default deny-list (e.g. \"CAP_SYS_TIME\")");
+			return 400;
+		}
+		snprintf(names[i], CONTAINER_CAP_NAME_MAX, "%s", cap_name);
+	}
+	*count = (int)jcap_add->u.array.count;
+	return 0;
+}
+
+/*
+ * Issue #248: the consoles a container declares. Validated in full
+ * before anything is created, so a bad declaration is a 400 naming what
+ * is wrong rather than a container that exists and then refuses to
+ * attach.
+ */
+static int plan_consoles(const struct json_value *jconsoles, struct registry_console *consoles,
+                         int *count, char *err_msg, size_t err_msg_size)
+{
+	size_t i;
+
+	memset(consoles, 0, REGISTRY_MAX_CONSOLES * sizeof(*consoles));
+	*count = 0;
+	if (jconsoles == NULL)
+		return 0;
+	if (jconsoles->type != JSON_ARRAY || jconsoles->u.array.count > REGISTRY_MAX_CONSOLES) {
+		snprintf(err_msg, err_msg_size, "consoles must be an array of at most %d entries",
+		         REGISTRY_MAX_CONSOLES);
+		return 400;
+	}
+	for (i = 0; i < jconsoles->u.array.count; i++) {
+		const struct json_value *item = jconsoles->u.array.items[i];
+		const char *cname;
+		const struct json_value *jcmd;
+		size_t a;
+		int dup;
+
+		cname = json_as_string(json_object_get(item, "name"));
+		jcmd = json_object_get(item, "cmd");
+		if (cname == NULL || cname[0] == '\0' || strlen(cname) >= REGISTRY_CONSOLE_NAME_MAX) {
+			snprintf(err_msg, err_msg_size, "each console needs a name of 1 to %d characters",
+			         REGISTRY_CONSOLE_NAME_MAX - 1);
+			return 400;
+		}
+		/*
+		 * The name is how a console is selected in a URL and shown in a
+		 * list, so keep it to characters that need no escaping in either.
+		 */
+		for (a = 0; cname[a] != '\0'; a++) {
+			if (!isalnum((unsigned char)cname[a]) && cname[a] != '_' && cname[a] != '-') {
+				snprintf(err_msg, err_msg_size,
+				         "console name '%s' may use only letters, digits, - and _", cname);
+				return 400;
+			}
+		}
+		/*
+		 * Duplicate names would make selection ambiguous, and silently
+		 * picking the first is exactly the kind of arbitrary choice this
+		 * whole field exists to remove.
+		 */
+		for (dup = 0; dup < *count; dup++) {
+			if (strcmp(consoles[dup].name, cname) == 0) {
+				snprintf(err_msg, err_msg_size, "console name '%s' is declared more than once",
+				         cname);
+				return 400;
+			}
+		}
+		if (jcmd == NULL || jcmd->type != JSON_ARRAY || jcmd->u.array.count < 1 ||
+		    jcmd->u.array.count > REGISTRY_CONSOLE_ARGC_MAX) {
+			snprintf(err_msg, err_msg_size, "console '%s' needs a cmd array of 1 to %d strings",
+			         cname, REGISTRY_CONSOLE_ARGC_MAX);
+			return 400;
+		}
+		snprintf(consoles[*count].name, sizeof(consoles[*count].name), "%s", cname);
+		for (a = 0; a < jcmd->u.array.count; a++) {
+			const char *arg = json_as_string(jcmd->u.array.items[a]);
+
+			if (arg == NULL || strlen(arg) >= REGISTRY_CONSOLE_ARG_MAX) {
+				snprintf(err_msg, err_msg_size,
+				         "console '%s' argv[%d] must be a string under %d bytes", cname,
+				         (int)a, REGISTRY_CONSOLE_ARG_MAX);
+				return 400;
+			}
+			snprintf(consoles[*count].argv[a], sizeof(consoles[*count].argv[a]), "%s", arg);
+		}
+		/*
+		 * argv[0] is exec'd by path, never resolved through a PATH lookup
+		 * -- there is no shell in this path. A bare name would fail at
+		 * exec time with a confusing ENOENT against a binary that exists,
+		 * so refuse it here where the message can say why.
+		 */
+		if (consoles[*count].argv[0][0] != '/') {
+			snprintf(err_msg, err_msg_size,
+			         "console '%s' argv[0] must be an absolute path -- it is exec'd directly, "
+			         "with no shell to resolve a bare name",
+			         cname);
+			return 400;
+		}
+		consoles[*count].argc = (int)jcmd->u.array.count;
+		(*count)++;
+	}
+	return 0;
+}
+
+/*
+ * dns_servers: an explicit list. Absent leaves *count alone, which is
+ * how the caller tells "absent, default them" from an explicit [].
+ */
+static int plan_dns_servers(const struct json_value *jdns_servers,
+                            char ips[][RESOLV_IP_STRLEN], int *count, char *err_msg,
+                            size_t err_msg_size)
+{
+	size_t i;
+
+	if (jdns_servers == NULL)
+		return 0;
+	if (jdns_servers->type != JSON_ARRAY || jdns_servers->u.array.count > RESOLV_MAX_NAMESERVERS) {
+		snprintf(err_msg, err_msg_size, "dns_servers must be an array of at most %d entries",
+		         RESOLV_MAX_NAMESERVERS);
+		return 400;
+	}
+	for (i = 0; i < jdns_servers->u.array.count; i++) {
+		const char *ip = json_as_string(jdns_servers->u.array.items[i]);
+		struct in_addr addr;
+
+		if (ip == NULL || inet_pton(AF_INET, ip, &addr) != 1) {
+			snprintf(err_msg, err_msg_size, "dns_servers entries must be valid IPv4 addresses");
+			return 400;
+		}
+		snprintf(ips[i], RESOLV_IP_STRLEN, "%s", ip);
+	}
+	*count = (int)jdns_servers->u.array.count;
+	return 0;
+}
+
+/* sysctls: each checked against what this container may set. */
+static int plan_sysctls(const struct json_value *jsysctls, int userns,
+                        struct container_sysctl *specs, int *count, char *err_msg,
+                        size_t err_msg_size)
+{
+	size_t i;
+
+	*count = 0;
+	if (jsysctls == NULL)
+		return 0;
+	if (jsysctls->type != JSON_OBJECT || jsysctls->u.object.count > CONTAINER_MAX_SYSCTLS) {
+		snprintf(err_msg, err_msg_size, "sysctls must be an object of at most 32 entries");
+		return 400;
+	}
+	for (i = 0; i < jsysctls->u.object.count; i++) {
+		const char *key = jsysctls->u.object.keys[i];
+		const char *value = json_as_string(jsysctls->u.object.values[i]);
+
+		if (container_sysctl_check(key, value, userns, err_msg, err_msg_size) != 0)
+			return 400;
+		snprintf(specs[i].key, sizeof(specs[i].key), "%s", key);
+		snprintf(specs[i].value, sizeof(specs[i].value), "%s", value);
+	}
+	*count = (int)jsysctls->u.object.count;
+	return 0;
+}
+
+/* env: "key=value" strings, and envp ending in NULL. */
+static int plan_env(const struct json_value *jenv, char env_buf[][CONTAINER_ENV_ENTRY_MAX],
+                    char **envp, int *count, char *err_msg, size_t err_msg_size)
+{
+	size_t i;
+
+	*count = 0;
+	envp[0] = NULL;
+	if (jenv == NULL)
+		return 0;
+	if (jenv->type != JSON_OBJECT || jenv->u.object.count > CONTAINER_MAX_ENV) {
+		snprintf(err_msg, err_msg_size, "env must be an object of at most 32 entries");
+		return 400;
+	}
+	for (i = 0; i < jenv->u.object.count; i++) {
+		const char *key = jenv->u.object.keys[i];
+		const char *value = json_as_string(jenv->u.object.values[i]);
+
+		if (value == NULL || strlen(key) >= CONTAINER_ENV_KEY_MAX ||
+		    strlen(value) >= CONTAINER_ENV_VALUE_MAX || !env_key_is_safe(key)) {
+			snprintf(err_msg, err_msg_size, "invalid env entry");
+			return 400;
+		}
+		snprintf(env_buf[i], CONTAINER_ENV_ENTRY_MAX, "%s=%s", key, value);
+		envp[i] = env_buf[i];
+	}
+	*count = (int)jenv->u.object.count;
+	envp[*count] = NULL;
+	return 0;
+}
+
 static int create_container_from_body(const char *body, size_t body_len,
                                        struct registry_entry **out_entry,
                                        char out_restart_policy[16], int *out_restart_delay_seconds,
@@ -15467,6 +15688,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	const struct json_value *jconsoles;
 	struct registry_console consoles[REGISTRY_MAX_CONSOLES];
 	int console_count = 0;
+	int plan_rc; /* a plan_*() parse: 0, or the HTTP status to answer (ADR-0375) */
 	int capture_output = 0;
 	const struct json_value *juserns; /* ADR-0179 #29 phase 2 opt-in */
 	int userns = 0;
@@ -16333,134 +16555,16 @@ static int create_container_from_body(const char *body, size_t body_len,
 			snprintf(interface_names[i], sizeof(interface_names[i]), "%s", host);
 		}
 	}
-	if (jcap_add != NULL) {
-		if (jcap_add->type != JSON_ARRAY || jcap_add->u.array.count > CONTAINER_MAX_CAP_ADD) {
-			json_free(root);
-			snprintf(err_msg, err_msg_size, "cap_add must be an array of at most 8 entries");
-			return 400;
-		}
-		cap_add_count = (int)jcap_add->u.array.count;
-		for (i = 0; i < (size_t)cap_add_count; i++) {
-			const char *cap_name = json_as_string(jcap_add->u.array.items[i]);
-
-			if (cap_name == NULL || !container_cap_name_valid(cap_name)) {
-				json_free(root);
-				snprintf(err_msg, err_msg_size,
-				         "cap_add entries must be a recognized capability name "
-				         "that's actually on the default deny-list (e.g. \"CAP_SYS_TIME\")");
-				return 400;
-			}
-			snprintf(cap_add_names[i], sizeof(cap_add_names[i]), "%s", cap_name);
-		}
+	plan_rc = plan_cap_add(jcap_add, cap_add_names, &cap_add_count, err_msg, err_msg_size);
+	if (plan_rc != 0) {
+		json_free(root);
+		return plan_rc;
 	}
-	/*
-	 * Issue #248: the consoles this container declares.
-	 *
-	 * Validated in full here, before anything is created, so a bad
-	 * declaration is a 400 naming what is wrong rather than a
-	 * container that exists and then refuses to attach.
-	 */
-	memset(consoles, 0, sizeof(consoles));
-	if (jconsoles != NULL) {
-		if (jconsoles->type != JSON_ARRAY ||
-		    jconsoles->u.array.count > REGISTRY_MAX_CONSOLES) {
-			json_free(root);
-			snprintf(err_msg, err_msg_size,
-			         "consoles must be an array of at most %d entries",
-			         REGISTRY_MAX_CONSOLES);
-			return 400;
-		}
-		for (i = 0; i < jconsoles->u.array.count; i++) {
-			const struct json_value *item = jconsoles->u.array.items[i];
-			const char *cname;
-			const struct json_value *jcmd;
-			size_t a;
-			int dup;
-
-			cname = json_as_string(json_object_get(item, "name"));
-			jcmd = json_object_get(item, "cmd");
-			if (cname == NULL || cname[0] == '\0' ||
-			    strlen(cname) >= REGISTRY_CONSOLE_NAME_MAX) {
-				json_free(root);
-				snprintf(err_msg, err_msg_size,
-				         "each console needs a name of 1 to %d characters",
-				         REGISTRY_CONSOLE_NAME_MAX - 1);
-				return 400;
-			}
-			/*
-			 * The name is how a console is selected in a URL and
-			 * shown in a list, so keep it to characters that need
-			 * no escaping in either.
-			 */
-			for (a = 0; cname[a] != '\0'; a++) {
-				if (!isalnum((unsigned char)cname[a]) && cname[a] != '_' &&
-				    cname[a] != '-') {
-					/* Message before the free: cname points into root (#421). */
-					snprintf(err_msg, err_msg_size,
-					         "console name '%s' may use only letters, digits, - and _",
-					         cname);
-					json_free(root);
-					return 400;
-				}
-			}
-			/*
-			 * Duplicate names would make selection ambiguous, and
-			 * silently picking the first is exactly the kind of
-			 * arbitrary choice this whole field exists to remove.
-			 */
-			for (dup = 0; dup < console_count; dup++) {
-				if (strcmp(consoles[dup].name, cname) == 0) {
-					/* Message before the free: cname points into root (#421). */
-					snprintf(err_msg, err_msg_size,
-					         "console name '%s' is declared more than once", cname);
-					json_free(root);
-					return 400;
-				}
-			}
-			if (jcmd == NULL || jcmd->type != JSON_ARRAY || jcmd->u.array.count < 1 ||
-			    jcmd->u.array.count > REGISTRY_CONSOLE_ARGC_MAX) {
-				/* Message before the free: cname points into root (#421). */
-				snprintf(err_msg, err_msg_size,
-				         "console '%s' needs a cmd array of 1 to %d strings", cname,
-				         REGISTRY_CONSOLE_ARGC_MAX);
-				json_free(root);
-				return 400;
-			}
-			snprintf(consoles[console_count].name, sizeof(consoles[console_count].name),
-			         "%s", cname);
-			for (a = 0; a < jcmd->u.array.count; a++) {
-				const char *arg = json_as_string(jcmd->u.array.items[a]);
-
-				if (arg == NULL || strlen(arg) >= REGISTRY_CONSOLE_ARG_MAX) {
-					/* Message before the free: cname points into root (#421). */
-					snprintf(err_msg, err_msg_size,
-					         "console '%s' argv[%d] must be a string under %d bytes",
-					         cname, (int)a, REGISTRY_CONSOLE_ARG_MAX);
-					json_free(root);
-					return 400;
-				}
-				snprintf(consoles[console_count].argv[a],
-				         sizeof(consoles[console_count].argv[a]), "%s", arg);
-			}
-			/*
-			 * argv[0] is exec'd by path, never resolved through a
-			 * PATH lookup -- there is no shell in this path. A bare
-			 * name would fail at exec time with a confusing ENOENT
-			 * against a binary that exists, so refuse it here where
-			 * the message can say why.
-			 */
-			if (consoles[console_count].argv[0][0] != '/') {
-				/* Message before the free: cname points into root (#421). */
-				snprintf(err_msg, err_msg_size,
-				         "console '%s' argv[0] must be an absolute path -- it is exec'd "
-				         "directly, with no shell to resolve a bare name",
-				         cname);
-				json_free(root);
-				return 400;
-			}
-			consoles[console_count].argc = (int)jcmd->u.array.count;
-			console_count++;
-		}
+	/* Issue #248: the consoles this container declares (plan_consoles()). */
+	plan_rc = plan_consoles(jconsoles, consoles, &console_count, err_msg, err_msg_size);
+	if (plan_rc != 0) {
+		json_free(root);
+		return plan_rc;
 	}
 	if (jfiles != NULL) {
 		if (jfiles->type != JSON_ARRAY || jfiles->u.array.count > CONTAINER_MAX_FILES) {
@@ -16605,68 +16709,17 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 * why the two cases are distinguished by jdns_servers being NULL
 	 * rather than by dns_server_count being 0.
 	 */
-	if (jdns_servers != NULL) {
-		if (jdns_servers->type != JSON_ARRAY || jdns_servers->u.array.count > RESOLV_MAX_NAMESERVERS) {
-			json_free(root);
-			snprintf(err_msg, err_msg_size, "dns_servers must be an array of at most %d entries",
-			         RESOLV_MAX_NAMESERVERS);
-			return 400;
-		}
-		for (i = 0; i < jdns_servers->u.array.count; i++) {
-			const char *ip = json_as_string(jdns_servers->u.array.items[i]);
-			struct in_addr addr;
-
-			if (ip == NULL || inet_pton(AF_INET, ip, &addr) != 1) {
-				json_free(root);
-				snprintf(err_msg, err_msg_size, "dns_servers entries must be valid IPv4 addresses");
-				return 400;
-			}
-			snprintf(dns_server_ips[i], sizeof(dns_server_ips[i]), "%s", ip);
-		}
-		dns_server_count = (int)jdns_servers->u.array.count;
+	plan_rc = plan_dns_servers(jdns_servers, dns_server_ips, &dns_server_count, err_msg,
+	                           err_msg_size);
+	if (plan_rc == 0)
+		plan_rc = plan_sysctls(jsysctls, userns, sysctl_specs, &sysctl_count, err_msg,
+		                       err_msg_size);
+	if (plan_rc == 0)
+		plan_rc = plan_env(jenv, env_buf, envp_ptrs, &env_count, err_msg, err_msg_size);
+	if (plan_rc != 0) {
+		json_free(root);
+		return plan_rc;
 	}
-	if (jsysctls != NULL) {
-		if (jsysctls->type != JSON_OBJECT || jsysctls->u.object.count > CONTAINER_MAX_SYSCTLS) {
-			json_free(root);
-			snprintf(err_msg, err_msg_size, "sysctls must be an object of at most 32 entries");
-			return 400;
-		}
-		sysctl_count = (int)jsysctls->u.object.count;
-		for (i = 0; i < (size_t)sysctl_count; i++) {
-			const char *key = jsysctls->u.object.keys[i];
-			const char *value = json_as_string(jsysctls->u.object.values[i]);
-
-			if (container_sysctl_check(key, value, userns, err_msg, err_msg_size) != 0) {
-				json_free(root);
-				return 400;
-			}
-			snprintf(sysctl_specs[i].key, sizeof(sysctl_specs[i].key), "%s", key);
-			snprintf(sysctl_specs[i].value, sizeof(sysctl_specs[i].value), "%s", value);
-		}
-	}
-	if (jenv != NULL) {
-		if (jenv->type != JSON_OBJECT || jenv->u.object.count > CONTAINER_MAX_ENV) {
-			json_free(root);
-			snprintf(err_msg, err_msg_size, "env must be an object of at most 32 entries");
-			return 400;
-		}
-		env_count = (int)jenv->u.object.count;
-		for (i = 0; i < (size_t)env_count; i++) {
-			const char *key = jenv->u.object.keys[i];
-			const char *value = json_as_string(jenv->u.object.values[i]);
-
-			if (value == NULL || strlen(key) >= CONTAINER_ENV_KEY_MAX ||
-			    strlen(value) >= CONTAINER_ENV_VALUE_MAX || !env_key_is_safe(key)) {
-				json_free(root);
-				snprintf(err_msg, err_msg_size, "invalid env entry");
-				return 400;
-			}
-			snprintf(env_buf[i], sizeof(env_buf[i]), "%s=%s", key, value);
-			envp_ptrs[i] = env_buf[i];
-		}
-	}
-
-	envp_ptrs[env_count] = NULL;
 
 	/*
 	 * ADR-0107/0108: an image's own rootfs is now one of potentially
