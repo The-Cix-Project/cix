@@ -180,6 +180,18 @@ int esp_entry_unhold(const char *entries_dir, const char *from, const char *to);
 /* fsyncs entries_dir, so a rename in it is on disk. 0 or -1. */
 int esp_entries_sync(const char *entries_dir);
 
+/*
+ * Renames entries_dir/from to entries_dir/to so that both the name and
+ * the content are on disk when it returns. On vfat a rename writes the
+ * new directory entry with size 0 and no first cluster, and the renamed
+ * file's own inode writeback fills them in later; a directory fsync does
+ * not trigger it. Measured by test_boot_update under QEMU on 2026-11-06
+ * (probe-cix-compile@0.2.57-715): a guest stopped right after a confirm
+ * left cix-b.conf on the ESP at 0 bytes. So the renamed file is fsynced,
+ * then the directory. 0, or -1 with errno.
+ */
+int esp_rename_durable(const char *entries_dir, const char *from, const char *to);
+
 void esp_write_json(struct json_writer *w);
 
 #endif /* ESP_H */

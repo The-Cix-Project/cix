@@ -3213,15 +3213,18 @@ static int confirm_boot(const char *slot)
 	if (strcmp(oldpath, newpath) == 0)
 		return 0; /* already confirmed (no counter suffix) -- nothing to do */
 	/* rename(2) replaces any stale confirmed entry of the same name,
-	 * which is exactly what should happen to the previous cycle's. */
-	if (rename(oldpath, newpath) != 0) {
-		perror("confirm_boot rename");
-		return -1;
+	 * which is exactly what should happen to the previous cycle's. On
+	 * disk, name and content, before anything reports it: a vfat rename
+	 * left unsynced reads back as an empty entry (esp_rename_durable()). */
+	{
+		char confirmed[ESP_ENTRY_NAME_MAX];
+
+		snprintf(confirmed, sizeof(confirmed), "cix-%s.conf", slot);
+		if (esp_rename_durable(g_esp_entries_dir, entry_name, confirmed) != 0) {
+			perror("confirm_boot rename");
+			return -1;
+		}
 	}
-	/* On disk before anything reports it: a power loss after a rename
-	 * still in the page cache would boot the old entry's counter. */
-	if (esp_entries_sync(g_esp_entries_dir) != 0)
-		fprintf(stderr, "confirm_boot: syncing %s: %s\n", g_esp_entries_dir, strerror(errno));
 	/* ADR-0339: the booted entry is confirmed some minutes after boot,
 	 * by the daemon and no API call -- the ESP and boot reads show it,
 	 * and the pipeline's deploy stage through getEsp (composed-of). */

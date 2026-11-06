@@ -714,10 +714,29 @@ int esp_entries_sync(const char *entries_dir)
 	return rc == 0 ? 0 : -1;
 }
 
+int esp_rename_durable(const char *entries_dir, const char *from, const char *to)
+{
+	char oldpath[PATH_MAX], newpath[PATH_MAX];
+	int fd, rc;
+
+	snprintf(oldpath, sizeof(oldpath), "%s/%s", entries_dir, from);
+	snprintf(newpath, sizeof(newpath), "%s/%s", entries_dir, to);
+	if (rename(oldpath, newpath) != 0)
+		return -1;
+	fd = open(newpath, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	rc = fsync(fd);
+	close(fd);
+	if (rc != 0)
+		return -1;
+	return esp_entries_sync(entries_dir);
+}
+
 int esp_entry_hold(const char *entries_dir, const char *slot, char *from, char *to,
                    size_t name_size, char *err, size_t err_size)
 {
-	char prefix[32], oldpath[PATH_MAX], newpath[PATH_MAX];
+	char prefix[32], newpath[PATH_MAX];
 	const char *p;
 	char *end;
 	long left, done = 0;
@@ -779,18 +798,11 @@ int esp_entry_hold(const char *entries_dir, const char *slot, char *from, char *
 		return -1;
 	}
 	snprintf(to, name_size, "cix-%s+0-%ld.conf", slot, left + done);
-	snprintf(oldpath, sizeof(oldpath), "%s/%s", entries_dir, from);
 	snprintf(newpath, sizeof(newpath), "%s/%s", entries_dir, to);
-	if (rename(oldpath, newpath) != 0) {
-		snprintf(err, err_size, "cannot rename %s to %s: %s", from, to, strerror(errno));
-		from[0] = to[0] = '\0';
-		return -1;
-	}
-	if (esp_entries_sync(entries_dir) != 0) {
-		snprintf(err, err_size, "cannot sync %s after holding %s: %s", entries_dir, from,
-		         strerror(errno));
-		rename(newpath, oldpath);
-		esp_entries_sync(entries_dir);
+	if (esp_rename_durable(entries_dir, from, to) != 0) {
+		snprintf(err, err_size, "cannot hold %s as %s durably: %s", from, to, strerror(errno));
+		if (access(newpath, F_OK) == 0)
+			esp_rename_durable(entries_dir, to, from);
 		from[0] = to[0] = '\0';
 		return -1;
 	}
@@ -799,15 +811,9 @@ int esp_entry_hold(const char *entries_dir, const char *slot, char *from, char *
 
 int esp_entry_unhold(const char *entries_dir, const char *from, const char *to)
 {
-	char oldpath[PATH_MAX], newpath[PATH_MAX];
-
 	if (from[0] == '\0' || to[0] == '\0')
 		return 0;
-	snprintf(oldpath, sizeof(oldpath), "%s/%s", entries_dir, from);
-	snprintf(newpath, sizeof(newpath), "%s/%s", entries_dir, to);
-	if (rename(newpath, oldpath) != 0)
-		return -1;
-	return esp_entries_sync(entries_dir);
+	return esp_rename_durable(entries_dir, to, from);
 }
 
 int esp_entry_to_confirm(const char *entries_dir, const char *slot, char *out, size_t out_size)
