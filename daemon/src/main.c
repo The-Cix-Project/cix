@@ -73,6 +73,7 @@
 #include "proctitle.h"
 #include "stallwatch.h"
 #include "startup_steps.h"
+#include "handover.h"
 #include "exec.h"
 #include "http.h"
 #include "image.h"
@@ -38301,25 +38302,42 @@ static int boot_subsystem_init(int init_mode, const char *name, int rc)
 }
 
 /*
- * ADR-0375: does any container's cgroup still hold a process? Read from
- * the kernel, which is the one thing a handover start can trust before
- * it has read anything else.
+ * ADR-0375 phase 2: the handover. The old cixd writes the record last and
+ * execs; the new one validates it first (E1), rebuilds each container's
+ * entry right after registry_init() (E2), and registers each running
+ * container's watches once the reactor exists (E3). A handover changes
+ * nothing about which containers run.
  */
-static int handover_containers_running(void)
+static struct handover_record g_handover_rec;
+static int *g_handover_pidfds;
+static struct registry_entry **g_handover_entries;
+
+static void handover_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/%s", STATE_DIR, HANDOVER_FILE);
+}
+
+/*
+ * A populated container cgroup that the record does not name as running:
+ * a container the handover would leave unwatched, which is a refusal.
+ * Read from the kernel. 1 with its name written, or 0.
+ */
+static int handover_unrecorded_container(const struct handover_record *rec, char *out,
+                                         size_t out_size)
 {
 	char dir[PATH_MAX];
 	DIR *d;
 	struct dirent *de;
-	int running = 0;
+	int found = 0;
 
 	snprintf(dir, sizeof(dir), "/sys/fs/cgroup/%s", CGROUP_WORKLOAD_PARENT);
 	d = opendir(dir);
 	if (d == NULL)
 		return 0;
-	while (!running && (de = readdir(d)) != NULL) {
+	while (!found && (de = readdir(d)) != NULL) {
 		char path[PATH_MAX], buf[256];
 		ssize_t n;
-		int fd;
+		int fd, i, named = 0;
 
 		if (de->d_name[0] == '.' || de->d_type != DT_DIR ||
 		    (size_t)snprintf(path, sizeof(path), "%s/%s/cgroup.events", dir, de->d_name) >=
@@ -38330,13 +38348,21 @@ static int handover_containers_running(void)
 			continue;
 		n = read(fd, buf, sizeof(buf) - 1);
 		close(fd);
-		if (n > 0) {
-			buf[n] = '\0';
-			running = strstr(buf, "populated 1") != NULL;
+		if (n <= 0)
+			continue;
+		buf[n] = '\0';
+		if (strstr(buf, "populated 1") == NULL)
+			continue;
+		for (i = 0; i < rec->count; i++)
+			if (rec->containers[i].running && strcmp(rec->containers[i].name, de->d_name) == 0)
+				named = 1;
+		if (!named) {
+			snprintf(out, out_size, "%s", de->d_name);
+			found = 1;
 		}
 	}
 	closedir(d);
-	return running;
+	return found;
 }
 
 /*
@@ -38357,35 +38383,159 @@ static void handover_recompute_data_dir_fault(void)
 }
 
 /*
- * ADR-0375 phase 1: nothing is in flight that the exec would orphan. A
- * helper's completion is a function in this image, a package job is
- * this process's memory, and the host roll and the root assembly are
- * steps of one. Containers wait for phase 2's record: until it exists,
- * a handover is only ever made with none running.
+ * ADR-0375: nothing is in flight that the exec would orphan. A helper's
+ * completion is a function in this image, a package job is this
+ * process's memory, and every other forked child is named here by the
+ * flag that says it runs. A container is steady when no teardown is in
+ * flight; a stop's grace is seconds, so a handover waits it out rather
+ * than carry it. Console shells are the one child left running unwatched
+ * (phase 3).
  */
 static int handover_quiescent(void)
 {
-	char names[1][REGISTRY_NAME_MAX];
+	static char names[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
+	int n, i;
 
-	return g_helpers_live == 0 && !pkg_job_in_flight_for(NULL, NULL, 1) &&
-	       !g_bootroot_assembly_running && g_hostroll.step == HOSTROLL_IDLE &&
-	       registry_list_names(names, 1) == 0 && !handover_containers_running();
+	if (g_helpers_live != 0 || pkg_job_in_flight_for(NULL, NULL, 1) ||
+	    g_bootroot_assembly_running || g_hostroll.step != HOSTROLL_IDLE ||
+	    pkg_push_in_flight() || pkg_sync_in_progress() ||
+	    g_iso_build_state == ISO_BUILD_BUILDING || g_iso_publish_state == ISO_PUB_RUNNING ||
+	    g_artifact_export_state == ARTIFACT_EXPORT_BUILDING || g_kernel_releases_fetching)
+		return 0;
+	n = registry_list_names(names, REGISTRY_MAX_CONTAINERS);
+	for (i = 0; i < n; i++) {
+		const struct registry_entry *e = registry_find(names[i]);
+
+		if (e != NULL && e->teardown_kind != REGISTRY_TEARDOWN_NONE)
+			return 0;
+	}
+	return 1;
+}
+
+/* Every registry entry into rec, the descriptors it passes by number. */
+static int handover_build_record(struct handover_record *rec)
+{
+	static char names[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
+	int n = registry_list_names(names, REGISTRY_MAX_CONTAINERS);
+	int i, k;
+
+	if (handover_record_init(rec, n) != 0)
+		return -1;
+	snprintf(rec->written_by, sizeof(rec->written_by), "%s", CIX_BUILD_VERSION);
+	rec->written_at = (long long)time(NULL);
+	rec->procfuse_pid = 0;
+	for (i = 0; i < n; i++) {
+		const struct registry_entry *e = registry_find(names[i]);
+		struct handover_container *c;
+
+		if (e == NULL)
+			continue;
+		c = &rec->containers[rec->count++];
+		memset(c, 0, sizeof(*c));
+		snprintf(c->name, sizeof(c->name), "%s", e->name);
+		snprintf(c->image, sizeof(c->image), "%s", e->image);
+		snprintf(c->image_version, sizeof(c->image_version), "%s", e->image_version);
+		c->running = e->running;
+		c->pid = e->running ? e->handle.pid : 0;
+		c->started_at = (long long)e->started_at;
+		c->paused = e->paused;
+		c->exit_status = e->exit_status;
+		c->term_signal = e->term_signal;
+		snprintf(c->last_exit_reason, sizeof(c->last_exit_reason), "%s", e->last_exit_reason);
+		c->restart_at = 0; /* a pending restart is re-armed from its definition */
+		c->userns_enabled = e->userns_enabled;
+		c->disk_quota_bytes = e->disk_quota_bytes;
+		c->reserve_devices = e->reserve_devices;
+		c->ip_forward = e->ip_forward;
+		c->capture_requested = e->capture_requested;
+		c->procfuse_expected = e->procfuse_expected;
+		c->init_up = e->init_up;
+		c->ready = e->ready;
+		c->net_count = e->net_count;
+		for (k = 0; k < e->net_count; k++)
+			c->nets[k] = e->nets[k];
+		c->file_count = e->file_count;
+		for (k = 0; k < e->file_count; k++)
+			snprintf(c->file_paths[k], sizeof(c->file_paths[k]), "%s", e->file_paths[k]);
+		c->dns_server_count = e->dns_server_count;
+		for (k = 0; k < e->dns_server_count; k++)
+			snprintf(c->dns_servers[k], sizeof(c->dns_servers[k]), "%s", e->dns_server_ips[k]);
+		c->device_count = e->device_count;
+		for (k = 0; k < e->device_count; k++)
+			c->devices[k] = e->devices[k];
+		c->pending_device_count = e->pending_device_count;
+		for (k = 0; k < e->pending_device_count; k++)
+			c->pending_devices[k] = e->pending_devices[k];
+		c->interface_count = e->interface_count;
+		for (k = 0; k < e->interface_count; k++) {
+			c->interfaces[k] = e->interface_records[k];
+			snprintf(c->interface_hosts[k], sizeof(c->interface_hosts[k]), "%s",
+			         e->interfaces[k]);
+		}
+		c->service_count = e->service_count;
+		for (k = 0; k < e->service_count; k++) {
+			const struct registry_service *s = &e->services[k];
+
+			c->services[k].state = s->state;
+			c->services[k].pid = s->pid;
+			c->services[k].has_exit = s->has_exit;
+			c->services[k].exit_kind = s->exit_kind;
+			c->services[k].exit_value = s->exit_value;
+			c->services[k].restarts = s->restarts;
+			c->services[k].fail_reason = s->fail_reason;
+			c->services[k].fail_detail = s->fail_detail;
+			c->services[k].output_fd = e->running ? s->output_fd : -1;
+		}
+		c->fd_init_control = e->running ? e->init_control_fd : -1;
+		c->fd_init_report = e->running ? e->init_report_fd : -1;
+		c->fd_capture = e->running ? e->output_fd : -1;
+		c->fd_bpf_prog = e->running ? e->handle.bpf_prog_fd : -1;
+		snprintf(c->captured_output, sizeof(c->captured_output), "%s", e->captured_output);
+	}
+	return 0;
+}
+
+/* FD_CLOEXEC cleared (pass, before the exec) or set back (after a failed
+ * one) on every descriptor the record passes. */
+static void handover_set_cloexec(const struct handover_record *rec, int cloexec)
+{
+	int i, k;
+
+	for (i = 0; i < rec->count; i++) {
+		const struct handover_container *c = &rec->containers[i];
+		int fds[4 + REGISTRY_MAX_SERVICES];
+		int nf = 0;
+
+		fds[nf++] = c->fd_init_control;
+		fds[nf++] = c->fd_init_report;
+		fds[nf++] = c->fd_capture;
+		fds[nf++] = c->fd_bpf_prog;
+		for (k = 0; k < c->service_count; k++)
+			fds[nf++] = c->services[k].output_fd;
+		for (k = 0; k < nf; k++)
+			if (fds[k] >= 0)
+				fcntl(fds[k], F_SETFD, cloexec ? FD_CLOEXEC : 0);
+	}
 }
 
 /*
  * ADR-0375: execs cixd again, in place, with the argv this one started
- * with and --handover added. The path is argv[0], what the boot entry
- * named (init=/bin/cixd); phase 4 changes only which root it resolves
- * in. Returns only when the exec failed, and then this cixd carries on.
+ * with and --handover added, after writing the record (always, even with
+ * no containers). The path is argv[0], what the boot entry named
+ * (init=/bin/cixd); phase 4 changes only which root it resolves in.
+ * Returns only when the handover failed, having undone every step, and
+ * then this cixd carries on.
  */
 static void handover_exec(void)
 {
+	struct handover_record rec;
 	char *argv[64];
-	const char *path = g_saved_argv[0];
+	char path[PATH_MAX], err[512];
+	const char *exe = g_saved_argv[0];
 	int i, n = 0;
 
-	if (path == NULL || path[0] != '/')
-		path = "/proc/self/exe";
+	if (exe == NULL || exe[0] != '/')
+		exe = "/proc/self/exe";
 	for (i = 0; i < g_saved_argc && n < 62; i++) {
 		if (strncmp(g_saved_argv[i], "--test-handover-after=", 22) == 0 ||
 		    strcmp(g_saved_argv[i], "--handover") == 0)
@@ -38394,14 +38544,283 @@ static void handover_exec(void)
 	}
 	argv[n++] = (char *)"--handover";
 	argv[n] = NULL;
-	logstore_write("cixd", "info", "handover: executing %s in place (ADR-0375)", path);
-	printf("handover: executing %s in place (ADR-0375)\n", path);
-	fflush(stdout);
+
+	if (handover_build_record(&rec) != 0) {
+		logstore_write("cixd", "error", "handover: out of memory building the record");
+		return;
+	}
+	handover_path(path, sizeof(path));
 	stallwatch_stop();
-	execv(path, argv);
+	handover_set_cloexec(&rec, 0);
+	if (handover_write(path, &rec, err, sizeof(err)) != 0) {
+		handover_set_cloexec(&rec, 1);
+		handover_record_free(&rec);
+		stallwatch_start(STALLWATCH_RECORDS_PATH);
+		logstore_write("cixd", "error", "handover: %s; this cixd carries on (ADR-0375)", err);
+		return;
+	}
+	logstore_write("cixd", "info", "handover: executing %s in place with %d containers (ADR-0375)",
+	               exe, rec.count);
+	printf("handover: executing %s in place with %d containers (ADR-0375)\n", exe, rec.count);
+	fflush(stdout);
+	execv(exe, argv);
 	logstore_write("cixd", "error", "handover: exec of %s failed (%s); this cixd carries on",
-	               path, strerror(errno));
+	               exe, strerror(errno));
+	handover_set_cloexec(&rec, 1);
+	unlink(path);
+	handover_record_free(&rec);
 	stallwatch_start(STALLWATCH_RECORDS_PATH);
+}
+
+/*
+ * E1 (ADR-0375): before anything else trusts the record. A refusal is a
+ * failed start: init mode parks, a test daemon exits 1.
+ */
+static int handover_load(void)
+{
+	char path[PATH_MAX], err[512], stray[REGISTRY_NAME_MAX];
+	int n;
+
+	handover_path(path, sizeof(path));
+	if (handover_read(path, &g_handover_rec, err, sizeof(err)) != 0) {
+		fprintf(stderr, "handover: %s; refusing to start (ADR-0375)\n", err);
+		return -1;
+	}
+	n = g_handover_rec.count > 0 ? g_handover_rec.count : 1;
+	g_handover_pidfds = calloc((size_t)n, sizeof(*g_handover_pidfds));
+	g_handover_entries = calloc((size_t)n, sizeof(*g_handover_entries));
+	if (g_handover_pidfds == NULL || g_handover_entries == NULL) {
+		fprintf(stderr, "handover: out of memory; refusing to start (ADR-0375)\n");
+		return -1;
+	}
+	if (handover_validate(&g_handover_rec, "/sys/fs/cgroup/" CGROUP_WORKLOAD_PARENT,
+	                      g_handover_pidfds, err, sizeof(err)) != 0) {
+		fprintf(stderr, "%s; refusing to start\n", err);
+		return -1;
+	}
+	if (handover_unrecorded_container(&g_handover_rec, stray, sizeof(stray))) {
+		fprintf(stderr,
+		        "handover: container %s is running and the record does not name it; refusing "
+		        "to start (ADR-0375)\n",
+		        stray);
+		return -1;
+	}
+	handover_recompute_data_dir_fault();
+	return 0;
+}
+
+/*
+ * E2 (ADR-0375): one container's entry, rebuilt through the plan its
+ * persisted body gives and the record's values for what only the old
+ * process knew. Mismatches between the two are refusals: the body
+ * changed under a running container, which a handover cannot reconcile.
+ */
+static struct registry_entry *handover_takeover_one(const struct handover_container *c, int pidfd,
+                                                    char *err, size_t err_size)
+{
+	struct container_def *def = containerdef_find(c->name);
+	struct json_value *root;
+	struct registry_console consoles[REGISTRY_MAX_CONSOLES];
+	char cap_add_names[CONTAINER_MAX_CAP_ADD][CONTAINER_CAP_NAME_MAX];
+	struct container_sysctl sysctl_specs[CONTAINER_MAX_SYSCTLS];
+	char env_buf[CONTAINER_MAX_ENV][CONTAINER_ENV_ENTRY_MAX];
+	char *envp[CONTAINER_MAX_ENV + 1];
+	struct registry_network_attachment plan_nets[CONTAINER_MAX_NETWORKS];
+	int plan_has_ip[CONTAINER_MAX_NETWORKS];
+	const char *iface_refs[CONTAINER_MAX_INTERFACES];
+	char ifnames[CONTAINER_MAX_INTERFACES][CONTAINER_IFNAME_MAX];
+	char no_chosen[1][16];
+	unsigned int svc_addrs[CONTAINER_MAX_NETWORKS];
+	int output_fds[REGISTRY_MAX_SERVICES];
+	struct cixinit_table table;
+	struct container_spec spec;
+	struct container_handle h;
+	struct registry_entry *e = NULL;
+	char path[PATH_MAX];
+	int console_count = 0, cap_add_count = 0, sysctl_count = 0, env_count = 0;
+	int plan_net_count = 0, ifcount = 0, rc, i;
+
+	if (def == NULL) {
+		snprintf(err, err_size, "container %s has no definition to take it over from",
+		         c->name);
+		return NULL;
+	}
+	root = json_parse(def->body, def->body_len);
+	if (root == NULL) {
+		snprintf(err, err_size, "container %s's definition does not parse", c->name);
+		return NULL;
+	}
+	rc = plan_cap_add(json_object_get(root, "cap_add"), cap_add_names, &cap_add_count, err,
+	                  err_size);
+	if (rc == 0)
+		rc = plan_consoles(json_object_get(root, "consoles"), consoles, &console_count, err,
+		                   err_size);
+	if (rc == 0)
+		rc = plan_sysctls(json_object_get(root, "sysctls"),
+		                  definition_userns(json_object_get(root, "userns")), sysctl_specs,
+		                  &sysctl_count, err, err_size);
+	if (rc == 0)
+		rc = plan_env(json_object_get(root, "env"), env_buf, envp, &env_count, err, err_size);
+	if (rc == 0)
+		rc = plan_interfaces(json_object_get(root, "interfaces"), no_chosen, 0, iface_refs,
+		                     ifnames, &ifcount, err, err_size);
+	if (rc != 0)
+		goto fail;
+	plan_networks(json_object_get(root, "networks"), plan_nets, plan_has_ip, &plan_net_count);
+	if (plan_net_count != c->net_count || ifcount != c->interface_count) {
+		snprintf(err, err_size,
+		         "container %s's definition names %d networks and %d interfaces, and it runs "
+		         "with %d and %d",
+		         c->name, plan_net_count, ifcount, c->net_count, c->interface_count);
+		goto fail;
+	}
+	for (i = 0; i < c->net_count; i++) {
+		if (strcmp(plan_nets[i].name, c->nets[i].name) != 0) {
+			snprintf(err, err_size,
+			         "container %s's definition attaches network %s where it runs on %s",
+			         c->name, plan_nets[i].name, c->nets[i].name);
+			goto fail;
+		}
+		svc_addrs[i] = c->nets[i].ip_be;
+	}
+	if (cixinit_table_from_json(json_object_get(root, "services"), svc_addrs, c->net_count,
+	                            (const char(*)[CONTAINER_IFNAME_MAX])ifnames, ifcount, &table, err,
+	                            err_size) != 0)
+		goto fail;
+	if (table.count != c->service_count) {
+		snprintf(err, err_size, "container %s's definition declares %d services, it runs %d",
+		         c->name, table.count, c->service_count);
+		goto fail;
+	}
+
+	/* Only what registry_fill() reads: a container's spec is a clone's. */
+	memset(&spec, 0, sizeof(spec));
+	spec.interface_count = ifcount;
+	for (i = 0; i < ifcount; i++) {
+		snprintf(spec.interfaces[i].host, sizeof(spec.interfaces[i].host), "%s",
+		         c->interface_hosts[i]);
+		snprintf(spec.interfaces[i].ifname, sizeof(spec.interfaces[i].ifname), "%s", ifnames[i]);
+	}
+	spec.sysctl_count = sysctl_count;
+	for (i = 0; i < sysctl_count; i++)
+		spec.sysctls[i] = sysctl_specs[i];
+	spec.cap_add_count = cap_add_count;
+	for (i = 0; i < cap_add_count; i++)
+		snprintf(spec.cap_add[i], sizeof(spec.cap_add[i]), "%s", cap_add_names[i]);
+	spec.envp = envp;
+
+	memset(&h, 0, sizeof(h));
+	h.pid = c->running ? c->pid : 0;
+	h.pidfd = c->running ? pidfd : -1;
+	snprintf(path, sizeof(path), "/sys/fs/cgroup/%s/%s", CGROUP_WORKLOAD_PARENT, c->name);
+	h.cgroup_fd = open(path, O_PATH | O_CLOEXEC); /* as cgroup_create() opens it */
+	h.bpf_prog_fd = c->fd_bpf_prog;
+	h.interfaces_netns_fd = -1;
+	if (c->running && ifcount > 0) {
+		snprintf(path, sizeof(path), "/proc/%d/ns/net", (int)c->pid);
+		h.interfaces_netns_fd = open(path, O_RDONLY | O_CLOEXEC);
+	}
+	h.iface_bringup_pid = 0;
+	h.iface_bringup_split_fd = -1;
+	h.diag_fd = -1;
+
+	if (registry_adopt(c->name, c->image, c->image_version, &spec, c->nets, c->net_count,
+	                   c->ip_forward, c->devices, c->device_count, c->file_paths, c->file_count,
+	                   c->dns_servers, c->dns_server_count, &h, (time_t)c->started_at,
+	                   &e) != REGISTRY_OK) {
+		snprintf(err, err_size, "container %s could not be entered in the registry", c->name);
+		if (h.cgroup_fd >= 0)
+			close(h.cgroup_fd);
+		if (h.interfaces_netns_fd >= 0)
+			close(h.interfaces_netns_fd);
+		e = NULL;
+		goto fail;
+	}
+	e->userns_enabled = c->userns_enabled;
+	e->disk_quota_bytes = c->disk_quota_bytes;
+	e->reserve_devices = c->reserve_devices;
+	for (i = 0; i < c->interface_count; i++)
+		e->interface_records[i] = c->interfaces[i];
+	registry_set_consoles(c->name, consoles, console_count);
+	for (i = 0; i < table.count; i++)
+		output_fds[i] = c->services[i].output_fd;
+	registry_set_services(e, &table, output_fds, c->fd_init_control, c->fd_init_report);
+	registry_restore_runtime(e, c);
+	if (c->pending_device_count > 0)
+		registry_set_pending_devices(e, c->pending_devices, c->pending_device_count);
+	e->output_fd = c->fd_capture;
+	e->capture_requested = c->capture_requested;
+fail:
+	json_free(root);
+	return e;
+}
+
+/* E2 for every container the record names. 0, or -1 with the reason on stderr. */
+static int handover_takeover_all(void)
+{
+	char err[512];
+	int i;
+
+	for (i = 0; i < g_handover_rec.count; i++) {
+		err[0] = '\0';
+		g_handover_entries[i] =
+		    handover_takeover_one(&g_handover_rec.containers[i], g_handover_pidfds[i], err,
+		                          sizeof(err));
+		if (g_handover_entries[i] == NULL) {
+			fprintf(stderr, "handover: %s; refusing to start (ADR-0375)\n", err);
+			return -1;
+		}
+	}
+	return 0;
+}
+
+/*
+ * E3 (ADR-0375): once the reactor exists. Each running container's exit,
+ * cix-init reports and output are watched again, a crash restart that was
+ * pending is re-armed from its definition -- one not stopped, whose policy
+ * would restart it, and that has no entry -- and the record goes.
+ */
+static void handover_watch_all(void)
+{
+	char order[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
+	char path[PATH_MAX];
+	int i, k, count, rearmed = 0;
+
+	for (i = 0; i < g_handover_rec.count; i++) {
+		struct registry_entry *e = g_handover_entries[i];
+
+		if (e == NULL || !e->running)
+			continue;
+		register_container_pidfd(e);
+		register_container_init(e);
+		if (e->output_fd >= 0)
+			register_container_output(e);
+		for (k = 0; k < e->service_count; k++)
+			register_container_output_fd(e, e->services[k].output_fd, k);
+	}
+	count = containerdef_resolve_order(order);
+	for (i = 0; i < count; i++) {
+		struct container_def *def = containerdef_find(order[i]);
+
+		if (def == NULL || def->stopped || registry_find(def->name) != NULL)
+			continue;
+		if (strcmp(def->restart_policy, "always") != 0 &&
+		    !(strcmp(def->restart_policy, "on-failure") == 0 && def->consecutive_failures > 0))
+			continue;
+		arm_restart_timer(def->name, restart_backoff_delay(def));
+		rearmed++;
+	}
+	handover_path(path, sizeof(path));
+	unlink(path);
+	logstore_write("cixd", "info",
+	               "handover: took over %d containers from cixd %s, %d pending restarts re-armed "
+	               "(ADR-0375)",
+	               g_handover_rec.count, g_handover_rec.written_by, rearmed);
+	handover_record_free(&g_handover_rec);
+	free(g_handover_pidfds);
+	free(g_handover_entries);
+	g_handover_pidfds = NULL;
+	g_handover_entries = NULL;
 }
 
 /* ADR-0375 phase 1's test trigger (--test-handover-after=N): once the
@@ -38479,28 +38898,26 @@ static int cixd_main(int argc, char **argv)
 	 * chance to apply a persisted port override (Part 0.5) -- nothing
 	 * between here and there reads it. */
 
-	if (init_mode && g_handover) {
+	if (g_handover) {
 		/*
-		 * ADR-0375: cixd again, in the kernel that is running. Nothing
-		 * in include/startup_steps.h runs. A handover takes containers
-		 * over only from a handover record (phase 2); until that
-		 * exists, one with containers running would be the blind
-		 * adoption ADR-0246 removed, so it is refused and the host
-		 * parks, which is any PID 1 start failure's path.
+		 * ADR-0375: cixd again, in the kernel that is running. Nothing in
+		 * include/startup_steps.h's once-per-kernel list runs, and the
+		 * record, not autostart, decides which containers run. E1: the
+		 * record is read and checked against the kernel before anything
+		 * trusts it; a refusal is a failed start (init mode parks, a test
+		 * daemon exits 1).
 		 */
 #define STARTUP_STEP_NAME(step) " " #step
 		printf("handover: cixd started again in this kernel, slot=%s (ADR-0375)\n"
 		       "handover: not run again, once per kernel:" STARTUP_ONCE_PER_KERNEL(
-		           STARTUP_STEP_NAME) "; kept running:" STARTUP_SURVIVES_HANDOVER(STARTUP_STEP_NAME) "\n",
+		           STARTUP_STEP_NAME) "; kept running:" STARTUP_SURVIVES_HANDOVER(
+		           STARTUP_STEP_NAME) "; replaced by the record:" STARTUP_REPLACED_BY_HANDOVER(
+		           STARTUP_STEP_NAME) "\n",
 		       slot != NULL ? slot : "(none)");
 #undef STARTUP_STEP_NAME
 		fflush(stdout);
-		if (handover_containers_running()) {
-			fprintf(stderr, "handover: containers are running and there is no handover "
-			                "record to take them over from (ADR-0375)\n");
+		if (handover_load() != 0)
 			return 1;
-		}
-		handover_recompute_data_dir_fault();
 	}
 	if (first_in_kernel()) {
 		/* The only observable serial-console signal for which slot
@@ -38520,6 +38937,19 @@ static int cixd_main(int argc, char **argv)
 		 */
 		if (boot_init() != 0) {
 			return 1;
+		}
+		/*
+		 * ADR-0375: a record that survives into a kernel's first start
+		 * is from a handover that never finished. It describes a kernel
+		 * that is gone, so it is removed, and said so on the console.
+		 */
+		{
+			char leftover[PATH_MAX];
+
+			handover_path(leftover, sizeof(leftover));
+			if (unlink(leftover) == 0)
+				printf("handover: removed a record left by an unfinished handover "
+				       "(ADR-0375)\n");
 		}
 	}
 
@@ -39187,6 +39617,14 @@ static int cixd_main(int argc, char **argv)
 	protect_control_plane();
 
 	registry_init();
+	/*
+	 * ADR-0375 E2: on a handover, every container the record names is
+	 * entered now -- before anything reads the registry, since the
+	 * orphan and rootfs sweeps, image retention and IP allocation below
+	 * all take an empty registry as the truth.
+	 */
+	if (g_handover && handover_takeover_all() != 0)
+		return 1;
 
 	/*
 	 * ensure_dir()'s directory scaffolding and each module's own
@@ -39489,7 +39927,12 @@ static int cixd_main(int argc, char **argv)
 	rootfs_discard_sweep(IMAGES_DIR); /* ADR-0343 */
 	rootfs_discard_sweep(ARTIFACTS_DIR); /* #644: a failed hostbuild's output */
 	pki_set_key_source(keypool_take); /* ADR-0353 */
-	containerdef_autostart_all();
+	/* ADR-0375: a handover changes nothing about which containers run,
+	 * so the record replaces autostart (E3); a boot starts them. */
+	if (g_handover)
+		handover_watch_all();
+	else
+		containerdef_autostart_all();
 	rearm_roll_watches(); /* ADR-0323 answer 4 */
 	/* ADR-0343: after autostart, so the registry holds every container
 	 * that will run; definitions are loaded already. Waits for the first

@@ -90,6 +90,7 @@ struct handover_container {
 	struct registry_pending_device pending_devices[CONTAINER_MAX_DEVICES];
 	int pending_device_count;
 	struct registry_interface_record interfaces[CONTAINER_MAX_INTERFACES];
+	char interface_hosts[CONTAINER_MAX_INTERFACES][CONTAINER_IFNAME_MAX]; /* "host" */
 	int interface_count;
 	struct handover_service services[REGISTRY_MAX_SERVICES];
 	int service_count;

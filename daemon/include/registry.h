@@ -623,6 +623,27 @@ int registry_procfuse_bound(const struct registry_entry *entry);
 struct registry_entry *registry_find(const char *name);
 
 /*
+ * ADR-0375 phase 2: a running container taken over from a handover --
+ * registry_create()'s slot rules and fill, with the given handle in place
+ * of a clone, and the container's own started_at.
+ */
+enum registry_error registry_adopt(const char *name, const char *image, const char *image_version,
+                                   const struct container_spec *spec,
+                                   const struct registry_network_attachment *nets, int net_count,
+                                   int ip_forward,
+                                   const struct registry_device_attachment *devices,
+                                   int device_count,
+                                   const char file_paths[][CONTAINER_FILE_PATH_MAX],
+                                   int file_count,
+                                   const char dns_server_ips[][RESOLV_IP_STRLEN],
+                                   int dns_server_count, const struct container_handle *handle,
+                                   time_t started_at, struct registry_entry **out);
+/* ADR-0375 phase 2: the runtime state a handover carries back onto an
+ * adopted entry, after registry_set_services(). */
+struct handover_container;
+void registry_restore_runtime(struct registry_entry *e, const struct handover_container *c);
+
+/*
  * Record what consoles a container declares (issue #248).
  *
  * A setter rather than four more parameters on registry_create(), which

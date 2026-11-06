@@ -9,10 +9,11 @@
  *     step that is gone;
  *   - every call of one sits within a few lines after a first_in_kernel()
  *     test, so none runs again on a handover;
- *   - the bare init_mode tests left in cixd_main() are exactly the four
- *     classified ones (the handover's own check, the uevent socket, the
- *     shutdown's sync and the shutdown itself), so a new init-mode step
- *     cannot slip in unclassified.
+ *   - the bare init_mode tests left in cixd_main() are exactly the three
+ *     classified ones (the uevent socket, the shutdown's sync and the
+ *     shutdown itself -- the handover's own check runs for any
+ *     --handover since phase 2), so a new init-mode step cannot slip in
+ *     unclassified.
  *
  * boot_subsystem_init(init_mode, ...) passes init_mode only to decide
  * whether a failure is fatal, and is not a gate.
@@ -25,7 +26,7 @@
 #define MAIN_C "daemon/src/main.c"
 #define MAX_LINES 4000
 #define WINDOW 25
-#define BARE_INIT_MODE_ALLOWED 4
+#define BARE_INIT_MODE_ALLOWED 3
 
 static char g_lines[MAX_LINES][512];
 static int g_n;

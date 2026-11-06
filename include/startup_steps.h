@@ -45,4 +45,12 @@
  */
 #define STARTUP_SURVIVES_HANDOVER(X) X(procfuse_start)
 
+/*
+ * And the step the handover record replaces (ADR-0375 phase 2): a
+ * handover changes nothing about which containers run, so the record --
+ * every entry, running or not, and the restarts it re-arms -- decides
+ * them, never autostart, which starts everything a definition says.
+ */
+#define STARTUP_REPLACED_BY_HANDOVER(X) X(containerdef_autostart_all)
+
 #endif

@@ -21943,6 +21943,12 @@ int pkg_approval_revoke(const char *gate, const char *target, char *granted_by,
 static int g_push_in_flight;
 static struct pkg_push_job g_push_current;
 
+/* ADR-0375: an artifact push's child is running; a handover waits. */
+int pkg_push_in_flight(void)
+{
+	return g_push_in_flight;
+}
+
 /* Where the push child records curl's own HTTP status, so the reaper
  * can say "published" / "already present with different bytes" /
  * "rejected" instead of a bare exit code. One push runs at a time, so

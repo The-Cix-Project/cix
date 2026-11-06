@@ -1703,6 +1703,9 @@ void pkg_sync_write_json_status(struct json_writer *w);
 
 int pkg_sync_in_progress(void);
 
+/* ADR-0375: 1 while an artifact push's child runs, so a handover waits. */
+int pkg_push_in_flight(void);
+
 /* ---- pkg/ redesign Part 3 (ADR-0122): local build-artifact cache + LRU eviction ---- */
 
 /* 2 GiB -- a real, always-enforced cap (no "unlimited" mode), the same

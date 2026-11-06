@@ -1,4 +1,5 @@
 #include "registry.h"
+#include "handover.h"
 #include "cixinit_table.h"
 #include "containerdef.h"
 #include "internal.h"
@@ -144,6 +145,88 @@ enum registry_error registry_create(const char *name, const char *image,
 	              device_count, file_paths, file_count, dns_server_ips, dns_server_count);
 	*out = e;
 	return REGISTRY_OK;
+}
+
+/*
+ * ADR-0375 phase 2: a container this process did not clone in this
+ * image, taken over from a handover. The same slot rules and the same
+ * fill as registry_create(); the handle is the one the kernel and the
+ * passed descriptors give back, and started_at is the container's own.
+ * ADR-0247 removed an adopt for containers whose exit their adopter
+ * could not observe; across an execve the PID is unchanged, so these
+ * are still this process's children and it reaps them as before.
+ */
+enum registry_error registry_adopt(const char *name, const char *image, const char *image_version,
+                                   const struct container_spec *spec,
+                                   const struct registry_network_attachment *nets, int net_count,
+                                   int ip_forward,
+                                   const struct registry_device_attachment *devices,
+                                   int device_count,
+                                   const char file_paths[][CONTAINER_FILE_PATH_MAX],
+                                   int file_count,
+                                   const char dns_server_ips[][RESOLV_IP_STRLEN],
+                                   int dns_server_count, const struct container_handle *handle,
+                                   time_t started_at, struct registry_entry **out)
+{
+	int i, slot = -1;
+	struct registry_entry *e;
+
+	if (registry_find(name) != NULL)
+		return REGISTRY_ERR_DUPLICATE;
+	for (i = 0; i < REGISTRY_MAX_CONTAINERS; i++) {
+		if (!g_entries[i].in_use) {
+			slot = i;
+			break;
+		}
+	}
+	if (slot < 0)
+		return REGISTRY_ERR_FULL;
+	e = &g_entries[slot];
+	e->handle = *handle;
+	registry_fill(e, name, image, image_version, spec, nets, net_count, ip_forward, devices,
+	              device_count, file_paths, file_count, dns_server_ips, dns_server_count);
+	e->started_at = started_at;
+	*out = e;
+	return REGISTRY_OK;
+}
+
+/*
+ * ADR-0375 phase 2: what a handover carries back onto an adopted entry,
+ * after registry_set_services() (which starts every service PENDING):
+ * each service's runtime state, cix-init's word on the container, and
+ * for one that had exited, its exit as it was recorded. A handover
+ * changes nothing about which containers run, so an exited one stays
+ * exited, with the same reason.
+ */
+void registry_restore_runtime(struct registry_entry *e, const struct handover_container *c)
+{
+	int i;
+
+	for (i = 0; i < e->service_count && i < c->service_count; i++) {
+		struct registry_service *s = &e->services[i];
+
+		s->state = c->services[i].state;
+		s->pid = c->services[i].pid;
+		s->has_exit = c->services[i].has_exit;
+		s->exit_kind = c->services[i].exit_kind;
+		s->exit_value = c->services[i].exit_value;
+		s->restarts = c->services[i].restarts;
+		s->fail_reason = c->services[i].fail_reason;
+		s->fail_detail = c->services[i].fail_detail;
+	}
+	e->init_up = c->init_up;
+	e->ready = c->ready;
+	e->paused = c->paused;
+	e->procfuse_expected = c->procfuse_expected; /* the binds are in its mounts already */
+	snprintf(e->captured_output, sizeof(e->captured_output), "%s", c->captured_output);
+	e->captured_output_len = (int)strlen(e->captured_output);
+	if (!c->running) {
+		e->running = 0;
+		registry_announce();
+		e->exit_status = c->exit_status;
+		e->term_signal = c->term_signal;
+		snprintf(e->last_exit_reason, sizeof(e->last_exit_reason), "%s", c->last_exit_reason);
+	}
 }
 
 /*

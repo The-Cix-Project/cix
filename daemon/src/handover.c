@@ -189,6 +189,8 @@ static void put_container(struct json_writer *w, const struct handover_container
 		jw_str(w, r->ifname);
 		jw_key(w, "left_host");
 		jw_bool(w, r->left_host);
+		jw_key(w, "host");
+		jw_str(w, c->interface_hosts[i]);
 		jw_obj_close(w);
 	}
 	jw_arr_close(w);
@@ -419,6 +421,7 @@ static void get_container(const struct json_value *o, struct handover_container 
 		get_str(r, "ref", t->ref, sizeof(t->ref), missing);
 		get_str(r, "ifname", t->ifname, sizeof(t->ifname), missing);
 		t->left_host = (int)get_int(r, "left_host", missing);
+		get_str(r, "host", c->interface_hosts[i], sizeof(c->interface_hosts[i]), missing);
 		c->interface_count++;
 	}
 
