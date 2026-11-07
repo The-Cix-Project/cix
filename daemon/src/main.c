@@ -39793,12 +39793,12 @@ static int cixd_main(int argc, char **argv)
 	if (first_in_kernel()) {
 		kmodscan_boot_sweep();
 		load_configured_modules();
-	} else if (g_handover) {
-		kmodscan_not_run("the boot's module loads ran at this kernel's first start; this cixd "
-		                 "was started by a handover (ADR-0375)");
-	} else {
+	} else if (!g_handover) {
 		kmodscan_not_run("start-up module loads run only on a real boot (--init-mode)");
 	}
+	/* A handover's report is the one the cixd before it held, restored
+	 * from the record by handover_load() (or, from a record that does not
+	 * carry it, kmodscan_note_handover()'s sentence). */
 	/* A persisted port change (PUT /v1/system/daemon-config) survives a
 	 * real reboot -- but an explicit --port= on argv (every test/dev
 	 * invocation always passes one, to avoid colliding with other
