@@ -215,6 +215,12 @@ Each is one probe; the second is budgeted for two.
 
 **A handed-over cixd that cannot start reboots; it does not park.** Until phase 5, a non-zero return from `cixd_main()` as PID 1 parked behind its banner (#131), whether the start was a boot or a handover. For a handover that broke rule 4's floor: after a refused record or takeover, containers would still be running with no API and no way back. `main()` now syncs and reboots after a failed `--handover` start. After a switch, the held entry boots the slot that was running. After an in-place handover, the slot is unchanged.
 
+**What a handed-over cixd still lost after the first live switch (2026-11-07), and what is done about each.** This is an inventory of state that lives only in the old process's memory.
+- **Login sessions:** not lost. `hostauth_sessions.json` persists them. A session's sliding expiry is saved once it has moved 60 s, so after a handover it may end up to a minute sooner, never later.
+- **Schedules:** `last_run_at` is persisted at every run, so nothing runs twice. But the first scheduler tick after any start counted as a boot, and a wall-clock occurrence that fell in the exec's seconds was recorded as missed and skipped. It now runs.
+- **The kernel module scan's report:** only the boot's sweep fills it. It now travels in the record as an optional `kmodscan` field, in the form `GET /v1/system/kmod-scan` answers. That is the first field added to format 1 after it shipped, so it is optional: 664 and 665 write none and ignore it. A new field on a live format is optional, or it needs a new format.
+- **A half-read line on cix-init's own stdio:** carried by the same code as a service's line (`register_container_output_resumed()`, service index -1). `test_handover` proves the service path. cix-init writes whole lines at moments no test can place an exec in, so its own path has no separate test.
+
 A kernel change still reboots. The roll is the only caller, as rule 5 says. The decision has no QEMU test of its own, because the roll needs a hostbuild. Its parts are tested: the switch by `test_boot_update`, the refusals by `test_rootswitch`. Its live proof needs two releases. The first release carrying phase 4 reaches .95 by reboot, because the root running there has no `/run/nextroot`. The release after it is the first the roll can switch into.
 
 ## Alternatives
