@@ -6,7 +6,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
-### A handover keeps the kmod scan report and runs a schedule due during the exec (ADR-0375, #673; in master, not yet released)
+### A handover keeps the kmod scan report and runs a schedule due during the exec (ADR-0375, #673, 0.2.57-666)
 
 - **The kernel module scan's report survives a handover.** Only the boot's sweep fills it, so a handed-over cixd used to say the sweep ran in the process before it. The report now travels in the record as an optional `kmodscan` field: the JSON that `GET /v1/system/kmod-scan` answers, which is the same across builds. A record from 664 or 665 has no such field: it still reads, and the report says why it is empty. 664 and 665 ignore the field as an unknown key, so the record stays format 1.
 - **A schedule due during the exec's seconds runs.** The first scheduler tick after a boot skips an occurrence the host missed while it was down. After a handover the host was not down, so the occurrence runs. `last_run_at` is persisted at every run, so nothing runs twice.
