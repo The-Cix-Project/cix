@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted by the owner on 2026-11-06: *"Accept ADR-0375, go ahead"*. Proposed 2026-11-05. Asked for by the owner the same day, after a day of releases had restarted vpn-1 at every reboot: *"it's senseless for this to happen every upgrade?"*, and then *"Continue with what's bar raising"*. It builds on [ADR-0247](0247-the-reactor-does-not-block-and-that-is-the-defence.md), which removed the last attempt to keep containers across a cixd restart and named the prerequisite this ADR takes as its first phase. It changes how [ADR-0327](0327-the-host-follows-its-rolling-packages-in-a-nightly-window.md)'s host roll ends. It changes nothing about the A/B slots or the boot counter.
+Accepted by the owner on 2026-11-06: *"Accept ADR-0375, go ahead"*. All five phases built and released in 0.2.57-664, live on 192.168.15.95 since 2026-11-06. That release reached the host by reboot. The first live switch is the next release under the same kernel (ROADMAP Part 360). Proposed 2026-11-05. Asked for by the owner the same day, after a day of releases had restarted vpn-1 at every reboot: *"it's senseless for this to happen every upgrade?"*, and then *"Continue with what's bar raising"*. It builds on [ADR-0247](0247-the-reactor-does-not-block-and-that-is-the-defence.md), which removed the last attempt to keep containers across a cixd restart and named the prerequisite this ADR takes as its first phase. It changes how [ADR-0327](0327-the-host-follows-its-rolling-packages-in-a-nightly-window.md)'s host roll ends. It changes nothing about the A/B slots or the boot counter.
 
 ## Context
 

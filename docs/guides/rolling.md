@@ -45,7 +45,9 @@ When discovery picks a new version, cixd's author stage asks cbs for `cbs revise
 
 What this means for a recipe author: nothing changes. A version is written once and never edited ([ADR-0107](../adr/0107-package-image-versioning.md)); rolling adds new recipe files and never touches published ones. See [writing-recipes.md](writing-recipes.md) for the recipe itself.
 
-The control plane rolls through the same chain: the nightly `host-roll` schedule (03:00 for 3h) hostbuilds whatever is newer of the kernel and cix, stages them together, and reboots inside the window ([ADR-0327](../adr/0327-the-host-follows-its-rolling-packages-in-a-nightly-window.md)).
+The control plane rolls through the same chain: the nightly `host-roll` schedule (03:00 for 3h) hostbuilds whatever is newer of the kernel and cix and stages them together ([ADR-0327](../adr/0327-the-host-follows-its-rolling-packages-in-a-nightly-window.md)). Then:
+- **Same kernel:** it switches the root in place, and the containers keep running ([ADR-0375](../adr/0375-the-control-plane-upgrades-in-place.md)).
+- **New kernel, or a refused switch:** it reboots inside the window.
 
 ## 3. Which built version an image takes
 

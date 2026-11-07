@@ -2445,6 +2445,32 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 360: the control plane upgrades in place (#673, ADR-0375 phases 1-5, 0.2.57-664)
+
+When the host roll stages a root with the running kernel, it now switches the root in place instead of rebooting, and every container keeps running. A new kernel still reboots. Five phases, each a separate probe:
+
+1. **Idempotent startup:** every `--init-mode` step is classified as once per kernel, kept running, or replaced by the handover, in `include/startup_steps.h`, which `test_startup_steps` reads.
+2. **The handover:** cixd execs itself with `--handover` and a record (`handover.c`) carrying each container's runtime state and the descriptors passed across `execve`. The successor checks the record against the kernel and takes every container over through the create path's plan. 2a split that path into its plan and its side effects.
+3. **The drain:** procfuse's load page is a memfd, console shells are carried, and so is a half-read output line. Every pid named must be a child of the new process.
+4. **The root switch** (`rootswitch.c`): the staged slot is mounted, every mount off the running root is moved into it, and cixd pivots and execs the new root's cixd. The staged entry is held at a spent counter until the new cixd confirms it, so a failed switch reboots once, into the slot that was running.
+5. **The roll's choice:** `hostroll_staged()` switches when the kernel is unchanged, waits for quiescence inside the window, and falls back to the reboot on any refusal. A cixd that cannot start after a handover reboots rather than parks.
+
+**Verified under QEMU, 2026-11-06 (probe-cix-compile@0.2.57-718, the release commit 530eb2c7):**
+
+- `test_handover`: a running container keeps its pid, address and stats across the exec. An exited container stays exited. A pending crash restart comes back. A split output line arrives whole. A record naming a dead pid makes `cixd --handover` exit 1.
+- `test_boot`: an init-mode cixd hands over in place with its two console shells, and procfuse is resumed with its load page.
+- `test_boot_update`: slot A updates slot B and switches into it in place under the same kernel. B's cixd starts with `slot=b` and confirms B, and a cold power-on then boots B.
+
+**Found on the way, each fixed before release:**
+
+- A handover lost the platform partitions, the listener's address and the uplink state, so a handed-over host would have served on loopback alone.
+- On vfat, a renamed boot entry reads 0 bytes until the renamed file is fsynced (probe 715). That affected every confirmed boot too.
+- A refused handover start parked PID 1 with no API.
+
+**Live on 192.168.15.95, 2026-11-06:** the owner asked for the roll to run at once rather than at 03:00 (`cixctl schedule run host-roll`). It built kernel 7.3.2-1 (19:10 to 20:22 UTC) and cix 0.2.57-664 (to 20:48), staged slot a at 20:49 and rebooted. That release had to reboot, both because the kernel changed and because 663 carried no switch. 664 booted on slot a under 7.3.2 and confirmed it (`cix-a.conf`), with 14 containers running. vpn-1 had its dial tone by 20:59.
+
+**Still to be shown live:** a switch. The next release under the same kernel is the first the roll can switch into.
+
 ## Part 359: a provider's ABI change is held where its consumers would break, and containers roll once their image settles (#672, ADR-0373 release C, ADR-0374, 0.2.57-661 and 0.2.57-662)
 
 The third of ADR-0373's four releases, with the rolling change it needed, which the owner chose on 2026-11-05 as ADR-0374.

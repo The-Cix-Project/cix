@@ -43,7 +43,11 @@ cixctl pkg update-all
 
 - **Schedules** ([ADR-0257](../adr/0257-one-scheduler-structured-schedules.md)). `cixctl schedule actions` lists what a schedule can run: fetching recipes (`pkg.sync`), finding, authenticating and authoring new upstream releases (`pkg.discover`, ADR-0323), the platform backup (`system.backup`), volume snapshots (`volume.backup`) and the host roll (`system.roll`, below). `cixctl schedule ls` shows which are scheduled on this host.
 - **Rolling images.** Publishing a recipe, by hand or through a sync, queues a rebuild of every image that tracks that package `rolling` (`cixctl pkg rebuilds` lists the queue). Containers created with `--follow-rolling` restart onto the rebuilt image, spread over the jitter window (`cixctl rolling-config show`).
-- **The host itself** ([ADR-0327](../adr/0327-the-host-follows-its-rolling-packages-in-a-nightly-window.md)). `system.roll` builds what is newer of the kernel and cix (the two hostbuild packages above, kernel first), stages root and kernel together on the inactive slot, and reboots into it inside the schedule's window. The boot counter falls back if the new slot does not confirm. A fresh host runs it as `host-roll`, nightly at 03:00 for 3h; `cixctl schedule ls` shows the last night's outcome, and `cixctl logs` each step. Edit the schedule to move the window, or delete it to update and reboot by hand as above.
+- **The host itself** ([ADR-0327](../adr/0327-the-host-follows-its-rolling-packages-in-a-nightly-window.md)). `system.roll` builds what is newer of the kernel and cix (the two hostbuild packages above, kernel first), and stages root and kernel together on the inactive slot.
+  - **Same kernel:** it switches the root in place, and every container keeps running ([ADR-0375](../adr/0375-the-control-plane-upgrades-in-place.md)).
+  - **New kernel, refused switch, or work still in flight at the window's end:** it reboots into the slot inside the schedule's window.
+
+  The boot entry falls back if the new slot does not confirm. A fresh host runs it as `host-roll`, nightly at 03:00 for 3h; `cixctl schedule ls` shows the last night's outcome, and `cixctl logs` each step. Edit the schedule to move the window, or delete it to update and reboot by hand as above.
 
 Nothing runs `pkg update-all` on its own. Run it yourself, or from any REST client on whatever cadence you choose.
 
