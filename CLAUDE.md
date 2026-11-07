@@ -468,9 +468,9 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **A test that installs into its own image creates it first** (`create_image()` in `test_pkg`; the loop in `test_pkg_cache`). An omitted image is `base`, which the daemon creates at boot.
 
 
-## The control plane upgrades in place (live in 0.2.57-664; first live switch pending)
+## The control plane upgrades in place (live; first switch 2026-11-07)
 
-**When the staged root carries the running kernel, the host roll switches to it in place and every container keeps running** -- [ADR-0375](docs/adr/0375-the-control-plane-upgrades-in-place.md), accepted by the owner on 2026-11-06 (*"Accept ADR-0375, go ahead"*). It is five phases: idempotent startup, the handover, the drain, the root switch, then the roll's choice. All five are built, proven under QEMU (probe-cix-compile@0.2.57-718) and released in 0.2.57-664, which reached .95 by reboot on 2026-11-06 because 663 had no switch. The next release under the same kernel is the first live switch.
+**When the staged root carries the running kernel, the host roll switches to it in place and every container keeps running** -- [ADR-0375](docs/adr/0375-the-control-plane-upgrades-in-place.md), accepted by the owner on 2026-11-06 (*"Accept ADR-0375, go ahead"*). It is five phases: idempotent startup, the handover, the drain, the root switch, then the roll's choice. All five are built, proven under QEMU (probe-cix-compile@0.2.57-718) and released in 0.2.57-664, which reached .95 by reboot on 2026-11-06 because 663 had no switch. The first live switch, 664 to 665 with 14 containers running, was on 2026-11-07 (ROADMAP Part 360).
 
 - **Idempotent startup comes first** (ADR-0247's prerequisite). Every `--init-mode` step is classified as once per kernel, idempotent, or per process, in a table a gate reads. Never add a startup step without its class.
 - **Handover, never blind adoption.** A container is taken over only from the handover record together with the descriptors passed across `execve`. A record the kernel contradicts is a failed handover, and the host reboots. Never create a container twice, and never adopt one from the kernel alone (ADR-0246's removed path).

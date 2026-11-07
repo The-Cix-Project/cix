@@ -2445,7 +2445,7 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
-## Part 360: the control plane upgrades in place (#673, ADR-0375 phases 1-5, 0.2.57-664)
+## Part 360: the control plane upgrades in place (#673, ADR-0375 phases 1-5, 0.2.57-664 and 0.2.57-665)
 
 When the host roll stages a root with the running kernel, it now switches the root in place instead of rebooting, and every container keeps running. A new kernel still reboots. Five phases, each a separate probe:
 
@@ -2469,7 +2469,15 @@ When the host roll stages a root with the running kernel, it now switches the ro
 
 **Live on 192.168.15.95, 2026-11-06:** the owner asked for the roll to run at once rather than at 03:00 (`cixctl schedule run host-roll`). It built kernel 7.3.2-1 (19:10 to 20:22 UTC) and cix 0.2.57-664 (to 20:48), staged slot a at 20:49 and rebooted. That release had to reboot, both because the kernel changed and because 663 carried no switch. 664 booted on slot a under 7.3.2 and confirmed it (`cix-a.conf`), with 14 containers running. vpn-1 had its dial tone by 20:59.
 
-**Still to be shown live:** a switch. The next release under the same kernel is the first the roll can switch into.
+**The first live switch, 192.168.15.95, 2026-11-07 (0.2.57-664 to 0.2.57-665, kernel 7.3.3 throughout).** The 03:00 roll that night had found kernel 7.3.3-1 and rebooted onto slot b, as a kernel change must. At 07:36 UTC the owner had the roll run at once, and it rolled cix 664 to 665 alone. In order:
+- 08:04:33: the cix build finished.
+- 08:04:53: .95 stopped answering; it answered again by 08:05:14.
+- Between those, at 08:04:22, the log records each step:
+  - `handover: switching root to slot a in place with 14 containers`;
+  - `handover: slot a confirmed after the root switch`;
+  - `handover: took over 14 containers and 2 console shells from cixd 0.2.57-664, 0 pending restarts re-armed, procfuse resumed with its load page`.
+
+.95 then ran 665 on slot a under 7.3.3, the ESP held `cix-a.conf`, and all 14 containers were running. Eleven kept the pid they had before the roll. The other three, jump, vpn-1 and agent-1, had restarted for an unrelated reason: hibr 0.99.459 was published at 07:58, during the cix build, and each rolled onto its rebuilt image (ADR-0323). jump and vpn-1 rolled before the switch, at 07:59 and 08:00; agent-1 after it, at 08:12. vpn-1 then ran straight through the switch: its pid stayed 20255, and its roll's probation began under 664 and was confirmed by 665.
 
 ## Part 359: a provider's ABI change is held where its consumers would break, and containers roll once their image settles (#672, ADR-0373 release C, ADR-0374, 0.2.57-661 and 0.2.57-662)
 
