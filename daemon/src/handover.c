@@ -32,6 +32,8 @@ int handover_record_init(struct handover_record *rec, int max)
 
 void handover_record_free(struct handover_record *rec)
 {
+	free(rec->kmodscan);
+	rec->kmodscan = NULL;
 	free(rec->containers);
 	rec->containers = NULL;
 	rec->count = 0;
@@ -263,6 +265,10 @@ int handover_write(const char *path, const struct handover_record *rec, char *er
 	jw_str(&w, rec->bind_addr);
 	jw_key(&w, "uplink_unattached");
 	jw_str(&w, rec->uplink_unattached);
+	if (rec->kmodscan != NULL) {
+		jw_key(&w, "kmodscan");
+		jw_str(&w, rec->kmodscan);
+	}
 	jw_key(&w, "procfuse_pid");
 	jw_int(&w, rec->procfuse_pid);
 	jw_key(&w, "procfuse_load_fd");
@@ -547,6 +553,13 @@ int handover_read(const char *path, struct handover_record *rec, char *err, size
 	}
 	rec->format = (int)format;
 	get_top(root, rec, &missing);
+	/* Optional, and read once the record is allocated: a 664 or 665
+	 * writer has none. */
+	{
+		const char *k = json_as_string(json_object_get(root, "kmodscan"));
+
+		rec->kmodscan = k != NULL ? strdup(k) : NULL;
+	}
 	for (i = 0; i < arr->u.array.count; i++) {
 		get_container(arr->u.array.items[i], &rec->containers[i], &missing);
 		if (missing != NULL) {

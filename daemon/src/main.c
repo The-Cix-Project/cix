@@ -7704,7 +7704,13 @@ static void handle_scheduler_timer_event(struct conn *cc)
 
 	if (read(cc->fd, &expirations, sizeof(expirations)) < 0)
 		perror("read (scheduler timerfd)");
-	scheduler_run_due((long)time(NULL), g_scheduler_first_tick);
+	/*
+	 * ADR-0375: a handover is not downtime. The first tick after a boot
+	 * skips an occurrence missed while the host was down, unless the job
+	 * catches up. After a handover, an occurrence that fell in the exec's
+	 * few seconds was not missed, and it runs.
+	 */
+	scheduler_run_due((long)time(NULL), g_scheduler_first_tick && !g_handover);
 	g_scheduler_first_tick = 0;
 	arm_scheduler_timer();
 }
@@ -38617,6 +38623,15 @@ static int handover_build_record(struct handover_record *rec)
 	snprintf(rec->slot, sizeof(rec->slot), "%s", g_slot != NULL ? g_slot : "");
 	snprintf(rec->bind_addr, sizeof(rec->bind_addr), "%s", g_bind_addr);
 	snprintf(rec->uplink_unattached, sizeof(rec->uplink_unattached), "%s", g_uplink_unattached);
+	{
+		/* The last kernel module scan's report, in its API form. */
+		struct json_writer w;
+
+		jw_init(&w);
+		kmodscan_write_json(&w);
+		rec->kmodscan = w.buf != NULL ? strndup(w.buf, w.len) : NULL;
+		jw_free(&w);
+	}
 	procfuse_handover_state(&rec->procfuse_pid, &rec->procfuse_load_fd);
 	rec->console_count = g_console_shell_count;
 	for (i = 0; i < g_console_shell_count; i++)
@@ -38990,7 +39005,20 @@ static int handover_load(void)
 	         g_handover_rec.uplink_unattached);
 	g_handover_switched = g_handover_rec.slot[0] != '\0' && g_slot != NULL &&
 	                      strcmp(g_handover_rec.slot, g_slot) != 0;
-	kmodscan_note_handover();
+	/* The kernel module scan's report: the boot's sweep ran in the process
+	 * before, and its report comes across with the record. A record from
+	 * a build that did not carry it says so instead. */
+	{
+		struct json_value *k = g_handover_rec.kmodscan != NULL
+		                           ? json_parse(g_handover_rec.kmodscan,
+		                                        strlen(g_handover_rec.kmodscan))
+		                           : NULL;
+
+		if (k == NULL || kmodscan_restore_json(k) != 0)
+			kmodscan_note_handover();
+		if (k != NULL)
+			json_free(k);
+	}
 	/* procfuse's server outlived the exec and still serves the mount every
 	 * container binds from: take it back, never start a second one over it. */
 	if (g_handover_rec.procfuse_pid > 0) {

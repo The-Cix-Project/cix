@@ -182,6 +182,23 @@ static int took_over(const struct cix_client *c)
 	return seen;
 }
 
+/* GET /v1/system/kmod-scan's body into out. 0, or -1. */
+static int read_kmodscan(const struct cix_client *c, char *out, size_t out_size)
+{
+	struct cix_response r;
+	int rc = -1;
+
+	out[0] = '\0';
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "GET", "/v1/system/kmod-scan", NULL, &r) == 0 && r.status == 200 &&
+	    r.body != NULL) {
+		snprintf(out, out_size, "%s", r.body);
+		rc = 0;
+	}
+	cix_response_free(&r);
+	return rc;
+}
+
 /* Do hoa's stats carry a load figure? */
 static int has_load(const struct cix_client *c)
 {
@@ -319,6 +336,7 @@ int main(void)
 	int ok = 1, i, had_load = 0, whole_before = 0, whole = 0, broken = 0;
 	long long pid_a = 0, x_status = 0, pid_c = 0;
 	char ip_a[32] = "";
+	static char kmod_before[8192], kmod_after[8192];
 	time_t handed;
 
 	memset(&a, 0, sizeof(a));
@@ -418,6 +436,13 @@ int main(void)
 		}
 	}
 
+	/* The kernel module scan's report as this cixd holds it, which the
+	 * successor must answer with unchanged: it travels in the record. */
+	if (ok && read_kmodscan(&client, kmod_before, sizeof(kmod_before)) != 0) {
+		fprintf(stderr, "FAIL: GET /v1/system/kmod-scan before the handover\n");
+		ok = 0;
+	}
+
 	/* The handover: at 12 s the daemon execs itself and logs its takeover.
 	 * Meanwhile, note whether hoa's stats carry a load figure. */
 	for (i = 0; ok && i < 300 && !took_over(&client); i++) {
@@ -432,6 +457,15 @@ int main(void)
 	handed = time(NULL);
 
 	if (ok) {
+		if (read_kmodscan(&client, kmod_after, sizeof(kmod_after)) != 0 ||
+		    strcmp(kmod_before, kmod_after) != 0) {
+			fprintf(stderr,
+			        "FAIL: the kernel module scan's report changed across the handover:\n"
+			        "before: %.600s\nafter:  %.600s\n",
+			        kmod_before, kmod_after);
+			ok = 0;
+		}
+
 		/* hoc's restart was pending: it is still down right after. */
 		if (read_container(&client, "hoc", &cc) != 0 || running(&cc)) {
 			fprintf(stderr, "FAIL: hoc must still be down at the handover: status=%s\n",

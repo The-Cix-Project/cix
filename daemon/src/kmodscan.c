@@ -675,6 +675,78 @@ void kmodscan_boot_sweep(void)
 	kmodscan_adopt(&r);
 }
 
+static int name_index(const char *const *names, size_t n, const char *s)
+{
+	size_t i;
+
+	for (i = 0; s != NULL && i < n; i++)
+		if (names[i] != NULL && strcmp(names[i], s) == 0)
+			return (int)i;
+	return -1;
+}
+
+int kmodscan_restore_json(const struct json_value *o)
+{
+	struct kmodscan_report r;
+	const struct json_value *entries;
+	const char *s;
+	int t;
+	size_t i;
+
+	if (o == NULL || o->type != JSON_OBJECT)
+		return -1;
+	kmodscan_report_init(&r);
+	r.ran = json_object_get(o, "ran") != NULL && json_object_get(o, "ran")->type == JSON_BOOL &&
+	        json_object_get(o, "ran")->u.boolean;
+	if (!r.ran) {
+		s = json_as_string(json_object_get(o, "not_run_reason"));
+		snprintf(r.not_run, sizeof(r.not_run), "%s", s != NULL ? s : "");
+	} else {
+		t = name_index(g_trigger_names, sizeof(g_trigger_names) / sizeof(g_trigger_names[0]),
+		               json_as_string(json_object_get(o, "trigger")));
+		if (t < 0)
+			goto bad;
+		r.trigger = (enum kmodscan_trigger)t;
+		r.started_at = (long long)json_as_number(json_object_get(o, "started_at"));
+		r.duration_ms = (long long)json_as_number(json_object_get(o, "duration_ms"));
+		r.truncated = json_object_get(o, "truncated") != NULL &&
+		              json_object_get(o, "truncated")->type == JSON_BOOL &&
+		              json_object_get(o, "truncated")->u.boolean;
+	}
+	entries = json_object_get(o, "entries");
+	for (i = 0; entries != NULL && entries->type == JSON_ARRAY && i < entries->u.array.count;
+	     i++) {
+		const struct json_value *e = entries->u.array.items[i];
+		const char *alias = json_as_string(json_object_get(e, "alias"));
+		const char *device = json_as_string(json_object_get(e, "device"));
+		const char *module = json_as_string(json_object_get(e, "module"));
+		const char *reason = json_as_string(json_object_get(e, "reason"));
+		struct kmodscan_entry *ent;
+		int idx, k, outcome;
+
+		outcome = name_index(g_outcome_names, sizeof(g_outcome_names) / sizeof(g_outcome_names[0]),
+		                     json_as_string(json_object_get(e, "outcome")));
+		if (alias == NULL || outcome < 0)
+			goto bad;
+		for (idx = -1, k = 0; k < r.alias_count; k++)
+			if (strcmp(r.aliases[k], alias) == 0)
+				idx = k;
+		if (idx < 0 && (idx = alias_add(&r, alias)) < 0)
+			goto bad;
+		ent = entry_add(&r, idx, device != NULL ? device : "", module != NULL ? module : "");
+		if (ent == NULL)
+			goto bad;
+		ent->outcome = (enum kmodscan_outcome)outcome;
+		snprintf(ent->reason, sizeof(ent->reason), "%s", reason != NULL ? reason : "");
+	}
+	kmodscan_report_free(&g_last);
+	g_last = r;
+	return 0;
+bad:
+	kmodscan_report_free(&r);
+	return -1;
+}
+
 void kmodscan_note_handover(void)
 {
 	if (!g_last.ran)

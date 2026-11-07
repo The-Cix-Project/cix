@@ -20,6 +20,11 @@
  *                   only the boot's network bootstrap computes
  *   uplink_unattached  the uplink the boot could not attach ("" for
  *                   none), which boot confirmation reads
+ *   kmodscan        optional: the last kernel module scan's report, as the
+ *                   JSON text GET /v1/system/kmod-scan answers, so the
+ *                   boot's sweep is still reported after a handover.
+ *                   Absent from a 0.2.57-664 or -665 writer's record, and
+ *                   ignored by their readers as an unknown key.
  *   procfuse_pid    procfuse's server, which survives the exec; 0 for none
  *   procfuse_load_fd  the memfd holding its load page (ADR-0349), passed
  *                   across execve; -1 for none
@@ -139,6 +144,7 @@ struct handover_record {
 	char slot[8];
 	char bind_addr[64];
 	char uplink_unattached[64];
+	char *kmodscan; /* heap JSON text, or NULL; freed by handover_record_free() */
 	pid_t procfuse_pid;
 	int procfuse_load_fd;
 	struct handover_console consoles[HANDOVER_CONSOLES_MAX];

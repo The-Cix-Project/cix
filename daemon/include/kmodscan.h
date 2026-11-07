@@ -153,6 +153,14 @@ void kmodscan_boot_sweep(void);
  */
 void kmodscan_note_handover(void);
 
+/*
+ * ADR-0375: the report the cixd before this one held, from the JSON
+ * kmodscan_write_json() wrote into its handover record. That is the API's
+ * own representation, so it reads the same across builds. 0 with the
+ * report adopted as the last one, or -1 (nothing changed).
+ */
+int kmodscan_restore_json(const struct json_value *o);
+
 /* Records that no sweep ran at this start, and why, for a daemon whose
  * start-up loads are not run at all (not --init-mode). */
 void kmodscan_not_run(const char *why);
