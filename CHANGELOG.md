@@ -6,7 +6,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
-### Nothing keeps running from the old root after a switch, so its slot is free for the next update (ADR-0375, #674; in master, not yet released)
+### Nothing keeps running from the old root after a switch, so its slot is free for the next update (ADR-0375, #674, 0.2.57-667)
 
 - **The defect:** on 192.168.15.95, the roll after the first live switch could not write the slot it had left. procfuse's server and the two console shells, still running from the old root, kept that root mounted, and the update failed with `failed to write image to inactive slot`.
 - **procfuse's server:** a switched cixd now replaces it with one from the new root, on the same FUSE connection. It takes the connection with `pidfd_getfd`, then stops and kills the old server where it holds no request. Containers' `/proc` files never see the connection close.
