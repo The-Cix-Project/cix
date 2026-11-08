@@ -2481,6 +2481,13 @@ When the host roll stages a root with the running kernel, it now switches the ro
 
 **The roll after it failed to stage, 2026-11-08 (#674).** The 03:00 roll built cix 0.2.57-666, then could not write slot b, the slot the switch had left. procfuse's server and the two console shells were still running from slot b's root and kept it mounted. .95 stayed healthy on 665. The fix replaces procfuse's server and the shells after a switch, and confirms the old slot is free (ADR-0375's 2026-11-08 correction). Recovery needs one reboot, to clear the processes from before the fix.
 
+**The fix, live the same day (0.2.57-667).** .95 was rebooted at 09:36 UTC, then the roll switched 665 to 667 in place at 10:18:45 UTC with 14 containers. The log records:
+- `handover: procfuse's server replaced from the new root, pid 224 -> 8964`
+- `took over 14 containers and 2 console shells from cixd 0.2.57-665`
+- `slot a is free again after 1 s, so the next update can write it`
+
+Afterwards every host process ran from the new root: procfuse 8964, the watchdog 8966, and the console shells 8975 and 8976. The 665 server had no part in its own replacement and was replaced all the same.
+
 ## Part 359: a provider's ABI change is held where its consumers would break, and containers roll once their image settles (#672, ADR-0373 release C, ADR-0374, 0.2.57-661 and 0.2.57-662)
 
 The third of ADR-0373's four releases, with the rolling change it needed, which the owner chose on 2026-11-05 as ADR-0374.
