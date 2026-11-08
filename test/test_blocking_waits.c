@@ -646,14 +646,17 @@ static const char *const g_datadir_calls[] = {
  * reads. events_self_read() runs any handler the contract marks
  * self-readable, so it costs what the slowest one costs: GET
  * /v1/pkg/cache held the loop 9410 ms that way on 192.168.15.95
- * (ts 1793934028). A state read runs only in events_check_work(), the
- * helper child; a sample, which a subscription streams and ADR-0342
- * keeps bounded, runs on the loop in events_check_sample().
+ * (ts 1793934028). Once the loop serves, a state read runs only in
+ * events_check_work(), the helper child. A sample, which a subscription
+ * streams and ADR-0342 keeps bounded, runs on the loop in
+ * events_check_sample(); and events_baseline() runs every read once
+ * before the loop serves anything, when no build can be running.
  */
 static const struct call_budget g_selfcheck_budgets[] = {
-	{ "main.c", "events_self_read(", 3,
-	  "the definition, events_check_sample() for a sample on the loop, and "
-	  "events_check_work(), which runs only in a helper child" },
+	{ "main.c", "events_self_read(", 4,
+	  "the definition, events_check_sample() for a sample on the loop, "
+	  "events_baseline() before the loop serves, and events_check_work(), "
+	  "which runs only in a helper child" },
 };
 
 static const char *const g_selfcheck_calls[] = {

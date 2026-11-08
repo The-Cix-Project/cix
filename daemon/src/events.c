@@ -247,6 +247,15 @@ int events_observe(int slot, uint64_t hash)
 	return drift;
 }
 
+int events_observe_read_at(int slot, uint64_t hash, uint64_t gen_at_read)
+{
+	if (slot < 0 || slot >= EVENTS_READ_COUNT)
+		return 0;
+	if (g_generation[slot] != gen_at_read)
+		return EVENTS_OBSERVE_MOVED;
+	return events_observe(slot, hash);
+}
+
 static unsigned char g_unreadable[EVENTS_READ_COUNT];
 
 void events_mark_readable(int slot, int readable)

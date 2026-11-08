@@ -522,7 +522,7 @@ paths:
         reading it is not compared: its answer may be from either side
         of the change, so it is neither drift nor a new baseline.
         The same check runs continuously, one read every few seconds,
-        and a full pass runs after daemon start as the baseline. This asks
+        and a full pass runs at daemon start as the baseline. This asks
         for a full pass now and answers when it is done, so a test can
         assert that nothing it did went unannounced. A pass takes about
         half a second on 192.168.15.95 (measured 2026-10-17: 104

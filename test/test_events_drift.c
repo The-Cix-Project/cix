@@ -89,8 +89,27 @@ int main(void)
 	check(events_generation(EV_getPipeline) == gen + 1,
 	      "announcing a read the view is not built from leaves the view alone");
 
+	/* ADR-0376: an answer read in a helper child, while the daemon went
+	 * on announcing. gen is the read's generation at the fork. */
+	gen = events_generation(EV_getSystemSite);
+	events_announce(EV_getSystemSite);
+	check(events_observe_read_at(EV_getSystemSite, 400, gen) == EVENTS_OBSERVE_MOVED,
+	      "a read announced while the helper read it is not compared");
+	check(events_observe_read_at(EV_getSystemSite, 400, events_generation(EV_getSystemSite)) ==
+	              0,
+	      "and records nothing: the next read, after that announcement, is not drift");
+	gen = events_generation(EV_getSystemSite);
+	check(events_observe_read_at(EV_getSystemSite, 500, gen) == 1,
+	      "with no announcement since the fork, a change is still drift");
+	gen = events_generation(EV_listContainers);
+	events_announce(EV_listContainers);
+	check(events_observe_read_at(EV_listContainers, 7, gen) == EVENTS_OBSERVE_MOVED,
+	      "a first read announced while it was made is not taken as the baseline");
+	check(events_observe(EV_listContainers, 8) == 0,
+	      "so the next read is the baseline, and is never drift");
+
 	c = events_check_counts();
-	check(c.checked == 4 && c.drift == 1, "the counts are what was observed: 4 compared, 1 drift");
+	check(c.checked == 6 && c.drift == 2, "the counts are what was observed: 6 compared, 2 drift");
 
 	if (g_failures != 0) {
 		printf("FAIL (%d)\n", g_failures);

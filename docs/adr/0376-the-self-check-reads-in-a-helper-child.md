@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted 2026-11-08. The owner parked this proposal on 2026-11-02 ("Move then we'll get back to it?") to return to after other work. On 2026-11-08, asked what came next, this was the pick. Issue [#646](https://git.home.arpa/itdlabs/cix/issues/646). It changes how [ADR-0339](0339-the-dashboard-is-told-what-changed.md)'s self-check (point 7) runs, not what it checks. It documents a `503` and a `500` on `POST /v1/events/verify`, and makes it an MCP tool. It uses [ADR-0342](0342-a-log-read-never-walks-the-store-on-the-event-loop.md)'s park, one more kind, and [ADR-0278](0278-the-reactor-forks-work-it-cannot-afford-to-wait-for.md)'s `helper_run()`, and adds no mechanism beside either.
+Accepted 2026-11-08, under the standing authority to work issues by product value. The owner parked the proposal on 2026-11-02 ("Move then we'll get back to it?") to return to later. The proposal was to run the self-check's reads in a helper child, and it was picked up when the owner asked what came next. It is one more kind of the park that [ADR-0340](0340-a-credential-is-checked-off-the-loop-and-the-request-waits-for-it.md) and [ADR-0342](0342-a-log-read-never-walks-the-store-on-the-event-loop.md) already established. The one decision visible to a user, `verifyEvents` becoming an MCP tool, was named to the owner with the release. Issue [#646](https://git.home.arpa/itdlabs/cix/issues/646). It changes how [ADR-0339](0339-the-dashboard-is-told-what-changed.md)'s self-check (point 7) runs, not what it checks. It documents a `503` and a `500` on `POST /v1/events/verify`. It uses ADR-0342's park, one more kind, and [ADR-0278](0278-the-reactor-forks-work-it-cannot-afford-to-wait-for.md)'s `helper_run()`, and adds no mechanism beside either.
 
 ## Context
 
@@ -25,13 +25,13 @@ The self-check is diagnosis. It serves no client, and nothing waits for its answ
 
 ## Decision
 
-1. **Every state read the self-check makes runs in a `helper_run()` child.** That covers the rolling check, the start-up baseline and `POST /v1/events/verify`. The child runs `api_run()` for each read in its list exactly as the loop did, hashes each 200 body, and writes one fixed-size result (slot, readable, hash) per read into a memory file the parent made before the fork. For a state read, `events_self_read()` is called from that child (`events_check_work()`) and from nowhere else. The one other caller is a sample's tick on the loop (item 3).
+1. **Every state read the self-check makes once the loop serves runs in a `helper_run()` child.** That covers the rolling check and `POST /v1/events/verify`. The child runs `api_run()` for each read in its list exactly as the loop did, hashes each 200 body, and writes one fixed-size result (slot, readable, hash) per read into a memory file the parent made before the fork. Once the loop serves, `events_self_read()` is called for a state read from that child (`events_check_work()`) and from nowhere else. It has two other callers: a sample's tick on the loop (item 3), and the baseline before serving (item 6).
 
 2. **The parent applies the results, and the generation decides what one means.** The parent records every read's generation at the fork, then applies each result when the child exits:
    - A read whose generation moved between the fork and the result is not observed. It is neither drift nor a new baseline. An announcement inside the window means the child's answer may be from either side of the change, and recording it as a baseline would make the next honest answer read as drift.
    - Every other result is `events_observe()`d exactly as before. The drift line, the count and the announcement are unchanged.
 
-   So drift still means only one thing: the answer changed and nothing at all was announced for that read.
+   So drift still means only one thing: the answer changed and nothing at all was announced for that read. The decision is `events_observe_read_at()` in `events.c`, a pure function beside `events_observe()`, and `test_events_drift` drives both outcomes.
 
 3. **Samples stay in-process.** A sample is what a subscription streams (ADR-0339 phase 2), and ADR-0342 item 4 already keeps that read bounded on the loop. The rolling check's sample ticks are the subscriptions' own reads and do not move. A full pass still observes the samples it has always observed, from the child, because a sample's observation compares hashes only.
 
@@ -46,9 +46,11 @@ The self-check is diagnosis. It serves no client, and nothing waits for its answ
 
    `verifyEvents` becomes an MCP tool (ADR-0368). It was `none` only because its handler ran `api_run()` itself, which `test_mcp_exposure` refuses for a tool. Its handler now parks, as a package verification does. Through the gateway, the fork happens inside the gateway's own `api_run()`, so the child clears the inherited sentinel before its reads. That sentinel is the child's own copy, and the call it belongs to never resumes there.
 
-   The daemon's own checks (the baseline, then every 3 s) are daemon jobs of the same kind, and **they never queue.** A tick that finds a check running or waiting does nothing. A slow check therefore delays the next one rather than stacking up behind it.
+   The daemon's own rolling checks, one state read every 3 s, are daemon jobs of the same kind, and **they never queue.** A tick that finds a check running or waiting does nothing. A slow check therefore delays the next one rather than stacking up behind it.
 
-6. **The baseline runs in the child too, and no longer before serving.** Start-up submits it as the first daemon job, where `events_full_pass(NULL)` used to run synchronously before the loop. Until its result arrives, the rolling check has nothing to compare against, and a read's first observation is its baseline, as it always was. ADR-0375's handover runs the same start-up, so a switched cixd no longer spends the baseline's time before serving.
+6. **The baseline stays in-process, before the loop serves anything** (`events_baseline()`). A test's first requests must be compared against it. A baseline taken while they run would skip every read they announce, and the next check of such a read would be its first observation, which is never drift. That would leave unannounced changes in a test's opening moments unseen, which is the class of bug `test_assert_no_drift()` exists to catch (#607).
+
+   Staying on the loop costs it nothing measured. Every slow self-read on record ran during a build or an assembly, and none is running at that moment: a boot has started none, and an ADR-0375 handover waits until none is in flight. The pass measured 0.4 s for 104 reads (2026-10-17). A child was tried first and withdrawn before release for the reason above.
 
 7. **A check never holds up an in-place switch.** ADR-0375's quiescence counts live helpers, so a running check delays a switch until it ends. While a host roll waits to switch (`HOSTROLL_SWITCH`), the timer starts no check, so the wait is at most one check long.
 
@@ -60,5 +62,5 @@ The self-check is diagnosis. It serves no client, and nothing waits for its answ
 
 - The self-check costs the loop one fork every 3 s, plus applying one result. The fork copies page tables, not memory, and it is the same cost every other helper already pays.
 - `POST /v1/events/verify` answers when its child finishes. A test's `test_assert_no_drift()` waits exactly as before, through an ordinary HTTP request.
-- `test_blocking_waits` counts the lines that name `events_self_read()`: its definition, the sample tick and the child. It counts every other off-loop function the same way, so this rule has a gate. `events_full_pass()`, the in-process pass, is gone.
-- The baseline is now taken shortly after start rather than before serving. A change nobody announced in the first moments after start, before each read's baseline, goes unseen. Before this ADR, the same gap was every change made before the daemon started, which no check ever saw either.
+- `test_blocking_waits` counts the lines that name `events_self_read()`: its definition, the sample tick, the baseline and the child. It counts every other off-loop function the same way, so this rule has a gate. `events_full_pass()` is gone, and with it the in-process pass that served `POST /v1/events/verify`.
+- A full pass on request now reads every state read in one child, so it no longer holds the loop for 0.8-0.9 s as it did four times on .95.

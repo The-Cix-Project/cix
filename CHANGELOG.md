@@ -8,8 +8,8 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 ### The announcement self-check reads in a helper child (ADR-0376, #646, 0.2.57-668)
 
-- **The defect:** ADR-0339's self-check ran each state read's handler on the event loop. On 192.168.15.95 one rolling read held the loop 9410 ms (`GET /v1/pkg/cache`, with a stall record) and another 5240 ms (`GET /v1/storage`). Both happened during builds, while the disk was busy.
-- **Now:** every state read the self-check makes runs in a helper child: the rolling check, the start-up baseline and `POST /v1/events/verify`. The parent applies each result when the child exits. A read that was announced while the child read it is not compared, so drift still means only a change nothing announced.
+- **The defect:** ADR-0339's self-check ran each state read's handler on the event loop. On 192.168.15.95 one rolling read held the loop 9410 ms (`GET /v1/pkg/cache`, with a stall record) and another 5240 ms (`GET /v1/storage`). Both happened during builds.
+- **Now:** every state read the self-check makes runs in a helper child: the rolling check and `POST /v1/events/verify`. The baseline still runs once before the daemon serves, when no build is running, so a test's first changes are compared against it. The parent applies each result when the child exits. A read that was announced while the child read it is not compared, so drift still means only a change nothing announced.
 - **The child changes nothing the parent reads:**
   - its log lines are held and replayed;
   - no helper child can start a helper, because `helper_run_pid()` now refuses;
@@ -18,9 +18,9 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **`POST /v1/events/verify`:**
   - it parks, with up to four waiting, and answers 503 beyond that;
   - it is now an MCP tool;
-  - the start-up baseline no longer runs before the daemon serves.
+  - its full pass no longer holds the loop (0.8-0.9 s four times on .95).
 - **Not changed:** a client's own GET of `/v1/pkg/cache`, `/v1/storage` or `/v1/volumes` still runs on the loop. That is #675.
-- **Gate:** `test_blocking_waits` counts the `events_self_read()` sites.
+- **Gates:** `test_blocking_waits` counts the `events_self_read()` sites. `test_events_drift` drives `events_observe_read_at()`: a read announced while the child read it is neither compared nor a baseline, and with no announcement a change is still drift.
 
 ### Nothing keeps running from the old root after a switch, so its slot is free for the next update (ADR-0375, #674, 0.2.57-667)
 

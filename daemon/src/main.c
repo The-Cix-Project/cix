@@ -35822,10 +35822,13 @@ static void events_subs_tick(void)
 
 /*
  * One read's result: record whether it could be run and what it
- * answered, and say so if it drifted. Returns 1 on drift, 0 otherwise,
- * -1 when unreadable (and then `hash` means nothing).
+ * answered, and say so if it drifted. `gen_at_read` is the read's
+ * generation when it was made -- the current one for a read made here,
+ * the one at the fork for a helper's (ADR-0376). Returns 1 on drift, 0
+ * when compared, -1 when unreadable (and then `hash` means nothing), or
+ * EVENTS_OBSERVE_MOVED when the read was announced since it was made.
  */
-static int events_note_result(int slot, int readable, uint64_t hash)
+static int events_note_result(int slot, int readable, uint64_t hash, uint64_t gen_at_read)
 {
 	int drift;
 
@@ -35834,13 +35837,40 @@ static int events_note_result(int slot, int readable, uint64_t hash)
 		return -1;
 	}
 	events_mark_readable(slot, 1);
-	drift = events_observe(slot, hash);
-	if (drift)
+	drift = events_observe_read_at(slot, hash, gen_at_read);
+	if (drift == 1)
 		logstore_write("events", "warn",
 		               "%s changed without an announcement (ADR-0339) -- a missing "
 		               "announcement, or a read declared with the wrong x-cix-read",
 		               events_op_id(slot));
 	return drift;
+}
+
+/*
+ * The baseline, in-process, before the loop serves anything (ADR-0376
+ * item 6). It stays here because a test's first requests must be
+ * compared against it: a baseline taken while they run skips every
+ * read they announce, and the next check of such a read is its first
+ * observation, which is never drift. It is cheap here for a reason
+ * that is not luck -- every slow self-read on record ran during a build
+ * or an assembly, and none runs before the loop (a boot has started
+ * none, and a handover waits until none is in flight). Measured
+ * 2026-10-17: 104 reads, 0.4 s together.
+ */
+static void events_baseline(void)
+{
+	int slot;
+
+	for (slot = 0; slot < EVENTS_READ_COUNT; slot++) {
+		const struct events_read *rd = events_read_at(slot);
+		uint64_t hash = 0;
+		int readable;
+
+		if (rd == NULL || rd->kind == EVENTS_READ_SESSION || !rd->self_readable)
+			continue;
+		readable = events_self_read(slot, &hash) == 0;
+		(void)events_note_result(slot, readable, hash, events_generation(slot));
+	}
 }
 
 /* A sample whose period has come round, on the loop: it is the read a
@@ -35851,12 +35881,14 @@ static void events_check_sample(int slot)
 	uint64_t hash = 0;
 	int readable = events_self_read(slot, &hash) == 0;
 
-	(void)events_note_result(slot, readable, hash);
+	(void)events_note_result(slot, readable, hash, events_generation(slot));
 }
 
 /*
- * ADR-0376: every state read the self-check makes runs in a helper
- * child. Measured on 192.168.15.95 before it, from GET /v1/system/stalls
+ * ADR-0376: every state read the self-check makes once the loop serves
+ * runs in a helper child -- the rolling check and POST /v1/events/verify;
+ * only the baseline before serving stays in-process (events_baseline()).
+ * Measured on 192.168.15.95 before it, from GET /v1/system/stalls
  * (read 2026-11-08): one rolling read held the loop 9410 ms (GET
  * /v1/pkg/cache, ts 1793934028, with a stall record), another 5240 ms
  * (GET /v1/storage), and POST /v1/events/verify's in-process pass
@@ -36000,11 +36032,11 @@ static void events_check_done(int exit_status, void *ctx)
 		for (i = 0; i < r.n; i++) {
 			int slot = r.r[i].slot;
 
-			outcome[i] = -2;
-			if (slot < 0 || slot >= EVENTS_READ_COUNT ||
-			    (r.r[i].readable && events_generation(slot) != p->ev_gen[slot]))
+			outcome[i] = EVENTS_OBSERVE_MOVED;
+			if (slot < 0 || slot >= EVENTS_READ_COUNT)
 				continue;
-			outcome[i] = events_note_result(slot, r.r[i].readable, r.r[i].hash);
+			outcome[i] = events_note_result(slot, r.r[i].readable, r.r[i].hash,
+			                                p->ev_gen[slot]);
 		}
 		status = 0;
 		if (p->cc != NULL && events_check_answer(p, &r, outcome) != 0)
@@ -36034,12 +36066,12 @@ static enum park_body_answer events_verify_ask(int *result_fd)
 }
 
 /*
- * The daemon's own check: the baseline at start (`full`), then one state
- * read per round. It never waits behind another check -- a tick that
- * finds one running or queued does nothing, so a slow check delays the
- * next rather than stacking them (ADR-0376 item 5). 0 when started.
+ * The daemon's own check: one state read per round. It never waits
+ * behind another check -- a tick that finds one running or queued does
+ * nothing, so a slow check delays the next rather than stacking them
+ * (ADR-0376 item 5). 0 when started.
  */
-static int events_check_submit_daemon_job(int full, int slot)
+static int events_check_submit_daemon_job(int slot)
 {
 	const struct park_queue *pq = &g_park_q[PARK_EVENTSCHECK];
 	struct park *p;
@@ -36050,7 +36082,7 @@ static int events_check_submit_daemon_job(int full, int slot)
 	if (p == NULL)
 		return -1;
 	p->daemon_job = 1;
-	p->ev_full = full;
+	p->ev_full = 0;
 	p->ev_slot = slot;
 	if (park_submit(p) != 0) {
 		park_free(p);
@@ -36106,7 +36138,7 @@ static void events_check_tick(void)
 		/* The cursor moves only once the read is under way, so a fork
 		 * that fails is retried on the same read next round, and said
 		 * once until one starts. */
-		if (events_check_submit_daemon_job(0, cursor) == 0) {
+		if (events_check_submit_daemon_job(cursor) == 0) {
 			g_events_check_cursor = cursor;
 			g_events_check_start_failed = 0;
 		} else if (!g_events_check_start_failed) {
@@ -40875,16 +40907,11 @@ static int cixd_main(int argc, char **argv)
 	kmodscan_set_broker(kmod_broker); /* ADR-0348 */
 	/* ADR-0339: X-Cix-Generation on every answer to an announced read. */
 	http_set_header_hook(events_generation_header);
-	/* ADR-0339 point 7: the baseline every later check compares with,
-	 * after containers are restored. ADR-0376: in a helper child, so
-	 * serving does not wait for it; until it is applied, a read's first
-	 * observation is its baseline, as it always was. Then the rolling
-	 * check, which starts nothing while this one runs. */
-	if (events_check_submit_daemon_job(1, -1) != 0)
-		logstore_write("events", "warn",
-		               "the announcement baseline could not start (%s) -- each read's first "
-		               "rolling check is its baseline instead (ADR-0376)",
-		               strerror(errno));
+	/* ADR-0339 point 7: the baseline every later check compares with --
+	 * here, after containers are restored and before anything is served,
+	 * so a check made at any moment afterwards has something to compare
+	 * against. About half a second, once. Then the rolling check. */
+	events_baseline();
 	start_events_check_timer();
 
 	while (!g_stop) {

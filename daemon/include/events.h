@@ -120,6 +120,16 @@ int events_stream_period(const char *op_id);
 uint64_t events_hash_body(const char *body, size_t len, const char *volatile_fields);
 int events_observe(int slot, uint64_t hash);
 
+/*
+ * ADR-0376: an answer read in a helper child, while the daemon went on
+ * announcing. `gen_at_read` is the read's generation when the child was
+ * forked. If the read was announced since, the answer may be from either
+ * side of that change: it is neither drift nor a baseline, nothing is
+ * recorded, and -2 is returned. Otherwise this is events_observe().
+ */
+#define EVENTS_OBSERVE_MOVED (-2)
+int events_observe_read_at(int slot, uint64_t hash, uint64_t gen_at_read);
+
 /* Counts since start, for GET /v1/events/status. */
 struct events_check_counts {
 	unsigned long checked;    /* state reads compared */
