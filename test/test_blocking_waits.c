@@ -641,6 +641,26 @@ static const char *const g_datadir_calls[] = {
 	NULL,
 };
 
+/*
+ * AN ELEVENTH COUNTED SET (ADR-0376, #646): the announcement self-check's
+ * reads. events_self_read() runs any handler the contract marks
+ * self-readable, so it costs what the slowest one costs: GET
+ * /v1/pkg/cache held the loop 9410 ms that way on 192.168.15.95
+ * (ts 1793934028). A state read runs only in events_check_work(), the
+ * helper child; a sample, which a subscription streams and ADR-0342
+ * keeps bounded, runs on the loop in events_check_sample().
+ */
+static const struct call_budget g_selfcheck_budgets[] = {
+	{ "main.c", "events_self_read(", 3,
+	  "the definition, events_check_sample() for a sample on the loop, and "
+	  "events_check_work(), which runs only in a helper child" },
+};
+
+static const char *const g_selfcheck_calls[] = {
+	"events_self_read(",
+	NULL,
+};
+
 struct call_set {
 	const char *what;
 	const struct call_budget *budgets;
@@ -692,6 +712,12 @@ static const struct call_set g_call_sets[] = {
 	  "Reporting the data directory walks every tree beneath it, and cixd has one event loop. "
 	  "Ask for it through datadir_ask() (#249), which parks the request and makes the report "
 	  "in a helper child." },
+	{ "announcement self-check", g_selfcheck_budgets,
+	  (int)(sizeof(g_selfcheck_budgets) / sizeof(g_selfcheck_budgets[0])), g_selfcheck_calls,
+	  "A self-read runs a handler the contract marks self-readable, which costs what that "
+	  "handler costs, and cixd has one event loop. Check a state read through "
+	  "events_check_submit_daemon_job() or POST /v1/events/verify (ADR-0376), which read in a "
+	  "helper child." },
 };
 
 #define CALL_SET_COUNT ((int)(sizeof(g_call_sets) / sizeof(g_call_sets[0])))

@@ -42,6 +42,16 @@ int persist_atomic_replace(const char *path, const char *data, size_t len);
 int persist_write_file_inplace(const char *path, const char *data, size_t len);
 
 /*
+ * ADR-0376: from now on, in this process, the three writers above refuse
+ * with EROFS and write nothing. Called only by the announcement
+ * self-check's helper child, which runs GET handlers on a fork of the
+ * daemon: a handler that saved state on its way would race the parent's
+ * own write of the same file, so there it fails and its read counts as
+ * unreadable instead. There is no way to turn it off; the child exits.
+ */
+void persist_set_readonly(void);
+
+/*
  * Reads path fully into a malloc'd, NUL-terminated buffer (*out_len
  * excludes the added NUL; caller frees *out_buf). If path doesn't
  * exist, returns 0 with *out_buf = NULL, *out_len = 0 -- the "no

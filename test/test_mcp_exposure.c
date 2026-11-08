@@ -23,11 +23,13 @@
  *
  * What the contract alone decides (a WebSocket, `authenticated`) apigen
  * refuses; this is the half only the source can answer. After step 5
- * (2026-11-02), 15 of 356 operations stay `none`: 3 WebSockets and 4
+ * (2026-11-02), 15 of 356 operations stayed `none`: 3 WebSockets and 4
  * more `authenticated`, which are apigen's to refuse; and 4 credential
  * parks (login, and the three LDAP operations that set a password), 2
  * header reads (whoami, logout) and 2 in-process runs (verifyEvents,
- * callMcp), which are this test's.
+ * callMcp), which are this test's. Since ADR-0376 (2026-11-08)
+ * verifyEvents runs its reads in a helper child and is a tool, so 14
+ * stay `none` and callMcp is the one in-process run.
  *
  * In SELFTESTS: it reads files and runs nothing.
  */

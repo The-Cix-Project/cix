@@ -5,7 +5,7 @@
 
 #include "json.h"
 
-/* The daemon's own words for a drift (events_check_slot()), which the
+/* The daemon's own words for a drift (events_note_result()), which the
  * events log line begins with after the read's operation id. */
 #define DRIFT_LOG_MARK " changed without an announcement"
 

@@ -11,6 +11,14 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* ADR-0376: set in the announcement self-check's helper child (persist.h). */
+static int g_readonly;
+
+void persist_set_readonly(void)
+{
+	g_readonly = 1;
+}
+
 /* The one implementation behind both contracts: `durable` says whether
  * the temporary is fsynced before the rename (persist.h). */
 static int atomic_write(const char *path, const char *data, size_t len, int durable)
@@ -19,6 +27,10 @@ static int atomic_write(const char *path, const char *data, size_t len, int dura
 	int fd;
 	ssize_t written;
 
+	if (g_readonly) {
+		errno = EROFS;
+		return -1;
+	}
 	if (snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path) >= (int)sizeof(tmp_path))
 		return -1;
 
@@ -106,6 +118,10 @@ int persist_write_file_inplace(const char *path, const char *data, size_t len)
 	int fd;
 	ssize_t written;
 
+	if (g_readonly) {
+		errno = EROFS;
+		return -1;
+	}
 	/* Deliberately no O_TRUNC: truncating first would make the file
 	 * briefly EMPTY, which is a worse thing for a reader to catch than
 	 * a stale tail -- an empty user list reads as "every account was

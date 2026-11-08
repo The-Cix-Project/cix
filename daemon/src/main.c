@@ -1091,7 +1091,8 @@ static char g_old_slot[8];
 static char g_old_slot_device[64];
 static time_t g_old_slot_since, g_old_slot_last;
 static int g_helpers_live;        /* helper children forked and not yet completed */
-static int g_saved_argc;          /* the argv a handover execs with, flags adjusted */
+static int g_in_helper_child;     /* this process is one of them (ADR-0376) */
+static int g_saved_argc;         /* the argv a handover execs with, flags adjusted */
 static char **g_saved_argv;
 
 static int first_in_kernel(void)
@@ -27727,21 +27728,31 @@ static void op_getEventsStatus(const struct api_ctx *ctx)
 	jw_free(&w);
 }
 
-static void events_full_pass(struct json_writer *w);
+static enum park_body_answer events_verify_ask(int *result_fd);
 
-/* POST /v1/events/verify -- ADR-0339: a full check now. The pass runs
- * first and this request's own answer is written after it, so the
- * status dispatch() reads back is this answer's, not a self-read's. */
+/* POST /v1/events/verify -- ADR-0339: a full check now. ADR-0376: the
+ * pass runs in a helper child while the request waits, and its answer
+ * is built when the child exits, from the results as they were applied. */
 static void op_verifyEvents(const struct api_ctx *ctx)
 {
-	struct json_writer w;
+	int rfd = -1;
 
-	jw_init(&w);
-	jw_obj_open(&w);
-	events_full_pass(&w);
-	jw_obj_close(&w);
-	respond_json(ctx->fd, 200, "OK", &w);
-	jw_free(&w);
+	switch (events_verify_ask(&rfd)) {
+	case PARK_ANSWER_ASK:
+		return; /* parked */
+	case PARK_ANSWER_BUSY:
+		respond_error_hdrs(ctx->fd, 503, "Service Unavailable", "Retry-After: 5\r\n",
+		                   "announcement checks are busy -- try again shortly", 0);
+		return;
+	case PARK_ANSWER_FAILED:
+		respond_error(ctx->fd, 500, "Internal Server Error",
+		              "the announcement check ended without a result");
+		return;
+	case PARK_ANSWER_READY:
+	default:
+		break;
+	}
+	respond_json_from_fd(ctx->fd, rfd, "the announcement check");
 }
 
 /* GET /v1/system/hostauth-config */
@@ -31662,6 +31673,18 @@ static int helper_run_pid(int (*work)(void *), void *work_arg, void (*done)(int,
 	pid_t pid;
 
 	/*
+	 * ADR-0376: a helper never starts a helper. helper_attach() puts the
+	 * child's pidfd into the daemon's epoll set, which a fork SHARES, with
+	 * a pointer into this process's memory as its data -- from a helper,
+	 * the daemon would be handed a pointer into a process that is about
+	 * to exit. The announcement self-check runs GET handlers in a helper,
+	 * so this is what keeps any of them from doing it.
+	 */
+	if (g_in_helper_child) {
+		errno = EPERM;
+		return -1;
+	}
+	/*
 	 * Allocated BEFORE the fork, so the one failure that is actually
 	 * plausible costs nothing: a helper that cannot be watched is a
 	 * helper that should never have been started. Every setup step that
@@ -31699,6 +31722,7 @@ static int helper_run_pid(int (*work)(void *), void *work_arg, void (*done)(int,
 			                           &g_lo_listener_conn, &g_lo_https_listener_conn };
 		size_t li;
 
+		g_in_helper_child = 1;
 		for (li = 0; li < sizeof(listeners) / sizeof(listeners[0]); li++) {
 			if (listeners[li]->fd >= 0)
 				close(listeners[li]->fd);
@@ -33173,6 +33197,7 @@ enum park_kind {
 	PARK_VERIFY,
 	PARK_PKGDELETE,
 	PARK_DATADIR,
+	PARK_EVENTSCHECK,
 	PARK_KINDS
 };
 
@@ -33205,6 +33230,13 @@ struct park {
 	/* PARK_DATADIR (#249): the entry to list one level down, or "" for
 	 * the data directory's own top level */
 	char datadir_entry[256];
+	/* PARK_EVENTSCHECK (ADR-0376): a full pass, or the one state read
+	 * ev_slot; and every read's generation at the fork, which decides
+	 * what each result means when it comes back. The child's results go
+	 * to the memfd; a request's answer replaces them there. */
+	int ev_full;
+	int ev_slot;
+	uint64_t *ev_gen;
 };
 
 /*
@@ -33250,6 +33282,7 @@ struct park_queue {
 #define BACKUP_WAIT_MAX 4
 #define VERIFY_WAIT_MAX 4
 #define DATADIR_WAIT_MAX 4
+#define EVENTSCHECK_WAIT_MAX 4
 static struct park_queue g_park_q[PARK_KINDS] = {
 	[PARK_CRED] = { .running_max = 1, .wait_max = CRED_WAIT_MAX },
 	[PARK_LOGREAD] = { .running_max = LOGREAD_RUNNING_MAX, .wait_max = LOGREAD_WAIT_MAX },
@@ -33260,6 +33293,7 @@ static struct park_queue g_park_q[PARK_KINDS] = {
 	[PARK_VERIFY] = { .running_max = 1, .wait_max = VERIFY_WAIT_MAX },
 	[PARK_PKGDELETE] = { .running_max = PKG_MAX_CONCURRENT_JOBS, .wait_max = 0 },
 	[PARK_DATADIR] = { .running_max = 1, .wait_max = DATADIR_WAIT_MAX },
+	[PARK_EVENTSCHECK] = { .running_max = 1, .wait_max = EVENTSCHECK_WAIT_MAX },
 };
 
 static void serve_request(struct conn *cc);
@@ -33271,6 +33305,7 @@ static void update_done(int exit_status, void *ctx);
 static void bootmgr_done(int exit_status, void *ctx);
 static void verify_done(int exit_status, void *ctx);
 static void datadir_done(int exit_status, void *ctx);
+static int events_check_start(struct park *p); /* ADR-0376, with the self-check */
 
 static struct park *park_new(enum park_kind kind, struct conn *cc)
 {
@@ -33295,6 +33330,7 @@ static void park_free(struct park *p)
 		close(p->memfd);
 	explicit_bzero(&p->rq, sizeof(p->rq));
 	free(p->job_body);
+	free(p->ev_gen);
 	free(p);
 }
 
@@ -33716,6 +33752,9 @@ static int park_start(struct park *p)
 	case PARK_DATADIR:
 		rc = datadir_start(p);
 		break;
+	case PARK_EVENTSCHECK:
+		rc = events_check_start(p);
+		break;
 	case PARK_PKGDELETE:
 		/* Never queued: pkg_delete_ask() starts the job itself. */
 		rc = -1;
@@ -33772,7 +33811,7 @@ static void park_unavailable(struct conn *cc, enum park_kind kind)
 		cc->cred_state = CRED_UNAVAILABLE;
 	else if (kind == PARK_LOGREAD || kind == PARK_BACKUP || kind == PARK_UPDATE ||
 	         kind == PARK_BOOTMGR || kind == PARK_VERIFY || kind == PARK_PKGDELETE ||
-	         kind == PARK_DATADIR)
+	         kind == PARK_DATADIR || kind == PARK_EVENTSCHECK)
 		cc->body_state = PARK_BODY_UNAVAILABLE;
 	else
 		cc->kmod_state = KMODJOB_STATE_UNAVAILABLE;
@@ -33794,6 +33833,13 @@ static void park_daemon_job_unavailable(struct park *p)
 		/* Not reached while updates never wait (wait_max 0), and said
 		 * if it ever is: the host roll is the update's daemon job. */
 		hostroll_staged(500, "", 0, "no helper could be forked to write the slot");
+	} else if (p->kind == PARK_EVENTSCHECK) {
+		/* Not reached while the daemon's own checks never wait (ADR-0376
+		 * item 5), and said if it ever is. */
+		logstore_write("events", "warn",
+		               "the announcement self-check could not start (%s) -- the next tick tries "
+		               "again",
+		               strerror(errno));
 	} else if (p->job.kind == KMODSCAN_JOB_SWEEP) {
 		kmodscan_set_sweep_pending(0);
 		logstore_write("cixd", "error",
@@ -35208,6 +35254,7 @@ static struct conn g_self_read_conn;
 static struct conn g_events_check_conn = { .fd = -1 };
 static unsigned long g_events_check_ticks;
 static int g_events_check_cursor;
+static int g_events_check_start_failed; /* said once, until a check starts (ADR-0376) */
 
 /*
  * Runs `method` `path` -- query and path parameters included, as
@@ -35774,15 +35821,15 @@ static void events_subs_tick(void)
 }
 
 /*
- * One read: run it, record it, and say so if it drifted. Returns 1 on
- * drift, 0 otherwise, -1 when unreadable.
+ * One read's result: record whether it could be run and what it
+ * answered, and say so if it drifted. Returns 1 on drift, 0 otherwise,
+ * -1 when unreadable (and then `hash` means nothing).
  */
-static int events_check_slot(int slot)
+static int events_note_result(int slot, int readable, uint64_t hash)
 {
-	uint64_t hash;
 	int drift;
 
-	if (events_self_read(slot, &hash) != 0) {
+	if (!readable) {
 		events_mark_readable(slot, 0);
 		return -1;
 	}
@@ -35796,51 +35843,228 @@ static int events_check_slot(int slot)
 	return drift;
 }
 
-/*
- * Every state and sample read the daemon can run itself, once. At start
- * this is the baseline; from POST /v1/events/verify it is the check,
- * with what it found written into `w` when w is not NULL.
- */
-static void events_full_pass(struct json_writer *w)
+/* A sample whose period has come round, on the loop: it is the read a
+ * subscription streams, which ADR-0342 keeps bounded there (ADR-0376
+ * item 3). */
+static void events_check_sample(int slot)
 {
-	int unreadable[EVENTS_READ_COUNT];
-	int slot, r, i, n_unreadable = 0;
-	long checked = 0;
+	uint64_t hash = 0;
+	int readable = events_self_read(slot, &hash) == 0;
 
-	if (w != NULL) {
-		jw_key(w, "drift");
-		jw_arr_open(w);
-	}
-	for (slot = 0; slot < EVENTS_READ_COUNT; slot++) {
-		const struct events_read *rd = events_read_at(slot);
-
-		if (rd->kind == EVENTS_READ_SESSION || !rd->self_readable)
-			continue;
-		r = events_check_slot(slot);
-		if (r < 0)
-			unreadable[n_unreadable++] = slot;
-		else if (rd->kind == EVENTS_READ_STATE)
-			checked++;
-		if (r == 1 && w != NULL)
-			jw_str(w, rd->op_id);
-	}
-	if (w == NULL)
-		return;
-	jw_arr_close(w);
-	jw_key(w, "unreadable");
-	jw_arr_open(w);
-	for (i = 0; i < n_unreadable; i++)
-		jw_str(w, events_op_id(unreadable[i]));
-	jw_arr_close(w);
-	jw_key(w, "checked");
-	jw_int(w, checked);
+	(void)events_note_result(slot, readable, hash);
 }
 
 /*
- * Every second: each sample whose period has come round, and one state
- * read every EVENTS_CHECK_STATE_EVERY ticks, round-robin -- about five
- * minutes for the whole set, so the check never costs the loop more
- * than one handler at a time.
+ * ADR-0376: every state read the self-check makes runs in a helper
+ * child. Measured on 192.168.15.95 before it, from GET /v1/system/stalls
+ * (read 2026-11-08): one rolling read held the loop 9410 ms (GET
+ * /v1/pkg/cache, ts 1793934028, with a stall record), another 5240 ms
+ * (GET /v1/storage), and POST /v1/events/verify's in-process pass
+ * 840-943 ms four times.
+ *
+ * The child runs each read through api_run() exactly as the loop did and
+ * reports a hash per read; the parent applies the results when it
+ * exits. The child changes nothing the parent reads: its log lines are
+ * held and replayed here, it cannot start a helper (helper_run_pid()),
+ * and it cannot write a state file (persist_set_readonly()).
+ */
+#define EVENTSCHECK_HELD_LOG_MAX 16384
+struct events_check_result {
+	char held[EVENTSCHECK_HELD_LOG_MAX];
+	int n;
+	struct {
+		int slot;
+		int readable;
+		uint64_t hash;
+	} r[EVENTS_READ_COUNT];
+};
+
+/* Is this read in the job's list: every read a full pass has always
+ * covered, or the one rolling read. */
+static int events_check_wants(const struct park *p, int slot)
+{
+	const struct events_read *rd = events_read_at(slot);
+
+	if (rd == NULL || rd->kind == EVENTS_READ_SESSION || !rd->self_readable)
+		return 0;
+	return p->ev_full || slot == p->ev_slot;
+}
+
+static int events_check_work(void *arg)
+{
+	struct park *p = arg;
+	static struct events_check_result r;
+	int slot;
+
+	memset(&r, 0, sizeof(r));
+	persist_set_readonly();
+	logstore_hold(r.held, sizeof(r.held));
+	/* A verification asked over MCP (ADR-0368) forks inside the gateway's
+	 * own api_run(), so this copy inherits its sentinel as in use. The
+	 * sentinel is this process's own copy and the call it belongs to never
+	 * resumes here, so the reads below may use it. */
+	g_api_run_active = 0;
+	for (slot = 0; slot < EVENTS_READ_COUNT; slot++) {
+		uint64_t hash = 0;
+
+		if (!events_check_wants(p, slot))
+			continue;
+		r.r[r.n].slot = slot;
+		r.r[r.n].readable = events_self_read(slot, &hash) == 0;
+		r.r[r.n].hash = hash;
+		r.n++;
+	}
+	return cix_write_all(p->memfd, &r, sizeof(r)) == 0 ? 0 : 1;
+}
+
+static void events_check_done(int exit_status, void *ctx);
+
+/* Forks a check, with every read's generation taken at the fork: what a
+ * result means is decided against it when the result comes back. */
+static int events_check_start(struct park *p)
+{
+	int slot;
+
+	free(p->ev_gen);
+	p->ev_gen = calloc(EVENTS_READ_COUNT, sizeof(*p->ev_gen));
+	if (p->ev_gen == NULL)
+		return -1;
+	p->memfd = memfd_create("cix-events-check", MFD_CLOEXEC);
+	if (p->memfd < 0)
+		return -1;
+	for (slot = 0; slot < EVENTS_READ_COUNT; slot++)
+		p->ev_gen[slot] = events_generation(slot);
+	if (helper_run_pid(events_check_work, p, events_check_done, p,
+	                   "the announcement self-check", &p->pid) != 0) {
+		close(p->memfd);
+		p->memfd = -1;
+		return -1;
+	}
+	return 0;
+}
+
+/* POST /v1/events/verify's answer, from one pass's results. */
+static int events_check_answer(const struct park *p, const struct events_check_result *r,
+                               const int *outcome)
+{
+	struct json_writer w;
+	long checked = 0;
+	int i, rc = 0;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "drift");
+	jw_arr_open(&w);
+	for (i = 0; i < r->n; i++) {
+		if (outcome[i] == 1)
+			jw_str(&w, events_op_id(r->r[i].slot));
+		if (outcome[i] >= 0 && events_read_at(r->r[i].slot)->kind == EVENTS_READ_STATE)
+			checked++;
+	}
+	jw_arr_close(&w);
+	jw_key(&w, "unreadable");
+	jw_arr_open(&w);
+	for (i = 0; i < r->n; i++) {
+		if (outcome[i] == -1)
+			jw_str(&w, events_op_id(r->r[i].slot));
+	}
+	jw_arr_close(&w);
+	jw_key(&w, "checked");
+	jw_int(&w, checked);
+	jw_obj_close(&w);
+	if (ftruncate(p->memfd, 0) != 0 || pwrite(p->memfd, w.buf, w.len, 0) != (ssize_t)w.len)
+		rc = -1;
+	jw_free(&w);
+	return rc;
+}
+
+/*
+ * The child has exited. Each result is applied unless its read's
+ * generation moved since the fork: an announcement inside the window
+ * means the answer may be from either side of the change, so it is
+ * neither drift nor a baseline (ADR-0376 item 2). outcome[] is the
+ * result's: 1 drift, 0 compared, -1 unreadable, -2 not applied.
+ */
+static void events_check_done(int exit_status, void *ctx)
+{
+	struct park *p = ctx;
+	static struct events_check_result r;
+	static int outcome[EVENTS_READ_COUNT];
+	int have = exit_status == 0 && p->memfd >= 0 &&
+	           pread(p->memfd, &r, sizeof(r), 0) == (ssize_t)sizeof(r) && r.n >= 0 &&
+	           r.n <= EVENTS_READ_COUNT;
+	int i, status = exit_status != 0 ? exit_status : 1;
+
+	if (have) {
+		logstore_replay(r.held, sizeof(r.held));
+		for (i = 0; i < r.n; i++) {
+			int slot = r.r[i].slot;
+
+			outcome[i] = -2;
+			if (slot < 0 || slot >= EVENTS_READ_COUNT ||
+			    (r.r[i].readable && events_generation(slot) != p->ev_gen[slot]))
+				continue;
+			outcome[i] = events_note_result(slot, r.r[i].readable, r.r[i].hash);
+		}
+		status = 0;
+		if (p->cc != NULL && events_check_answer(p, &r, outcome) != 0)
+			status = 1;
+	} else if (p->daemon_job) {
+		logstore_write("events", "warn",
+		               "the announcement self-check ended without a result (helper exit %d) -- "
+		               "the next tick tries again",
+		               exit_status);
+	}
+	park_body_done(p, status, "the announcement self-check");
+}
+
+/* ADR-0376: POST /v1/events/verify, for the request being served. */
+static enum park_body_answer events_verify_ask(int *result_fd)
+{
+	enum park_body_answer a = park_body_take(result_fd);
+	struct park *p;
+
+	if (a != PARK_ANSWER_ASK)
+		return a;
+	p = park_new(PARK_EVENTSCHECK, request_conn());
+	if (p == NULL)
+		return PARK_ANSWER_BUSY;
+	p->ev_full = 1;
+	return park_body_submit(p);
+}
+
+/*
+ * The daemon's own check: the baseline at start (`full`), then one state
+ * read per round. It never waits behind another check -- a tick that
+ * finds one running or queued does nothing, so a slow check delays the
+ * next rather than stacking them (ADR-0376 item 5). 0 when started.
+ */
+static int events_check_submit_daemon_job(int full, int slot)
+{
+	const struct park_queue *pq = &g_park_q[PARK_EVENTSCHECK];
+	struct park *p;
+
+	if (pq->running > 0 || pq->waiting > 0)
+		return -1;
+	p = park_new(PARK_EVENTSCHECK, NULL);
+	if (p == NULL)
+		return -1;
+	p->daemon_job = 1;
+	p->ev_full = full;
+	p->ev_slot = slot;
+	if (park_submit(p) != 0) {
+		park_free(p);
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * Every second: each sample whose period has come round, on the loop,
+ * and one state read every EVENTS_CHECK_STATE_EVERY ticks, round-robin
+ * -- about five minutes for the whole set -- in a helper child
+ * (ADR-0376). No check starts while a host roll waits to switch in
+ * place, because a running helper holds the switch back (ADR-0375).
  */
 static void events_check_tick(void);
 
@@ -35864,19 +36088,35 @@ static void events_check_tick(void)
 
 		if (rd->kind == EVENTS_READ_SAMPLE && rd->self_readable && rd->sample_period > 0 &&
 		    g_events_check_ticks % (unsigned long)rd->sample_period == 0)
-			(void)events_check_slot(slot);
+			events_check_sample(slot);
 	}
-	if (g_events_check_ticks % EVENTS_CHECK_STATE_EVERY != 0)
+	if (g_events_check_ticks % EVENTS_CHECK_STATE_EVERY != 0 ||
+	    g_hostroll.step == HOSTROLL_SWITCH || g_park_q[PARK_EVENTSCHECK].running > 0 ||
+	    g_park_q[PARK_EVENTSCHECK].waiting > 0)
 		return;
 	for (n = 0; n < EVENTS_READ_COUNT; n++) {
 		const struct events_read *rd;
+		int cursor = (g_events_check_cursor + 1) % EVENTS_READ_COUNT;
 
-		g_events_check_cursor = (g_events_check_cursor + 1) % EVENTS_READ_COUNT;
-		rd = events_read_at(g_events_check_cursor);
-		if (rd->kind == EVENTS_READ_STATE && rd->self_readable) {
-			(void)events_check_slot(g_events_check_cursor);
-			return;
+		rd = events_read_at(cursor);
+		if (rd->kind != EVENTS_READ_STATE || !rd->self_readable) {
+			g_events_check_cursor = cursor;
+			continue;
 		}
+		/* The cursor moves only once the read is under way, so a fork
+		 * that fails is retried on the same read next round, and said
+		 * once until one starts. */
+		if (events_check_submit_daemon_job(0, cursor) == 0) {
+			g_events_check_cursor = cursor;
+			g_events_check_start_failed = 0;
+		} else if (!g_events_check_start_failed) {
+			g_events_check_start_failed = 1;
+			logstore_write("events", "warn",
+			               "the announcement self-check could not start (%s) -- the next round "
+			               "tries again (ADR-0376)",
+			               strerror(errno));
+		}
+		return;
 	}
 }
 
@@ -40635,11 +40875,16 @@ static int cixd_main(int argc, char **argv)
 	kmodscan_set_broker(kmod_broker); /* ADR-0348 */
 	/* ADR-0339: X-Cix-Generation on every answer to an announced read. */
 	http_set_header_hook(events_generation_header);
-	/* ADR-0339 point 7: the baseline every later check compares with --
-	 * here, after containers are restored and before anything is served,
-	 * so a check made at any moment afterwards has something to compare
-	 * against. About half a second, once. Then the rolling check. */
-	events_full_pass(NULL);
+	/* ADR-0339 point 7: the baseline every later check compares with,
+	 * after containers are restored. ADR-0376: in a helper child, so
+	 * serving does not wait for it; until it is applied, a read's first
+	 * observation is its baseline, as it always was. Then the rolling
+	 * check, which starts nothing while this one runs. */
+	if (events_check_submit_daemon_job(1, -1) != 0)
+		logstore_write("events", "warn",
+		               "the announcement baseline could not start (%s) -- each read's first "
+		               "rolling check is its baseline instead (ADR-0376)",
+		               strerror(errno));
 	start_events_check_timer();
 
 	while (!g_stop) {

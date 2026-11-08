@@ -16,7 +16,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/logout` | Invalidate the current session (idempotent, `public`) |
 | GET | `/events` | The box's announcements, live, as a WebSocket: which reads changed, never their content, filtered to what the session may read (ADR-0339) -- `authenticated`, the session rides as the `cix.bearer.<token>` subprotocol |
 | GET | `/events/status` | The box's boot epoch and the generation of every read it announces when it changes (ADR-0339) -- `authenticated`, `derived` because it changes on every announcement |
-| POST | `/events/verify` | Check every announcement now: re-run each parameterless announced read in-process and list any whose answer changed while its generation did not -- drift, a change nothing announced (ADR-0339) -- `system:write` |
+| POST | `/events/verify` | Check every announcement now: re-run each parameterless announced read in a helper child (ADR-0376) and list any whose answer changed while its generation did not -- drift, a change nothing announced (ADR-0339) -- `system:write` |
 | GET | `/whoami` | Is the caller's own bearer token currently authenticated, and its permissions -- `public`, never consumes a single-use session (ADR-0164) |
 | GET, POST | `/whoami/app-passwords` | The same, for the session's own user -- needs a login session, not an app password (#543) |
 | DELETE | `/whoami/app-passwords/{app}` | Revoke one of your own |
@@ -1016,15 +1016,19 @@ log tail and the kernel log.
 **The box checks its own announcements** (0.2.57-524):
 
 - **The rolling check:** every second the daemon re-runs any sample whose period has come round, and
-  every third second one state read, round-robin, so the whole set takes about five minutes. Each is
-  run in-process, and the answer is hashed without its `x-cix-volatile-fields`.
+  every third second one state read, round-robin, so the whole set takes about five minutes. A sample
+  runs in-process. A state read runs in a helper child, so a slow handler never holds the event loop
+  ([ADR-0376](../adr/0376-the-self-check-reads-in-a-helper-child.md)). The answer is hashed without
+  its `x-cix-volatile-fields`, and a read that was announced while the child was reading it is not
+  compared.
 - **Samples:** a sample whose answer changed is announced. That is how health, NTP status and the other
   samples reach a client without anyone asking.
 - **Drift:** a state read whose answer changed while its generation did not is logged with source
   `events` and counted on `GET /events/status`. Something changed what it shows and nothing announced
   it.
-- **On demand:** `POST /events/verify` (`cixctl events verify`) runs the whole check now and lists what
-  it found.
+- **On demand:** `POST /events/verify` (`cixctl events verify`) runs the whole check now, in a helper
+  child while the request waits, and lists what it found. One check runs at a time and four more may
+  wait; beyond that the answer is 503 with `Retry-After`.
 
 The lists were seeded from the path: a change marks a read stale when one path root is a segment-prefix of the other. Cross-resource effects were then added by hand: a package install changes images, a container changes networks and volumes, and a group change changes `whoami`. Marking too much costs one extra read. Marking too little is what the box's drift check reports, and what the events test fails on, so a missing name is a bug to fix in the contract.
 
@@ -1032,12 +1036,12 @@ The lists were seeded from the path: a change marks a read stale when one path r
 
 cixd can serve its API to MCP clients as tools, one tool per operation ([ADR-0368](../adr/0368-cixd-serves-the-api-as-mcp-tools.md)). **Every operation says whether it is one**, with `x-cix-mcp: tool` or `x-cix-mcp: none`, and `apigen` refuses an operation that says neither, as it refuses one with no `x-cix-permission` or `x-cix-read`. Neither value is a default, so an operation becoming callable by an agent is a visible line in a diff. It is a key of its own rather than a word in `x-cix-expose`: `cli` and `web` name clients that must call an operation, which `test_api_surfaces` enforces, while `tool` offers an operation to any MCP client and promises no caller.
 
-341 of the contract's 356 operations are `tool`. The 15 that are not are the ones an in-process call cannot serve, and two gates hold them there:
+342 of the contract's 356 operations are `tool`. The 14 that are not are the ones an in-process call cannot serve, and two gates hold them there:
 
 - **The contract decides two of the cases, and `apigen` refuses them.** A WebSocket, which answers 101 (`getEvents`, `pkgBuildLog`, `consoleContainer`), is a session and never a tool. An operation whose permission is `authenticated` (`getEventsStatus` and the three self-service app-password operations) needs a login session, which an app password never is.
-- **The handler's text decides the rest, and `test_mcp_exposure` refuses them.** It reads every tool's handler, one call deep. Four park on a credential check: login, and the three LDAP operations that set a password (`createLdapUser`, `updateLdapUser`, `createLdapUserAppPassword`). A connection holds one credential verdict, which the MCP request's own app password may already be using. Two read a request header (`getWhoami`, `postLogout`). Two run operations in-process themselves (`verifyEvents`, `callMcp`).
+- **The handler's text decides the rest, and `test_mcp_exposure` refuses them.** It reads every tool's handler, one call deep. Four park on a credential check: login, and the three LDAP operations that set a password (`createLdapUser`, `updateLdapUser`, `createLdapUserAppPassword`). A connection holds one credential verdict, which the MCP request's own app password may already be using. Two read a request header (`getWhoami`, `postLogout`). One runs operations in-process itself (`callMcp`); `verifyEvents` has run its reads in a helper child since ADR-0376, and is a tool.
 
-**Work that parks** -- a filtered log read, a backup, a system update, a boot manager install, an uninstall, a verification, the data-directory report, a module load -- parks the MCP request itself. Nothing is sent until the work is done; the request is then served again, the call made again, and this time it finds its result and answers. The client sees one slower response. The call is audited once, on the pass that answers.
+**Work that parks** -- a filtered log read, a backup, a system update, a boot manager install, an uninstall, a verification, the data-directory report, a module load, an announcement check -- parks the MCP request itself. Nothing is sent until the work is done; the request is then served again, the call made again, and this time it finds its result and answers. The client sees one slower response. The call is audited once, on the pass that answers.
 
 **An answer that is not JSON** -- a container file (`getContainerFile`), a build log (`getBuildLog`), an artifact's bytes (`downloadPkgArtifactExport`) -- is an embedded resource: `{"type":"resource","resource":{"uri":"cix:/v1/...","mimeType":"...","blob":"<base64>"}}`, the bytes unaltered.
 

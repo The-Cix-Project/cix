@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The announcement self-check reads in a helper child (ADR-0376, #646, 0.2.57-668)
+
+- **The defect:** ADR-0339's self-check ran each state read's handler on the event loop. On 192.168.15.95 one rolling read held the loop 9410 ms (`GET /v1/pkg/cache`, with a stall record) and another 5240 ms (`GET /v1/storage`). Both happened during builds, while the disk was busy.
+- **Now:** every state read the self-check makes runs in a helper child: the rolling check, the start-up baseline and `POST /v1/events/verify`. The parent applies each result when the child exits. A read that was announced while the child read it is not compared, so drift still means only a change nothing announced.
+- **The child changes nothing the parent reads:**
+  - its log lines are held and replayed;
+  - no helper child can start a helper, because `helper_run_pid()` now refuses;
+  - its state-file writes are refused (`persist_set_readonly()`).
+- **Unchanged:** samples, which subscriptions stream, still run on the loop.
+- **`POST /v1/events/verify`:**
+  - it parks, with up to four waiting, and answers 503 beyond that;
+  - it is now an MCP tool;
+  - the start-up baseline no longer runs before the daemon serves.
+- **Not changed:** a client's own GET of `/v1/pkg/cache`, `/v1/storage` or `/v1/volumes` still runs on the loop. That is #675.
+- **Gate:** `test_blocking_waits` counts the `events_self_read()` sites.
+
 ### Nothing keeps running from the old root after a switch, so its slot is free for the next update (ADR-0375, #674, 0.2.57-667)
 
 - **The defect:** on 192.168.15.95, the roll after the first live switch could not write the slot it had left. procfuse's server and the two console shells, still running from the old root, kept that root mounted, and the update failed with `failed to write image to inactive slot`.
