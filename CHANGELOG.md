@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Nothing keeps running from the old root after a switch, so its slot is free for the next update (ADR-0375, #674; in master, not yet released)
+
+- **The defect:** on 192.168.15.95, the roll after the first live switch could not write the slot it had left. procfuse's server and the two console shells, still running from the old root, kept that root mounted, and the update failed with `failed to write image to inactive slot`.
+- **procfuse's server:** a switched cixd now replaces it with one from the new root, on the same FUSE connection. It takes the connection with `pidfd_getfd`, then stops and kills the old server where it holds no request. Containers' `/proc` files never see the connection close.
+- **Console shells:** a switched cixd ends them, and they respawn from the new root.
+- **The old slot:** the switched cixd reports once whether it is free again.
+- **Error messages:** a failed slot write now names the step and the errno.
+- **Tests:** `test_boot_update` now waits for `handover: slot a is free again`.
+- **On .95:** recovery needs one reboot, to clear the processes from before this fix.
+
 ### A handover keeps the kmod scan report and runs a schedule due during the exec (ADR-0375, #673, 0.2.57-666)
 
 - **The kernel module scan's report survives a handover.** Only the boot's sweep fills it, so a handed-over cixd used to say the sweep ran in the process before it. The report now travels in the record as an optional `kmodscan` field: the JSON that `GET /v1/system/kmod-scan` answers, which is the same across builds. A record from 664 or 665 has no such field: it still reads, and the report says why it is empty. 664 and 665 ignore the field as an unknown key, so the record stays format 1.

@@ -201,7 +201,7 @@ Each is one probe; the second is budgeted for two.
 - **The target must have exactly one entry, and it must be counted.** A stale `cix-<target>.conf` beside a held entry would be booted instead of the slot that was running.
 - **The first release that carries this code cannot switch.** The switch runs in the root that is running, and only a root built by this release's `mkbootroot` has `/run/nextroot`. A missing one is a stated refusal. So the first release with phase 4 reaches a host by the window's reboot, and the release after it is the first that can switch.
 
-*Accepted limits.* procfuse's server and the console shells run the old build's code until they next exit. The server's page layout is checked by its size and by a format number now kept at the start of the page. A console shell is a REST client, and its next respawn runs the new `cixctl`.
+*Accepted limits.* (Wrong; see the 2026-11-08 correction after phase 5.) procfuse's server and the console shells run the old build's code until they next exit. The server's page layout is checked by its size and by a format number now kept at the start of the page. A console shell is a REST client, and its next respawn runs the new `cixctl`.
 
 *Tests.* A new, gated `test_rootswitch` covers `esp_entry_hold()` and the mount planner against crafted `mountinfo` text. `test_esp` is outside the gate. In `test_boot_update`, slot A updates slot B and is then told `--test-switch-after=5`. It switches into B in place, under the same kernel, and B confirms. The console must show each of these once: the update, the switch, the second start with `slot=b`, and the confirmation. The ESP must then hold `cix-b.conf` and no counted B entry. A cold power-on boots B, as before. The phase 3 leftovers ride along: the takeover line prints procfuse's state and `test_boot` asserts it, `container_output_line()` sizes its buffer from `HANDOVER_OUTPUT_LINE_MAX`, and the dead-pid case asserts its reason.
 
@@ -222,6 +222,23 @@ Each is one probe; the second is budgeted for two.
 - **A half-read line on cix-init's own stdio:** carried by the same code as a service's line (`register_container_output_resumed()`, service index -1). `test_handover` proves the service path. cix-init writes whole lines at moments no test can place an exec in, so its own path has no separate test.
 
 A kernel change still reboots. The roll is the only caller, as rule 5 says. The decision has no QEMU test of its own, because the roll needs a hostbuild. Its parts are tested: the switch by `test_boot_update`, the refusals by `test_rootswitch`. Its live proof needs two releases. The first release carrying phase 4 reaches .95 by reboot, because the root running there has no `/run/nextroot`. The release after it is the first the roll can switch into.
+
+**Correction, 2026-11-08: nothing may keep running from the old root (#674).** Phase 4 accepted that procfuse's server and the console shells would run the old build's code until they next exited. That was wrong, and the second roll after the first live switch showed why. The roll built cix 666 and then could not write slot b, the slot the switch had left: `failed to write image to inactive slot`.
+- **Measured:** those three processes (pids 226, 284, 285, from the boot of 664 on slot b) were still mapping binaries from slot b's squashfs. That kept the detached root alive.
+- **Inferred:** this kernel lacks `BLK_DEV_WRITE_MOUNTED`, so it refuses a write to a held device. The errno reached only stderr, so this last link is not measured.
+
+Every later roll would fail the same way, including the one that would ship a fix, so the host needs one reboot to recover. The rule now: **after a switch, nothing runs from the old root.**
+- **procfuse's server is replaced, not resumed** (`procfuse_replace_server()`).
+  1. The new cixd takes the old server's FUSE connection (fd 3) with `pidfd_getfd(2)` and checks it is `/dev/fuse`.
+  2. It stops the old server at a point where it holds no request: `/proc/<pid>/syscall` shows its blocking `poll` (nr 7) or its `read` on fd 3 (nr 0).
+  3. It kills the old server, settles any odd entry on the load page, and forks a server from the new root onto the same connection.
+
+  The connection never closes, so the containers' bound files never see the change. The old server is not asked to do anything, so a server from any earlier build is replaced the same way.
+- **The console shells are ended** and respawn from the new root. A session someone had open on a host console ends with it.
+- **The switched cixd says whether the old slot is free**, once: an `O_EXCL` open of its device either succeeds, or it is still held 60 s after the takeover. The second case is logged as an error naming the remedy.
+- **An update's failed slot write names the step and the errno.** Before, it named neither.
+
+`test_boot_update` now ends on `handover: slot a is free again` and asserts the server replacement. That stands in for the second stage it never ran, and the missing second stage is why this got through.
 
 ## Alternatives
 

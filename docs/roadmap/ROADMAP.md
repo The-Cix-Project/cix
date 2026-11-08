@@ -2479,6 +2479,8 @@ When the host roll stages a root with the running kernel, it now switches the ro
 
 .95 then ran 665 on slot a under 7.3.3, the ESP held `cix-a.conf`, and all 14 containers were running. Eleven kept the pid they had before the roll. The other three, jump, vpn-1 and agent-1, had restarted for an unrelated reason: hibr 0.99.459 was published at 07:58, during the cix build, and each rolled onto its rebuilt image (ADR-0323). jump and vpn-1 rolled before the switch, at 07:59 and 08:00; agent-1 after it, at 08:12. vpn-1 then ran straight through the switch: its pid stayed 20255, and its roll's probation began under 664 and was confirmed by 665.
 
+**The roll after it failed to stage, 2026-11-08 (#674).** The 03:00 roll built cix 0.2.57-666, then could not write slot b, the slot the switch had left. procfuse's server and the two console shells were still running from slot b's root and kept it mounted. .95 stayed healthy on 665. The fix replaces procfuse's server and the shells after a switch, and confirms the old slot is free (ADR-0375's 2026-11-08 correction). Recovery needs one reboot, to clear the processes from before the fix.
+
 ## Part 359: a provider's ABI change is held where its consumers would break, and containers roll once their image settles (#672, ADR-0373 release C, ADR-0374, 0.2.57-661 and 0.2.57-662)
 
 The third of ADR-0373's four releases, with the rolling change it needed, which the owner chose on 2026-11-05 as ADR-0374.
