@@ -67,11 +67,19 @@
 #define BOOT_TIMEOUT_SECONDS 120
 /* Attempt 1 boots, updates slot B, serves, switches its root into B in
  * place (ADR-0375 phase 4) and starts cixd a second time: one boot under
- * TCG plus a second start, as test_boot budgets. */
-#define SWITCH_TIMEOUT_SECONDS 240
-/* The last line of the handover, printed after the takeover and the
- * confirmation, so a capture that stops at it has both whole. */
-#define SWITCH_MARKER "handover: complete"
+ * TCG plus a second start, as test_boot budgets, plus up to 60 s for
+ * slot A to come free. */
+#define SWITCH_TIMEOUT_SECONDS 300
+/*
+ * The last line of a switch: slot A, the root left, is free again, so
+ * the next update could write it. Printed after the takeover, the
+ * confirmation and the replacement of everything that ran from slot A
+ * (procfuse's server, the console shells). It stands for the second
+ * stage this test does not run: the roll after the first live switch on
+ * 192.168.15.95 (2026-11-08) could not write the slot it had left,
+ * because those processes still held it.
+ */
+#define SWITCH_MARKER "handover: slot a is free again"
 /* The full expected success line, not just a prefix of it -- qemu_boot_
  * capture() stops the instant its marker substring has fully arrived,
  * so a marker that's only a prefix (e.g. "test-update: status=") stops
@@ -405,6 +413,8 @@ int main(void)
 			"handover: root is slot b now",
 			"handover: cixd started again in this kernel, slot=b",
 			"handover: slot b confirmed after the root switch",
+			"handover: procfuse's server replaced from the new root",
+			"handover: complete",
 			SWITCH_MARKER,
 		};
 		size_t k;

@@ -37,6 +37,8 @@
 #include <sys/mount.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/sysmacros.h>
 #include <sys/statfs.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -1998,6 +2000,57 @@ const char *procfuse_mount_path(void)
 	return g_mounted ? g_mount_path : NULL;
 }
 
+/*
+ * Forks the server onto fd, the FUSE connection. Its pid, or -1 with
+ * errno. The parent keeps its own copy of fd and closes it itself.
+ */
+static pid_t spawn_server(int fd, const char *load_top)
+{
+	pid_t pid = fork();
+
+	if (pid != 0)
+		return pid;
+	{
+		/*
+		 * A fork of cixd inherits the HTTPS listener, every accepted
+		 * connection, the epoll set and every pidfd. A child holding
+		 * the listener is a daemon that cannot be restarted, for a
+		 * reason nothing in the restart path would name -- so close
+		 * everything except the one descriptor this process exists to
+		 * serve. stallwatch gets away without this because it opens
+		 * nothing.
+		 *
+		 * Fd 3 is part of a contract: procfuse_replace_server() takes
+		 * a running server's FUSE connection by that number. Every
+		 * server since #456/#448 has kept it there.
+		 */
+		int keep = fd;
+
+		if (keep != 3) {
+			if (dup2(keep, 3) < 0)
+				_exit(1);
+			keep = 3;
+		}
+		close_range(4, ~0U, 0);
+		signal(SIGPIPE, SIG_IGN);
+		/*
+		 * Name the child so it is not a third anonymous "cixd" in
+		 * GET /system/processes and the watchdog record (#456). The
+		 * whole of #448 turned on identifying this exact process --
+		 * pid 133, "cixd", wchan fuse_dev_do_read -- as the procfuse
+		 * server by inference; a name says it outright. 15 chars fit
+		 * TASK_COMM_LEN's budget exactly.
+		 */
+		prctl(PR_SET_NAME, (unsigned long)"cixd [procfuse]", 0UL, 0UL, 0UL);
+		/* And the longer command_line field, which is a different
+		 * string: without this the child reports the daemon's own
+		 * "/bin/cixd --init-mode ..." inherited across the fork. */
+		proctitle_set("cixd [procfuse]");
+		procfuse_main(keep, load_top);
+		_exit(0);
+	}
+}
+
 int procfuse_start(const char *state_dir, const char *load_top)
 {
 	char opts[256];
@@ -2066,47 +2119,12 @@ int procfuse_start(const char *state_dir, const char *load_top)
 		load_top = NULL;
 	}
 
-	pid = fork();
+	pid = spawn_server(fd, load_top);
 	if (pid < 0) {
 		logstore_write("cixd", "error", "procfuse: fork failed: %s", strerror(errno));
 		umount2(g_mount_path, MNT_DETACH);
 		close(fd);
 		return -1;
-	}
-	if (pid == 0) {
-		/*
-		 * A fork of cixd inherits the HTTPS listener, every accepted
-		 * connection, the epoll set and every pidfd. A child holding
-		 * the listener is a daemon that cannot be restarted, for a
-		 * reason nothing in the restart path would name -- so close
-		 * everything except the one descriptor this process exists to
-		 * serve. stallwatch gets away without this because it opens
-		 * nothing.
-		 */
-		int keep = fd;
-
-		if (keep != 3) {
-			if (dup2(keep, 3) < 0)
-				_exit(1);
-			keep = 3;
-		}
-		close_range(4, ~0U, 0);
-		signal(SIGPIPE, SIG_IGN);
-		/*
-		 * Name the child so it is not a third anonymous "cixd" in
-		 * GET /system/processes and the watchdog record (#456). The
-		 * whole of #448 turned on identifying this exact process --
-		 * pid 133, "cixd", wchan fuse_dev_do_read -- as the procfuse
-		 * server by inference; a name says it outright. 15 chars fit
-		 * TASK_COMM_LEN's budget exactly.
-		 */
-		prctl(PR_SET_NAME, (unsigned long)"cixd [procfuse]", 0UL, 0UL, 0UL);
-		/* And the longer command_line field, which is a different
-		 * string: without this the child reports the daemon's own
-		 * "/bin/cixd --init-mode ..." inherited across the fork. */
-		proctitle_set("cixd [procfuse]");
-		procfuse_main(keep, load_top);
-		_exit(0);
 	}
 
 	close(fd); /* the child owns it now */
@@ -2179,6 +2197,135 @@ int procfuse_resume(const char *state_dir, pid_t server_pid, int load_fd, char *
 int procfuse_has_load_page(void)
 {
 	return g_load != NULL;
+}
+
+#ifndef SYS_pidfd_open
+#define SYS_pidfd_open 434
+#endif
+#ifndef SYS_pidfd_getfd
+#define SYS_pidfd_getfd 438
+#endif
+
+/*
+ * Is the stopped server at a point where it holds no FUSE request? Read
+ * from /proc/<pid>/syscall, which for a task stopped inside a system
+ * call gives that call's number and arguments, and "-1 ..." in user
+ * mode. procfuse_main() blocks in exactly two places: poll() on the
+ * FUSE connection when it samples load (nr 7, ppoll 271), and read()
+ * on fd 3 when it does not (nr 0, first argument 0x3). A request is
+ * dequeued by read() and answered by write(); between the two the
+ * server is in user mode or in a load pass's own reads of cgroup files,
+ * both of which this refuses. 1, or 0.
+ */
+static int server_idle(pid_t pid)
+{
+	char path[64], buf[256];
+	long nr;
+	char *p;
+	ssize_t n;
+	int fd;
+
+	snprintf(path, sizeof(path), "/proc/%d/syscall", (int)pid);
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return 0;
+	buf[n] = '\0';
+	nr = strtol(buf, &p, 10);
+	if (p == buf)
+		return 0;
+	if (nr == 7 || nr == 271)
+		return 1;
+	return nr == 0 && strncmp(p, " 0x3 ", 5) == 0;
+}
+
+/* Every load entry a writer left odd -- stopped between its two
+ * increments -- made even, so the next writer's ++ does not leave it
+ * odd for good. */
+static void load_page_settle(void)
+{
+	int i;
+
+	if (g_load == NULL)
+		return;
+	for (i = 0; i < LOAD_ENTRIES; i++)
+		if (g_load->e[i].seq & 1)
+			g_load->e[i].seq++;
+}
+
+int procfuse_replace_server(const char *load_top, char *err, size_t err_size)
+{
+	struct stat st;
+	pid_t old = g_server_pid, fresh;
+	int pidfd, fusefd, tries, status;
+
+	if (!g_mounted || old <= 0) {
+		snprintf(err, err_size, "no procfuse server is running");
+		return -1;
+	}
+	pidfd = (int)syscall(SYS_pidfd_open, old, 0);
+	if (pidfd < 0) {
+		snprintf(err, err_size, "pidfd_open(%d): %s", (int)old, strerror(errno));
+		return -1;
+	}
+	fusefd = (int)syscall(SYS_pidfd_getfd, pidfd, 3, 0);
+	close(pidfd);
+	if (fusefd < 0) {
+		snprintf(err, err_size, "taking fd 3 of the server (pid %d): %s", (int)old,
+		         strerror(errno));
+		return -1;
+	}
+	/* /dev/fuse is misc 10:229. */
+	if (fstat(fusefd, &st) != 0 || !S_ISCHR(st.st_mode) || major(st.st_rdev) != 10 ||
+	    minor(st.st_rdev) != 229) {
+		snprintf(err, err_size, "fd 3 of the server (pid %d) is not /dev/fuse", (int)old);
+		close(fusefd);
+		return -1;
+	}
+	fcntl(fusefd, F_SETFD, FD_CLOEXEC);
+
+	/* Stop it where it holds no request, then end it. Requests that
+	 * arrive meanwhile queue on the connection, which fusefd keeps
+	 * open, and the new server reads them. */
+	for (tries = 0; tries < 400; tries++) {
+		kill(old, SIGSTOP);
+		if (waitpid(old, &status, WUNTRACED) != old) {
+			snprintf(err, err_size, "waiting for the server (pid %d) to stop: %s", (int)old,
+			         strerror(errno));
+			kill(old, SIGCONT);
+			close(fusefd);
+			return -1;
+		}
+		if (server_idle(old))
+			break;
+		kill(old, SIGCONT);
+		usleep(5000);
+	}
+	if (tries == 400) {
+		kill(old, SIGCONT);
+		snprintf(err, err_size,
+		         "the server (pid %d) was never stopped while idle in 2 s of trying", (int)old);
+		close(fusefd);
+		return -1;
+	}
+	kill(old, SIGKILL);
+	waitpid(old, NULL, 0);
+
+	load_page_settle();
+	fresh = spawn_server(fusefd, g_load != NULL ? load_top : NULL);
+	if (fresh < 0) {
+		snprintf(err, err_size, "forking the new server: %s", strerror(errno));
+		close(fusefd);
+		g_server_pid = -1;
+		return -1;
+	}
+	close(fusefd);
+	g_server_pid = fresh;
+	snprintf(err, err_size, "pid %d -> %d", (int)old, (int)fresh);
+	return 0;
 }
 
 void procfuse_stop(void)

@@ -182,6 +182,20 @@ int procfuse_resume(const char *state_dir, pid_t server_pid, int load_fd, char *
 int procfuse_has_load_page(void);
 
 /*
+ * ADR-0375: after a root switch the resumed server still runs the old
+ * root's cixd, and while it does the old root stays mounted and its slot
+ * cannot be written by the next update (measured on 192.168.15.95,
+ * 2026-11-08). This takes the server's FUSE connection (fd 3, through
+ * pidfd_getfd(2)), stops the server at a point where it holds no
+ * request, ends it, and forks a new server from this process onto the
+ * same connection. The containers' bound files never see the
+ * connection close. Needs nothing from the old server, so it works on
+ * one from any build. 0 with err saying "pid OLD -> NEW", or -1 with
+ * err written and the old server left running.
+ */
+int procfuse_replace_server(const char *load_top, char *err, size_t err_size);
+
+/*
  * Renders one file of PROCFUSE_FILES (by index) as it would be served
  * to a process in cgroup directory `cg`, or as the host's own when `cg`
  * is NULL. Returns the number of bytes written.

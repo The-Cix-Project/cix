@@ -1085,6 +1085,11 @@ static int g_test_handover_after; /* test only: re-exec this many seconds after 
 static int g_test_switch_after;   /* test only: switch root in place this many seconds after
                                    * serving (ADR-0375 phase 4) */
 static int g_handover_switched;   /* this cixd's handover was a root switch: confirm its slot */
+/* After a root switch: the slot left, whose device the next update
+ * writes, watched until nothing holds it (handover_old_slot_tick()). */
+static char g_old_slot[8];
+static char g_old_slot_device[64];
+static time_t g_old_slot_since, g_old_slot_last;
 static int g_helpers_live;        /* helper children forked and not yet completed */
 static int g_saved_argc;          /* the argv a handover execs with, flags adjusted */
 static char **g_saved_argv;
@@ -3635,24 +3640,35 @@ static int copy_bytes(int src_fd, int dst_fd)
 	return 0;
 }
 
-/* device_path already exists as a block device -- O_WRONLY only, no
- * O_CREAT (unlike write_file_to_esp() below). */
-static int write_file_to_device(const char *src_path, const char *device_path)
+/*
+ * device_path already exists as a block device -- O_WRONLY only, no
+ * O_CREAT (unlike write_file_to_esp() below). why gets the step and its
+ * errno on failure, for the update's own message: this used to say only
+ * perror() on a console, and on 2026-11-08 a refused slot write reached
+ * the log store as a bare "failed to write image" with its cause lost.
+ */
+static int write_file_to_device(const char *src_path, const char *device_path, char *why,
+                                size_t why_size)
 {
 	int src, dst, rc;
 
 	src = open(src_path, O_RDONLY);
 	if (src < 0) {
-		perror(src_path);
+		snprintf(why, why_size, "cannot open %s: %s", src_path, strerror(errno));
 		return -1;
 	}
 	dst = open(device_path, O_WRONLY);
 	if (dst < 0) {
-		perror(device_path);
+		snprintf(why, why_size, "cannot open %s for writing: %s", device_path,
+		         errno == EBUSY ? "the device is in use -- mounted, or held by a filesystem "
+		                          "something still runs from"
+		                        : strerror(errno));
 		close(src);
 		return -1;
 	}
 	rc = copy_bytes(src, dst);
+	if (rc != 0)
+		snprintf(why, why_size, "writing %s to %s: %s", src_path, device_path, strerror(errno));
 	close(src);
 	close(dst);
 	return rc;
@@ -4031,12 +4047,18 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 	 * the bigger write: it copies the whole active partition, not just
 	 * the squashfs on it.
 	 */
-	if (write_file_to_device(image_path != NULL ? image_path : active_device, device) != 0) {
-		json_free(root);
-		snprintf(out_errmsg, out_errmsg_size,
-		         image_path != NULL ? "failed to write image to inactive slot"
-		                             : "failed to copy the active slot's own root forward");
-		return 500;
+	{
+		char why[384];
+
+		if (write_file_to_device(image_path != NULL ? image_path : active_device, device, why,
+		                         sizeof(why)) != 0) {
+			json_free(root);
+			snprintf(out_errmsg, out_errmsg_size, "%s: %s",
+			         image_path != NULL ? "failed to write image to inactive slot"
+			                             : "failed to copy the active slot's own root forward",
+			         why);
+			return 500;
+		}
 	}
 	if (write_file_to_esp(kernel_path != NULL ? kernel_path : active_kernel_path, kernel_dest) !=
 	    0) {
@@ -39005,6 +39027,11 @@ static int handover_load(void)
 	         g_handover_rec.uplink_unattached);
 	g_handover_switched = g_handover_rec.slot[0] != '\0' && g_slot != NULL &&
 	                      strcmp(g_handover_rec.slot, g_slot) != 0;
+	if (g_handover_switched) {
+		snprintf(g_old_slot, sizeof(g_old_slot), "%s", g_handover_rec.slot);
+		snprintf(g_old_slot_device, sizeof(g_old_slot_device), "%s",
+		         strcmp(g_old_slot, "a") == 0 ? ROOT_A_DEVICE : ROOT_B_DEVICE);
+	}
 	/* The kernel module scan's report: the boot's sweep ran in the process
 	 * before, and its report comes across with the record. A record from
 	 * a build that did not carry it says so instead. */
@@ -39251,6 +39278,12 @@ static void handover_watch_all(void)
 		}
 		register_console_shell_pidfd(s->pid, pidfd, s->tty);
 		shells++;
+		/* After a root switch the shell runs the old root's cixctl,
+		 * which keeps that root mounted. End it; its exit is watched
+		 * above, and the respawn runs this root's cixctl. A session
+		 * someone had open on that console ends with it. */
+		if (g_handover_switched)
+			kill(s->pid, SIGTERM);
 	}
 
 	/* A definition with no entry is brought up by the rule boot autostart
@@ -39292,12 +39325,59 @@ static void handover_watch_all(void)
 	/* Its own line, last, so a console reader that stops at it has every
 	 * line before it whole. */
 	printf("handover: complete (ADR-0375)\n");
+	/* A switch's old slot is watched from here (handover_old_slot_tick()). */
+	if (g_old_slot_device[0] != '\0')
+		g_old_slot_since = time(NULL);
 	fflush(stdout);
 	handover_record_free(&g_handover_rec);
 	free(g_handover_pidfds);
 	free(g_handover_entries);
 	g_handover_pidfds = NULL;
 	g_handover_entries = NULL;
+}
+
+/*
+ * After a root switch, from the loop at most once a second: has the slot
+ * left become free? Its old root stays mounted while anything still runs
+ * from it, and the next update cannot write the slot until it is not;
+ * that is what stopped the roll after the first live switch (192.168.15.95,
+ * 2026-11-08). O_EXCL on a block device fails with EBUSY while a
+ * filesystem holds it, and read-only never touches the slot. Said once,
+ * either way, within HANDOVER_OLD_SLOT_WAIT seconds of the takeover.
+ */
+#define HANDOVER_OLD_SLOT_WAIT 60
+
+static void handover_old_slot_tick(void)
+{
+	time_t now;
+	int fd;
+
+	if (g_old_slot_device[0] == '\0' || g_old_slot_since == 0)
+		return;
+	now = time(NULL);
+	if (now == g_old_slot_last)
+		return;
+	g_old_slot_last = now;
+	fd = open(g_old_slot_device, O_RDONLY | O_EXCL | O_CLOEXEC);
+	if (fd >= 0) {
+		close(fd);
+		logstore_write("cixd", "info",
+		               "handover: slot %s is free again after %ld s, so the next update can "
+		               "write it (ADR-0375)",
+		               g_old_slot, (long)(now - g_old_slot_since));
+		printf("handover: slot %s is free again (ADR-0375)\n", g_old_slot);
+	} else if (errno != EBUSY || now - g_old_slot_since >= HANDOVER_OLD_SLOT_WAIT) {
+		logstore_write("cixd", "error",
+		               "handover: slot %s (%s) is still held after %ld s (%s): an update cannot "
+		               "stage into it until it is free, and a reboot frees it (ADR-0375)",
+		               g_old_slot, g_old_slot_device, (long)(now - g_old_slot_since),
+		               strerror(errno));
+		printf("handover: slot %s is still held: %s\n", g_old_slot, strerror(errno));
+	} else {
+		return;
+	}
+	fflush(stdout);
+	g_old_slot_device[0] = '\0';
 }
 
 /*
@@ -40396,6 +40476,33 @@ static int cixd_main(int argc, char **argv)
 		               "(ADR-0375)",
 		               procfuse_mount_path(), (int)g_handover_rec.procfuse_pid,
 		               procfuse_has_load_page() ? ", with its load page" : "");
+	/*
+	 * After a root switch the handed-over server still runs the old
+	 * root's cixd, which keeps the old root mounted and its slot
+	 * unwritable by the next update. Measured on 192.168.15.95 on
+	 * 2026-11-08: the roll after the first switch could not stage. So a
+	 * switched cixd replaces the server with one of its own, on the same
+	 * FUSE connection.
+	 */
+	if (g_handover_switched && procfuse_mount_path() != NULL &&
+	    g_handover_rec.procfuse_pid > 0) {
+		char why[256];
+
+		if (procfuse_replace_server(CGROUP_WORKLOAD_PARENT, why, sizeof(why)) == 0) {
+			logstore_write("cixd", "info",
+			               "handover: procfuse's server replaced from the new root, %s "
+			               "(ADR-0375)",
+			               why);
+			printf("handover: procfuse's server replaced from the new root (ADR-0375)\n");
+		} else {
+			logstore_write("cixd", "error",
+			               "handover: procfuse's server could not be replaced (%s): the old "
+			               "root stays mounted until it is (ADR-0375)",
+			               why);
+			printf("handover: procfuse's server could not be replaced: %s\n", why);
+		}
+		fflush(stdout);
+	}
 
 	{
 		/* #551: trees set aside because a reused version was wrong. No
@@ -40739,6 +40846,7 @@ static int cixd_main(int argc, char **argv)
 		 * middle of serving one. */
 		handover_test_tick();
 		hostroll_switch_tick();
+		handover_old_slot_tick();
 
 		drain_pending_free();
 
