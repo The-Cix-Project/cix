@@ -22120,6 +22120,7 @@ components:
             read yet.
         probed_at:
           type: [integer, "null"]
+          format: unix-seconds
           description: >
             When the probe this device's fs_type, fs_uuid, part_label and
             capacity came from ran, in Unix seconds (ADR-0377). null when
