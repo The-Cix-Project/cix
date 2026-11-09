@@ -7255,9 +7255,15 @@ paths:
     get:
       summary: List real host block devices, including their partitions, for multi-disk management
       description: >
-        Read-only, live-enumerated from /sys/class/block on every call
-        (never persisted), the same real-hardware convention /devices
-        already established. Since task #844, every partition on a disk
+        Read-only. The device list, sizes, partitions and mount status
+        are read live from sysfs and /proc/mounts on every call (never
+        persisted), the same real-hardware convention /devices already
+        established. What needs a device read -- fs_type, fs_uuid,
+        part_label, and a mounted filesystem's used/free bytes -- comes
+        from the disk snapshot, which a helper child refreshes whenever
+        a device changes and every 30 s, so this request never waits on
+        a busy disk (ADR-0377). Those fields are null while not known,
+        and probed_at says how old they are. Since task #844, every partition on a disk
         is also listed as its own ordinary entry (`is_partition`/
         `parent_disk`), alongside the whole disk itself -- a partition
         is independently addressable everywhere a whole disk name is
@@ -7860,7 +7866,11 @@ paths:
             btrfs is grown in place), there is not enough free space
             immediately after it, the kernel refused the per-partition
             resize, or its filesystem needs a check that cannot be made
-            automatically (the table is NOT changed in that case)
+            automatically (the table is NOT changed in that case). Also when
+            the partition was changed and the disk snapshot has not probed
+            it since, so whether it holds a filesystem to grow is not known
+            yet: nothing is changed, and `Retry-After` says when to try again
+            (ADR-0377).
           content:
             application/json:
               schema:
@@ -22018,8 +22028,9 @@ components:
             from under its live filesystem. This flag is why a
             repartition gets refused with 409 while a partition is in
         part_label:
-          type: string
+          type: [string, "null"]
           description: >
+            null while not known, as for fs_type (ADR-0377).
             Partitions only: the partition's own name in the GPT --
             what whoever created it actually called it. The fixed OS
             layout carries cix-esp, cix-root-a, cix-root-b,
@@ -22037,12 +22048,16 @@ components:
             and can therefore grow it -- free space elsewhere on the
             disk cannot. Zero for a whole disk.
         fs_type:
-          type: string
+          type: [string, "null"]
           description: >
             The filesystem actually on this device, read from its own
             superblock: "ext4", "btrfs", "vfat", "swap", "squashfs", or
             "" when none is recognised (which for a partition means
             genuinely unformatted) or the device could not be read.
+            The superblock is read by the disk snapshot's helper, never
+            by this request (ADR-0377). null while not known: the device
+            was changed (a format, a partition write, a kernel event) and
+            has not been probed since. null is never "no filesystem".
             Answered for every disk and partition regardless of role --
             the OS layout carries no role at all, and its partitions are
             exactly where "is this formatted, and as what" is least
@@ -22051,12 +22066,13 @@ components:
             mounted as, kept to choose a mount type rather than to
             report truth.
         fs_uuid:
-          type: string
+          type: [string, "null"]
           description: >
             The UUID of the filesystem on this device, read from its
             superblock in the same read as fs_type, lowercase
             8-4-4-4-12. ext4 and btrfs only; "" otherwise. What a
-            device mapping of kind fs_uuid names (ADR-0345).
+            device mapping of kind fs_uuid names (ADR-0345). null while
+            not known, as for fs_type.
         role:
           type: string
           nullable: true
@@ -22090,11 +22106,24 @@ components:
             this daemon exposes, short of cgroup io.stat/PSI-level
             integration.
         used_bytes:
-          type: integer
-          description: Real statvfs(2) usage of mount_path. Only meaningful (non-zero) when mounted is true.
+          type: [integer, "null"]
+          description: >
+            Real statvfs(2) usage of mount_path, from the disk snapshot's
+            last probe (ADR-0377), so up to 30 s old. 0 when not mounted.
+            null for a mounted filesystem the snapshot has not read since
+            it was mounted.
         free_bytes:
-          type: integer
-          description: Real statvfs(2) free space of mount_path. Only meaningful (non-zero) when mounted is true.
+          type: [integer, "null"]
+          description: >
+            Real statvfs(2) free space of mount_path, from the same probe
+            as used_bytes. 0 when not mounted; null when mounted and not
+            read yet.
+        probed_at:
+          type: [integer, "null"]
+          description: >
+            When the probe this device's fs_type, fs_uuid, part_label and
+            capacity came from ran, in Unix seconds (ADR-0377). null when
+            the snapshot holds no probe of this device as it is now.
         protected:
           type: boolean
           description: >

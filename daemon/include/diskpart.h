@@ -119,6 +119,9 @@ enum diskpart_error {
 	DISKPART_ERR_SHRINK_REFUSED,
 	DISKPART_ERR_NO_ROOM_AFTER,
 	DISKPART_ERR_FS_UNSUPPORTED,
+	/* ADR-0377: the partition was changed and its new filesystem has not
+	 * been probed yet, so whether it has one to grow is not known. */
+	DISKPART_ERR_IDENTITY_UNKNOWN,
 	DISKPART_ERR_FS_UNCLEAN,
 	DISKPART_ERR_RESIZE_FS_FAILED,
 	/*

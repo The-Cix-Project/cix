@@ -11,6 +11,7 @@
 #include "disk.h"
 #include "diskformat.h"
 #include "diskpart.h"
+#include "disksnap.h"
 #include "diskrole.h"
 #include "bootmodules.h"
 #include "kmod.h"
@@ -5996,7 +5997,8 @@ static void handle_uevent_event(struct conn *cc)
 	ssize_t n;
 	int is_add = 0, is_remove = 0, is_usb = 0, is_pci = 0, is_whole_device = 0;
 	int is_hardware = 0; /* ADR-0339: a subsystem the device and storage reads list */
-	const char *modalias = NULL, *devpath = NULL;
+	int is_change = 0, is_block = 0; /* ADR-0377 */
+	const char *modalias = NULL, *devpath = NULL, *devname = NULL;
 	size_t off;
 
 	n = recv(cc->fd, buf, sizeof(buf) - 1, 0);
@@ -6029,9 +6031,13 @@ static void handle_uevent_event(struct conn *cc)
 		if (strncmp(line, "ACTION=", 7) == 0) {
 			is_add = strcmp(line + 7, "add") == 0;
 			is_remove = strcmp(line + 7, "remove") == 0;
+			is_change = strcmp(line + 7, "change") == 0;
+		} else if (strncmp(line, "DEVNAME=", 8) == 0) {
+			devname = line + 8;
 		} else if (strncmp(line, "SUBSYSTEM=", 10) == 0) {
 			is_usb = strcmp(line + 10, "usb") == 0;
 			is_pci = strcmp(line + 10, "pci") == 0;
+			is_block = strcmp(line + 10, "block") == 0;
 			is_hardware = is_usb || is_pci || strcmp(line + 10, "block") == 0 ||
 			              strcmp(line + 10, "scsi") == 0;
 		} else if (strncmp(line, "DEVPATH=", 8) == 0) {
@@ -6058,6 +6064,39 @@ static void handle_uevent_event(struct conn *cc)
 
 		snprintf(device, sizeof(device), "/sys%s", devpath != NULL ? devpath : "");
 		kmod_hotplug(modalias, device);
+	}
+
+	/*
+	 * ADR-0377: the kernel says a block device arrived, left or changed
+	 * (a partition table re-read, a resize, a medium inserted). What the
+	 * disk snapshot holds for it, and for the disk it is a partition of,
+	 * is unknown until the next probe, which this asks for. DEVPATH ends
+	 * .../block/<disk>/<partition> for a partition, so the component
+	 * before the last names its disk.
+	 */
+	if (is_block && devname != NULL && (is_add || is_remove || is_change)) {
+		const char *base = strrchr(devname, '/');
+
+		disksnap_touch(base != NULL ? base + 1 : devname);
+		if (devpath != NULL) {
+			const char *last = strrchr(devpath, '/');
+			const char *prev = last;
+
+			while (prev != NULL && prev > devpath && prev[-1] != '/')
+				prev--;
+			if (last != NULL && prev != NULL && prev < last && prev > devpath) {
+				char parent[32];
+				size_t plen = (size_t)(last - prev);
+
+				/* A whole disk's previous component is "block". */
+				if (plen < sizeof(parent)) {
+					memcpy(parent, prev, plen);
+					parent[plen] = '\0';
+					if (strcmp(parent, "block") != 0)
+						disksnap_touch(parent);
+				}
+			}
+		}
 	}
 
 	/* ADR-0339: a device arriving or leaving -- a disk, a partition, a
@@ -36152,6 +36191,152 @@ static void events_check_tick(void)
 	}
 }
 
+/*
+ * ADR-0377: the disk snapshot's helper. Once the loop serves, a block
+ * device's superblock, GPT label and mounted capacity are read only
+ * here; disk_enumerate() takes them from disksnap.c. Measured on
+ * 192.168.15.95 before it: GET /v1/storage held the loop 5240 ms, GET
+ * /v1/volumes 1173 ms and GET /v1/storage/quota 795 ms during builds
+ * (GET /v1/system/stalls, ts 1793915024, 1793896968, 1793415971).
+ *
+ * One child at a time. A touch while one runs is coalesced into exactly
+ * one more (item 6), never dropped: unlike the announcement self-check,
+ * a refresh is asked for because something changed. A refresh is also
+ * started every DISKSNAP_PERIOD_SECONDS, which keeps capacity current
+ * and bounds how stale identity can be after a write nobody announces.
+ */
+#define DISKSNAP_PERIOD_SECONDS 30
+#define DISKSNAP_HELD_LOG_MAX 4096
+
+struct disksnap_result {
+	char held[DISKSNAP_HELD_LOG_MAX];
+	int n;
+	struct discovered_disk disks[DISK_ENUM_MAX];
+};
+
+static int g_disksnap_running;
+static int g_disksnap_again;
+static long long g_disksnap_last_ms;
+static int g_disksnap_memfd = -1;
+static struct disksnap_counters g_disksnap_at_fork;
+
+static int disksnap_work(void *arg)
+{
+	static struct disksnap_result r;
+
+	(void)arg;
+	memset(&r, 0, sizeof(r));
+	persist_set_readonly();
+	logstore_hold(r.held, sizeof(r.held));
+	r.n = disk_enumerate_probe(r.disks, DISK_ENUM_MAX, CONTAINERS_DIR);
+	return cix_write_all(g_disksnap_memfd, &r, sizeof(r)) == 0 ? 0 : 1;
+}
+
+/* Every read built from the snapshot (ADR-0377 item 9). The format
+ * status is one: it reports "running" until its disk is known. */
+static void disksnap_announce(void)
+{
+	events_announce(EV_listStorage);
+	events_announce(EV_getStorageQuota);
+	events_announce(EV_listDevices);
+	events_announce(EV_listDeviceMaps);
+	events_announce(EV_listVolumes);
+	events_announce(EV_getStorageFormatStatus);
+}
+
+static void disksnap_start(void);
+
+static void disksnap_done(int exit_status, void *ctx)
+{
+	static struct disksnap_result r;
+
+	(void)ctx;
+	g_disksnap_running = 0;
+	if (exit_status == 0 && g_disksnap_memfd >= 0 &&
+	    pread(g_disksnap_memfd, &r, sizeof(r), 0) == (ssize_t)sizeof(r) && r.n >= 0 &&
+	    r.n <= DISK_ENUM_MAX) {
+		logstore_replay(r.held, sizeof(r.held));
+		if (disksnap_install(r.disks, r.n, &g_disksnap_at_fork))
+			disksnap_announce();
+	} else {
+		logstore_write("cixd", "warn",
+		               "the disk snapshot's probe ended without a result (helper exit %d) -- "
+		               "the next refresh tries again (ADR-0377)",
+		               exit_status);
+	}
+	if (g_disksnap_memfd >= 0) {
+		close(g_disksnap_memfd);
+		g_disksnap_memfd = -1;
+	}
+	if (g_disksnap_again) {
+		g_disksnap_again = 0;
+		disksnap_start();
+	}
+}
+
+static void disksnap_start(void)
+{
+	static int said;
+
+	if (g_disksnap_running) {
+		g_disksnap_again = 1;
+		return;
+	}
+	g_disksnap_last_ms = monotonic_ms();
+	g_disksnap_memfd = memfd_create("cix-disksnap", MFD_CLOEXEC);
+	if (g_disksnap_memfd >= 0) {
+		disksnap_counters_capture(&g_disksnap_at_fork);
+		if (helper_run(disksnap_work, NULL, disksnap_done, NULL, "the disk snapshot") == 0) {
+			g_disksnap_running = 1;
+			said = 0;
+			return;
+		}
+		close(g_disksnap_memfd);
+		g_disksnap_memfd = -1;
+	}
+	if (!said) {
+		said = 1;
+		logstore_write("cixd", "warn",
+		               "the disk snapshot could not start its probe (%s) -- the next period "
+		               "tries again (ADR-0377)",
+		               strerror(errno));
+	}
+}
+
+/* Every loop pass: a touch since the last pass, or the period. A periodic
+ * refresh does not start while a host roll waits to switch, because a
+ * running helper holds the switch back (ADR-0375); a touch still does. */
+static void disksnap_tick(void)
+{
+	int wanted = disksnap_take_wanted();
+
+	if (g_disksnap_running) {
+		if (wanted)
+			g_disksnap_again = 1;
+		return;
+	}
+	if (wanted || (g_hostroll.step != HOSTROLL_SWITCH &&
+	               monotonic_ms() - g_disksnap_last_ms >= DISKSNAP_PERIOD_SECONDS * 1000LL))
+		disksnap_start();
+}
+
+/*
+ * The first snapshot, in-process, before the loop serves (ADR-0377 item
+ * 7): no build runs then, and a handover waits until none is in flight.
+ * From here on disk_enumerate() reads the snapshot, not the devices.
+ */
+static void disksnap_build_now(void)
+{
+	static struct discovered_disk disks[DISK_ENUM_MAX];
+	struct disksnap_counters c;
+	int n = disk_enumerate_probe(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
+
+	disksnap_counters_capture(&c);
+	(void)disksnap_install(disks, n, &c);
+	disk_set_identity_source(disksnap_fill);
+	g_disksnap_last_ms = monotonic_ms();
+}
+
 static void start_events_check_timer(void)
 {
 	struct cix_epoll_event ev;
@@ -40911,6 +41096,9 @@ static int cixd_main(int argc, char **argv)
 	 * here, after containers are restored and before anything is served,
 	 * so a check made at any moment afterwards has something to compare
 	 * against. About half a second, once. Then the rolling check. */
+	/* ADR-0377: the disk snapshot first, so the baseline reads what every
+	 * later read will. */
+	disksnap_build_now();
 	events_baseline();
 	start_events_check_timer();
 
@@ -41119,6 +41307,7 @@ static int cixd_main(int argc, char **argv)
 		handover_test_tick();
 		hostroll_switch_tick();
 		handover_old_slot_tick();
+		disksnap_tick(); /* ADR-0377 */
 
 		drain_pending_free();
 

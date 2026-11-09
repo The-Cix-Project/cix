@@ -1458,7 +1458,13 @@ static void fmt_disk_line(const struct json_value *v)
 		long long io_time_ms = (long long)json_as_number(json_object_get(v, "io_time_ms"));
 
 		printf("             io: reads=%lld writes=%lld io_time_ms=%lld", reads, writes, io_time_ms);
-		if (mounted) {
+		const struct json_value *jused = json_object_get(v, "used_bytes");
+
+		/* ADR-0377: null while the disk snapshot has not read a newly
+		 * mounted filesystem -- never 0, which would be a lie. */
+		if (mounted && (jused == NULL || jused->type == JSON_NULL)) {
+			printf(" used=probing");
+		} else if (mounted) {
 			double used_gib =
 			        (double)(long long)json_as_number(json_object_get(v, "used_bytes")) /
 			        (1024.0 * 1024.0 * 1024.0);

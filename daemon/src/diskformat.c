@@ -2,6 +2,7 @@
 #include "childdiag.h"
 #include "disk.h"
 #include "diskpart.h"
+#include "disksnap.h"
 #include "diskrole.h"
 #include "linux_compat.h"
 #include "namecheck.h"
@@ -203,6 +204,9 @@ enum diskformat_error diskformat_start(const char *disk_name, const char *os_con
 	g_error[0] = '\0';
 	g_fs_type = fs_type;
 	g_state = DISKFORMAT_STATE_RUNNING;
+	/* ADR-0377: unknown while mkfs runs, and a probe already running is
+	 * not installed for this disk. */
+	disksnap_touch(disk_name);
 	*out_pid = pid;
 	*out_pidfd = pidfd;
 	return DISKFORMAT_OK;
@@ -210,6 +214,8 @@ enum diskformat_error diskformat_start(const char *disk_name, const char *os_con
 
 void diskformat_completed(int exit_status)
 {
+	/* ADR-0377: whatever mkfs did, the next probe reads it. */
+	disksnap_touch(g_disk_name);
 	if (exit_status == 0) {
 		g_state = DISKFORMAT_STATE_READY;
 		g_error[0] = '\0';
@@ -311,6 +317,15 @@ static const char *state_str(enum diskformat_state s)
 
 void diskformat_write_status_json(struct json_writer *w, const char *want_disk_name)
 {
+	/* ADR-0377 item 8: a format is finished when its disk's new
+	 * filesystem is known, so a client that waits for "ready" and then
+	 * reads GET /v1/storage sees it rather than "probing". The job's own
+	 * state moves at completion; only what is reported waits. */
+	enum diskformat_state shown =
+	    g_state == DISKFORMAT_STATE_READY && !disksnap_identity_known(g_disk_name)
+	        ? DISKFORMAT_STATE_RUNNING
+	        : g_state;
+
 	if (g_state == DISKFORMAT_STATE_NONE ||
 	    (want_disk_name != NULL && strcmp(want_disk_name, g_disk_name) != 0)) {
 		jw_obj_open(w);
@@ -324,7 +339,7 @@ void diskformat_write_status_json(struct json_writer *w, const char *want_disk_n
 	jw_key(w, "disk_name");
 	jw_str(w, g_disk_name);
 	jw_key(w, "state");
-	jw_str(w, state_str(g_state));
+	jw_str(w, state_str(shown));
 	if (g_state == DISKFORMAT_STATE_RUNNING || g_state == DISKFORMAT_STATE_READY) {
 		jw_key(w, "fs_type");
 		jw_str(w, fs_type_str(g_fs_type));

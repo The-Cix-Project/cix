@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/statvfs.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define SYS_BLOCK_DIR "/sys/class/block"
@@ -158,18 +159,19 @@ static void fill_io_stats(struct discovered_disk *e)
 /*
  * ADR-0142: real statvfs(2) capacity for e's own mount_path -- caller's
  * responsibility to only call this once e->mounted is already known
- * true (fill_mount_status() below runs first). Leaves both fields 0 on
- * any statvfs(2) failure -- never fatal.
+ * true (fill_mount_status() below runs first). Leaves both fields 0, and returns -1,
+ * on any statvfs(2) failure -- never fatal.
  */
-static void fill_capacity(struct discovered_disk *e)
+static int fill_capacity(struct discovered_disk *e)
 {
 	struct statvfs st;
 
 	if (statvfs(e->mount_path, &st) != 0)
-		return;
+		return -1;
 	e->used_bytes = ((unsigned long long)st.f_blocks - (unsigned long long)st.f_bfree) *
 	                (unsigned long long)st.f_frsize;
 	e->free_bytes = (unsigned long long)st.f_bavail * (unsigned long long)st.f_frsize;
+	return 0;
 }
 
 /*
@@ -215,7 +217,6 @@ void disk_fill_mount_status_from(const char *mounts_path, struct discovered_disk
 			if (!out[i].mounted && strcmp(out[i].name, base) == 0) {
 				out[i].mounted = 1;
 				snprintf(out[i].mount_path, sizeof(out[i].mount_path), "%s", mountpoint);
-				fill_capacity(&out[i]);
 			}
 			/* Its parent whole disk, when the mount is a partition --
 			 * disk_name_from_partition() returns `base` unchanged for a
@@ -410,12 +411,25 @@ void disk_probe_fs_uuid(const char *dev_path, char *out, size_t out_size)
  * caller afterward, since they differ (or need a parent lookup) between
  * the two passes.
  */
-static void fill_common(struct discovered_disk *e, const char *d_name, const char *size_str)
+/* ADR-0377: the disk snapshot, once cixd has registered one. */
+static disk_identity_fn g_identity_source;
+
+void disk_set_identity_source(disk_identity_fn fn)
+{
+	g_identity_source = fn;
+}
+
+static void fill_common(struct discovered_disk *e, const char *d_name, const char *size_str,
+                        int probe)
 {
 	memset(e, 0, sizeof(*e));
 	snprintf(e->name, sizeof(e->name), "%s", d_name);
 	snprintf(e->dev_path, sizeof(e->dev_path), "/dev/%s", d_name);
-	probe_fs(e->dev_path, e->fs_type, sizeof(e->fs_type), e->fs_uuid, sizeof(e->fs_uuid));
+	if (probe) {
+		probe_fs(e->dev_path, e->fs_type, sizeof(e->fs_type), e->fs_uuid,
+		         sizeof(e->fs_uuid));
+		e->identity_known = 1;
+	}
 	/* sysfs "size" is always in 512-byte sectors, regardless of the
 	 * device's own real logical block size. */
 	e->size_bytes = strtoull(size_str, NULL, 10) * 512ULL;
@@ -475,7 +489,13 @@ static int disk_order_compare(const void *va, const void *vb)
 	return name_compare_natural(a->name, b->name);
 }
 
-int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containers_dir)
+/*
+ * The one walk. `probe` reads each device's superblock and GPT label and
+ * each mounted filesystem's capacity (block I/O); without it those come
+ * from the registered identity source (ADR-0377).
+ */
+static int enumerate(struct discovered_disk *out, int cap, const char *os_containers_dir,
+                     int probe)
 {
 	DIR *d;
 	struct dirent *ent;
@@ -514,7 +534,7 @@ int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containe
 			continue; /* not a real block device (e.g. "loop-control") */
 
 		e = &out[count];
-		fill_common(e, ent->d_name, size_str);
+		fill_common(e, ent->d_name, size_str, probe);
 
 		snprintf(attr_path, sizeof(attr_path), "%s/device/model", base);
 		read_sysfs_attr(attr_path, e->model, sizeof(e->model));
@@ -565,7 +585,7 @@ int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containe
 			continue;
 
 		e = &out[count];
-		fill_common(e, ent->d_name, size_str);
+		fill_common(e, ent->d_name, size_str, probe);
 		e->is_partition = 1;
 		/*
 		 * Where this partition begins on its parent disk, in 512-byte
@@ -615,8 +635,9 @@ int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containe
 			if (suffix[0] == 'p' && suffix[1] >= '0' && suffix[1] <= '9')
 				suffix++;
 			snprintf(parent_dev, sizeof(parent_dev), "/dev/%s", parent_name);
-			partlabel_read(parent_dev, (unsigned int)strtoul(suffix, NULL, 10), e->part_label,
-			                        sizeof(e->part_label));
+			if (probe)
+				partlabel_read(parent_dev, (unsigned int)strtoul(suffix, NULL, 10),
+				               e->part_label, sizeof(e->part_label));
 		}
 
 		snprintf(e->parent_disk, sizeof(e->parent_disk), "%s", parent_name);
@@ -632,8 +653,32 @@ int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containe
 	closedir(d);
 
 	fill_mount_status(out, count);
+	{
+		long long now = (long long)time(NULL);
+		int i;
+
+		for (i = 0; i < count; i++) {
+			if (probe) {
+				out[i].probed_at = now;
+				if (out[i].mounted)
+					out[i].capacity_known = fill_capacity(&out[i]) == 0;
+			} else {
+				g_identity_source(&out[i]);
+			}
+		}
+	}
 	qsort(out, (size_t)count, sizeof(out[0]), disk_order_compare);
 	return count;
+}
+
+int disk_enumerate(struct discovered_disk *out, int cap, const char *os_containers_dir)
+{
+	return enumerate(out, cap, os_containers_dir, g_identity_source == NULL);
+}
+
+int disk_enumerate_probe(struct discovered_disk *out, int cap, const char *os_containers_dir)
+{
+	return enumerate(out, cap, os_containers_dir, 1);
 }
 
 void disk_write_json_one(const struct discovered_disk *d, struct json_writer *w)
@@ -667,16 +712,32 @@ void disk_write_json_one(const struct discovered_disk *d, struct json_writer *w)
 	 * unformatted. role is joined here rather than leaving every client
 	 * to fetch GET /diskroles and match by name itself.
 	 */
+	/* ADR-0377: null while the disk snapshot has no current probe of
+	 * this device -- "" keeps meaning "probed, and there is none". */
 	jw_key(w, "fs_type");
-	jw_str(w, d->fs_type);
+	if (d->identity_known)
+		jw_str(w, d->fs_type);
+	else
+		jw_null(w);
 	jw_key(w, "fs_uuid");
-	jw_str(w, d->fs_uuid);
+	if (d->identity_known)
+		jw_str(w, d->fs_uuid);
+	else
+		jw_null(w);
 	/* Partitions only: the name in the partition table, which is what
 	 * whoever created it actually called it -- the fixed OS layout's
 	 * own cix-esp/cix-root-a/... names, or whatever POST
 	 * .../partitions was given. Write-only until now. */
 	jw_key(w, "part_label");
-	jw_str(w, d->part_label);
+	if (d->identity_known)
+		jw_str(w, d->part_label);
+	else
+		jw_null(w);
+	jw_key(w, "probed_at");
+	if (d->probed_at > 0)
+		jw_int(w, d->probed_at);
+	else
+		jw_null(w);
 	/* Partitions only: where it starts on its parent, in 512-byte
 	 * sectors. Reported because it is what tells a client whether a
 	 * free extent is adjacent to this partition and can therefore grow
@@ -702,10 +763,19 @@ void disk_write_json_one(const struct discovered_disk *d, struct json_writer *w)
 	jw_int(w, (long long)d->sectors_written);
 	jw_key(w, "io_time_ms");
 	jw_int(w, (long long)d->io_time_ms);
+	/* A mounted filesystem whose capacity the snapshot has not read
+	 * since it was mounted is null; an unmounted one is 0, as before,
+	 * with `mounted` saying why. */
 	jw_key(w, "used_bytes");
-	jw_int(w, (long long)d->used_bytes);
+	if (d->mounted && !d->capacity_known)
+		jw_null(w);
+	else
+		jw_int(w, (long long)d->used_bytes);
 	jw_key(w, "free_bytes");
-	jw_int(w, (long long)d->free_bytes);
+	if (d->mounted && !d->capacity_known)
+		jw_null(w);
+	else
+		jw_int(w, (long long)d->free_bytes);
 	jw_key(w, "is_partition");
 	jw_bool(w, d->is_partition);
 	jw_key(w, "parent_disk");

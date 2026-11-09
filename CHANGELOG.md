@@ -6,6 +6,33 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Disk reads answer from a snapshot; block devices are probed only in a helper child (ADR-0377 part 1, #675, 0.2.57-669)
+
+- **The defect:** `disk_enumerate()` read every block device's superblock and GPT label, and ran `statvfs` on every mounted filesystem, on the event loop. On 192.168.15.95 that held the loop for:
+  - 5240 ms in `GET /v1/storage`;
+  - 1173 ms in `GET /v1/volumes`;
+  - 795 ms in `GET /v1/storage/quota`.
+
+  All three happened during builds. About 25 callers ran the same walk, and `listStorage` and `getStorageQuota` are samples, so the self-check ran it every 30 s.
+- **Now:** a helper child probes the devices into one disk snapshot (`disksnap.c`). `disk_enumerate()` keeps its signature: topology and mount status are still read live from sysfs and `/proc/mounts`, while identity and capacity come from the snapshot.
+- **The snapshot refreshes:**
+  - after any touch: a format's start and end, a partition write, or a kernel block `add`, `remove` or `change` for the device and its disk;
+  - every 30 s;
+  - once in-process at start, before serving.
+
+  A refresh asked for while one runs is coalesced. A result is installed only if its device was not touched since the fork (`disksnap_result_installable()`).
+- **Contract:**
+  - `fs_type`, `fs_uuid`, `part_label`, and a mounted device's `used_bytes`/`free_bytes` are `null` while not known, and `probed_at` is new;
+  - a format reports `running` until its disk is known again;
+  - growing a partition whose filesystem is unknown is a 409 with `Retry-After`. Before this, unknown would have read as unformatted, and the table would have grown without the filesystem.
+- **Clients:** the dashboard shows "probing" through one helper (`diskFilesystemText()`), and `cixctl storage ls` prints `used=probing`.
+- **Gates:**
+  - `test_disksnap` covers the install rule, touches, gone and replaced devices;
+  - `test_blocking_waits` allows `disk_enumerate_probe()` only in the child and the start-up build.
+- **Still to come (part 2):**
+  - the artifact cache's walk and its eviction move into the same child;
+  - the direct `disk_probe_fs_uuid()` callers in storage placement and roles read the snapshot.
+
 ### The announcement self-check reads in a helper child (ADR-0376, #646, 0.2.57-668)
 
 - **The defect:** ADR-0339's self-check ran each state read's handler on the event loop. On 192.168.15.95 one rolling read held the loop 9410 ms (`GET /v1/pkg/cache`, with a stall record) and another 5240 ms (`GET /v1/storage`). Both happened during builds.

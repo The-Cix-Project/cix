@@ -970,6 +970,7 @@ static void check_architecture_components(void)
 		{ "credcheck.c", "Credential checks" },
 		{ "logread.c", "Filtered log reads" },
 		{ "devicestate.c", "Device state" },
+		{ "disksnap.c", "disk snapshot" },
 		{ "devicematch.c", "Device mappings" },
 		{ "kmodpolicy.c", "Module policy" },
 		{ "procfuse.c", "procfuse" },

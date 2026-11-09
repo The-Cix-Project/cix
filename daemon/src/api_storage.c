@@ -14,6 +14,7 @@
 #include "diskrole.h"
 #include "diskformat.h"
 #include "diskpart.h"
+#include "disksnap.h"
 #include "registry.h"
 #include "namecheck.h"
 #include "storageplacement.h"
@@ -643,6 +644,13 @@ static void respond_diskpart_error(int fd, enum diskpart_error err)
 		respond_error(fd, 400, "Bad Request",
 		              "only an ext4, btrfs or unformatted partition can be grown");
 		break;
+	case DISKPART_ERR_IDENTITY_UNKNOWN:
+		respond_error_hdrs(fd, 409, "Conflict", "Retry-After: 2\r\n",
+		                   "this partition changed and is still being probed, so whether it "
+		                   "holds a filesystem to grow is not known yet -- try again shortly "
+		                   "(ADR-0377)",
+		                   0);
+		break;
 	case DISKPART_ERR_KERNEL_SIZE_STALE:
 		respond_error(fd, 409, "Conflict",
 		              "the partition table was grown but the kernel is still reporting the old "
@@ -795,6 +803,7 @@ void handle_disk_partition_table_post(int fd, const char *disk_name, const char 
 	json_free(root);
 
 	derr = diskpart_create_table(disk_name, CONTAINERS_DIR);
+	disksnap_touch(disk_name); /* ADR-0377: after any write, whatever it did */
 	if (derr != DISKPART_OK) {
 		respond_diskpart_error(fd, derr);
 		return;
@@ -856,6 +865,7 @@ void handle_disk_partitions_post(int fd, const char *disk_name, const char *body
 		json_free(root);
 
 		derr = diskpart_add(disk_name, CONTAINERS_DIR, part_name_buf, size_mib);
+		disksnap_touch(disk_name); /* ADR-0377 */
 		if (derr != DISKPART_OK) {
 			respond_diskpart_error(fd, derr);
 			return;
@@ -919,6 +929,8 @@ void handle_disk_partition_resize(int fd, const char *disk_name, const char *par
 	json_free(root);
 
 	derr = diskpart_resize(disk_name, partition_name, CONTAINERS_DIR, size_mib);
+	disksnap_touch(disk_name); /* ADR-0377 */
+	disksnap_touch(partition_name);
 	if (derr != DISKPART_OK) {
 		respond_diskpart_error(fd, derr);
 		return;
@@ -950,6 +962,8 @@ void handle_disk_partition_delete(int fd, const char *disk_name, const char *par
 {
 	enum diskpart_error derr = diskpart_delete(disk_name, partition_name, CONTAINERS_DIR);
 
+	disksnap_touch(disk_name); /* ADR-0377 */
+	disksnap_touch(partition_name);
 	if (derr != DISKPART_OK) {
 		respond_diskpart_error(fd, derr);
 		return;

@@ -172,7 +172,36 @@ struct discovered_disk {
 	 */
 	int is_partition;
 	char parent_disk[32];
+	/*
+	 * ADR-0377: whether fs_type/fs_uuid/part_label, and for a mounted
+	 * device used_bytes/free_bytes, are known, and when the probe they
+	 * came from ran. disk_enumerate() reads them from the disk snapshot
+	 * once the daemon has one, and a device touched since its last probe
+	 * is unknown; disk_enumerate_probe() reads the device and knows.
+	 * Unknown is null in the API and never matches in a decision.
+	 */
+	int identity_known;
+	int capacity_known;
+	long long probed_at;
 };
+
+/*
+ * ADR-0377: where disk_enumerate() takes identity and capacity from
+ * instead of reading the devices. cixd registers the disk snapshot
+ * (disksnap_fill()) once it has built one; until then, and in any tool
+ * or test that registers nothing, disk_enumerate() probes every device
+ * itself as it always did.
+ */
+typedef void (*disk_identity_fn)(struct discovered_disk *e);
+void disk_set_identity_source(disk_identity_fn fn);
+
+/*
+ * disk_enumerate(), reading every device's superblock, GPT label and
+ * mounted capacity itself. Block I/O on every device: called only by
+ * the disk snapshot's helper child and by start-up code before the
+ * event loop serves (ADR-0377 item 1, counted by test_blocking_waits).
+ */
+int disk_enumerate_probe(struct discovered_disk *out, int cap, const char *os_containers_dir);
 
 /*
  * Walks /sys/class/block fresh, writing up to cap entries into out: every

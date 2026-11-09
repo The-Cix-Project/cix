@@ -7479,7 +7479,28 @@ const DISK_VOLATILE_FIELDS = ["used_bytes", "free_bytes", "reads_completed",
                               "writes_completed", "sectors_read", "sectors_written",
                               "io_time_ms"];
 
+/*
+ * ADR-0377: fs_type, fs_uuid, part_label and a mounted device's
+ * used/free bytes are null while the disk snapshot has not probed the
+ * device as it is now -- after a format, a partition write or a kernel
+ * event. null is never "no filesystem" and never "empty", so every
+ * surface that shows them asks these.
+ */
+const DISK_PROBING = "probing…";
+
+function diskFilesystemText(d, whenNone) {
+	if (d.fs_type === null)
+		return DISK_PROBING;
+	return d.fs_type || whenNone;
+}
+
+function diskUsageKnown(d) {
+	return d.used_bytes !== null && d.free_bytes !== null;
+}
+
 function diskUsageText(d) {
+	if (d.mounted && !diskUsageKnown(d))
+		return DISK_PROBING;
 	return d.mounted
 		? formatBytes(d.used_bytes) + " used / " + formatBytes(d.free_bytes) + " free"
 		: "-";
@@ -7587,7 +7608,7 @@ function diskListRow(d) {
 	 * recognised filesystem, which is different from unknown. */
 	const fsCell = document.createElement("td");
 
-	fsCell.textContent = d.fs_type || (d.has_mounted_partition ? "(partitioned)" : "none");
+	fsCell.textContent = diskFilesystemText(d, d.has_mounted_partition ? "(partitioned)" : "none");
 	row.appendChild(fsCell);
 
 	const mountedCell = document.createElement("td");
@@ -7658,9 +7679,7 @@ function diskRow(d) {
 	/* ADR-0142: real statvfs(2) usage, only meaningful while mounted. */
 	const usageCell = document.createElement("td");
 
-	usageCell.textContent = d.mounted
-		? formatBytes(d.used_bytes) + " used / " + formatBytes(d.free_bytes) + " free"
-		: "-";
+	usageCell.textContent = diskUsageText(d);
 	row.appendChild(usageCell);
 
 	/* ADR-0142: real, live, monotonically-increasing counters straight
@@ -7781,7 +7800,7 @@ function renderDiskDetail(name) {
 	fields.appendChild(fieldBlock("Kind", d.is_partition ? "partition of " + d.parent_disk : "whole disk"));
 	fields.appendChild(fieldBlock("Role", role ? role.role : "none"));
 	fields.appendChild(
-		fieldBlock("Filesystem", d.fs_type || (parts.length > 0 ? "(partitioned)" : "unformatted"))
+		fieldBlock("Filesystem", diskFilesystemText(d, parts.length > 0 ? "(partitioned)" : "unformatted"))
 	);
 	fields.appendChild(
 		fieldBlock("Mounted at", d.mounted ? d.mount_path : d.has_mounted_partition ? "(a partition of it is)" : "not mounted")
@@ -7860,13 +7879,15 @@ function renderDiskUsage(d) {
 	const host = document.getElementById("dd-usage");
 
 	host.textContent = "";
-	if (!d.mounted || d.used_bytes + d.free_bytes === 0) {
+	if (!d.mounted || !diskUsageKnown(d) || d.used_bytes + d.free_bytes === 0) {
 		const p = document.createElement("p");
 
 		p.className = "hint";
-		p.textContent = d.mounted
-			? "Mounted, but the filesystem reported no capacity."
-			: "Usage is only known while the device is mounted.";
+		p.textContent = !d.mounted
+			? "Usage is only known while the device is mounted."
+			: !diskUsageKnown(d)
+				? "Usage is being read, and appears here when it is."
+				: "Mounted, but the filesystem reported no capacity.";
 		host.appendChild(p);
 		return;
 	}
@@ -7998,7 +8019,7 @@ function renderDiskRoleTab(d, role) {
 	summary.className = "detail-table";
 	summary.appendChild(summaryBody);
 	summaryBody.appendChild(fieldBlock("Role", role ? role.role : "none"));
-	summaryBody.appendChild(fieldBlock("Filesystem", d.fs_type || "unformatted"));
+	summaryBody.appendChild(fieldBlock("Filesystem", diskFilesystemText(d, "unformatted")));
 	summaryBody.appendChild(fieldBlock("Mounted at", d.mounted ? d.mount_path : "not mounted"));
 	if (formatStatus && formatStatus.state !== "none")
 		summaryBody.appendChild(
@@ -8355,9 +8376,9 @@ function renderDiskPartitions(d, parts) {
 			return role ? role.role : (p.part_label || FIELD_ABSENT);
 		} },
 		"protected",
-		{ label: "Filesystem", text: (p) => p.fs_type || "unformatted" },
+		{ label: "Filesystem", text: (p) => diskFilesystemText(p, "unformatted") },
 		{ field: "mount_path", label: "Mounted" },
-		{ label: "Usage", text: (p) => (p.mounted && p.used_bytes + p.free_bytes > 0
+		{ label: "Usage", text: (p) => (p.mounted && !diskUsageKnown(p)) ? DISK_PROBING : (p.mounted && p.used_bytes + p.free_bytes > 0
 			? Math.round((p.used_bytes / (p.used_bytes + p.free_bytes)) * 100) + "% used"
 			: FIELD_ABSENT) },
 	], {

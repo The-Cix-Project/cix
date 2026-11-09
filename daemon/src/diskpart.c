@@ -1099,6 +1099,13 @@ enum diskpart_error diskpart_resize(const char *disk_name, const char *partition
 	if (diskpart_partition_protected(part.name, part.is_os_disk))
 		return DISKPART_ERR_PROTECTED_PARTITION;
 
+	/* ADR-0377: "" means unformatted only when the probe that said so
+	 * is current. Unknown would read as unformatted, and growing the
+	 * table of a formatted partition while leaving its filesystem alone
+	 * is not what was asked for. */
+	if (!part.identity_known)
+		return DISKPART_ERR_IDENTITY_UNKNOWN;
+
 	/* Only filesystems this can actually finish the job for (#163). */
 	if (part.fs_type[0] != '\0' && strcmp(part.fs_type, "ext4") != 0 &&
 	    strcmp(part.fs_type, "btrfs") != 0)

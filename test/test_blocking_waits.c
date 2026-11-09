@@ -664,6 +664,27 @@ static const char *const g_selfcheck_calls[] = {
 	NULL,
 };
 
+/*
+ * A TWELFTH COUNTED SET (ADR-0377, #675): reading block devices.
+ * disk_enumerate_probe() reads every device's superblock and GPT label
+ * and statvfs's every mounted filesystem. On 192.168.15.95 that held the
+ * loop 5240 ms (GET /v1/storage), 1173 ms (GET /v1/volumes) and 795 ms
+ * (GET /v1/storage/quota) during builds. disk_enumerate() reads the disk
+ * snapshot instead; the probe runs in disksnap_work(), the snapshot's
+ * helper child, and once in disksnap_build_now() before the loop serves.
+ */
+static const struct call_budget g_diskprobe_budgets[] = {
+	{ "disk.c", "disk_enumerate_probe(", 1, "the definition, not a call" },
+	{ "main.c", "disk_enumerate_probe(", 2,
+	  "disksnap_work(), which runs only in a helper child, and disksnap_build_now(), "
+	  "before the loop serves" },
+};
+
+static const char *const g_diskprobe_calls[] = {
+	"disk_enumerate_probe(",
+	NULL,
+};
+
 struct call_set {
 	const char *what;
 	const struct call_budget *budgets;
@@ -721,6 +742,12 @@ static const struct call_set g_call_sets[] = {
 	  "handler costs, and cixd has one event loop. Check a state read through "
 	  "events_check_submit_daemon_job() or POST /v1/events/verify (ADR-0376), which read in a "
 	  "helper child." },
+	{ "block device probe", g_diskprobe_budgets,
+	  (int)(sizeof(g_diskprobe_budgets) / sizeof(g_diskprobe_budgets[0])), g_diskprobe_calls,
+	  "Reading block devices waits for as long as a busy disk makes it, and cixd has one event "
+	  "loop. Read identity and capacity through disk_enumerate(), which answers from the disk "
+	  "snapshot, and touch the device with disksnap_touch() when something changes it "
+	  "(ADR-0377)." },
 };
 
 #define CALL_SET_COUNT ((int)(sizeof(g_call_sets) / sizeof(g_call_sets[0])))
