@@ -7,7 +7,7 @@ Accepted by the owner on 2026-11-09. Asked to choose between parking `GET /v1/st
 - It applies [ADR-0247](0247-the-reactor-does-not-block-and-that-is-the-defence.md), the loop's blocking budget, and [ADR-0278](0278-the-reactor-forks-work-it-cannot-afford-to-wait-for.md)'s `helper_run()`.
 - It extends to every disk read what [#100](https://git.home.arpa/itdlabs/cix/issues/100) did for one caller (`disk_currently_present()` in `diskrole.c`).
 - It changes `GET /v1/storage`'s contract: an identity or a capacity not known yet is `null`, never `""` or `0`.
-- It also makes `GET /v1/pkg/cache` and `GET /v1/pkg`'s `artifact_cached` answer from memory.
+- It also moves the artifact cache's walk into the same child, so `GET /v1/pkg/cache` and `GET /v1/pkg`'s `artifact_cached` answer from the snapshot.
 
 ## Context
 
@@ -75,15 +75,19 @@ Which step inside `disk_enumerate()` costs the time is **not measured**: the sup
 
 9. **Installing a snapshot that changed anything announces every read made from it**, through one setter: `listStorage`, `getStorageQuota`, `listDevices`, `listDeviceMaps` and `listVolumes`. ADR-0339 says the daemon's own state changes announce. A refresh that changed nothing announces nothing. Capacity moves on every refresh under write load, so used and free bytes are `x-cix-volatile-fields` of `listStorage` and `getStorageQuota`, as the session expiry is of the session list.
 
-10. **The artifact cache's total is kept in memory**, and the same applies to whether a given artifact is cached.
-    - cixd reads the cache directory once, in-process before serving.
-    - From then on it updates one in-memory index at every write: storing an artifact (`pkg_cache_save_from_file()`), the completion of an export child that wrote one, an eviction, a clear, and the start-up retirement of `.tar.gz` files.
-    - `GET /v1/pkg/cache`, the LRU eviction order, and each package's `artifact_cached` in `GET /v1/pkg` read the index.
-    - Nothing else writes the directory, and the gate counts the paths that open it.
+10. **The artifact cache's walk joins the snapshot.** The same child that probes the disks also walks the artifact cache: one `readdir` and one `stat` per file, the walk `cache_scan()` does today. `GET /v1/pkg/cache` and each package's `artifact_cached` in `GET /v1/pkg` answer from that.
+
+    The LRU eviction moves into the child too. When the walk finds the cache over its maximum, the child unlinks the oldest files until it fits, and reports what is left. It is no longer a walk on the loop before every store.
+
+    **An in-memory index kept at each write was considered and rejected.** The cache has more than one writer: `pkg_cache_save_from_file()`, the export child that writes a hostbuild's artifact straight into the directory, and the signatures beside the artifacts. An index that missed one writer would be wrong silently, and for as long as cixd ran. The walk cannot miss a writer. At worst a write nobody announced is seen one period late.
+
+    `pkg_announce_cache()`, which every writer already calls, now asks for a refresh. The install that follows announces `getPkgCache` and `listPkgs` if the walk changed anything. So the announcement always comes after the state it describes.
+
+    **Decisions still `stat` the one file they ask about.** Whether this version is cached (`pkg_cache_has()`) decides whether a build runs, and must be true at that moment. One `stat` of one path is not a walk.
 
 11. **Gates.**
     - `test_blocking_waits` counts the call sites of `probe_fs(`, `partlabel_read(`, `disk_probe_fs_type(`, `disk_probe_fs_uuid(` and `fill_capacity(` in `daemon/src`. They are allowed only in the child's work function and in start-up code that runs before the loop.
-    - It counts `opendir(g_cache_dir)` the same way, allowing only the start-up read and a clear.
+    - It counts `cache_scan(` the same way, allowing only the child and the start-up build.
 
 ## Out of scope
 
