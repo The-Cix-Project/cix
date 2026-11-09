@@ -1734,8 +1734,35 @@ void pkg_cache_write_json_status(struct json_writer *w);
  * else in this module ever calls this itself. */
 void pkg_cache_clear(void);
 /* ADR-0339: announces a change to the artifact cache's contents, for a
- * writer outside pkg.c (an artifact export lands there directly). */
+ * writer outside pkg.c (an artifact export lands there directly).
+ * ADR-0377: asks the disk snapshot's child to walk the cache; the
+ * announcement follows once that walk is installed. */
 void pkg_announce_cache(void);
+
+/*
+ * ADR-0377 part 2: the artifact cache's walk, made by the disk
+ * snapshot's helper child, and what GET /v1/pkg/cache and each
+ * package's artifact_cached answer from. The walk also evicts: when
+ * the cache is over max_bytes it unlinks the least recently used files
+ * until it fits, and reports what is left. Names are sorted, so two
+ * walks of the same set compare equal.
+ */
+#define PKG_CACHE_WALK_MAX 4096
+#define PKG_CACHE_WALK_NAME_MAX (PKG_NAME_MAX + PKG_VERSION_MAX + 16)
+struct pkg_cache_walk {
+	int ok;
+	long long total_bytes;
+	int count;
+	int evicted;
+	char names[PKG_CACHE_WALK_MAX][PKG_CACHE_WALK_NAME_MAX];
+};
+
+/* In the helper child, or before the loop serves: walk, evict, report. */
+void pkg_cache_walk_evict(struct pkg_cache_walk *out);
+
+/* In the daemon: installs a walk, and announces the reads built from it
+ * when anything a client sees changed. */
+void pkg_cache_walk_install(const struct pkg_cache_walk *w);
 
 /* ---- ADR-0157 Phase 3: operator-configured concurrent-build limit ---- */
 

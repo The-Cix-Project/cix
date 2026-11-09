@@ -6075,7 +6075,27 @@ skip_pin_isolation:
 			 * "exists only on this disk" -- it was found by comparing
 			 * two systems by hand. artifact_cached answers the half a
 			 * host can know for free.
+			 *
+			 * ADR-0377 part 2: from the disk snapshot's last walk of the
+			 * cache, which follows the export within about a second. So
+			 * wait for it (up to 15 s), then make the ordinary check.
 			 */
+			{
+				int w;
+
+				for (w = 0; w < 60; w++) {
+					int seen;
+
+					memset(&r, 0, sizeof(r));
+					seen = cix_client_request(&client, "GET", "/v1/pkg/hostbuild/hbtest", NULL,
+					                          &r) == 0 &&
+					       r.status == 200 && json_bool_field(r.json, "artifact_cached");
+					cix_response_free(&r);
+					if (seen)
+						break;
+					usleep(250000);
+				}
+			}
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "GET", "/v1/pkg/hostbuild/hbtest", NULL, &r) != 0 ||
 			    r.status != 200) {

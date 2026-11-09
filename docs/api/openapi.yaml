@@ -12157,6 +12157,15 @@ paths:
   /pkg/cache:
     get:
       summary: Current local build-artifact cache occupancy.
+      description: >
+        From the last walk of the cache, made by the disk snapshot's
+        helper child rather than by this request, so a busy disk never
+        holds the daemon's event loop (ADR-0377). The walk follows a
+        store, a clear or a lowered max_bytes within about a second, and
+        this read is announced when it lands; it also runs every 30 s.
+        The same walk evicts the least recently used artifacts when the
+        cache is over max_bytes, so until it runs the cache may exceed
+        its cap by what was stored since the last one.
       operationId: getPkgCache
       x-cix-read: state
       x-cix-permission: packages:read

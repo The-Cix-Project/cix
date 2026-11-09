@@ -14,6 +14,7 @@
 #include "linux_compat.h"
 #include "logstore.h"
 #include "events.h"
+#include "disksnap.h"
 #include "elfcheck.h"
 #include "namecheck.h"
 #include "cbsevents.h"
@@ -6723,6 +6724,9 @@ static void phases_write_json(struct json_writer *w, const enum cbs_phase_state 
 	jw_arr_close(w);
 }
 
+/* ADR-0377 part 2: whether the cache's last walk saw an artifact (below). */
+static int cache_view_has(const char *name, const char *version);
+
 /* #489: the command a build failed in, as {"command","log_path","message",
  * "exit_status","signal"}, or null. log_path is inside the build
  * container. exit_status is the command's own code, or -1 when it did
@@ -6838,7 +6842,7 @@ static void write_pkg_json(const struct pkg_entry *e, struct json_writer *w)
 	 */
 	jw_key(w, "artifact_cached");
 	jw_bool(w, e->state == PKG_STATE_INSTALLED &&
-	                  pkg_artifact_cache_has(e->name, e->version));
+	                  cache_view_has(e->name, e->version)); /* ADR-0377 part 2 */
 	jw_key(w, "error");
 	if (e->error[0] != '\0')
 		jw_str(w, e->error);
@@ -21088,6 +21092,7 @@ enum pkg_error pkg_cache_set_max_bytes(long long max_bytes)
 	g_cache_max_bytes = max_bytes;
 	if (save_cache_config() != 0)
 		return PKG_ERR_PERSIST_FAILED;
+	disksnap_want(); /* ADR-0377 part 2: a lower max evicts at the next walk */
 	return PKG_OK;
 }
 
@@ -21098,9 +21103,9 @@ enum pkg_error pkg_cache_set_max_bytes(long long max_bytes)
  * real cache holding more than this many distinct (name,version)
  * artifacts at once is not a case this project has ever seen -- a
  * real, generous bound, not an unbounded scan. */
-#define PKG_CACHE_SCAN_MAX 4096
+#define PKG_CACHE_SCAN_MAX PKG_CACHE_WALK_MAX /* one bound for the scan and the walk it fills (pkg.h) */
 struct cache_scan_entry {
-	char filename[PKG_NAME_MAX + PKG_VERSION_MAX + 16];
+	char filename[PKG_CACHE_WALK_NAME_MAX];
 	time_t mtime;
 	long long size;
 };
@@ -21165,23 +21170,90 @@ static long long cache_scan(void)
  */
 void pkg_announce_cache(void)
 {
+	/* ADR-0377 part 2: what the reads answer comes from the cache's walk,
+	 * so the announcement follows the walk that sees this change. */
+	disksnap_want();
+}
+
+/*
+ * ADR-0377 part 2: the cache as the disk snapshot's child last walked
+ * it. cache_scan() was a readdir and a stat per file on the event loop,
+ * once per GET /v1/pkg/cache and once before every store; on
+ * 192.168.15.95 one such read held the loop 9410 ms, in D state on
+ * wait_current_trans (GET /v1/system/stalls, ts 1793934027).
+ */
+static struct pkg_cache_walk g_cache_view;
+
+static int walk_name_cmp(const void *a, const void *b)
+{
+	return strcmp((const char *)a, (const char *)b);
+}
+
+void pkg_cache_walk_evict(struct pkg_cache_walk *out)
+{
+	long long total = cache_scan();
+	int i, n = 0;
+
+	out->ok = 1;
+	out->evicted = 0;
+	/* Oldest first (cache_scan()'s order): least recently used, since a
+	 * hit and a store both bump the mtime (pkg_cache_touch()). */
+	for (i = 0; i < g_cache_scan_count; i++) {
+		if (total > g_cache_max_bytes) {
+			char path[PATH_MAX];
+
+			snprintf(path, sizeof(path), "%s/%s", g_cache_dir, g_cache_scan_buf[i].filename);
+			if (unlink(path) == 0) {
+				total -= g_cache_scan_buf[i].size;
+				out->evicted++;
+				continue;
+			}
+		}
+		snprintf(out->names[n], sizeof(out->names[n]), "%s", g_cache_scan_buf[i].filename);
+		n++;
+	}
+	qsort(out->names, (size_t)n, sizeof(out->names[0]), walk_name_cmp);
+	out->total_bytes = total;
+	out->count = n;
+}
+
+void pkg_cache_walk_install(const struct pkg_cache_walk *w)
+{
+	int changed;
+
+	if (w == NULL || !w->ok || w->count < 0 || w->count > PKG_CACHE_WALK_MAX)
+		return;
+	changed = !g_cache_view.ok || g_cache_view.total_bytes != w->total_bytes ||
+	          g_cache_view.count != w->count ||
+	          memcmp(g_cache_view.names, w->names, (size_t)w->count * sizeof(w->names[0])) != 0;
+	if (w->evicted > 0)
+		logstore_write("cixd", "info",
+		               "artifact cache: evicted %d least recently used artifact(s) to fit "
+		               "max_bytes %lld (ADR-0377)",
+		               w->evicted, g_cache_max_bytes);
+	if (!changed)
+		return;
+	g_cache_view.ok = 1;
+	g_cache_view.total_bytes = w->total_bytes;
+	g_cache_view.count = w->count;
+	memcpy(g_cache_view.names, w->names, (size_t)w->count * sizeof(w->names[0]));
 	events_announce(EV_getPkgCache);
 	events_announce(EV_listPkg);
 	events_announce(EV_getPkg);
 }
 
-static void cache_evict_lru_until_fits(long long incoming_size)
+/* Whether the last walk saw this version's artifact: what GET /v1/pkg's
+ * artifact_cached reports. A decision asks pkg_artifact_cache_has(),
+ * one stat of one path, which is true now. */
+static int cache_view_has(const char *name, const char *version)
 {
-	long long total = cache_scan();
-	int i;
+	char want[PKG_CACHE_WALK_NAME_MAX];
 
-	for (i = 0; i < g_cache_scan_count && total + incoming_size > g_cache_max_bytes; i++) {
-		char path[PATH_MAX];
-
-		snprintf(path, sizeof(path), "%s/%s", g_cache_dir, g_cache_scan_buf[i].filename);
-		if (unlink(path) == 0)
-			total -= g_cache_scan_buf[i].size;
-	}
+	snprintf(want, sizeof(want), "%s-%s%s", name, version,
+	         artifact_suffix(PKG_ARTIFACT_FORMAT_CIXPKG));
+	return g_cache_view.ok &&
+	       bsearch(want, g_cache_view.names, (size_t)g_cache_view.count,
+	               sizeof(g_cache_view.names[0]), walk_name_cmp) != NULL;
 }
 
 static int pkg_cache_has(const char *name, const char *version)
@@ -21236,7 +21308,9 @@ static void pkg_cache_save_from_file(const char *name, const char *version, cons
 		unlink(src_path);
 		return;
 	}
-	cache_evict_lru_until_fits(size);
+	/* ADR-0377 part 2: eviction is the walk's, which pkg_announce_cache()
+	 * below asks for. Until it runs, the cache may hold this artifact over
+	 * max_bytes -- one store's worth, for at most one walk. */
 	unlink(final_path);
 	if (rename(src_path, final_path) != 0) {
 		if (copy_file_simple(src_path, final_path) == 0)
@@ -21309,17 +21383,16 @@ static void warn_unexecutable_binaries(const char *root, const char *pkg_name, i
 	closedir(d);
 }
 
+/* ADR-0377 part 2: the last walk's answer, never a walk of its own. */
 void pkg_cache_write_json_status(struct json_writer *w)
 {
-	long long total = cache_scan();
-
 	jw_obj_open(w);
 	jw_key(w, "max_bytes");
 	jw_int(w, g_cache_max_bytes);
 	jw_key(w, "current_bytes");
-	jw_int(w, total);
+	jw_int(w, g_cache_view.total_bytes);
 	jw_key(w, "entry_count");
-	jw_int(w, g_cache_scan_count);
+	jw_int(w, g_cache_view.count);
 	jw_obj_close(w);
 }
 

@@ -524,6 +524,42 @@ static long cache_json_long(const struct json_value *v, const char *key)
 	return (long)json_as_number(json_object_get(v, key));
 }
 
+enum cache_want { CACHE_EQ, CACHE_GT, CACHE_LE };
+
+/*
+ * ADR-0377 part 2: GET /v1/pkg/cache answers from the disk snapshot's
+ * last walk of the cache. That walk follows a store, a lowered cap or a
+ * clear within about a second, evicts if the cache is over its cap, and
+ * is announced when it lands. So a check that follows a write first
+ * waits for the walk -- up to 15 s for `key` to satisfy want/value --
+ * and then makes its ordinary read and assertion, which this does not
+ * replace. A wait that runs out is not itself a failure; the assertion
+ * after it is.
+ */
+static void wait_cache_field(const struct cix_client *client, const char *key,
+                             enum cache_want want, long value)
+{
+	int i;
+
+	for (i = 0; i < 60; i++) {
+		struct cix_response r;
+		int done = 0;
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(client, "GET", "/v1/pkg/cache", NULL, &r) == 0 &&
+		    r.status == 200 && r.json != NULL) {
+			long got = cache_json_long(r.json, key);
+
+			done = (want == CACHE_EQ && got == value) || (want == CACHE_GT && got > value) ||
+			       (want == CACHE_LE && got <= value);
+		}
+		cix_response_free(&r);
+		if (done)
+			return;
+		usleep(250000);
+	}
+}
+
 /*
  * The shared loopback file server (test_image_fixture.c), rooted at dir.
  * This was `python3 -m http.server`, and a Cix build environment has no
@@ -687,6 +723,7 @@ int main(void)
 		}
 	}
 
+	wait_cache_field(&client, "entry_count", CACHE_EQ, 1);
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 200,
 	      "GET /v1/pkg/cache (after real build)");
@@ -779,6 +816,9 @@ int main(void)
 		CHECK(wait_for_pkg_state(&client, "cachetest2", "imgC", "installed", 300) == 0,
 		      "cachetest2@imgC reaches state=installed");
 
+		/* The eviction is the walk's, so the walk has to have run before
+		 * the total or the evicted file can be checked. */
+		wait_cache_field(&client, "current_bytes", CACHE_LE, 2048);
 		memset(&r, 0, sizeof(r));
 		CHECK(cix_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 200,
 		      "GET /v1/pkg/cache (after LRU eviction)");
@@ -812,6 +852,7 @@ int main(void)
 	CHECK(cix_client_request(&client, "DELETE", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 204,
 	      "DELETE /v1/pkg/cache");
 	cix_response_free(&r);
+	wait_cache_field(&client, "entry_count", CACHE_EQ, 0);
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 200,
 	      "GET /v1/pkg/cache (after clear)");
@@ -913,6 +954,7 @@ int main(void)
 			CHECK(wait_for_pkg_state(&client, "artifacttest", "imgD", "installed", 300) == 0,
 			      "artifacttest@imgD reaches state=installed via the artifact tier");
 
+			wait_cache_field(&client, "entry_count", CACHE_EQ, 1);
 			memset(&r, 0, sizeof(r));
 			CHECK(cix_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 &&
 			              r.status == 200,
@@ -1019,6 +1061,7 @@ int main(void)
 				      "a cache-hit cix hostbuild still triggers the bootroot assembly "
 				      "(started_generation advanced past its pre-install value)");
 
+				wait_cache_field(&client, "entry_count", CACHE_EQ, 4);
 				memset(&r, 0, sizeof(r));
 				CHECK(cix_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 &&
 				              r.status == 200 && r.json != NULL &&

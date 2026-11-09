@@ -348,8 +348,8 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **A change to a device is followed by `disksnap_touch(name)`, never by a read.** The touch bumps the device's counter, makes it unknown at once, and asks for a refresh. A touch that makes a known device unknown is announced from the tick, because a uevent has no request to announce it. A result read across a touch is never installed (`disksnap_result_installable()`).
 - **Unknown is `null` in the API and never matches in a decision.** A decision that needs a device's identity and finds it unknown refuses with a 409 and `Retry-After` (the partition resize is the first). Never read `""` as "no filesystem" without `identity_known`.
 - **A refresh is coalesced, never dropped.** That is unlike ADR-0376's self-check, which skips.
+- **The artifact cache is walked and evicted by the same child.** `GET /v1/pkg/cache` and `artifact_cached` read that walk; `pkg_announce_cache()` asks for a new one. Never walk the cache anywhere else, and never evict at a store. A decision asks `pkg_artifact_cache_has()`, which is one stat.
 - **Part 2 is not built yet:**
-  - the artifact cache's walk and its LRU eviction move into the same child;
   - the direct `disk_probe_fs_uuid()` callers (storage placement, roles, data storage migrate) read the snapshot.
 
 ## A log read never walks the store on the event loop

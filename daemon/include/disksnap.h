@@ -69,6 +69,10 @@ int disksnap_identity_known(const char *name);
 /* Was a refresh asked for since the last call; clears the request. */
 int disksnap_take_wanted(void);
 
+/* Asks for a refresh without touching a device: the artifact cache's
+ * contents changed, and the same child walks it (ADR-0377 part 2). */
+void disksnap_want(void);
+
 /*
  * Did a touch turn a known device unknown since the last call; clears
  * it. Every read built from the snapshot then answers differently, and

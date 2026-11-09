@@ -36212,6 +36212,8 @@ struct disksnap_result {
 	char held[DISKSNAP_HELD_LOG_MAX];
 	int n;
 	struct discovered_disk disks[DISK_ENUM_MAX];
+	/* Part 2: the artifact cache, walked and evicted by the same child. */
+	struct pkg_cache_walk cache;
 };
 
 static int g_disksnap_running;
@@ -36229,6 +36231,7 @@ static int disksnap_work(void *arg)
 	persist_set_readonly();
 	logstore_hold(r.held, sizeof(r.held));
 	r.n = disk_enumerate_probe(r.disks, DISK_ENUM_MAX, CONTAINERS_DIR);
+	pkg_cache_walk_evict(&r.cache);
 	return cix_write_all(g_disksnap_memfd, &r, sizeof(r)) == 0 ? 0 : 1;
 }
 
@@ -36258,6 +36261,7 @@ static void disksnap_done(int exit_status, void *ctx)
 		logstore_replay(r.held, sizeof(r.held));
 		if (disksnap_install(r.disks, r.n, &g_disksnap_at_fork))
 			disksnap_announce();
+		pkg_cache_walk_install(&r.cache); /* announces its own reads */
 	} else {
 		logstore_write("cixd", "warn",
 		               "the disk snapshot's probe ended without a result (helper exit %d) -- "
@@ -36334,12 +36338,15 @@ static void disksnap_tick(void)
 static void disksnap_build_now(void)
 {
 	static struct discovered_disk disks[DISK_ENUM_MAX];
+	static struct pkg_cache_walk cache;
 	struct disksnap_counters c;
 	int n = disk_enumerate_probe(disks, DISK_ENUM_MAX, CONTAINERS_DIR);
 
 	disksnap_counters_capture(&c);
 	(void)disksnap_install(disks, n, &c);
 	disk_set_identity_source(disksnap_fill);
+	pkg_cache_walk_evict(&cache);
+	pkg_cache_walk_install(&cache);
 	g_disksnap_last_ms = monotonic_ms();
 }
 

@@ -96,7 +96,7 @@ Which step inside `disk_enumerate()` costs the time is **not measured**: the sup
 11. **Gates.**
     - `test_blocking_waits` counts the lines naming `disk_enumerate_probe(`, the one door to the walk that reads devices: the child and the start-up build.
     - It counts `disk_probe_fs_type(` and `disk_probe_fs_uuid(`, one device's superblock read directly, at today's numbers per file. So part 2's removals are a visible lowering, not a claim.
-    - Part 2 adds `cache_scan(` the same way.
+    - It counts `cache_scan(` and `pkg_cache_walk_evict(` the same way: the definitions, the child and the start-up build.
     - `test_disksnap` drives the install rule, touches, replaced and departed devices, and the announcement flag.
 
 ## Built in part 1, and what part 2 adds
@@ -108,10 +108,10 @@ Which step inside `disk_enumerate()` costs the time is **not measured**: the sup
 - the 30 s period and the start-up build;
 - `null`, `probed_at` and a format reporting `running` until its disk is known;
 - the 409 on growing a partition of unknown identity;
-- the dashboard's "probing" and the gates.
+- the dashboard's "probing" and the gates;
+- the artifact cache's walk and eviction in the same child (item 10), which `GET /v1/pkg/cache` and `artifact_cached` answer from.
 
 **Part 2:**
-- **The artifact cache** (item 10): its walk and eviction move into the same child.
 - **The direct superblock reads become snapshot reads.** These are storage placement's `set` and `set_pending`, a role's `set_fs_type` and `resolve_recorded`, and the data storage migration. Each also gets item 4's 409 when the identity is unknown. Reads before the loop serves (`load_state()`) stay as they are.
 - **Touches from a mount or unmount, a swap on or off, and the release of a block device grant.** None of these changes identity. The first two change only whether capacity applies, which `disksnap_fill()` already reports as unknown for a device mounted since its probe. The third is bounded today by the 30 s period.
 

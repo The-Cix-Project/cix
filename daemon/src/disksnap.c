@@ -226,6 +226,11 @@ int disksnap_identity_known(const char *name)
 	return x != NULL && x->identity_known;
 }
 
+void disksnap_want(void)
+{
+	g_wanted = 1;
+}
+
 int disksnap_take_wanted(void)
 {
 	int w = g_wanted;

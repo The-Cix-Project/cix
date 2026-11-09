@@ -702,6 +702,30 @@ static const char *const g_diskprobe_calls[] = {
 	NULL,
 };
 
+/*
+ * A THIRTEENTH COUNTED SET (ADR-0377 part 2): walking the artifact cache.
+ * cache_scan() is a readdir and a stat per cached file; on 192.168.15.95
+ * one such walk, for GET /v1/pkg/cache, held the loop 9410 ms in D state
+ * on wait_current_trans (ts 1793934027). It runs in
+ * pkg_cache_walk_evict(), which the disk snapshot's helper child calls,
+ * and once before the loop serves.
+ */
+static const struct call_budget g_cachewalk_budgets[] = {
+	{ "pkg.c", "cache_scan(", 2,
+	  "the definition, and pkg_cache_walk_evict(), run only by the disk snapshot's helper "
+	  "child and once before the loop serves" },
+	{ "pkg.c", "pkg_cache_walk_evict(", 1, "the definition, not a call" },
+	{ "main.c", "pkg_cache_walk_evict(", 2,
+	  "disksnap_work(), in the helper child, and disksnap_build_now(), before the loop "
+	  "serves" },
+};
+
+static const char *const g_cachewalk_calls[] = {
+	"cache_scan(",
+	"pkg_cache_walk_evict(",
+	NULL,
+};
+
 struct call_set {
 	const char *what;
 	const struct call_budget *budgets;
@@ -765,6 +789,12 @@ static const struct call_set g_call_sets[] = {
 	  "loop. Read identity and capacity through disk_enumerate(), which answers from the disk "
 	  "snapshot, and touch the device with disksnap_touch() when something changes it "
 	  "(ADR-0377)." },
+	{ "artifact cache walk", g_cachewalk_budgets,
+	  (int)(sizeof(g_cachewalk_budgets) / sizeof(g_cachewalk_budgets[0])), g_cachewalk_calls,
+	  "Walking the artifact cache stats every file in it, and cixd has one event loop. Read "
+	  "the last walk (pkg_cache_write_json_status(), cache_view_has()), ask for a new one with "
+	  "pkg_announce_cache(), and ask whether one version is cached with "
+	  "pkg_artifact_cache_has(), which is one stat (ADR-0377)." },
 };
 
 #define CALL_SET_COUNT ((int)(sizeof(g_call_sets) / sizeof(g_call_sets[0])))

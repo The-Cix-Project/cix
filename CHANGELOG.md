@@ -6,7 +6,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
-### Disk reads answer from a snapshot; block devices are probed only in a helper child (ADR-0377 part 1, #675, 0.2.57-669)
+### Disk reads and the artifact cache answer from a snapshot; block devices are probed only in a helper child (ADR-0377, #675, 0.2.57-669)
 
 - **The defect:** `disk_enumerate()` read every block device's superblock and GPT label, and ran `statvfs` on every mounted filesystem, on the event loop. On 192.168.15.95 that held the loop for:
   - 5240 ms in `GET /v1/storage`;
@@ -29,9 +29,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **Gates:**
   - `test_disksnap` covers the install rule, touches, gone and replaced devices;
   - `test_blocking_waits` allows `disk_enumerate_probe()` only in the child and the start-up build.
-- **Still to come (part 2):**
-  - the artifact cache's walk and its eviction move into the same child;
-  - the direct `disk_probe_fs_uuid()` callers in storage placement and roles read the snapshot.
+- **The artifact cache's walk joins the snapshot.**
+  - `GET /v1/pkg/cache` was a `readdir` and a `stat` per cached file on the loop, and once held it 9410 ms in D state on `wait_current_trans`.
+  - The snapshot's child now walks the cache and runs the LRU eviction, which used to run before every store. `GET /v1/pkg/cache` and `GET /v1/pkg`'s `artifact_cached` answer from that walk.
+  - `pkg_announce_cache()` asks for the walk, and the walk's install announces. Until the walk runs, the cache may exceed its cap by what was just stored.
+  - A decision still asks `pkg_artifact_cache_has()`, one `stat` of one file.
+  - `test_pkg_cache` and `test_pkg` wait for the walk before their existing assertions.
+- **Still to come (part 2):** the direct `disk_probe_fs_uuid()` callers in storage placement, roles and the data storage migration read the snapshot.
 
 ### The announcement self-check reads in a helper child (ADR-0376, #646, 0.2.57-668)
 
