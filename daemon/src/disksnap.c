@@ -35,6 +35,9 @@ struct counter {
 static struct counter g_counters[DISKSNAP_MAX];
 static int g_ncounters;
 static int g_wanted;
+/* A touch turned a known entry unknown: what every read built from the
+ * snapshot answers has changed, and must be announced (ADR-0339). */
+static int g_changed;
 
 static struct snap_entry *entry_find(const char *name)
 {
@@ -82,10 +85,20 @@ void disksnap_touch(const char *name)
 	g_counters[i].value++;
 	e = entry_find(name);
 	if (e != NULL) {
+		if (e->identity_known || e->capacity_known)
+			g_changed = 1;
 		e->identity_known = 0;
 		e->capacity_known = 0;
 	}
 	g_wanted = 1;
+}
+
+int disksnap_take_changed(void)
+{
+	int c = g_changed;
+
+	g_changed = 0;
+	return c;
 }
 
 void disksnap_counters_capture(struct disksnap_counters *out)
@@ -227,4 +240,5 @@ void disksnap_reset(void)
 	memset(g_counters, 0, sizeof(g_counters));
 	g_ncounters = 0;
 	g_wanted = 0;
+	g_changed = 0;
 }

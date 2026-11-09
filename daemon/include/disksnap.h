@@ -69,6 +69,14 @@ int disksnap_identity_known(const char *name);
 /* Was a refresh asked for since the last call; clears the request. */
 int disksnap_take_wanted(void);
 
+/*
+ * Did a touch turn a known device unknown since the last call; clears
+ * it. Every read built from the snapshot then answers differently, and
+ * a kernel uevent has no request to announce it, so main.c announces
+ * them when this says so (ADR-0339).
+ */
+int disksnap_take_changed(void);
+
 /* Test only: forget everything. */
 void disksnap_reset(void);
 

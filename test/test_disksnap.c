@@ -107,9 +107,14 @@ int main(void)
 
 	/* A touch makes the device unknown at once and asks for a refresh. */
 	(void)disksnap_take_wanted();
+	(void)disksnap_take_changed();
 	disksnap_touch("sda1");
 	check(disksnap_take_wanted(), "a touch asks for a refresh");
 	check(!disksnap_take_wanted(), "and asks once");
+	check(disksnap_take_changed(),
+	      "a touch that made a known device unknown is a change to announce");
+	disksnap_touch("sda1");
+	check(!disksnap_take_changed(), "touching a device already unknown changes nothing");
 	check(!disksnap_identity_known("sda1"), "a touched device is unknown at once");
 	e = live("sda1", 400, 0);
 	disksnap_fill(&e);

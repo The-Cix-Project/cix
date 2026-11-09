@@ -20,7 +20,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - every 30 s;
   - once in-process at start, before serving.
 
-  A refresh asked for while one runs is coalesced. A result is installed only if its device was not touched since the fork (`disksnap_result_installable()`).
+  A refresh asked for while one runs is coalesced. A result is installed only if its device was not touched since the fork (`disksnap_result_installable()`). A touch that makes a known device unknown is announced, since a uevent has no request to announce it.
 - **Contract:**
   - `fs_type`, `fs_uuid`, `part_label`, and a mounted device's `used_bytes`/`free_bytes` are `null` while not known, and `probed_at` is new;
   - a format reports `running` until its disk is known again;

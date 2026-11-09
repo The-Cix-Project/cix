@@ -38,7 +38,7 @@ Which step inside `disk_enumerate()` costs the time is **not measured**: the sup
 
 ## Decision
 
-1. **Once the loop serves, a block device is read only in a helper child.** Superblock probes, GPT label reads and `statvfs` of a mounted data filesystem happen in `disksnap_work()`, the snapshot's helper. Nowhere else after start: no handler, no write path, no grant check.
+1. **Once the loop serves, a block device is read only in a helper child.** Superblock probes, GPT label reads and `statvfs` of a mounted data filesystem happen in `disksnap_work()`, the snapshot's helper. Nowhere else after start: no handler, no write path, no grant check. Part 1 moves the device walk; the few direct single-device reads move in part 2 (see the end).
 
 2. **One snapshot holds what that child read.** For every device, keyed by name, it holds:
    - identity: filesystem type, filesystem UUID and partition label;
@@ -53,14 +53,14 @@ Which step inside `disk_enumerate()` costs the time is **not measured**: the sup
    - **In the contract:** `GET /v1/storage` reports an unknown `fs_type`, `fs_uuid`, `part_label`, `used_bytes` or `free_bytes` as `null`, and adds `probed_at`, the time of the probe the identity came from. `""` keeps meaning "probed, and there is none". Contract and README change together.
    - **In the dashboard:** the storage view renders null as "probing", never as "no filesystem".
    - **In a caller that decides by identity:** unknown never matches. That covers role resolution by UUID (`diskrole_resolve_recorded()`), the ADR-0345 `fs_uuid` selector, storage placement by UUID, and the quota report's btrfs filter.
-   - **In a write that records a disk's identity** (storage placement, a role's filesystem type): unknown is a 409 naming the disk as still being probed, so the request can be retried. It never records an empty UUID.
+   - **In a write that records a disk's identity** (storage placement, a role's filesystem type): unknown is a 409 naming the disk as still being probed, so the request can be retried. It never records an empty UUID. These callers read the device directly until part 2.
 
-5. **Every device has a change counter, and it alone decides whether a probe result may be installed.** The counter is bumped by:
-   - every cixd operation that changes a device: a format, a partition-table write, a partition add, delete or resize, a mount or unmount, a swap on or off. Each operation bumps it both before it starts and after it ends;
-   - a kernel block uevent (`add`, `remove` or `change`), for the device, its parent and its partitions;
-   - the release of a block device grant.
+5. **Every device has a change counter, and it alone decides whether a probe result may be installed.** It is bumped by `disksnap_touch()` whenever something changes, or may have changed, what a device holds:
+   - **A format** touches its disk when `mkfs` starts and again when it ends, because it runs asynchronously while the loop goes on serving.
+   - **A partition write** (a new table, or adding, resizing or deleting a partition) touches its disk, and the partition it named, once, after the write. The write runs synchronously on the loop, so no reader on the loop can see it half done. A probe child forked before or during it is discarded by the counter that moved.
+   - **A kernel block uevent** (`add`, `remove` or `change`) touches the device and, for a partition, its disk.
 
-   Bumping the counter also makes the entry unknown at once. A probe result is installed only if its device's counter is the same as when the child was forked. That is what stops a periodic probe from installing a superblock it read halfway through a format. The rule is one pure function, `disksnap_result_installable()`, with its own unit test.
+   Bumping the counter also makes the entry unknown at once. A touch that turns a known entry unknown is announced (item 9), because every read built from the snapshot now answers differently. A probe result is installed only if its device's counter is the same as when the child was forked. That is what stops a periodic probe from installing a superblock it read halfway through a format. The rule is one pure function, `disksnap_result_installable()`, with its own unit test.
 
 6. **A refresh asked for while one is running is coalesced, never dropped.** This differs from ADR-0376's rolling check, which skips. A self-check that is skipped loses nothing, because the next one compares the same state. A refresh is asked for because something changed, so skipping it would leave an entry unknown until the next periodic one. So there is one child at a time, plus an `again` flag. The child that is running finishes, and exactly one more starts.
 
@@ -71,9 +71,17 @@ Which step inside `disk_enumerate()` costs the time is **not measured**: the sup
 
 8. **A format is finished when its device is known again.** A format job reports `ready` only after the probe that follows it has been installed. A client that waits for the format and then reads `GET /v1/storage` therefore sees the new filesystem, never "probing".
 
+   This has a bound, stated rather than hidden: a format whose disk leaves before the re-probe reports `running` until the disk is seen again, and so does a format whose refresh child cannot be started. In both cases the device's `probed_at` is `null`, which tells them apart from a format still writing.
+
    A partition write returns when `sfdisk` does. The partitions it touched read as unknown until their probe is installed, which announces (item 9). A client reading in between sees `null`, never the old answer.
 
-9. **Installing a snapshot that changed anything announces every read made from it**, through one setter: `listStorage`, `getStorageQuota`, `listDevices`, `listDeviceMaps` and `listVolumes`. ADR-0339 says the daemon's own state changes announce. A refresh that changed nothing announces nothing. Capacity moves on every refresh under write load, so used and free bytes are `x-cix-volatile-fields` of `listStorage` and `getStorageQuota`, as the session expiry is of the session list.
+9. **A change to the snapshot announces every read made from it**, through one setter, `disksnap_announce()`. The reads are `listStorage`, `getStorageQuota`, `listDevices`, `listDeviceMaps`, `listVolumes` and `getStorageFormatStatus`. There are two such changes:
+   - an install that changed anything a client sees;
+   - a touch that made a known device unknown.
+
+   The second matters for a kernel uevent, which has no request for `dispatch()` to announce. ADR-0339 says the daemon's own state changes announce. A refresh that changed nothing announces nothing.
+
+   `listStorage` and `getStorageQuota` are samples, so a capacity that moves between refreshes is announced by being observed to change. It is not a volatile field.
 
 10. **The artifact cache's walk joins the snapshot.** The same child that probes the disks also walks the artifact cache: one `readdir` and one `stat` per file, the walk `cache_scan()` does today. `GET /v1/pkg/cache` and each package's `artifact_cached` in `GET /v1/pkg` answer from that.
 
@@ -86,8 +94,26 @@ Which step inside `disk_enumerate()` costs the time is **not measured**: the sup
     **Decisions still `stat` the one file they ask about.** Whether this version is cached (`pkg_cache_has()`) decides whether a build runs, and must be true at that moment. One `stat` of one path is not a walk.
 
 11. **Gates.**
-    - `test_blocking_waits` counts the call sites of `probe_fs(`, `partlabel_read(`, `disk_probe_fs_type(`, `disk_probe_fs_uuid(` and `fill_capacity(` in `daemon/src`. They are allowed only in the child's work function and in start-up code that runs before the loop.
-    - It counts `cache_scan(` the same way, allowing only the child and the start-up build.
+    - `test_blocking_waits` counts the lines naming `disk_enumerate_probe(`, the one door to the walk that reads devices: the child and the start-up build.
+    - It counts `disk_probe_fs_type(` and `disk_probe_fs_uuid(`, one device's superblock read directly, at today's numbers per file. So part 2's removals are a visible lowering, not a claim.
+    - Part 2 adds `cache_scan(` the same way.
+    - `test_disksnap` drives the install rule, touches, replaced and departed devices, and the announcement flag.
+
+## Built in part 1, and what part 2 adds
+
+**Part 1** (0.2.57-669):
+- the snapshot and its helper child;
+- `disk_enumerate()` reading identity and capacity from it;
+- touches from formats, partition writes and kernel block uevents;
+- the 30 s period and the start-up build;
+- `null`, `probed_at` and a format reporting `running` until its disk is known;
+- the 409 on growing a partition of unknown identity;
+- the dashboard's "probing" and the gates.
+
+**Part 2:**
+- **The artifact cache** (item 10): its walk and eviction move into the same child.
+- **The direct superblock reads become snapshot reads.** These are storage placement's `set` and `set_pending`, a role's `set_fs_type` and `resolve_recorded`, and the data storage migration. Each also gets item 4's 409 when the identity is unknown. Reads before the loop serves (`load_state()`) stay as they are.
+- **Touches from a mount or unmount, a swap on or off, and the release of a block device grant.** None of these changes identity. The first two change only whether capacity applies, which `disksnap_fill()` already reports as unknown for a device mounted since its probe. The third is bounded today by the 30 s period.
 
 ## Out of scope
 

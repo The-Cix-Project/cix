@@ -36310,6 +36310,12 @@ static void disksnap_tick(void)
 {
 	int wanted = disksnap_take_wanted();
 
+	/* A touch made a known device unknown: every read built from the
+	 * snapshot answers differently now, announced here because a kernel
+	 * uevent has no request for dispatch() to announce. */
+	if (disksnap_take_changed())
+		disksnap_announce();
+
 	if (g_disksnap_running) {
 		if (wanted)
 			g_disksnap_again = 1;

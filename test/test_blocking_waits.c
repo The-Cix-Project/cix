@@ -678,10 +678,27 @@ static const struct call_budget g_diskprobe_budgets[] = {
 	{ "main.c", "disk_enumerate_probe(", 2,
 	  "disksnap_work(), which runs only in a helper child, and disksnap_build_now(), "
 	  "before the loop serves" },
+	/* One device's superblock, read directly. Budgeted at what is there
+	 * today so ADR-0377 part 2, which moves these onto the snapshot, is
+	 * a visible lowering rather than a claim. */
+	{ "disk.c", "disk_probe_fs_type(", 1, "the definition, not a call" },
+	{ "disk.c", "disk_probe_fs_uuid(", 1, "the definition, not a call" },
+	{ "main.c", "disk_probe_fs_type(", 1,
+	  "handle_data_storage_migrate_post() -- ADR-0377 part 2 reads the snapshot" },
+	{ "main.c", "disk_probe_fs_uuid(", 2,
+	  "data_disk_device() and handle_data_storage_migrate_post() -- ADR-0377 part 2" },
+	{ "diskrole.c", "disk_probe_fs_uuid(", 3,
+	  "diskrole_resolve_recorded(), load_state() before serving, and "
+	  "diskrole_set_fs_type() -- ADR-0377 part 2" },
+	{ "storageplacement.c", "disk_probe_fs_uuid(", 3,
+	  "load_state() before serving, storageplacement_set_pending() and "
+	  "storageplacement_set() -- ADR-0377 part 2" },
 };
 
 static const char *const g_diskprobe_calls[] = {
 	"disk_enumerate_probe(",
+	"disk_probe_fs_type(",
+	"disk_probe_fs_uuid(",
 	NULL,
 };
 
