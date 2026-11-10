@@ -12576,7 +12576,7 @@ static int cixpkg_unpack_start(const char *artifact, const char *dest_dir, pid_t
 
 static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
                                         const struct pkg_recipe *recipe_in,
-                                        int is_final_upgrade, const char *recipe_path,
+                                        int job_upgrade, const char *recipe_path,
                                         struct container_spec *spec_out,
                                         int *out_stdio_write_fd, pid_t *out_compose_pid,
                                         int *out_compose_pidfd)
@@ -12643,7 +12643,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		char refused[PKG_ERROR_MAX];
 
 		if (build_memory_admit(recipe.build_memory, refused, sizeof(refused)) != 0) {
-			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD, "%s", refused);
+			pkg_fail(e, job_upgrade, PIPELINE_BUILD, "%s", refused);
 			logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
 			chain_release(chain_idx);
 			return 0;
@@ -12726,7 +12726,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		 */
 		snprintf(declared, sizeof(declared), "%s", recipe.build_depends);
 		if (append_words(declared, sizeof(declared), "cbs") != 0) {
-			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
+			pkg_fail(e, job_upgrade, PIPELINE_BUILD,
 			         "the declared build tool list has no room for the cbs engine");
 			logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
 			chain_release(chain_idx);
@@ -12738,7 +12738,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		                          sizeof(env_err), out_compose_pid, out_compose_pidfd,
 		                          report_path, chain_idx);
 		if (envr < 0) {
-			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD, "%s", env_err);
+			pkg_fail(e, job_upgrade, PIPELINE_BUILD, "%s", env_err);
 			logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
 			chain_release(chain_idx);
 			return 0;
@@ -12788,7 +12788,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		 * something fuller than it asked for -- which is precisely how
 		 * a declaration becomes decorative.
 		 */
-		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
+		pkg_fail(e, job_upgrade, PIPELINE_BUILD,
 		         "recipe declares no build requirements (requires { build { ... } }) -- every build environment is composed "
 		         "from a recipe's declared tools and nothing else (issue #168); add them to "
 		         "%s's recipe",
@@ -12959,7 +12959,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 					                "reassemble and reboot the control plane (ADR-0307 "
 					                "clause 6)",
 					                e->name, g_chains[chain_idx].image, cached, PKG_CBS_BIN);
-					pkg_fail(e, is_final_upgrade, PIPELINE_UNPACK,
+					pkg_fail(e, job_upgrade, PIPELINE_UNPACK,
 					         "the cached artifact is a .cixpkg and this host has no %s to "
 					         "read it with",
 					         PKG_CBS_BIN);
@@ -13056,10 +13056,10 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 					                "the step's own error is logged immediately above",
 					                e->name, g_chains[chain_idx].image, prep_step, dest_dir);
 				if (prep_stage == PIPELINE_UNPACK)
-					pkg_fail(e, is_final_upgrade, prep_stage, "%s (%s failed)",
+					pkg_fail(e, job_upgrade, prep_stage, "%s (%s failed)",
 					         pipeline_stage_verb(prep_stage), prep_step);
 				else
-					pkg_fail(e, is_final_upgrade, prep_stage,
+					pkg_fail(e, job_upgrade, prep_stage,
 					         "could not prepare the build container (%s failed)", prep_step);
 				chain_release(chain_idx);
 				return 0;
@@ -13108,7 +13108,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			logstore_write("cixd", "error",
 			                "pkg %s@%s: could not prepare build container (create cbs workspace): %s",
 			                e->name, g_chains[chain_idx].image, strerror(errno));
-			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
+			pkg_fail(e, job_upgrade, PIPELINE_BUILD,
 			         "could not prepare the build container (create cbs workspace failed)");
 			chain_release(chain_idx);
 			return 0;
@@ -13119,7 +13119,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 			logstore_write("cixd", "error",
 			                "pkg %s@%s: could not prepare build container (create cbs cache): %s",
 			                e->name, g_chains[chain_idx].image, strerror(errno));
-			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
+			pkg_fail(e, job_upgrade, PIPELINE_BUILD,
 			         "could not prepare the build container (create cbs cache failed)");
 			chain_release(chain_idx);
 			return 0;
@@ -13135,7 +13135,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 				                "pkg %s@%s: could not prepare build container (stage source %d "
 				                "into the cbs cache): %s",
 				                e->name, g_chains[chain_idx].image, i, strerror(errno));
-				pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
+				pkg_fail(e, job_upgrade, PIPELINE_BUILD,
 				         "could not prepare the build container (stage source %d for cbs failed)",
 				         i);
 				chain_release(chain_idx);
@@ -13191,7 +13191,7 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		logstore_write("cixd", "error",
 		                "pkg %s@%s: could not prepare build container (write kmod-extra.config): %s",
 		                e->name, g_chains[chain_idx].image, strerror(errno));
-		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
+		pkg_fail(e, job_upgrade, PIPELINE_BUILD,
 		         "could not prepare the build container (write kmod-extra.config failed)");
 		chain_release(chain_idx);
 		return 0;
@@ -13218,7 +13218,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	char recipe_path[PATH_MAX];
 	struct pkg_recipe recipe;
 	char sha_out[128];
-	int is_final_upgrade;
+	int job_upgrade;
 	int i;
 
 	*out_compose_pid = -1;
@@ -13235,7 +13235,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		chain_release_if_job_over(chain_idx, e);
 		return 0;
 	}
-	is_final_upgrade = g_chains[chain_idx].job_is_upgrade;
+	job_upgrade = g_chains[chain_idx].job_is_upgrade;
 
 	/*
 	 * Issue #149: report an artifact checksum mismatch regardless of
@@ -13314,7 +13314,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		 */
 		if (e->cancel_requested) {
 			e->cancel_requested = 0;
-			pkg_fail_cancelled(e, is_final_upgrade, PIPELINE_BUILD,
+			pkg_fail_cancelled(e, job_upgrade, PIPELINE_BUILD,
 			         "fetch cancelled by operator");
 			logstore_write("cixd", "info", "pkg %s@%s: fetch cancelled by operator", e->name,
 			               e->image);
@@ -13325,7 +13325,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		if (exit_status == PKG_FETCH_EXIT_PRECONDITION && detail_len > 0)
 			/* Never reached curl -- a precondition failed, and the
 			 * sidecar says which. */
-			pkg_fail(e, is_final_upgrade, PIPELINE_FETCH, "%s", detail);
+			pkg_fail(e, job_upgrade, PIPELINE_FETCH, "%s", detail);
 		else {
 			/* #503: a fetch into a partition with no room fails as a
 			 * bare curl exit 1, which reads exactly like the
@@ -13334,10 +13334,10 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 
 			disk_pressure_note(disk, sizeof(disk));
 			if (detail_len > 0)
-				pkg_fail(e, is_final_upgrade, PIPELINE_FETCH,
+				pkg_fail(e, job_upgrade, PIPELINE_FETCH,
 				         "fetch failed (curl exit status %d): %s%s", exit_status, detail, disk);
 			else
-				pkg_fail(e, is_final_upgrade, PIPELINE_FETCH,
+				pkg_fail(e, job_upgrade, PIPELINE_FETCH,
 				         "fetch failed (curl exit status %d)%s", exit_status, disk);
 		}
 		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
@@ -13347,7 +13347,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 
 	if (fetched_recipe_path(chain_idx, e->name, recipe_path, sizeof(recipe_path)) != 0 ||
 	    parse_recipe_for(recipe_path, e->name, &recipe) != 0) {
-		pkg_fail(e, is_final_upgrade, PIPELINE_AUTHOR, "recipe became unreadable mid-install");
+		pkg_fail(e, job_upgrade, PIPELINE_AUTHOR, "recipe became unreadable mid-install");
 		chain_release(chain_idx);
 		return 0;
 	}
@@ -13439,7 +13439,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 				                "The recipe's sha256 is not involved in this failure; the "
 				                "fetch did not put a file at the path the check reads.",
 				                e->name, recipe.version, i, src_path, strerror(errno));
-				pkg_fail(e, is_final_upgrade, PIPELINE_FETCH,
+				pkg_fail(e, job_upgrade, PIPELINE_FETCH,
 				         "source %d was never written to %s -- no bytes arrived, so this is a "
 				         "fetch failure and not a checksum one",
 				         i, src_path);
@@ -13486,7 +13486,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 				 * enough to recognise, and path and url are in the
 				 * log line above, whose address is named exactly.
 				 */
-				pkg_fail(e, is_final_upgrade, PIPELINE_FETCH,
+				pkg_fail(e, job_upgrade, PIPELINE_FETCH,
 				         "checksum mismatch (source %d): %lld bytes hash to %s, recipe declares "
 				         "%.12s... -- path and url: GET /v1/system/logs?source=cixd",
 				         i, (long long)sst.st_size,
@@ -13515,7 +13515,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	 */
 	if (e->cancel_requested) {
 		e->cancel_requested = 0;
-		pkg_fail_cancelled(e, is_final_upgrade, PIPELINE_BUILD,
+		pkg_fail_cancelled(e, job_upgrade, PIPELINE_BUILD,
 		         "build cancelled by operator before it started");
 		logstore_write("cixd", "info",
 		               "pkg %s@%s: cancelled before its build container was spawned",
@@ -13545,7 +13545,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 				g_packages[oi].build_container_name[0] = '\0';
 		}
 	}
-	return pkg_prepare_build_and_start(chain_idx, e, &recipe, is_final_upgrade, recipe_path,
+	return pkg_prepare_build_and_start(chain_idx, e, &recipe, job_upgrade, recipe_path,
 	                                    spec_out, out_stdio_write_fd, out_compose_pid,
 	                                    out_compose_pidfd);
 }
@@ -13574,7 +13574,7 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 	struct pkg_entry *e = pkg_find(g_chains[chain_idx].name, g_chains[chain_idx].image);
 	char recipe_path[PATH_MAX];
 	struct pkg_recipe recipe;
-	int is_final_upgrade;
+	int job_upgrade;
 	char reason[256];
 	char report_path[PATH_MAX], version[IMAGE_VERSION_MAX];
 	char *files;
@@ -13626,7 +13626,7 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 		return 0;
 	}
 
-	is_final_upgrade = g_chains[chain_idx].job_is_upgrade;
+	job_upgrade = g_chains[chain_idx].job_is_upgrade;
 
 	if (exit_status != 0) {
 		/* Remove the created-but-empty image the failed composition
@@ -13635,11 +13635,11 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 			buildenv_compose_failed_cleanup(chain_idx, g_chains[chain_idx].buildenv_image);
 		chain_set_buildenv(chain_idx, "");
 		if (reason[0] != '\0')
-			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
+			pkg_fail(e, job_upgrade, PIPELINE_BUILD,
 			         "could not compose a build environment from the declared tools: %s",
 			         reason);
 		else
-			pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
+			pkg_fail(e, job_upgrade, PIPELINE_BUILD,
 			         "could not compose a build environment from the declared tools (the "
 			         "composer exited %d and left no reason)",
 			         exit_status);
@@ -13650,14 +13650,14 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 
 	if (fetched_recipe_path(chain_idx, e->name, recipe_path, sizeof(recipe_path)) != 0 ||
 	    parse_recipe_for(recipe_path, e->name, &recipe) != 0) {
-		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
+		pkg_fail(e, job_upgrade, PIPELINE_BUILD,
 		         "the recipe became unreadable while its build environment was composed");
 		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
 		chain_release(chain_idx);
 		return 0;
 	}
 
-	return pkg_prepare_build_and_start(chain_idx, e, &recipe, is_final_upgrade, recipe_path,
+	return pkg_prepare_build_and_start(chain_idx, e, &recipe, job_upgrade, recipe_path,
 	                                    spec_out, out_stdio_write_fd, out_compose_pid,
 	                                    out_compose_pidfd);
 }
@@ -13680,7 +13680,7 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
 	struct pkg_entry *e = pkg_find(g_chains[chain_idx].name, g_chains[chain_idx].image);
 	char recipe_path[PATH_MAX];
 	struct pkg_recipe recipe;
-	int is_final_upgrade;
+	int job_upgrade;
 
 	*out_compose_pid = -1;
 	*out_compose_pidfd = -1;
@@ -13693,7 +13693,7 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
 		return 0;
 	}
 
-	is_final_upgrade = g_chains[chain_idx].job_is_upgrade;
+	job_upgrade = g_chains[chain_idx].job_is_upgrade;
 
 	if (exit_status != 0) {
 		/*
@@ -13709,12 +13709,12 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
 		 * package at all (ADR-0307 clause 6).
 		 */
 		if (exit_status == 127)
-			pkg_fail(e, is_final_upgrade, PIPELINE_UNPACK,
+			pkg_fail(e, job_upgrade, PIPELINE_UNPACK,
 			         "could not run %s to unpack the cached artifact -- this host has no CPDL "
 			         "engine, and nothing else reads a .cixpkg",
 			         PKG_CBS_BIN);
 		else
-			pkg_fail(e, is_final_upgrade, PIPELINE_UNPACK,
+			pkg_fail(e, job_upgrade, PIPELINE_UNPACK,
 			         "unpacking the cached artifact failed (cbs extract exited %d)",
 			         exit_status);
 		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
@@ -13724,7 +13724,7 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
 
 	if (fetched_recipe_path(chain_idx, e->name, recipe_path, sizeof(recipe_path)) != 0 ||
 	    parse_recipe_for(recipe_path, e->name, &recipe) != 0) {
-		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD,
+		pkg_fail(e, job_upgrade, PIPELINE_BUILD,
 		         "the recipe became unreadable while its artifact was unpacked");
 		logstore_write("cixd", "error", "pkg %s@%s: %s", e->name, e->image, e->error);
 		chain_release(chain_idx);
@@ -13751,7 +13751,7 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
 	}
 
 	g_chains[chain_idx].unpacked = 1;
-	return pkg_prepare_build_and_start(chain_idx, e, &recipe, is_final_upgrade, recipe_path,
+	return pkg_prepare_build_and_start(chain_idx, e, &recipe, job_upgrade, recipe_path,
 	                                    spec_out, out_stdio_write_fd, out_compose_pid,
 	                                    out_compose_pidfd);
 }
@@ -13956,6 +13956,10 @@ enum pkg_error pkg_resume_build(const char *name, const char *image, const char 
 	g_chains[chain_idx].dep_queue_count = 1;
 	g_chains[chain_idx].dep_queue_pos = 0;
 	g_chains[chain_idx].dep_queue_is_upgrade = 0;
+	/* A resume never passes through start_fetch_for(), and a slot is
+	 * not zeroed when it is handed out, so the job's flag is set here
+	 * or it is whatever the slot's previous job left. */
+	g_chains[chain_idx].job_is_upgrade = 0;
 	snprintf(g_chains[chain_idx].image, sizeof(g_chains[chain_idx].image), "%s", e->image);
 	/* Set last -- this is what marks the slot busy (chain_alloc()/
 	 * pkg_any_job_busy() both key off name[0]), so nothing above can
@@ -13981,9 +13985,9 @@ void pkg_build_spawn_failed(int chain_idx)
 	pkg_build_memory_note_end(chain_idx); /* cix#558: it never ran */
 
 	if (e != NULL) {
-		int is_final_upgrade = g_chains[chain_idx].job_is_upgrade;
+		int job_upgrade = g_chains[chain_idx].job_is_upgrade;
 
-		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD, "could not start the build container");
+		pkg_fail(e, job_upgrade, PIPELINE_BUILD, "could not start the build container");
 	}
 	chain_release(chain_idx);
 	/*
