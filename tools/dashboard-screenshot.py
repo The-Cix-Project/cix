@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 """
 Screenshot the Cix dashboard, authenticated, over the Chrome DevTools
 Protocol.

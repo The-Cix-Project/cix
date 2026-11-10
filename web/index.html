@@ -754,7 +754,9 @@
 <div class="tab-panel" data-tab="storage">
 			<div class="view-list">
 				
-				<p class="hint">Real host block devices, discovered live from sysfs every poll. Partitions are
+				<p class="hint">Real host block devices. The list and the mounts are read live; filesystems
+					and usage come from a probe the host runs off its main loop, within seconds of a change
+					and every 30 seconds, and read &ldquo;probing&rdquo; until it has. Partitions are
 					not listed here &mdash; they belong to a disk, so they live on that disk's own page: click
 					a disk to manage its partition table, or to give the whole disk a role and format it
 					directly with no partitions at all. The OS disk (this platform's own fixed
