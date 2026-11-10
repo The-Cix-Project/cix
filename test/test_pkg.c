@@ -7769,11 +7769,29 @@ skip_resume:
 				}
 				cix_response_free(&r);
 			}
-			if (s_ok && (poll_pkg_state(&client, "splitpkg-tool", st_s, sizeof(st_s), 240) != 0 ||
-			             !str_eq(st_s, "installed"))) {
-				fprintf(stderr, "FAIL: #678 splitpkg-tool did not install (state=%s) -- the "
-				                "output collided with the path splitpkg 1.0 still owns\n",
-				        st_s);
+			/*
+			 * splitpkg-tool has no entry until its own job starts:
+			 * the chain runs splitpkg 2.0 first, and an entry is made
+			 * when each chain job starts (start_fetch_for()), so its
+			 * GET answers 404 until then. One attempt per pass, so a
+			 * 404 is a wait, not an answer -- probe 0.2.57-733 read
+			 * the first 404 as a failure and printed the state left
+			 * over from splitpkg's own poll.
+			 */
+			if (s_ok) {
+				int w;
+
+				for (w = 0; w < 400; w++) {
+					st_s[0] = '\0';
+					if (poll_pkg_state(&client, "splitpkg-tool", st_s, sizeof(st_s), 1) == 0)
+						break;
+					usleep(300000);
+				}
+			}
+			if (s_ok && !str_eq(st_s, "installed")) {
+				fprintf(stderr, "FAIL: #678 splitpkg-tool did not install (state=%s; "
+				                "empty means it never got an entry)\n",
+				        st_s[0] != '\0' ? st_s : "");
 				ok = 0;
 				s_ok = 0;
 			}
