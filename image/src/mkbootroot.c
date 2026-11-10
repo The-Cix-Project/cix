@@ -1098,9 +1098,26 @@ int main(int argc, char **argv)
 	 * launch. Needs no extra runtime libs of its own beyond what's
 	 * already staged above (ld.so/libc.so.6, the same TCC dynamic-link
 	 * dependency cixd itself has).
+	 *
+	 * At /usr/bin/cixctl, the path its package installs (ADR-0371
+	 * decision C, the owner on 2026-11-10): the root built from the
+	 * cix-root image will have it there, and one path is what both
+	 * roots and the console agree on. It used to go through
+	 * test_image_fixture_build(), which put it at /bin/cixctl and
+	 * staged the C library a second time over cixd's.
 	 */
-	if (test_image_fixture_build(image_root, cixctl_bin, "cixctl") != 0)
-		return 1;
+	{
+		char cixctl_dir[PATH_MAX];
+		char cixctl_dst[PATH_MAX];
+
+		snprintf(cixctl_dir, sizeof(cixctl_dir), "%s/usr/bin", image_root);
+		snprintf(cixctl_dst, sizeof(cixctl_dst), "%s/usr/bin/cixctl", image_root);
+		if (test_mkdir_p(cixctl_dir) != 0 ||
+		    test_image_fixture_copy_file(cixctl_bin, cixctl_dst) != 0) {
+			fprintf(stderr, "could not stage %s as %s\n", cixctl_bin, cixctl_dst);
+			return 1;
+		}
+	}
 	/*
 	 * libtinfo.so.6 WAS STAGED HERE BY NAME, from the build host, and
 	 * is not any more (cix#350).

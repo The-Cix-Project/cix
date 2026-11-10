@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cixctl lives at /usr/bin/cixctl in the control-plane root (ADR-0371 decision C, #350, 0.2.57-672)
+
+- **What changed:** the root carries `cixctl` at `/usr/bin/cixctl`, the path its `cixctl` output installs, rather than `/bin/cixctl`.
+  - The console shell execs `/usr/bin/cixctl`.
+  - `controlplane_programs.h` names that path.
+  - `mkbootroot` copies the binary straight there, rather than through `test_image_fixture_build()`, which put it at `/bin` and staged the C library a second time.
+- **Why:** the owner's choice of 2026-11-10, after ADR-0371 phase 2. A root built from the `cix-root` image has `cixctl` where its package puts it, and one path is what both roots and the console agree on.
+- **During a roll:** a root switched in under 671 respawns its console shells from the new root (ADR-0375 #674), which has the new path.
+
 ### An output's build spends its recipe's repo token; the build-events read is measured step by step (#677, #676, 0.2.57-671)
 
 - **#677:** a recipe's output (ADR-0367) got no repo token.

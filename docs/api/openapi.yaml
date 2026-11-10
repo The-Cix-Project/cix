@@ -1135,7 +1135,7 @@ paths:
                     nullable: true
                     description: >
                       Why the last assembly asked for was refused before
-                      it started, or null. A root takes /bin/cixctl from
+                      it started, or null. A root takes /usr/bin/cixctl from
                       the `cixctl` package the same cix build produced
                       (ADR-0367), so a hostbuild that left none in the
                       local cache cannot be assembled from, and

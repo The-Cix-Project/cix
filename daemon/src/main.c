@@ -10761,7 +10761,7 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 	snprintf(mkbootroot_bin, sizeof(mkbootroot_bin), "%s/mkbootroot", artifact_dir);
 	/*
 	 * /bin/cixd, /bin/cix-init and /web come from the `cixd` output,
-	 * /bin/cixctl from the `cixctl` output and /lib/modules from the
+	 * /usr/bin/cixctl (ADR-0371 decision C) from the `cixctl` output and /lib/modules from the
 	 * `kernel-modules` output (g_root_outputs), extracted in the child
 	 * below, off the loop. No fallback to a copy in a main package: a
 	 * root assembled without its own builds' outputs is refused, and the
@@ -38463,8 +38463,8 @@ static void spawn_console_shell(const char *tty_path)
 		dup2(fd, STDERR_FILENO);
 		if (fd > STDERR_FILENO)
 			close(fd);
-		execve("/bin/cixctl", argv, environ);
-		perror("execve /bin/cixctl");
+		execve("/usr/bin/cixctl", argv, environ); /* ADR-0371 decision C */
+		perror("execve /usr/bin/cixctl");
 		_exit(127);
 	}
 

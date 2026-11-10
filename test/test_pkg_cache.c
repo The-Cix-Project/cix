@@ -1018,7 +1018,7 @@ int main(void)
 				          compute_file_sha256(cix_pkg, cix_sha, sizeof(cix_sha)) == 0,
 				      "package the cix artifact under its own name");
 
-				/* ADR-0367, ADR-0371: the root takes /bin/cixctl from the
+				/* ADR-0367, ADR-0371: the root takes /usr/bin/cixctl from the
 				 * cixctl package and /bin/cixd from the cixd package the
 				 * same cix build produced, so the recipe declares both
 				 * outputs, and a repository copy of cix counts only when

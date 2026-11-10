@@ -49,7 +49,7 @@
  */
 #define CONTROLPLANE_PROGRAMS(X)                                                                   \
 	/* the console's shell (spawn_console_shell() in cixd) */                                   \
-	X(CIXCTL, "/bin/cixctl", CP_BUILD, "")                                                      \
+	X(CIXCTL, "/usr/bin/cixctl", CP_BUILD, "") /* ADR-0371 C: its package's path */             \
 	/* image content, and mkbootroot's own seal when it runs on this root */                   \
 	X(UNSQUASHFS, "/usr/bin/unsquashfs", CP_HOSTTOOLS, "squashfs-tools")                        \
 	X(MKSQUASHFS, "/usr/bin/mksquashfs", CP_HOSTTOOLS, "squashfs-tools")                        \
