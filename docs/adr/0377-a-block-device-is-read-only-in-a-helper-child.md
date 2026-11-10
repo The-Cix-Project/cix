@@ -132,3 +132,4 @@ Which step inside `disk_enumerate()` costs the time is **not measured**: the sup
 - A caller deciding by identity can be told "not known yet" for the length of one probe after a change. Item 4 says what each one does with that.
 - Capacity is up to 30 s old, and `probed_at` says how old.
 - A device a container holds and rewrites shows its new identity within one period.
+- Role and placement UUID adoption runs after every install that changed the snapshot, which under write load is every 30 s. For each role or placement still without a UUID, it walks sysfs and `/proc/mounts` once (`disk_identity_of()`). A role on a disk whose filesystem has no UUID (vfat, or unformatted) never adopts, and pays that walk each time: milliseconds, and no block I/O.

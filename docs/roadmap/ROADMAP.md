@@ -2445,6 +2445,52 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 361: no storage, cache or self-check read waits on a busy disk (#646, #675, ADR-0376, ADR-0377, 0.2.57-668 to 0.2.57-670)
+
+Before this, the event loop itself read the disks. The announcement self-check ran every self-readable handler on the loop. `disk_enumerate()` read every block device's superblock and GPT label, and `statvfs`'d every mount, on every storage, volume, quota and device read. `GET /v1/pkg/cache` was a `readdir` and a `stat` per cached artifact. While a build kept the disk busy, `GET /v1/system/stalls` on 192.168.15.95 recorded:
+- 9410 ms on `GET /v1/pkg/cache`, in D state on `wait_current_trans`, with a stall record;
+- 5240 ms on `GET /v1/storage`;
+- 1173 ms on `GET /v1/volumes`;
+- 795 ms on `GET /v1/storage/quota`;
+- 840-943 ms, four times, on `POST /v1/events/verify`.
+
+1. **ADR-0376 (0.2.57-668):** the self-check's state reads run in a helper child, `PARK_EVENTSCHECK`.
+   - `POST /v1/events/verify` parks, and is now an MCP tool.
+   - A result whose read was announced while the child read it is not compared (`events_observe_read_at()`).
+   - The baseline stays in-process before serving, so a test's first changes are still compared.
+2. **ADR-0377 part 1 (0.2.57-669):** block devices are probed by a helper child into one disk snapshot (`disksnap.c`). `disk_enumerate()` reads identity and capacity from it.
+   - The snapshot refreshes after a touch (a format, a partition write, a kernel block event), every 30 s, and once before serving.
+   - A result read across a touch is never installed.
+   - Unknown is `null` in the API, with `probed_at`. The dashboard shows "probing". Growing a partition of unknown identity is a 409.
+   - The artifact cache's walk and LRU eviction run in the same child.
+3. **ADR-0377 part 2 (0.2.57-670):** the last direct superblock reads on the loop moved onto the snapshot.
+   - The data-storage move is a 409 while its disk is unknown.
+   - Role and placement UUIDs are adopted after each install.
+   - A released block-device grant touches the device.
+   - One read remains, `data_disk_device()` at boot.
+
+**Verified before release:**
+- `test_events_drift` drives the moved-read rule.
+- `test_disksnap` drives the install rule, touches, replaced and departed devices, and the announcement flag.
+- `test_blocking_waits` counts every self-read, device probe and cache walk.
+- Compile probes 724, 725, 727, 729 and 730 passed the full selftest.
+- Three failed first, each on a real defect:
+  - 726: `probed_at` needed `format: unix-seconds`;
+  - 728: `test_pkg_cache` read the cache before the walk that sees a deletion made behind the daemon's back;
+  - and, found in review before release, a touch that changed what `GET /v1/devices` answers announced nothing.
+
+**Live on 192.168.15.95:**
+- **0.2.57-668** switched in at 03:26 UTC on 2026-11-09. The probes for 726 to 729 and the 03:00 roll's cix build all ran under it. The stall record names no `events-check-timer` pass since 2026-11-06.
+- **0.2.57-669** switched in at about 03:25 UTC on 2026-11-10, on slot b, with the containers keeping their pids. At 09:40:
+  - every device in `GET /v1/storage` carried a `probed_at` from the same probe;
+  - `GET /v1/pkg/cache` answered from the walk (1969 entries);
+  - `GET /v1/events/status` showed drift 0;
+  - `POST /v1/events/verify` parked and answered: 88 checked, nothing drifted;
+  - the storage page rendered correctly in a screenshot.
+- **0.2.57-670** rolls at 03:00 on 2026-11-11.
+
+**Found on the way, filed:** #676, a build completion that read its events file on the loop for 2863 ms.
+
 ## Part 360: the control plane upgrades in place (#673, ADR-0375 phases 1-5, 0.2.57-664 and 0.2.57-665)
 
 When the host roll stages a root with the running kernel, it now switches the root in place instead of rebooting, and every container keeps running. A new kernel still reboots. Five phases, each a separate probe:
