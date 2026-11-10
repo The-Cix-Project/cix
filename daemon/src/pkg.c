@@ -2726,7 +2726,18 @@ static const char *owning_token(const char *name)
  */
 static void substitute_repo_token(struct pkg_recipe *out)
 {
-	const char *tok = owning_token(out->name);
+	/*
+	 * The RECIPE's owner, not the package's name (#677): for one of a
+	 * recipe's outputs (ADR-0367) `name` is the output -- `cixctl` --
+	 * which no source owns, since a source owns the recipe `cix`. Asked
+	 * by `name`, an output's build got no token, kept the placeholder,
+	 * and failed at fetch; on 192.168.15.95 every cix publish queued a
+	 * cixctl rebuild in the agent image that did exactly that
+	 * (2026-11-10, ts 1794305765). The sources ARE the recipe's, so
+	 * whose token they spend is the recipe's owner's question.
+	 */
+	const char *tok =
+	    owning_token(out->recipe_name[0] != '\0' ? out->recipe_name : out->name);
 	int i;
 
 	if (tok == NULL)
@@ -15451,23 +15462,39 @@ static ssize_t pkg_build_events_poll(int chain_idx, struct pkg_entry *e)
 
 	if (e == NULL || !e->progress_known || c->events_path[0] == '\0')
 		return 0;
+	/*
+	 * #676: each call below is tallied on its own. A build completion
+	 * held the loop 2863 ms in this step on 192.168.15.95 (ts
+	 * 1794269601) while the tally then covering only the read and fold
+	 * recorded ~0 ms, so the time was in the open or the fstat -- both
+	 * metadata lookups in the build container's btrfs tree, which a
+	 * busy disk can stall (#675's wait_current_trans). Which one is not
+	 * measured; the next slow pass names it.
+	 */
 	if (!c->events_open) {
-		int fd = open(c->events_path, O_RDONLY | O_CLOEXEC);
+		int fd;
 
+		started = stallwatch_tally_start();
+		fd = open(c->events_path, O_RDONLY | O_CLOEXEC);
+		stallwatch_tally("build events: open", started);
 		if (fd < 0)
 			return 0; /* cbs has not created it yet */
 		c->events_fd = fd;
 		c->events_open = 1;
 	}
-	if (fstat(c->events_fd, &st) != 0 || st.st_size <= c->events_off)
+	started = stallwatch_tally_start();
+	if (fstat(c->events_fd, &st) != 0 || st.st_size <= c->events_off) {
+		stallwatch_tally("build events: stat", started);
 		return 0;
+	}
+	stallwatch_tally("build events: stat", started);
 	started = stallwatch_tally_start();
 	n = pread(c->events_fd, chunk, sizeof(chunk), c->events_off);
 	if (n > 0) {
 		c->events_off += n;
 		pkg_build_events_fold(c, e, chunk, (size_t)n);
 	}
-	stallwatch_tally("build events", started);
+	stallwatch_tally("build events: read", started);
 	/* ADR-0339: the phase is state a client reads, and nothing else
 	 * announces it, since no request is in front of a build moving on. */
 	if (e->progress.changed) {
@@ -15527,7 +15554,10 @@ static void pkg_build_events_finish(int chain_idx, struct pkg_entry *e, int succ
 		;
 	cbs_progress_finish(&e->progress, succeeded, cancelled);
 	if (c->events_open) {
+		long long t = stallwatch_tally_start();
+
 		close(c->events_fd);
+		stallwatch_tally("build events: close", t); /* #676 */
 		c->events_open = 0;
 	}
 	c->events_path[0] = '\0';

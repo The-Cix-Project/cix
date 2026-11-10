@@ -6,6 +6,19 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An output's build spends its recipe's repo token; the build-events read is measured step by step (#677, #676, 0.2.57-671)
+
+- **#677:** a recipe's output (ADR-0367) got no repo token.
+  - `substitute_repo_token()` looked up the owning source by the package's name. For an output that is `cixctl`, which no source owns, because the source owns the recipe `cix`. The placeholder stayed in the URL, and the fetch failed.
+  - On 192.168.15.95, every cix publish queued a `cixctl` rebuild in `agent` that did exactly that, and the queue then dropped `agent`.
+  - It now asks for the owner of the recipe (`recipe_name`). Whose token a source URL spends is the recipe's question, since the sources are the recipe's.
+- **#676:** a build completion held the loop 2863 ms in "read the build's events", while the tally for the read itself recorded about 0 ms.
+  - The open, the `fstat`, the read and the close of the events file are now tallied separately, so the next slow pass names which call it was.
+  - **Cause:** not established. The candidates are the `open` and the `fstat`, metadata lookups in the build container's btrfs tree.
+- **Smaller:**
+  - the storage overview's hint says what is read live and what is probed (ADR-0377);
+  - `tools/dashboard-screenshot.py` has a shebang, so it runs by its path as CLAUDE.md says.
+
 ### No device is read on the event loop once cixd serves (ADR-0377 part 2, #675, 0.2.57-670)
 
 - **The last direct superblock reads moved onto the disk snapshot.**
