@@ -2445,6 +2445,25 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 362: the control-plane root exists as one image, and matches today's root byte for byte where they overlap (#350, ADR-0371 phase 2)
+
+`cix-root@1.0.0` (cix-recipes f4ef69e) names the root's content as whole packages: the `cixd`, `cixctl` and `kernel-modules` outputs, kmod, the firmware, the six tool packages `controlplane_programs.h` names, ca-certificates and glibc. On 192.168.15.95 the image was created and materialized on 2026-11-10, with 24 packages after the runtime closure. Nothing reads it yet; phase 3 makes `mkbootroot` take it.
+
+**How it was compared.**
+- `cix-installer-0.2.57-669` was built on .95 from the 669 hostbuild and published to the LAN cache.
+- `probe-rootimage` 2-1 and 3-1 each extracted half of the image's packages from their cached `.cixpkg`s, merged them, and ran `diff -rq --no-dereference` against that ISO's unsquashed root. Two halves, because cixd parses at most 16 sources per recipe.
+
+**What it found.**
+- Every file in both trees is byte-identical, and no shared path differs in content.
+- The six kmod tools are symlinks in the image and copies in the root.
+- 20 paths are only in the root:
+  - ten that mkbootroot adds by design: eight mount points, `os-release` and `resolv.conf`;
+  - `/bin/cixctl`, because the output installs `usr/bin/cixctl`;
+  - libcap, libcrypt and libpsx, which today's sweep of every cix-hosttools library carries and cixd does not link.
+- 120 paths are only in the image: chiefly glibc's build-time files and tools, xz's script family, ncurses' programs and terminfo, and the curl, openssl and pkgconf CLIs.
+
+**Phase 3 needs three owner decisions,** listed on #350: one path for `cixctl`, whether glibc gets a `-dev` output (a glibc rebuild), and whether the extra tools are acceptable in a shell-less root.
+
 ## Part 361: no storage, cache or self-check read waits on a busy disk (#646, #675, ADR-0376, ADR-0377, 0.2.57-668 to 0.2.57-670)
 
 Before this, the event loop itself read the disks. The announcement self-check ran every self-readable handler on the loop. `disk_enumerate()` read every block device's superblock and GPT label, and `statvfs`'d every mount, on every storage, volume, quota and device read. `GET /v1/pkg/cache` was a `readdir` and a `stat` per cached artifact. While a build kept the disk busy, `GET /v1/system/stalls` on 192.168.15.95 recorded:
