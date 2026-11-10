@@ -531,17 +531,24 @@ enum cache_want { CACHE_EQ, CACHE_GT, CACHE_LE };
  * last walk of the cache. That walk follows a store, a lowered cap or a
  * clear within about a second, evicts if the cache is over its cap, and
  * is announced when it lands. So a check that follows a write first
- * waits for the walk -- up to 15 s for `key` to satisfy want/value --
+ * waits for the walk -- up to 40 s for `key` to satisfy want/value --
  * and then makes its ordinary read and assertion, which this does not
  * replace. A wait that runs out is not itself a failure; the assertion
  * after it is.
+ *
+ * 40 s, not a second, because one write here is made behind the
+ * daemon's back: test_image_fixture_clear_floor_cache() unlinks the
+ * floor's artifacts directly, which nothing announces, so the walk that
+ * sees it is the 30 s periodic one (ADR-0377 item 7). Measured in
+ * compile probe 0.2.57-728, whose fresh-cache check read the floor's
+ * entries from an earlier walk.
  */
 static void wait_cache_field(const struct cix_client *client, const char *key,
                              enum cache_want want, long value)
 {
 	int i;
 
-	for (i = 0; i < 60; i++) {
+	for (i = 0; i < 160; i++) {
 		struct cix_response r;
 		int done = 0;
 
@@ -695,6 +702,7 @@ int main(void)
 	}
 
 	/* --- scenario 1: fresh cache is empty --- */
+	wait_cache_field(&client, "entry_count", CACHE_EQ, 0);
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 200,
 	      "GET /v1/pkg/cache (fresh)");
