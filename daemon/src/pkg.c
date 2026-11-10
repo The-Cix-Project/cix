@@ -985,14 +985,24 @@ struct pkg_chain {
 	/* The resolved install order for this job: dependencies first
 	 * (post-order), the originally-requested package last.
 	 * dep_queue_pos is the index currently fetching/building;
-	 * dep_queue_is_upgrade is true only when the LAST entry is an
-	 * explicit upgrade of an already-installed package (dependencies
-	 * are only ever fresh-installed if missing, never auto-upgraded as
-	 * a side effect). */
+	 * dep_queue_is_upgrade is true when the LAST entry, the package
+	 * asked for, was already installed when the request was taken.
+	 *
+	 * job_is_upgrade is the same question for the job at dep_queue_pos,
+	 * settled by start_fetch_for() when that job starts, and it is what
+	 * every install, unpack and failure path reads. A dependency used to
+	 * be only ever a fresh install, so the last entry's flag stood for
+	 * every job. #678 broke that: a recipe's sibling held at another
+	 * version is upgraded ahead of the package asked for, and read as a
+	 * fresh install its old manifest was never cleared, so splitpkg 2.0
+	 * kept 1.0's path and its own output collided with it (compile
+	 * probe 0.2.57-734). The last job keeps the chain's flag, which a
+	 * hostbuild and a resume set to 0 on purpose. */
 	char dep_queue[PKG_MAX_DEP_CHAIN][PKG_NAME_MAX];
 	int dep_queue_count;
 	int dep_queue_pos;
 	int dep_queue_is_upgrade;
+	int job_is_upgrade;
 
 	/* ADR-0159 Phase B: only ever set by pkg_hostbuild_start() (empty
 	 * for every ordinary pkg_install_start() job) -- a pre-validated,
@@ -11207,6 +11217,10 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 
 	e = pkg_find(name, g_chains[chain_idx].image);
 	is_upgrade = (e != NULL && e->state == PKG_STATE_INSTALLED);
+	g_chains[chain_idx].job_is_upgrade =
+	        g_chains[chain_idx].dep_queue_pos + 1 >= g_chains[chain_idx].dep_queue_count ?
+	                g_chains[chain_idx].dep_queue_is_upgrade :
+	                is_upgrade;
 
 	if (e == NULL || !is_upgrade) {
 		if (e == NULL) {
@@ -13221,7 +13235,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 		chain_release_if_job_over(chain_idx, e);
 		return 0;
 	}
-	is_final_upgrade = g_chains[chain_idx].dep_queue_is_upgrade && (g_chains[chain_idx].dep_queue_pos + 1 >= g_chains[chain_idx].dep_queue_count);
+	is_final_upgrade = g_chains[chain_idx].job_is_upgrade;
 
 	/*
 	 * Issue #149: report an artifact checksum mismatch regardless of
@@ -13612,8 +13626,7 @@ int pkg_buildenv_completed(int chain_idx, int exit_status, struct container_spec
 		return 0;
 	}
 
-	is_final_upgrade = g_chains[chain_idx].dep_queue_is_upgrade &&
-	                   (g_chains[chain_idx].dep_queue_pos + 1 >= g_chains[chain_idx].dep_queue_count);
+	is_final_upgrade = g_chains[chain_idx].job_is_upgrade;
 
 	if (exit_status != 0) {
 		/* Remove the created-but-empty image the failed composition
@@ -13680,8 +13693,7 @@ int pkg_unpack_completed(int chain_idx, int exit_status, struct container_spec *
 		return 0;
 	}
 
-	is_final_upgrade = g_chains[chain_idx].dep_queue_is_upgrade &&
-	                   (g_chains[chain_idx].dep_queue_pos + 1 >= g_chains[chain_idx].dep_queue_count);
+	is_final_upgrade = g_chains[chain_idx].job_is_upgrade;
 
 	if (exit_status != 0) {
 		/*
@@ -13969,7 +13981,7 @@ void pkg_build_spawn_failed(int chain_idx)
 	pkg_build_memory_note_end(chain_idx); /* cix#558: it never ran */
 
 	if (e != NULL) {
-		int is_final_upgrade = g_chains[chain_idx].dep_queue_is_upgrade && (g_chains[chain_idx].dep_queue_pos + 1 >= g_chains[chain_idx].dep_queue_count);
+		int is_final_upgrade = g_chains[chain_idx].job_is_upgrade;
 
 		pkg_fail(e, is_final_upgrade, PIPELINE_BUILD, "could not start the build container");
 	}
@@ -16454,7 +16466,7 @@ static int install_produce_start(int chain_idx, pid_t *out_pid, int *out_pidfd, 
 
 	ctx.dest_dir = dest_dir;
 	ctx.e = e;
-	ctx.is_upgrade = chain_job_is_final(chain_idx) && g_chains[chain_idx].dep_queue_is_upgrade;
+	ctx.is_upgrade = g_chains[chain_idx].job_is_upgrade;
 	ctx.keep_privileged = 1;
 	produce_report_path(chain_idx, report_path, sizeof(report_path));
 	/* #654: the merge's own sentence, not "the caller's own mutate step". */
@@ -16875,7 +16887,7 @@ int pkg_produce_completed(int chain_idx, int exit_status, pid_t *out_pid, int *o
 			*out_deleted_chain = chain_idx;
 		return next;
 	}
-	is_upgrade = chain_job_is_final(chain_idx) && g_chains[chain_idx].dep_queue_is_upgrade;
+	is_upgrade = g_chains[chain_idx].job_is_upgrade;
 
 	if (waited) {
 		stallwatch_step("pkg install: the image's other producer finished");
@@ -17021,7 +17033,7 @@ int pkg_build_completed(const char *container_name, int exit_status, pid_t *out_
 	}
 
 	is_final = (g_chains[chain_idx].dep_queue_pos + 1 >= g_chains[chain_idx].dep_queue_count);
-	is_upgrade = is_final && g_chains[chain_idx].dep_queue_is_upgrade;
+	is_upgrade = g_chains[chain_idx].job_is_upgrade;
 
 	/*
 	 * #388, #489: the rest of the build's events, and the phases a stopped

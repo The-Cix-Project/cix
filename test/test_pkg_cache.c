@@ -824,9 +824,36 @@ int main(void)
 		CHECK(wait_for_pkg_state(&client, "cachetest2", "imgC", "installed", 300) == 0,
 		      "cachetest2@imgC reaches state=installed");
 
-		/* The eviction is the walk's, so the walk has to have run before
-		 * the total or the evicted file can be checked. */
-		wait_cache_field(&client, "current_bytes", CACHE_LE, 2048);
+		/*
+		 * The eviction is the walk's, so the walk that saw cachetest2
+		 * has to have run before the total or the evicted file can be
+		 * checked. current_bytes <= 2048 does not say that: the walk
+		 * before cachetest2 was stored already read ~1.1 KB, so it is
+		 * true on that stale walk too, and compile probe 0.2.57-734
+		 * found cachetest-1.0 still on disk that way. artifact_cached
+		 * reads the same walk (ADR-0377), so cachetest2 showing as
+		 * cached means the walk that evicts has landed. Up to 40 s, for
+		 * wait_cache_field()'s reason.
+		 */
+		{
+			int w;
+
+			for (w = 0; w < 160; w++) {
+				const struct json_value *v;
+				int cached;
+
+				memset(&r, 0, sizeof(r));
+				cached = cix_client_request(&client, "GET", "/v1/pkg/cachetest2@imgC", NULL,
+				                            &r) == 0 &&
+				         r.status == 200 && r.json != NULL &&
+				         (v = json_object_get(r.json, "artifact_cached")) != NULL &&
+				         v->type == JSON_BOOL && v->u.boolean;
+				cix_response_free(&r);
+				if (cached)
+					break;
+				usleep(250000);
+			}
+		}
 		memset(&r, 0, sizeof(r));
 		CHECK(cix_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 200,
 		      "GET /v1/pkg/cache (after LRU eviction)");

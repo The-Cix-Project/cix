@@ -13,6 +13,10 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **Now:** `resolve_chain()` queues each sibling of the package it resolves first, as an upgrade. A sibling is the recipe's main package or another of its outputs, held in the image at a different version.
   - It does this only when V is the recipe's newest version, because that's the version a queued dependency resolves to.
   - A sibling already being resolved further up is left to its own frame.
+- **And an upgrade is a property of each job, not of the chain.** This is the first time a chain upgrades a package ahead of the one asked for. Before it, a dependency was only ever a fresh install, so every job read the chain's "the last package is an upgrade" flag.
+  - Read that way, splitpkg 2.0 was installed as if fresh. Its old manifest was never cleared, so it kept 1.0's `usr/bin/splitpkg-x`, and its own output collided with it (compile probe 0.2.57-734).
+  - `start_fetch_for()` now records whether the job's own entry was installed, and every install, unpack and failure path reads that.
+  - The last job keeps the chain's flag, which a hostbuild and a resume set to 0 on purpose.
 - **Gate:** `test_pkg` publishes `splitpkg` 1.0, which owns `usr/bin/splitpkg-x` in its main package, and installs it. It then publishes 2.0, which gives that path to an output, and installs the output. Both must end at 2.0-1, with the path owned by the output.
 
 ### cixctl lives at /usr/bin/cixctl in the control-plane root (ADR-0371 decision C, #350, 0.2.57-672)
