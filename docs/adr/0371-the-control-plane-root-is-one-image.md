@@ -69,6 +69,14 @@ Both taken on 2026-11-03: **A is "wait for outputs"** and **B is "followed"**. S
   - **Pinned at hostbuild:** the assembly first installs `cix@X` into `cix-root`. That moves the pin (ADR-0320), so the recipe has to leave cix unpinned or follow the install. The timing is today's: a hostbuild produces a root.
   - **Followed:** `cix` rolls in `cix-root` like any other entry, and an assembly runs when the image gains a version. That covers the host roll (ADR-0327) too, but it moves the trigger from "a cix build finished" to "the image changed".
 
+### Decisions of 2026-11-10, after phase 2
+
+Phase 2 created `cix-root@1.0.0` on 192.168.15.95 and compared it with the root inside `cix-installer-0.2.57-669` (ROADMAP Part 362, #350). Every file in both trees was byte-identical. The root alone held mount points, `os-release`, `resolv.conf`, `/bin/cixctl` and three libraries from its sweep. The image alone held 120 paths. The owner was asked three questions on that evidence and answered all three on 2026-11-10:
+
+- **C. `cixctl` lives at `/usr/bin/cixctl`,** the path its output installs. `cixd --init-mode`, the console and `controlplane_programs.h` move to it. No package changes, and agent-1 already has it there.
+- **D. glibc gets a `-dev` output,** as openssl, curl and ncurses did. That output holds the `crt*.o` objects, the static archives, `/usr/include` and the build-time tools. Build images take it through ADR-0372's rule. The root carries runtime glibc only. This is one glibc rebuild, priced and asked before it runs, as CLAUDE.md requires for glibc.
+- **E. The extra command-line tools are split out of the library packages too.** That covers the curl, openssl and pkgconf CLIs, xz's programs and helper scripts, and ncurses' programs and terminfo. Each library package's main output keeps only its runtime libraries, so the root carries no tool it does not name. This **reverses** the 2026-11-03 rule above that "CLIs and terminfo stay in the main package". An image that uses one of those tools at runtime, such as `agent` with the curl binary or an interactive image with terminfo, declares the tool output in its recipe. A recipe that composes the tool at build time gets it through ADR-0372. Each split is one ordinary rebuild of its package.
+
 ## Alternatives
 
 - **Keep the filter and report it.** `GET /v1/system/assembly` would list each input's image version and package set, and the four slots would become required. That is one release. It answers the operator's question, but it keeps six definitions and the copy-order glibc.
