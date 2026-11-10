@@ -10765,6 +10765,58 @@ static int resolve_chain(const char *name, const char *version, const char *imag
 		tok = strtok_r(NULL, " \t", &save);
 	}
 
+	/*
+	 * #678: every package one recipe builds moves together in an image.
+	 * Between two versions of a recipe a path can move from one of its
+	 * packages to another -- xz 5.8.3-12 moved usr/bin from xz to a new
+	 * xz-tools output -- so installing one of them at V while the image
+	 * holds another at an older version collides with the paths the
+	 * older one still owns ("one package owns a path", #553). On
+	 * 192.168.15.95, 2026-11-10, converging jumpbox and iso-builder did
+	 * exactly that: xz-tools@5.8.3-12 was refused because xz 5.8.3-11,
+	 * installed there as a dependency, still owned usr/bin/xz.
+	 *
+	 * So each sibling of this recipe -- its main package and its other
+	 * outputs -- that the image holds at a different version is queued
+	 * first, as an upgrade. Only when V is the recipe's newest version:
+	 * a queued dependency resolves to its newest (current_fetch_
+	 * effective_version()), so that is the only V the sibling is
+	 * guaranteed to land on. A pin to an older V is left as it was.
+	 */
+	{
+		char family[PKG_RECIPE_OUTPUTS_MAX + 1][PKG_NAME_MAX];
+		char newest[PKG_VERSION_MAX];
+		int outs, fn, f, v;
+
+		snprintf(family[0], sizeof(family[0]), "%s", recipe.recipe_name);
+		outs = recipe_outputs(recipe_path, family + 1, PKG_RECIPE_OUTPUTS_MAX);
+		fn = 1 + (outs > 0 ? outs : 0);
+		if (recipe_latest_version(name, newest, sizeof(newest)) == 0 &&
+		    strcmp(newest, recipe.version) == 0) {
+			for (f = 0; f < fn; f++) {
+				struct pkg_entry *se;
+				int resolving = 0;
+
+				if (strcmp(family[f], name) == 0)
+					continue;
+				/* A sibling being resolved further up is queued by its
+				 * own frame; recursing into it would read as a cycle. */
+				for (v = 0; v < *visiting_count; v++)
+					if (strcmp(visiting[v], family[f]) == 0)
+						resolving = 1;
+				if (resolving)
+					continue;
+				se = pkg_find(family[f], image);
+				if (se == NULL || se->state != PKG_STATE_INSTALLED ||
+				    strcmp(se->version, recipe.version) == 0)
+					continue;
+				if (resolve_chain(family[f], NULL, image, 1, queue, count, visiting,
+				                  visiting_count, err_out, err_out_size) != 0)
+					return -1;
+			}
+		}
+	}
+
 	(*visiting_count)--;
 
 	if (*count >= PKG_MAX_DEP_CHAIN) {

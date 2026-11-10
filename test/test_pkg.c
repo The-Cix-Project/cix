@@ -917,6 +917,67 @@ static int write_multiout_recipe(const struct cix_client *c, const char *name, c
 }
 
 /*
+ * #678: a recipe that moves a path between its packages across two
+ * versions, as xz 5.8.3-12 moved usr/bin into xz-tools. The main package
+ * installs usr/bin/<name> and usr/bin/<name>-x; with `split`, an output
+ * "<name>-tool" claims usr/bin/<name>-x, so at that version the main
+ * package no longer owns it.
+ */
+static int write_split_recipe(const struct cix_client *c, const char *name, const char *version,
+                              const char *tarball_path, const char *sha256, int split)
+{
+	char srcdir[160];
+	char build_body[512], install_body[768], decls[256];
+	char content[4096];
+
+	fixture_srcdir(tarball_path, srcdir, sizeof(srcdir));
+	snprintf(build_body, sizeof(build_body),
+	         "        cd \"${src}/%s/%s\" {\n"
+	         "            run \"tcc\" {\n"
+	         "                \"-o\" \"hello\" \"hello.c\"\n"
+	         "            }\n"
+	         "        }\n",
+	         name, srcdir);
+	snprintf(install_body, sizeof(install_body),
+	         "        mkdir \"${dest}/usr/bin\" parents chmod 0755\n"
+	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s\"\n"
+	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s-x\"\n",
+	         name, srcdir, name, name, srcdir, name);
+	decls[0] = '\0';
+	if (split)
+		snprintf(decls, sizeof(decls),
+		         "    output \"%s-tool\" {\n"
+		         "        files { \"usr/bin/%s-x\" }\n"
+		         "    }\n\n",
+		         name, name);
+	cpdl_recipe_text_decl(content, sizeof(content), name, version, test_http_src(tarball_path),
+	                      sha256, NULL,
+	                      "            compiler \"tcc\"\n"
+	                      "            tool \"linux-headers\"\n"
+	                      "            tool \"bash\"\n"
+	                      "            tool \"coreutils\"\n"
+	                      "            tool \"binutils\"\n",
+	                      NULL, split ? decls : NULL, build_body, install_body);
+	return publish_cpdl_content(c, name, version, content);
+}
+
+/* The installed version of a package in the default image, or "". */
+static void pkg_installed_version(const struct cix_client *c, const char *name, char *out,
+                                  size_t out_size)
+{
+	char path[128];
+	struct cix_response r;
+
+	out[0] = '\0';
+	snprintf(path, sizeof(path), "/v1/pkg/%s", name);
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "GET", path, NULL, &r) == 0 && r.status == 200 &&
+	    json_str_field(r.json, "version") != NULL)
+		snprintf(out, out_size, "%s", json_str_field(r.json, "version"));
+	cix_response_free(&r);
+}
+
+/*
  * ADR-0373: a small package for the ABI hold, compiled like every
  * fixture here. `abi` (or NULL) is the ABI it offers; `metadata` (or
  * NULL) is a whole metadata block's lines, which is how a consumer is
@@ -7655,6 +7716,78 @@ skip_resume:
 					ok = 0;
 				}
 				cix_response_free(&r);
+			}
+		}
+		/*
+		 * #678: a path moving between a recipe's packages. splitpkg 1.0
+		 * installs usr/bin/splitpkg-x in its main package; 2.0 gives it
+		 * to an output, splitpkg-tool. Installing splitpkg-tool must
+		 * first bring splitpkg to 2.0, which gives the path up --
+		 * otherwise the output collides with what 1.0 still owns, as
+		 * xz-tools did in jumpbox on 192.168.15.95 (2026-11-10).
+		 */
+		{
+			char sha_s1[65], sha_s2[65];
+			char tarball_s1[PATH_MAX], tarball_s2[PATH_MAX];
+			char st_s[64] = "", ver_main[64], ver_tool[64];
+			int s_ok;
+
+			s_ok = stage_fixture_tarball(scratch_dir, "splitpkg", "1.0", tarball_s1,
+			                             sizeof(tarball_s1), sha_s1, sizeof(sha_s1)) == 0 &&
+			       write_split_recipe(&client, "splitpkg", "1.0", tarball_s1, sha_s1, 0) == 0;
+			if (s_ok) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/pkg/install",
+				                       "{\"name\":\"splitpkg\"}", &r) != 0 ||
+				    (r.status != 202 && r.status != 200))
+					s_ok = 0;
+				cix_response_free(&r);
+			}
+			if (s_ok && (poll_pkg_state(&client, "splitpkg", st_s, sizeof(st_s), 240) != 0 ||
+			             !str_eq(st_s, "installed")))
+				s_ok = 0;
+			if (!s_ok) {
+				fprintf(stderr, "FAIL: #678 could not install splitpkg 1.0 (state=%s)\n", st_s);
+				ok = 0;
+			}
+			if (s_ok &&
+			    (stage_fixture_tarball(scratch_dir, "splitpkg", "2.0", tarball_s2,
+			                           sizeof(tarball_s2), sha_s2, sizeof(sha_s2)) != 0 ||
+			     write_split_recipe(&client, "splitpkg", "2.0", tarball_s2, sha_s2, 1) != 0)) {
+				fprintf(stderr, "FAIL: #678 could not publish splitpkg 2.0\n");
+				ok = 0;
+				s_ok = 0;
+			}
+			if (s_ok) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/pkg/install",
+				                       "{\"name\":\"splitpkg-tool\"}", &r) != 0 ||
+				    (r.status != 202 && r.status != 200)) {
+					fprintf(stderr, "FAIL: #678 install splitpkg-tool status=%d\n", r.status);
+					ok = 0;
+					s_ok = 0;
+				}
+				cix_response_free(&r);
+			}
+			if (s_ok && (poll_pkg_state(&client, "splitpkg-tool", st_s, sizeof(st_s), 240) != 0 ||
+			             !str_eq(st_s, "installed"))) {
+				fprintf(stderr, "FAIL: #678 splitpkg-tool did not install (state=%s) -- the "
+				                "output collided with the path splitpkg 1.0 still owns\n",
+				        st_s);
+				ok = 0;
+				s_ok = 0;
+			}
+			if (s_ok) {
+				pkg_installed_version(&client, "splitpkg", ver_main, sizeof(ver_main));
+				pkg_installed_version(&client, "splitpkg-tool", ver_tool, sizeof(ver_tool));
+				if (!str_eq(ver_main, "2.0-1") || !str_eq(ver_tool, "2.0-1") ||
+				    pkg_lists_file(&client, "splitpkg", "usr/bin/splitpkg-x") != 0 ||
+				    pkg_lists_file(&client, "splitpkg-tool", "usr/bin/splitpkg-x") != 1) {
+					fprintf(stderr, "FAIL: #678 want splitpkg and splitpkg-tool both at 2.0-1 "
+					                "with usr/bin/splitpkg-x owned by the output; got %s, %s\n",
+					        ver_main, ver_tool);
+					ok = 0;
+				}
 			}
 		}
 		/*

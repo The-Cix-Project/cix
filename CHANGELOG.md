@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A recipe's packages move together in an image (#678, 0.2.57-673)
+
+- **The defect:** installing one of a recipe's outputs at version V, into an image that held the recipe's main package at an older version, collided with the paths the older main package still owned ("one package owns a path", #553).
+  - On 192.168.15.95 on 2026-11-10, splitting xz (ADR-0371 decision E): converging jumpbox and iso-builder installed `xz-tools@5.8.3-12` while xz 5.8.3-11, installed there as a dependency, still owned `usr/bin/xz`. Both were refused, and xz had to be upgraded by hand first.
+- **Now:** `resolve_chain()` queues each sibling of the package it resolves first, as an upgrade. A sibling is the recipe's main package or another of its outputs, held in the image at a different version.
+  - It does this only when V is the recipe's newest version, because that's the version a queued dependency resolves to.
+  - A sibling already being resolved further up is left to its own frame.
+- **Gate:** `test_pkg` publishes `splitpkg` 1.0, which owns `usr/bin/splitpkg-x` in its main package, and installs it. It then publishes 2.0, which gives that path to an output, and installs the output. Both must end at 2.0-1, with the path owned by the output.
+
 ### cixctl lives at /usr/bin/cixctl in the control-plane root (ADR-0371 decision C, #350, 0.2.57-672)
 
 - **What changed:** the root carries `cixctl` at `/usr/bin/cixctl`, the path its `cixctl` output installs, rather than `/bin/cixctl`.
