@@ -678,21 +678,16 @@ static const struct call_budget g_diskprobe_budgets[] = {
 	{ "main.c", "disk_enumerate_probe(", 2,
 	  "disksnap_work(), which runs only in a helper child, and disksnap_build_now(), "
 	  "before the loop serves" },
-	/* One device's superblock, read directly. Budgeted at what is there
-	 * today so ADR-0377 part 2, which moves these onto the snapshot, is
-	 * a visible lowering rather than a claim. */
+	/* One device's superblock, read directly. ADR-0377 part 2 moved
+	 * every reader on the loop onto the snapshot (disk_identity_of(),
+	 * and the role and placement UUID adoption after each install):
+	 * part 1 budgeted 1 + 2 + 3 + 3 here, and what is left is a boot
+	 * path. */
 	{ "disk.c", "disk_probe_fs_type(", 1, "the definition, not a call" },
 	{ "disk.c", "disk_probe_fs_uuid(", 1, "the definition, not a call" },
-	{ "main.c", "disk_probe_fs_type(", 1,
-	  "handle_data_storage_migrate_post() -- ADR-0377 part 2 reads the snapshot" },
-	{ "main.c", "disk_probe_fs_uuid(", 2,
-	  "data_disk_device() and handle_data_storage_migrate_post() -- ADR-0377 part 2" },
-	{ "diskrole.c", "disk_probe_fs_uuid(", 3,
-	  "diskrole_resolve_recorded(), load_state() before serving, and "
-	  "diskrole_set_fs_type() -- ADR-0377 part 2" },
-	{ "storageplacement.c", "disk_probe_fs_uuid(", 3,
-	  "load_state() before serving, storageplacement_set_pending() and "
-	  "storageplacement_set() -- ADR-0377 part 2" },
+	{ "main.c", "disk_probe_fs_uuid(", 1,
+	  "data_disk_device(), called only by mount_data_dir() at boot, before the loop "
+	  "serves" },
 };
 
 static const char *const g_diskprobe_calls[] = {

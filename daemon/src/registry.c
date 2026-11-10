@@ -2,6 +2,7 @@
 #include "handover.h"
 #include "cixinit_table.h"
 #include "containerdef.h"
+#include "disksnap.h"
 #include "internal.h"
 #include "linux_compat.h"
 #include "logstore.h"
@@ -587,6 +588,23 @@ static void registry_mark_exited_with(struct registry_entry *entry, int status, 
 		registry_announce();
 		entry->exit_status = status;
 		entry->term_signal = sig;
+
+		/*
+		 * ADR-0377 part 2: a block device this container held comes back
+		 * to the host, and the container may have rewritten it -- what
+		 * the disk snapshot holds for it is stale until a probe that
+		 * starts after the exit.
+		 */
+		{
+			int d;
+
+			for (d = 0; d < entry->device_count; d++) {
+				const char *base = strrchr(entry->devices[d].dev_path, '/');
+
+				if (entry->devices[d].type == DEVICE_NODE_BLOCK)
+					disksnap_touch(base != NULL ? base + 1 : entry->devices[d].dev_path);
+			}
+		}
 
 		/*
 		 * Prefer the child's own real diagnostic text (the ONLY thing

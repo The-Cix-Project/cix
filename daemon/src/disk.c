@@ -681,6 +681,31 @@ int disk_enumerate_probe(struct discovered_disk *out, int cap, const char *os_co
 	return enumerate(out, cap, os_containers_dir, 1);
 }
 
+int disk_identity_of(const char *name, char *fs_type, size_t fs_size, char *uuid,
+                     size_t uuid_size)
+{
+	static struct discovered_disk disks[DISK_ENUM_MAX];
+	int n = disk_enumerate(disks, DISK_ENUM_MAX, NULL);
+	int i;
+
+	if (fs_type != NULL && fs_size > 0)
+		fs_type[0] = '\0';
+	if (uuid != NULL && uuid_size > 0)
+		uuid[0] = '\0';
+	for (i = 0; i < n; i++) {
+		if (name == NULL || strcmp(disks[i].name, name) != 0)
+			continue;
+		if (!disks[i].identity_known)
+			return 0;
+		if (fs_type != NULL && fs_size > 0)
+			snprintf(fs_type, fs_size, "%s", disks[i].fs_type);
+		if (uuid != NULL && uuid_size > 0)
+			snprintf(uuid, uuid_size, "%s", disks[i].fs_uuid);
+		return 1;
+	}
+	return -1;
+}
+
 void disk_write_json_one(const struct discovered_disk *d, struct json_writer *w)
 {
 	jw_obj_open(w);

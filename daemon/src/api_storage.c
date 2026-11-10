@@ -231,6 +231,7 @@ void diskrole_mount_assigned(const char *disk_name, const char *containers_dir)
 		if (strcmp(disks[i].name, disk_name) != 0)
 			continue;
 		rc = diskformat_mount_role_disk(&disks[i], DISKS_MOUNT_DIR, msg, sizeof(msg));
+		disksnap_want(); /* ADR-0377: its capacity, read by the next probe */
 		if (rc > 0)
 			logstore_write("cixd", "info", "storage role: %s", msg);
 		else if (rc < 0)
@@ -471,6 +472,7 @@ void handle_disk_unmount_post(int fd, const char *disk_name, const char *body, s
 	}
 
 	derr = diskformat_unmount(disk_name, CONTAINERS_DIR, g_base_dir);
+	disksnap_want(); /* ADR-0377: a mount changed; capacity follows at the next probe */
 	if (derr == DISKFORMAT_ERR_IS_DATA_DIR) {
 		/*
 		 * #249: structural, and worth saying so plainly rather than

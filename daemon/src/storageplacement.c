@@ -73,6 +73,46 @@ static const char *kind_key(enum storage_kind kind)
 	}
 }
 
+/*
+ * #255, ADR-0377 part 2: every placement -- and every pending move's
+ * target -- with no recorded filesystem UUID takes its disk's, when the
+ * disk's identity is known and it has one. Read through
+ * disk_identity_of(), so before the loop serves it is a probe and after
+ * it is the disk snapshot: no device is read on the loop. Returns how
+ * many were adopted; the caller saves.
+ */
+static int adopt_one(const char *disk, char *uuid, size_t uuid_size)
+{
+	char found[DISK_FS_UUID_MAX];
+
+	if (disk[0] == '\0' || uuid[0] != '\0')
+		return 0;
+	if (disk_identity_of(disk, NULL, 0, found, sizeof(found)) != 1 || found[0] == '\0')
+		return 0;
+	snprintf(uuid, uuid_size, "%s", found);
+	return 1;
+}
+
+static int adopt_uuids(void)
+{
+	enum storage_kind k;
+	int adopted = 0;
+
+	for (k = STORAGE_KIND_REBUILDABLE; k < STORAGE_KIND_COUNT; k++) {
+		adopted += adopt_one(g_disk[k], g_uuid[k], sizeof(g_uuid[k]));
+		adopted += adopt_one(g_pending_disk[k], g_pending_uuid[k], sizeof(g_pending_uuid[k]));
+	}
+	return adopted;
+}
+
+void storageplacement_adopt_uuids(void)
+{
+	if (adopt_uuids() > 0 && save_state() != STORAGEPLACEMENT_OK)
+		fprintf(stderr, "%s: could not persist adopted filesystem UUIDs -- the next "
+		                "snapshot tries again (ADR-0377)\n",
+		        g_state_path);
+}
+
 static int load_state(void)
 {
 	char *buf;
@@ -178,7 +218,6 @@ static int load_state(void)
 
 		for (k = STORAGE_KIND_REBUILDABLE; k < STORAGE_KIND_COUNT; k++) {
 			char resolved[DISKROLE_DISK_NAME_MAX];
-			char dev_path[PATH_MAX];
 
 			/* A pending target follows its filesystem the same way. */
 			if (g_pending_disk[k][0] != '\0' &&
@@ -195,13 +234,8 @@ static int load_state(void)
 				        g_state_path, kind_key(k), g_disk[k], resolved, g_uuid[k]);
 				snprintf(g_disk[k], sizeof(g_disk[k]), "%s", resolved);
 			}
-			if (g_uuid[k][0] != '\0')
-				continue;
-			snprintf(dev_path, sizeof(dev_path), "/dev/%s", g_disk[k]);
-			disk_probe_fs_uuid(dev_path, g_uuid[k], sizeof(g_uuid[k]));
-			if (g_uuid[k][0] != '\0')
-				adopted++;
 		}
+		adopted = adopt_uuids();
 		if (adopted > 0) {
 			fprintf(stderr, "%s: adopted filesystem UUIDs for %d storage placement(s) (#255)\n",
 			        g_state_path, adopted);
@@ -317,11 +351,11 @@ enum storageplacement_error storageplacement_set_pending(enum storage_kind kind,
 	g_pending_disk[kind][0] = '\0';
 	g_pending_uuid[kind][0] = '\0';
 	if (disk_name != NULL) {
-		char dev_path[PATH_MAX];
-
 		snprintf(g_pending_disk[kind], sizeof(g_pending_disk[kind]), "%s", disk_name);
-		snprintf(dev_path, sizeof(dev_path), "/dev/%s", disk_name);
-		disk_probe_fs_uuid(dev_path, g_pending_uuid[kind], sizeof(g_pending_uuid[kind]));
+		/* ADR-0377 part 2: from the disk snapshot, or adopted by the
+		 * install that next knows the disk -- never read on the loop. */
+		(void)adopt_one(g_pending_disk[kind], g_pending_uuid[kind],
+		                sizeof(g_pending_uuid[kind]));
 	}
 	err = save_state();
 	if (err != STORAGEPLACEMENT_OK) {
@@ -407,12 +441,12 @@ enum storageplacement_error storageplacement_set(enum storage_kind kind, const c
 	snprintf(prev, sizeof(prev), "%s", g_disk[kind]);
 	snprintf(prev_uuid, sizeof(prev_uuid), "%s", g_uuid[kind]);
 	if (disk_name != NULL) {
-		char dev_path[PATH_MAX];
-
 		snprintf(g_disk[kind], sizeof(g_disk[kind]), "%s", disk_name);
-		/* #255: record what this disk IS, not only where it is now. */
-		snprintf(dev_path, sizeof(dev_path), "/dev/%s", disk_name);
-		disk_probe_fs_uuid(dev_path, g_uuid[kind], sizeof(g_uuid[kind]));
+		/* #255: record what this disk IS, not only where it is now.
+		 * ADR-0377 part 2: from the disk snapshot, or adopted by the
+		 * install that next knows the disk -- never read on the loop. */
+		g_uuid[kind][0] = '\0';
+		(void)adopt_one(g_disk[kind], g_uuid[kind], sizeof(g_uuid[kind]));
 	} else {
 		g_disk[kind][0] = '\0';
 		g_uuid[kind][0] = '\0';

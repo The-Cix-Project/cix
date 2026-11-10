@@ -145,6 +145,12 @@ const char *diskrole_lookup(const char *disk_name);
  */
 enum diskrole_error diskrole_set_fs_type(const char *disk_name, const char *fs_type);
 
+/* ADR-0377 part 2: every role with no recorded filesystem UUID adopts its
+ * disk's from the disk snapshot, when known, and saves. Called after each
+ * snapshot install, so a UUID a format created is recorded within one
+ * probe, never by reading the device on the loop. */
+void diskrole_adopt_uuids(void);
+
 /* NULL if disk_name has no role, or has a role but was never
  * successfully formatted (diskrole_set_fs_type() never called for it). */
 const char *diskrole_lookup_fs_type(const char *disk_name);

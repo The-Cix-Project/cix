@@ -128,6 +128,11 @@ const char *storageplacement_get(enum storage_kind kind);
  */
 enum storageplacement_error storageplacement_set(enum storage_kind kind, const char *disk_name);
 
+/* ADR-0377 part 2: every placement and pending target with no recorded
+ * filesystem UUID adopts its disk's from the disk snapshot, when known,
+ * and saves. Called after each snapshot install. */
+void storageplacement_adopt_uuids(void);
+
 /*
  * The recorded filesystem UUID of kind's placement disk, or NULL when
  * none is recorded (no placement, or a filesystem with no UUID). What

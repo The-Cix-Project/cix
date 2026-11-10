@@ -2,6 +2,7 @@
 
 #include "apiresp.h"
 #include "daemonpaths.h"
+#include "disksnap.h"
 #include "http.h"
 #include "json.h"
 #include "swap.h"
@@ -152,6 +153,7 @@ void handle_swap_enable(int fd, const char *body, size_t body_len)
 	}
 
 	serr = swap_enable(size_mb);
+	disksnap_want(); /* ADR-0377: the swap file changed its filesystem's free space */
 	if (serr != SWAP_OK) {
 		respond_swap_error(fd, serr);
 		return;
@@ -167,6 +169,7 @@ void handle_swap_disable(int fd)
 {
 	enum swap_error serr = swap_disable();
 
+	disksnap_want(); /* ADR-0377: as for enable */
 	if (serr != SWAP_OK) {
 		respond_swap_error(fd, serr);
 		return;

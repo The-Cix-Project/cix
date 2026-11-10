@@ -38,7 +38,7 @@ Which step inside `disk_enumerate()` costs the time is **not measured**: the sup
 
 ## Decision
 
-1. **Once the loop serves, a block device is read only in a helper child.** Superblock probes, GPT label reads and `statvfs` of a mounted data filesystem happen in `disksnap_work()`, the snapshot's helper. Nowhere else after start: no handler, no write path, no grant check. Part 1 moves the device walk; the few direct single-device reads move in part 2 (see the end).
+1. **Once the loop serves, a block device is read only in a helper child.** Superblock probes, GPT label reads and `statvfs` of a mounted data filesystem happen in `disksnap_work()`, the snapshot's helper. Nowhere else after start: no handler, no write path, no grant check. Part 1 moved the device walk, and part 2 the direct single-device reads (see the end); what is left is one read on the boot path, before the loop serves.
 
 2. **One snapshot holds what that child read.** For every device, keyed by name, it holds:
    - identity: filesystem type, filesystem UUID and partition label;
@@ -53,7 +53,8 @@ Which step inside `disk_enumerate()` costs the time is **not measured**: the sup
    - **In the contract:** `GET /v1/storage` reports an unknown `fs_type`, `fs_uuid`, `part_label`, `used_bytes` or `free_bytes` as `null`, and adds `probed_at`, the time of the probe the identity came from. `""` keeps meaning "probed, and there is none". Contract and README change together.
    - **In the dashboard:** the storage view renders null as "probing", never as "no filesystem".
    - **In a caller that decides by identity:** unknown never matches. That covers role resolution by UUID (`diskrole_resolve_recorded()`), the ADR-0345 `fs_uuid` selector, storage placement by UUID, and the quota report's btrfs filter.
-   - **In a write that records a disk's identity** (storage placement, a role's filesystem type): unknown is a 409 naming the disk as still being probed, so the request can be retried. It never records an empty UUID. These callers read the device directly until part 2.
+   - **In a request that needs a disk's identity to decide:** unknown is a 409 with `Retry-After`, naming the disk as still being probed. The partition resize and the data-storage move are the two.
+   - **In a write that records a disk's UUID** (a storage placement, a pending move's target, a role after a format): the UUID is taken from the snapshot if it is known. If it is not, it is left empty, and the first snapshot install that knows the disk adopts it (`diskrole_adopt_uuids()`, `storageplacement_adopt_uuids()`). This is #255's adoption at boot, run after every install. A 409 was the first plan and is wrong here. These writes are often not requests at all: a format completes on its own, and a move ends when its copy does. A format has also just made its disk unknown, so the write would refuse every time. An empty UUID is never recorded as the disk's identity. It means only "not adopted yet", and resolution falls back to the name, exactly as it did for a role made before #255.
 
 5. **Every device has a change counter, and it alone decides whether a probe result may be installed.** It is bumped by `disksnap_touch()` whenever something changes, or may have changed, what a device holds:
    - **A format** touches its disk when `mkfs` starts and again when it ends, because it runs asynchronously while the loop goes on serving.
@@ -95,11 +96,11 @@ Which step inside `disk_enumerate()` costs the time is **not measured**: the sup
 
 11. **Gates.**
     - `test_blocking_waits` counts the lines naming `disk_enumerate_probe(`, the one door to the walk that reads devices: the child and the start-up build.
-    - It counts `disk_probe_fs_type(` and `disk_probe_fs_uuid(`, one device's superblock read directly, at today's numbers per file. So part 2's removals are a visible lowering, not a claim.
+    - It counts `disk_probe_fs_type(` and `disk_probe_fs_uuid(`, one device's superblock read directly, per file. Part 1 budgeted them at what was there; part 2 lowered them to the one boot-path read, a lowering visible in the diff.
     - It counts `cache_scan(` and `pkg_cache_walk_evict(` the same way: the definitions, the child and the start-up build.
     - `test_disksnap` drives the install rule, touches, replaced and departed devices, and the announcement flag.
 
-## Built in part 1, and what part 2 adds
+## Built in part 1 and part 2
 
 **Part 1** (0.2.57-669):
 - the snapshot and its helper child;
@@ -111,9 +112,14 @@ Which step inside `disk_enumerate()` costs the time is **not measured**: the sup
 - the dashboard's "probing" and the gates;
 - the artifact cache's walk and eviction in the same child (item 10), which `GET /v1/pkg/cache` and `artifact_cached` answer from.
 
-**Part 2:**
-- **The direct superblock reads become snapshot reads.** These are storage placement's `set` and `set_pending`, a role's `set_fs_type` and `resolve_recorded`, and the data storage migration. Each also gets item 4's 409 when the identity is unknown. Reads before the loop serves (`load_state()`) stay as they are.
-- **Touches from a mount or unmount, a swap on or off, and the release of a block device grant.** None of these changes identity. The first two change only whether capacity applies, which `disksnap_fill()` already reports as unknown for a device mounted since its probe. The third is bounded today by the 30 s period.
+**Part 2** (0.2.57-670):
+- **The direct superblock reads on the loop are gone.**
+  - The data-storage move reads the disk through `disk_identity_of()`, and is a 409 while the disk is unknown.
+  - Storage placement and role writes record a UUID from the snapshot, or let a later install adopt it (item 4).
+  - Role resolution by UUID reads the UUID `disk_enumerate()` already holds.
+  - What remains is `data_disk_device()`, called only by `mount_data_dir()` at boot, before the loop serves. Part 1's gate budgeted nine direct reads in four files. Part 2 leaves one, on that boot path.
+- **The release of a block device grant touches the device.** It happens in `registry_mark_exited()`, because a container may have rewritten what it held.
+- **A mount, an unmount and a swap change ask for a refresh (`disksnap_want()`), and do not touch.** None of them changes identity, so a touch would make the device unknown, and a 409 possible, for nothing. What they do change is capacity, which `disksnap_fill()` already reports as unknown for a device mounted since its probe, and which the refresh they ask for reads.
 
 ## Out of scope
 

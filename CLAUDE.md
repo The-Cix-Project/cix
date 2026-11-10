@@ -349,8 +349,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Unknown is `null` in the API and never matches in a decision.** A decision that needs a device's identity and finds it unknown refuses with a 409 and `Retry-After` (the partition resize is the first). Never read `""` as "no filesystem" without `identity_known`.
 - **A refresh is coalesced, never dropped.** That is unlike ADR-0376's self-check, which skips.
 - **The artifact cache is walked and evicted by the same child.** `GET /v1/pkg/cache` and `artifact_cached` read that walk; `pkg_announce_cache()` asks for a new one. Never walk the cache anywhere else, and never evict at a store. A decision asks `pkg_artifact_cache_has()`, which is one stat.
-- **Part 2 is not built yet:**
-  - the direct `disk_probe_fs_uuid()` callers (storage placement, roles, data storage migrate) read the snapshot.
+- **Part 2 (0.2.57-670): one direct read remains, `data_disk_device()` at boot.** A write recording a UUID takes it from the snapshot or leaves it for `diskrole_adopt_uuids()` / `storageplacement_adopt_uuids()` after an install; never read a device for it. A request that must decide by identity answers 409 when it is unknown.
 
 ## A log read never walks the store on the event loop
 

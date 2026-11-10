@@ -3990,7 +3990,10 @@ paths:
             This is already the data directory's placement and no move
             is pending, or something the boot does not carry is still in
             the data directory: rebuildable storage, a volume with no
-            disk, or an enabled swap file on the default placement
+            disk, or an enabled swap file on the default placement. Also
+            when the disk changed and the disk snapshot has not probed it
+            since, so whether it holds btrfs is not known yet: nothing is
+            started, and `Retry-After` says when to try again (ADR-0377).
           content:
             application/json:
               schema:

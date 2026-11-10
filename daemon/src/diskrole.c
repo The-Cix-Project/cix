@@ -75,9 +75,11 @@ int diskrole_resolve_recorded(const char *recorded_name, const char *recorded_uu
 	 */
 	n = disk_enumerate(disks, DISK_ENUM_MAX, NULL);
 	for (i = 0; i < n; i++) {
-		char uuid[DISK_FS_UUID_MAX];
+		/* ADR-0377: the UUID disk_enumerate() already has -- probed by
+		 * it before the loop serves, from the snapshot after. Unknown
+		 * never matches. */
+		const char *uuid = disks[i].identity_known ? disks[i].fs_uuid : "";
 
-		disk_probe_fs_uuid(disks[i].dev_path, uuid, sizeof(uuid));
 		if (uuid[0] == '\0' || strcasecmp(uuid, recorded_uuid) != 0)
 			continue;
 		if (recorded_name != NULL && strcmp(disks[i].name, recorded_name) == 0)
@@ -229,6 +231,39 @@ static int save_state(void)
 	return rc;
 }
 
+/*
+ * #255, ADR-0377 part 2: every role with no recorded filesystem UUID
+ * takes its disk's, when the disk's identity is known and it has one.
+ * Read through disk_identity_of(), so before the loop serves it is a
+ * probe and after it is the disk snapshot -- no device is read on the
+ * loop. Returns how many were adopted; the caller saves.
+ */
+static int adopt_uuids(void)
+{
+	int i, adopted = 0;
+
+	for (i = 0; i < DISKROLE_MAX; i++) {
+		char uuid[DISK_FS_UUID_MAX];
+
+		if (!g_roles[i].in_use || g_roles[i].fs_uuid[0] != '\0')
+			continue;
+		if (disk_identity_of(g_roles[i].disk_name, NULL, 0, uuid, sizeof(uuid)) != 1 ||
+		    uuid[0] == '\0')
+			continue;
+		snprintf(g_roles[i].fs_uuid, sizeof(g_roles[i].fs_uuid), "%s", uuid);
+		adopted++;
+	}
+	return adopted;
+}
+
+void diskrole_adopt_uuids(void)
+{
+	if (adopt_uuids() > 0 && save_state() != 0)
+		fprintf(stderr, "%s: could not persist adopted filesystem UUIDs -- the next "
+		                "snapshot tries again (ADR-0377)\n",
+		        g_state_path);
+}
+
 static int load_state(void)
 {
 	char *buf;
@@ -350,21 +385,8 @@ static int load_state(void)
 	 * better to use.
 	 */
 	{
-		int i, adopted = 0;
+		int adopted = adopt_uuids();
 
-		for (i = 0; i < count; i++) {
-			char dev_path[PATH_MAX];
-			char uuid[DISK_FS_UUID_MAX];
-
-			if (g_roles[i].fs_uuid[0] != '\0')
-				continue;
-			snprintf(dev_path, sizeof(dev_path), "/dev/%s", g_roles[i].disk_name);
-			disk_probe_fs_uuid(dev_path, uuid, sizeof(uuid));
-			if (uuid[0] == '\0')
-				continue;
-			snprintf(g_roles[i].fs_uuid, sizeof(g_roles[i].fs_uuid), "%s", uuid);
-			adopted++;
-		}
 		if (adopted > 0)
 			fprintf(stderr, "%s: adopted filesystem UUIDs for %d disk role(s) (#255)\n",
 			        g_state_path, adopted);
@@ -449,18 +471,19 @@ enum diskrole_error diskrole_set_fs_type(const char *disk_name, const char *fs_t
 		return DISKROLE_ERR_NOT_FOUND;
 	snprintf(r->fs_type, sizeof(r->fs_type), "%s", fs_type);
 	/*
-	 * #255: a format has just created a new filesystem, so this is
-	 * exactly when its UUID exists and is worth recording. Doing it
+	 * #255: a format has just created a new filesystem, so the UUID on
+	 * record is the previous filesystem's and is dropped here. Doing it
 	 * here rather than at role creation is deliberate -- at creation
-	 * there may be no filesystem yet, and a UUID read then would be
-	 * the previous filesystem's.
+	 * there may be no filesystem yet.
+	 *
+	 * ADR-0377 part 2: the new UUID is not read here. The format's own
+	 * completion has just touched the disk, so the snapshot does not
+	 * know it yet, and reading the device would be block I/O on the
+	 * loop. The first snapshot install that knows the disk adopts it
+	 * (diskrole_adopt_uuids(), from main.c), within one probe.
 	 */
-	{
-		char dev_path[PATH_MAX];
-
-		snprintf(dev_path, sizeof(dev_path), "/dev/%s", r->disk_name);
-		disk_probe_fs_uuid(dev_path, r->fs_uuid, sizeof(r->fs_uuid));
-	}
+	r->fs_uuid[0] = '\0';
+	(void)adopt_uuids();
 	if (save_state() != 0)
 		return DISKROLE_ERR_PERSIST_FAILED;
 	return DISKROLE_OK;

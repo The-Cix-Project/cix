@@ -22212,7 +22212,17 @@ static void handle_data_storage_migrate_post(int fd, const char *body, size_t bo
 			              "that is the cix-containers partition, the default: send disk null");
 			return;
 		}
-		disk_probe_fs_type(dev_path, fs, sizeof(fs));
+		/* ADR-0377 part 2: from the disk snapshot, never the device. A
+		 * disk changed and not probed since is a retry, never a
+		 * "not formatted". */
+		if (disk_identity_of(disk, fs, sizeof(fs), uuid, sizeof(uuid)) == 0) {
+			json_free(root);
+			respond_error_hdrs(fd, 409, "Conflict", "Retry-After: 2\r\n",
+			                   "this disk changed and is still being probed, so what it holds "
+			                   "is not known yet -- try again shortly (ADR-0377)",
+			                   0);
+			return;
+		}
 		if (strcmp(fs, "btrfs") != 0) {
 			snprintf(msg, sizeof(msg), "disk '%s' is %s, and the data directory must be btrfs: "
 			                           "format it first",
@@ -22221,7 +22231,6 @@ static void handle_data_storage_migrate_post(int fd, const char *body, size_t bo
 			respond_error(fd, 400, "Bad Request", msg);
 			return;
 		}
-		disk_probe_fs_uuid(dev_path, uuid, sizeof(uuid));
 		if (uuid[0] == '\0') {
 			snprintf(msg, sizeof(msg), "disk '%s' has no filesystem UUID to be mounted by", disk);
 			json_free(root);
@@ -36259,8 +36268,14 @@ static void disksnap_done(int exit_status, void *ctx)
 	    pread(g_disksnap_memfd, &r, sizeof(r), 0) == (ssize_t)sizeof(r) && r.n >= 0 &&
 	    r.n <= DISK_ENUM_MAX) {
 		logstore_replay(r.held, sizeof(r.held));
-		if (disksnap_install(r.disks, r.n, &g_disksnap_at_fork))
+		if (disksnap_install(r.disks, r.n, &g_disksnap_at_fork)) {
 			disksnap_announce();
+			/* Part 2: a role or placement waiting for its disk's UUID
+			 * (after a format, or set while the disk was unknown) takes
+			 * it from what was just installed. */
+			diskrole_adopt_uuids();
+			storageplacement_adopt_uuids();
+		}
 		pkg_cache_walk_install(&r.cache); /* announces its own reads */
 	} else {
 		logstore_write("cixd", "warn",

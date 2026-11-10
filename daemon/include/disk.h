@@ -204,6 +204,16 @@ void disk_set_identity_source(disk_identity_fn fn);
 int disk_enumerate_probe(struct discovered_disk *out, int cap, const char *os_containers_dir);
 
 /*
+ * ADR-0377 part 2: one device's filesystem type and UUID as
+ * disk_enumerate() reports them -- from the disk snapshot once cixd has
+ * one, so a caller on the event loop reads no device. 1 when known (""
+ * for none), 0 when the device exists and has not been probed as it is
+ * now, -1 when there is no such device. Either output may be NULL.
+ */
+int disk_identity_of(const char *name, char *fs_type, size_t fs_size, char *uuid,
+                     size_t uuid_size);
+
+/*
  * Walks /sys/class/block fresh, writing up to cap entries into out: every
  * whole disk, plus every partition on it (anything with a "partition"
  * sysfs attribute -- is_partition/parent_disk above). Returns the count
