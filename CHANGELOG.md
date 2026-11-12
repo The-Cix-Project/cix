@@ -12,7 +12,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - In compile probes 0.2.57-740 and -741 on 192.168.15.95 (2026-11-12), the host had a backlog of deleted subvolumes after glibc 2.44-21 rolled. Every selftest daemon that emptied its delete queue started a quota settle (ADR-0343), and each one's helper waited up to `QUOTA_SETTLE_WAIT_SECONDS` (2 h) for btrfs's cleaner after its daemon had stopped.
   - The kernel's OOM report for `/cix-workload/cix-pkgbuild` showed 28 `cixd` processes holding about 50 MB of anonymous memory each, 1.4 GB of the 2 GiB build budget. The OOM killer took the boot tests' `mksquashfs` and qemu, so `test_boot`, `test_boot_ab`, `test_boot_update`, `test_console_shell`, `test_console_pki_bootstrap` and `test_installer` failed. Probe 739 of the same commit, run before the backlog, passed.
 - **Now:** a helper sets `PR_SET_PDEATHSIG` to `SIGKILL` and exits at once if its parent already died between the fork and the `prctl`.
-  - In production nothing changes: cixd is pid 1, and the ADR-0375 handover is an `execve`, which does not fire the signal (stallwatch's watchdog relies on the same property).
+  - In production nothing changes: cixd is pid 1, and no helper is alive at an ADR-0375 handover (`handover_quiescent()` waits for `g_helpers_live` to reach 0).
 
 ### A composed build's C library is glibc's whole recipe, not one package (ADR-0371 decision E, #350, 0.2.57-674)
 

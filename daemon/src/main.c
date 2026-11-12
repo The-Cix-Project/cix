@@ -31784,11 +31784,13 @@ static int helper_run_pid(int (*work)(void *), void *work_arg, void (*done)(int,
 		 * 1.4 GB of the 2 GiB build budget. The OOM killer then took
 		 * the boot tests' mksquashfs and qemu.
 		 *
-		 * The signal fires when the parent exits, not on execve, so
-		 * the ADR-0375 handover (an exec of cixd) keeps its helpers;
-		 * stallwatch's watchdog relies on the same property
-		 * (stallwatch_stop()). The getppid() check covers a parent
-		 * that died between the fork and the prctl.
+		 * No helper is alive at an ADR-0375 handover:
+		 * handover_quiescent() waits for g_helpers_live to reach 0.
+		 * The exec would not fire the signal anyway (stallwatch's
+		 * watchdog relies on that, stallwatch_stop()), so in
+		 * production, where cixd is pid 1, this changes nothing. The
+		 * getppid() check covers a parent that died between the fork
+		 * and the prctl.
 		 */
 		if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0 || getppid() != parent)
 			_exit(1);
