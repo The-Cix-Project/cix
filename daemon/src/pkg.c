@@ -408,9 +408,12 @@ static void pkg_job_set_state(struct pkg_entry *e, enum pkg_state s)
  * `minisign` to make room, which is the shape of a limit that has
  * stopped being generous.
  *
- * The cost is bounded and small: struct buildenv_tool is 136 bytes, so
- * the array in buildenv_image_for() grows from 4.3 KB of stack to 8.7
+ * The cost is bounded and small: struct buildenv_tool was 136 bytes, so
+ * the array in buildenv_image_for() grew from 4.3 KB of stack to 8.7
  * KB, and the canonical-name buffer beside it from 4.2 KB to 8.4 KB.
+ * It is 200 bytes since it records each tool's recipe family (two
+ * 64-byte names, a 64-byte version and a pointer), so the array is
+ * 12.8 KB.
  * Composing a larger environment copies more files, which is
  * proportional work rather than a cliff -- and a set nobody declares
  * costs nothing, since the hash of the declared set is what names the
@@ -7844,6 +7847,17 @@ struct buildenv_tool {
 	/* The installed entry it resolved to -- its file list is what gets
 	 * copied, and its image is where those files currently live. */
 	struct pkg_entry *entry;
+	/*
+	 * The package whose recipe built it: its own name, or, for an
+	 * output, its main package's (ADR-0372). Set by
+	 * buildenv_add_outputs(), the one place that knows a tool is an
+	 * output. The C library is a family, not one package, once glibc's
+	 * headers and objects are their own output (ADR-0371 decision E):
+	 * buildenv_mutate() copies the whole family last, and
+	 * buildenv_verify_libc_intact() checks each critical file against
+	 * the member that installs it.
+	 */
+	char family[PKG_NAME_MAX];
 };
 
 struct buildenv_ctx {
@@ -8054,6 +8068,15 @@ static int buildenv_add_outputs(const char *name, const char *version, struct bu
 		}
 		if (buildenv_add_tool(spec, name, out, max, n, err, err_size, depth + 1) != 0)
 			return -1;
+		/* Whether it was added just now or was already there as
+		 * another package's runtime dependency, it is this recipe's. */
+		{
+			int j;
+
+			for (j = 0; j < *n; j++)
+				if (strcmp(out[j].name, outputs[k]) == 0)
+					snprintf(out[j].family, sizeof(out[j].family), "%s", name);
+		}
 	}
 	return 0;
 }
@@ -8182,6 +8205,7 @@ static int buildenv_add_tool(const char *name, const char *via, struct buildenv_
 
 	snprintf(out[*n].name, sizeof(out[*n].name), "%s", found->name);
 	snprintf(out[*n].version, sizeof(out[*n].version), "%s", found->version);
+	snprintf(out[*n].family, sizeof(out[*n].family), "%s", found->name);
 	out[*n].entry = found;
 	(*n)++;
 
@@ -8344,8 +8368,6 @@ static int buildenv_verify_libc_intact(const char *staging_rootfs, const struct 
 		"usr/include/sys/cdefs.h",
 	};
 	const struct pkg_entry *libc = NULL;
-	char src_rootfs[PATH_MAX];
-	char version[IMAGE_VERSION_MAX];
 	size_t k;
 	int i;
 
@@ -8358,22 +8380,48 @@ static int buildenv_verify_libc_intact(const char *staging_rootfs, const struct 
 	if (libc == NULL)
 		return buildenv_fail("no %s in the composed tool set -- nothing in it could exec",
 		                     PKG_BASE_LIBC);
-	if (image_current_version(normalize_image(libc->image), version, sizeof(version)) != IMAGE_OK)
-		return buildenv_fail("%s@%s lives in image \"%s\", which has no current version",
-		                     libc->name, libc->version, normalize_image(libc->image));
-	image_version_rootfs_path(normalize_image(libc->image), version, src_rootfs,
-	                           sizeof(src_rootfs));
 
+	/*
+	 * Each file is compared with the copy the C library member that
+	 * installs it holds, in that member's own image: once glibc's
+	 * headers are its glibc-dev output (ADR-0371 decision E), cdefs.h is
+	 * not glibc's and need not be in glibc's image. A critical file no
+	 * member installs is refused, never skipped.
+	 */
 	for (k = 0; k < sizeof(critical) / sizeof(critical[0]); k++) {
+		const struct pkg_entry *owner = NULL;
+		char src_rootfs[PATH_MAX], version[IMAGE_VERSION_MAX];
 		char want[PATH_MAX], got[PATH_MAX];
+		int f;
 
+		for (i = 0; owner == NULL && i < ctx->tool_count; i++) {
+			const struct pkg_entry *m = ctx->tools[i].entry;
+
+			if (strcmp(ctx->tools[i].family, PKG_BASE_LIBC) != 0)
+				continue;
+			for (f = 0; f < m->file_count; f++)
+				if (strcmp(m->files[f], critical[k]) == 0) {
+					owner = m;
+					break;
+				}
+		}
+		if (owner == NULL)
+			return buildenv_fail("no package of %s@%s installs %s, so the composed C library "
+			                     "cannot be checked whole",
+			                     libc->name, libc->version, critical[k]);
+		if (image_current_version(normalize_image(owner->image), version, sizeof(version)) !=
+		    IMAGE_OK)
+			return buildenv_fail("%s@%s lives in image \"%s\", which has no current version",
+			                     owner->name, owner->version, normalize_image(owner->image));
+		image_version_rootfs_path(normalize_image(owner->image), version, src_rootfs,
+		                           sizeof(src_rootfs));
 		snprintf(want, sizeof(want), "%s/%s", src_rootfs, critical[k]);
 		snprintf(got, sizeof(got), "%s/%s", staging_rootfs, critical[k]);
 		if (!buildenv_files_identical(want, got))
 			return buildenv_fail("%s is not the copy %s@%s installed -- another declared tool "
 			                     "overwrote it, and an environment holding halves of two C "
 			                     "libraries cannot exec",
-			                     critical[k], libc->name, libc->version);
+			                     critical[k], owner->name, owner->version);
 	}
 	return 0;
 }
@@ -8418,6 +8466,10 @@ static int buildenv_mutate(const char *staging_rootfs, void *ctx_v)
 	 * The environment's identity is the sorted tool SET, not the copy
 	 * order, so this changes no hash and reuses every existing
 	 * environment unchanged.
+	 *
+	 * "The C library" is a recipe family, not one package name: each
+	 * tool's family is the package whose recipe built it (ADR-0372
+	 * outputs), so glibc's own outputs go in the last pass with it.
 	 */
 	for (pass = 0; pass < 2; pass++)
 	for (i = 0; i < ctx->tool_count; i++) {
@@ -8425,7 +8477,11 @@ static int buildenv_mutate(const char *staging_rootfs, void *ctx_v)
 		char src_rootfs[PATH_MAX];
 		char version[IMAGE_VERSION_MAX];
 		int f;
-		int is_libc = strcmp(ctx->tools[i].name, PKG_BASE_LIBC) == 0;
+		/* The C library is its whole recipe: glibc and every output of
+		 * it, glibc-dev's headers included, or a tool sorting after
+		 * "glibc-dev" could still overwrite cdefs.h (ADR-0371
+		 * decision E). */
+		int is_libc = strcmp(ctx->tools[i].family, PKG_BASE_LIBC) == 0;
 
 		if ((pass == 0) == is_libc)
 			continue;

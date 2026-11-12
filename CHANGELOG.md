@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A composed build's C library is glibc's whole recipe, not one package (ADR-0371 decision E, #350, 0.2.57-674)
+
+- **Why:** splitting glibc's headers and objects into a `glibc-dev` output would have broken every build on the box. The composer treated the C library as the one package named `glibc` in two places:
+  - `buildenv_mutate()` copies the C library last, so no other tool overwrites its headers (#187). `glibc-dev` would have been copied in the first pass with everything else.
+  - `buildenv_verify_libc_intact()` compared `usr/include/sys/cdefs.h` with the copy in glibc's own image. After the split, the header is `glibc-dev`'s and need not be there.
+- **Now:** each composed tool records its family, the package whose recipe built it. `buildenv_add_outputs()` sets it for an output, the one place that knows a tool is one.
+  - The last pass copies the whole `glibc` family.
+  - Each critical file (the loader, `libc.so.6`, `cdefs.h`) is compared with the copy held by the family member that installs it, in that member's image. A critical file that no member installs is refused, never skipped.
+- **Measured before it:** glibc 2.44-20 in cix-builder records all three critical paths verbatim among its 1963 files, so the check holds today's unsplit glibc as before.
+- **Verified:** compile probe on 192.168.15.95, where every fixture build composes through the changed code with the unsplit glibc. The split case cannot be in the suite: the test floor's glibc is 2.44-20 whole, and a split glibc fixture would replace the C library under every later build in that daemon. It is verified live, with glibc 2.44-21 held by a pin and tried in a throwaway image first.
+
 ### A recipe's packages move together in an image (#678, 0.2.57-673)
 
 - **The defect:** installing one of a recipe's outputs at version V, into an image that held the recipe's main package at an older version, collided with the paths the older main package still owned ("one package owns a path", #553).
