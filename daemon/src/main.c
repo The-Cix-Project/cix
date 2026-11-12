@@ -175,6 +175,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
+#include <sys/prctl.h>
 #include <sys/quota.h>
 #include <sys/reboot.h>
 #include <poll.h>
@@ -31718,7 +31719,7 @@ static int helper_run_pid(int (*work)(void *), void *work_arg, void (*done)(int,
                           void *ctx, const char *what, pid_t *out_pid)
 {
 	struct conn *hc;
-	pid_t pid;
+	pid_t pid, parent;
 
 	/*
 	 * ADR-0376: a helper never starts a helper. helper_attach() puts the
@@ -31744,6 +31745,7 @@ static int helper_run_pid(int (*work)(void *), void *work_arg, void (*done)(int,
 		return -1;
 	}
 
+	parent = getpid();
 	pid = fork();
 	if (pid < 0) {
 		int saved = errno;
@@ -31770,6 +31772,26 @@ static int helper_run_pid(int (*work)(void *), void *work_arg, void (*done)(int,
 			                           &g_lo_listener_conn, &g_lo_https_listener_conn };
 		size_t li;
 
+		/*
+		 * A helper dies with its daemon. Nothing reads its result once
+		 * the daemon is gone, and a helper can wait for a long time:
+		 * the quota settle waits up to QUOTA_SETTLE_WAIT_SECONDS for
+		 * btrfs's cleaner. Measured in compile probes 0.2.57-740 and
+		 * -741 (192.168.15.95, 2026-11-12). The host had a backlog of
+		 * deleted subvolumes after a glibc roll, every test daemon that
+		 * emptied its delete queue left a settle helper waiting on it,
+		 * and 28 of them (about 50 MB of anonymous memory each) held
+		 * 1.4 GB of the 2 GiB build budget. The OOM killer then took
+		 * the boot tests' mksquashfs and qemu.
+		 *
+		 * The signal fires when the parent exits, not on execve, so
+		 * the ADR-0375 handover (an exec of cixd) keeps its helpers;
+		 * stallwatch's watchdog relies on the same property
+		 * (stallwatch_stop()). The getppid() check covers a parent
+		 * that died between the fork and the prctl.
+		 */
+		if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0 || getppid() != parent)
+			_exit(1);
 		g_in_helper_child = 1;
 		for (li = 0; li < sizeof(listeners) / sizeof(listeners[0]); li++) {
 			if (listeners[li]->fd >= 0)

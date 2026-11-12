@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A helper child dies with its daemon (0.2.57-675)
+
+- **The defect:** `helper_run_pid()` forked a copy of cixd and left it running after the daemon that started it had exited. Nothing reads a helper's result once its daemon is gone.
+  - In compile probes 0.2.57-740 and -741 on 192.168.15.95 (2026-11-12), the host had a backlog of deleted subvolumes after glibc 2.44-21 rolled. Every selftest daemon that emptied its delete queue started a quota settle (ADR-0343), and each one's helper waited up to `QUOTA_SETTLE_WAIT_SECONDS` (2 h) for btrfs's cleaner after its daemon had stopped.
+  - The kernel's OOM report for `/cix-workload/cix-pkgbuild` showed 28 `cixd` processes holding about 50 MB of anonymous memory each, 1.4 GB of the 2 GiB build budget. The OOM killer took the boot tests' `mksquashfs` and qemu, so `test_boot`, `test_boot_ab`, `test_boot_update`, `test_console_shell`, `test_console_pki_bootstrap` and `test_installer` failed. Probe 739 of the same commit, run before the backlog, passed.
+- **Now:** a helper sets `PR_SET_PDEATHSIG` to `SIGKILL` and exits at once if its parent already died between the fork and the `prctl`.
+  - In production nothing changes: cixd is pid 1, and the ADR-0375 handover is an `execve`, which does not fire the signal (stallwatch's watchdog relies on the same property).
+
 ### A composed build's C library is glibc's whole recipe, not one package (ADR-0371 decision E, #350, 0.2.57-674)
 
 - **Why:** splitting glibc's headers and objects into a `glibc-dev` output would have broken every build on the box. The composer treated the C library as the one package named `glibc` in two places:
