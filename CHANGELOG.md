@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cixctl's prompts own the terminal, and a username echoes (0.2.57-678)
+
+- **The defect:** every cixctl command runs under the pager (`less -FRX` by default), one-shot and in the console shell alike, `login` included.
+  - So the "Username:" prompt sat in less's buffer, unseen.
+  - The keys typed at it were split between less, which reads the keyboard, and `login`'s own read.
+  - And the username was read with echo off, like the password, so nothing showed what had arrived.
+  - On 2026-11-13 the owner typed `osakka` at the console, and 192.168.15.95's audit log shows the daemon refusing "osaka" and "oakka" (16:33-16:34 UTC).
+- **Now:** `read_line_prompt()` is the one terminal prompt. It ends the pager before printing, so the prompt shows and gets every key. It turns echo off only when asked: a username echoes, and a password or passphrase does not.
+
 ### A composed build environment holds up to 128 packages (0.2.57-677)
 
 - **Why:** ADR-0372 composes every output of a declared tool, so each package split (ADR-0371 decision E) grows a build's set.

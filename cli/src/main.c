@@ -19387,22 +19387,30 @@ static void clear_token_file(void)
 		unlink(path);
 }
 
-/* Reads a line from stdin into out, with terminal echo turned off for
- * the duration when stdin is a real terminal (a piped/scripted
- * invocation has no terminal to control, so it's read as plain input
- * instead -- the caller's own --password= flag is the right tool for
- * genuinely non-interactive use anyway). Strips a trailing newline.
- * Returns 0 on success, -1 on EOF/read error. */
-static int read_line_noecho(const char *prompt, char *out, size_t out_size)
+/* Reads a line from stdin into out after printing prompt. With echo
+ * 0 and stdin a real terminal, terminal echo is off for the duration
+ * (a piped/scripted invocation has no terminal to control, so it's read
+ * as plain input instead -- the caller's own --password= flag is the
+ * right tool for genuinely non-interactive use anyway). Strips a
+ * trailing newline. Returns 0 on success, -1 on EOF/read error.
+ *
+ * The pager ends first. Every command runs under it, one-shot and in
+ * the console shell alike, and the pager (less) reads the keyboard
+ * too, so a prompt shown while it ran sat in its buffer, unseen, and
+ * the keys typed at it were split between less and this fgets(). The
+ * owner, signing in at the console on 2026-11-13, typed osakka and the
+ * daemon refused "osaka" and "oakka" (audit log, 16:33-16:34 UTC). */
+static int read_line_prompt(const char *prompt, char *out, size_t out_size, int echo)
 {
 	struct termios saved, raw;
 	int is_tty = isatty(STDIN_FILENO);
 	size_t n;
 
+	pager_end();
 	printf("%s", prompt);
 	fflush(stdout);
 
-	if (is_tty) {
+	if (is_tty && !echo) {
 		if (tcgetattr(STDIN_FILENO, &saved) != 0)
 			return -1;
 		raw = saved;
@@ -19411,12 +19419,12 @@ static int read_line_noecho(const char *prompt, char *out, size_t out_size)
 	}
 
 	if (fgets(out, (int)out_size, stdin) == NULL) {
-		if (is_tty)
+		if (is_tty && !echo)
 			tcsetattr(STDIN_FILENO, TCSANOW, &saved);
 		return -1;
 	}
 
-	if (is_tty) {
+	if (is_tty && !echo) {
 		tcsetattr(STDIN_FILENO, TCSANOW, &saved);
 		printf("\n");
 	}
@@ -19425,6 +19433,12 @@ static int read_line_noecho(const char *prompt, char *out, size_t out_size)
 	while (n > 0 && (out[n - 1] == '\n' || out[n - 1] == '\r'))
 		out[--n] = '\0';
 	return 0;
+}
+
+/* A secret: the passphrase and password prompts. */
+static int read_line_noecho(const char *prompt, char *out, size_t out_size)
+{
+	return read_line_prompt(prompt, out, out_size, 0);
 }
 
 /*
@@ -19825,7 +19839,8 @@ static int cmd_login(const struct cix_client *c, int json_mode, int argc, char *
 	}
 
 	if (username == NULL) {
-		if (read_line_noecho("Username: ", username_buf, sizeof(username_buf)) != 0) {
+		/* A username is not a secret: it echoes, so a typo shows. */
+		if (read_line_prompt("Username: ", username_buf, sizeof(username_buf), 1) != 0) {
 			fprintf(stderr, "cixctl: no username given\n");
 			return 2;
 		}
