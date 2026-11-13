@@ -1522,14 +1522,42 @@ static int entry_being_uninstalled(const struct pkg_entry *e)
  * every other image installs it in seconds (#555). So an image whose next
  * package is already in flight elsewhere waits for it.
  */
+static void recipe_family(const char *name, char *out, size_t out_size);
+
+/*
+ * #681: a build belongs to a recipe, not to the one name a chain was
+ * asked for. So a package is in flight when any chain is running or
+ * still has queued a job for any package of the same recipe: its main
+ * package or any of its outputs (ADR-0367). The jobs from dep_queue_pos
+ * on are the ones it will still build.
+ *
+ * Comparing only the chain's name missed both shapes measured on
+ * 192.168.15.95 on 2026-11-12, when glibc 2.44-21 was built three times
+ * at once:
+ *   - a chain asked for glibc-dev builds glibc first, by #678's sibling
+ *     rule;
+ *   - an image whose glibc entry was rightly deferred went on to its
+ *     glibc-dev entry, and nothing in flight was named glibc-dev.
+ */
 static int package_job_in_flight(const char *package)
 {
-	int i;
+	char family[PKG_NAME_MAX];
+	int i, k;
 
 	chain_reap_stale();
+	recipe_family(package, family, sizeof(family));
 	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
-		if (g_chains[i].name[0] != '\0' && strcmp(g_chains[i].name, package) == 0)
+		if (g_chains[i].name[0] == '\0')
+			continue;
+		if (strcmp(g_chains[i].name, package) == 0)
 			return 1;
+		for (k = g_chains[i].dep_queue_pos; k < g_chains[i].dep_queue_count; k++) {
+			char f[PKG_NAME_MAX];
+
+			recipe_family(g_chains[i].dep_queue[k], f, sizeof(f));
+			if (strcmp(f, family) == 0)
+				return 1;
+		}
 	}
 	return 0;
 }
@@ -6638,6 +6666,32 @@ static int recipe_latest_version(const char *name, char *out_version, size_t out
 		slot->in_use = 1;
 	}
 	return 0;
+}
+
+/*
+ * #681: the recipe that builds `name` -- the recipe of that name, or the
+ * one `name` is an output of (ADR-0367), or `name` itself when no recipe
+ * builds it. recipe_latest_version() resolves the owner and caches it
+ * with the store's mtime, so a name the drain has just looked up costs
+ * a scan of the cache, and output_owner()'s walk runs only on a miss.
+ */
+static void recipe_family(const char *name, char *out, size_t out_size)
+{
+	char version[PKG_VERSION_MAX];
+	int i;
+
+	snprintf(out, out_size, "%s", name);
+	if (recipe_latest_version(name, version, sizeof(version)) != 0)
+		return;
+	for (i = 0; i < RECIPE_CACHE_SLOTS; i++) {
+		const struct recipe_cache_entry *e = &g_recipe_cache[i];
+
+		if (e->in_use && strcmp(e->name, name) == 0) {
+			if (e->owner[0] != '\0')
+				snprintf(out, out_size, "%s", e->owner);
+			return;
+		}
+	}
 }
 
 /*

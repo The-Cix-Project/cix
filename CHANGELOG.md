@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A recipe is built once when images name different packages of it (#681, 0.2.57-676)
+
+- **The defect:** glibc 2.44-21 was built three times at once on 192.168.15.95 on 2026-11-12, for cix-builder, iso-builder and kernel-builder, each for about an hour.
+  - The rolling drain's in-flight check (#555) compared a manifest entry's package with each chain's name, the one package that chain was asked for.
+  - Measured from the daemon's log: at 21:16:20 the drain started cix-builder's glibc build. At 21:16:58 the sync applied iso-builder's and kernel-builder's new recipes, which name glibc-dev. At 21:16:59 the drain deferred their glibc entries, rightly, then went on to their glibc-dev entries, matched no chain named glibc-dev, and started two installs. #678's sibling rule queued glibc ahead of each, and each built the whole recipe.
+- **Now:** `package_job_in_flight()` compares recipe families. A package is in flight when any chain is running, or still has queued, a job for any package of the same recipe: its main package or any output (ADR-0367).
+  - `recipe_family()` reads the owner `recipe_latest_version()` caches, so the drain's per-entry lookups stay cache hits.
+- **Gate:** `test_pkg` gives the `dupout` recipe an output, `dupout-tool`. Image dupoutA tracks `dupout` and dupoutB only `dupout-tool`, both rolling. Publishing 2.0 must rebuild both with exactly one non-empty build log for either name at 2.0-1.
+
 ### A helper child dies with its daemon (0.2.57-675)
 
 - **The defect:** `helper_run_pid()` forked a copy of cixd and left it running after the daemon that started it had exited. Nothing reads a helper's result once its daemon is gone.

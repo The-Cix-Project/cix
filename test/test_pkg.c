@@ -5530,6 +5530,113 @@ skip_rolling_rebuild:
 	}
 
 	/*
+	 * #681: built once even when the images name different packages of
+	 * one recipe. dupout's recipe builds dupout and its output
+	 * dupout-tool; dupoutA tracks dupout and dupoutB tracks only
+	 * dupout-tool, both rolling. Publishing 2.0 must build the recipe
+	 * once. Before the fix, each image's chain was named for its own
+	 * package, the drain's in-flight check compared names, and glibc
+	 * 2.44-21 was built three times at once on 192.168.15.95
+	 * (2026-11-12) for images naming glibc and glibc-dev.
+	 */
+	{
+		static const char *const oimgs[] = { "dupoutA", "dupoutB" };
+		static const char *const opkgs[] = { "dupout", "dupout-tool" };
+		char otar1[512], osha1[128], otar2[512], osha2[128];
+		char opath[160], ostate[64];
+		int ook, o, w, built = 0;
+
+		ook = stage_fixture_tarball(scratch_dir, "dupout", "1.0", otar1, sizeof(otar1), osha1,
+		                            sizeof(osha1)) == 0 &&
+		      stage_fixture_tarball(scratch_dir, "dupout", "2.0", otar2, sizeof(otar2), osha2,
+		                            sizeof(osha2)) == 0 &&
+		      write_split_recipe(&client, "dupout", "1.0", otar1, osha1, 1) == 0;
+		for (o = 0; ook && o < 2; o++) {
+			char body[160];
+
+			ook = create_image(&client, oimgs[o]) == 0;
+			snprintf(body, sizeof(body), "{\"name\":\"%s\",\"image\":\"%s\"}", opkgs[o],
+			         oimgs[o]);
+			memset(&r, 0, sizeof(r));
+			if (ook && (cix_client_request(&client, "POST", "/v1/pkg/install", body, &r) != 0 ||
+			            (r.status != 202 && r.status != 200)))
+				ook = 0;
+			cix_response_free(&r);
+			snprintf(opath, sizeof(opath), "%s@%s", opkgs[o], oimgs[o]);
+			if (ook && (poll_pkg_state(&client, opath, ostate, sizeof(ostate), 240) != 0 ||
+			            !str_eq(ostate, "installed")))
+				ook = 0;
+			snprintf(opath, sizeof(opath), "/v1/images/%s/manifest", oimgs[o]);
+			snprintf(body, sizeof(body),
+			         "{\"package\":\"%s\",\"mode\":\"rolling\",\"version\":\"1.0\"}", opkgs[o]);
+			memset(&r, 0, sizeof(r));
+			if (ook && (cix_client_request(&client, "POST", opath, body, &r) != 0 ||
+			            r.status != 204))
+				ook = 0;
+			cix_response_free(&r);
+		}
+		if (!ook) {
+			fprintf(stderr, "FAIL: #681 could not set up dupout 1.0 in dupoutA and dupoutB\n");
+			ok = 0;
+		}
+		if (ook && write_split_recipe(&client, "dupout", "2.0", otar2, osha2, 1) != 0) {
+			fprintf(stderr, "FAIL: #681 publish dupout 2.0\n");
+			ok = 0;
+			ook = 0;
+		}
+		/* Both images must reach 2.0-1 by the rolling drain alone. */
+		for (o = 0; ook && o < 2; o++) {
+			snprintf(opath, sizeof(opath), "/v1/pkg/%s@%s", opkgs[o], oimgs[o]);
+			for (w = 0; w < 400; w++) {
+				int done = 0;
+
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", opath, NULL, &r) == 0 && r.status == 200 &&
+				    str_eq(json_str_field(r.json, "state"), "installed") &&
+				    str_eq(json_str_field(r.json, "version"), "2.0-1"))
+					done = 1;
+				cix_response_free(&r);
+				if (done)
+					break;
+				usleep(300000);
+			}
+			if (w == 400) {
+				fprintf(stderr, "FAIL: #681 %s@%s was not rebuilt to 2.0-1\n", opkgs[o],
+				        oimgs[o]);
+				ok = 0;
+				ook = 0;
+			}
+		}
+		if (ook) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/build-logs", NULL, &r) == 0 &&
+			    r.status == 200 && r.json != NULL) {
+				const struct json_value *logs = json_object_get(r.json, "logs");
+				size_t k;
+
+				for (k = 0; logs != NULL && logs->type == JSON_ARRAY && k < logs->u.array.count;
+				     k++) {
+					const struct json_value *l = logs->u.array.items[k];
+					const char *ln = json_str_field(l, "name");
+
+					if ((str_eq(ln, "dupout") || str_eq(ln, "dupout-tool")) &&
+					    str_eq(json_str_field(l, "version"), "2.0-1") &&
+					    json_as_number(json_object_get(l, "size_bytes")) > 0)
+						built++;
+				}
+			}
+			cix_response_free(&r);
+			if (built != 1) {
+				fprintf(stderr,
+				        "FAIL: #681 dupout's recipe was built %d time(s) at 2.0-1 for images "
+				        "naming dupout and dupout-tool, expected once\n",
+				        built);
+				ok = 0;
+			}
+		}
+	}
+
+	/*
 	 * 16.6. ADR-0107/0108 per-version rootfs isolation (task #722): the
 	 * core guarantee the whole versioning epic exists to provide -- a
 	 * container created against an image stays pinned to the exact
