@@ -5675,9 +5675,21 @@ skip_rolling_rebuild:
 				pok = 0;
 			cix_response_free(&r);
 			snprintf(ppath, sizeof(ppath), "depapp@%s", pimgs[p]);
-			if (pok && (poll_pkg_state(&client, ppath, pstate, sizeof(pstate), 240) != 0 ||
-			            !str_eq(pstate, "installed")))
-				pok = 0;
+			/* depapp has no entry until its own job starts, after
+			 * deplib's, so a 404 is a wait here, not an answer (as for
+			 * #678's splitpkg-tool; probe 0.2.57-748). */
+			if (pok) {
+				int pw;
+
+				for (pw = 0; pw < 400; pw++) {
+					pstate[0] = '\0';
+					if (poll_pkg_state(&client, ppath, pstate, sizeof(pstate), 1) == 0)
+						break;
+					usleep(300000);
+				}
+				if (!str_eq(pstate, "installed"))
+					pok = 0;
+			}
 			snprintf(ppath, sizeof(ppath), "/v1/images/%s/manifest", pimgs[p]);
 			snprintf(body, sizeof(body), "{\"package\":\"depapp\",\"mode\":\"%s\",\"version\":\"%s\"}",
 			         p == 0 ? "rolling" : "pinned", p == 0 ? "1.0" : "1.0-1");
