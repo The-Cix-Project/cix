@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A composed build environment holds up to 128 packages (0.2.57-677)
+
+- **Why:** ADR-0372 composes every output of a declared tool, so each package split (ADR-0371 decision E) grows a build's set.
+  - Once glibc 2.44-22 (`glibc-tools`, `glibc-gconv`) and the zlib and libarchive `-dev` outputs were published on 2026-11-13, cix's own build composed about 68 packages: 37 declared tools, tcc and glibc, their runtime dependencies, and those tools' outputs. That count was computed from the box's installed entries and the recipes.
+  - Compile probe 0.2.57-745 was refused with "more than 64 packages in the composed build environment", and so would a cix hostbuild be.
+- **Now:** `PKG_BUILDENV_MAX_TOOLS` is 128. The tools array and the canonical-name buffer, both on `buildenv_image_for()`'s stack, are now 25.6 KB and about 16.5 KB.
+  - A recipe's declaration buffer gets its own bound, `PKG_BUILD_DECLARED_MAX` (64), instead of following the composed one. It lives in `struct pkg_recipe`, which many functions hold on the stack.
+- **Built by holding five outputs:** the running 676 still refused cix's build. So `zlib-dev`, `libarchive-dev`, `xz-dev`, `curl-dev` and `openssl-dev` were removed from cix-builder, the only image holding them, for the build of 677. Composition fell back to the unsplit revisions in `base`, which are the same upstream versions. The drain reinstated them afterwards.
+
 ### A path moves between a recipe's packages in either install order (#682, 0.2.57-677)
 
 - **The defect:** dosfstools 4.2-5 moved `usr/share/man/man8/fsck.fat.8` from `dosfstools` into its `dosfstools-extra` output. On 192.168.15.95 (2026-11-13) the drain asked for `dosfstools`, #678's sibling rule queued `dosfstools-extra` first, and its install was refused against the path `dosfstools` 4.2-4 still owned. iso-builder was dropped from the rebuild queue and sat at glibc 2.44-21 until a hand install of the output and a sync.

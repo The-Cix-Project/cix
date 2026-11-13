@@ -412,23 +412,35 @@ static void pkg_job_set_state(struct pkg_entry *e, enum pkg_state s)
  * the array in buildenv_image_for() grew from 4.3 KB of stack to 8.7
  * KB, and the canonical-name buffer beside it from 4.2 KB to 8.4 KB.
  * It is 200 bytes since it records each tool's recipe family (two
- * 64-byte names, a 64-byte version and a pointer), so the array is
- * 12.8 KB.
+ * 64-byte names, a 64-byte version and a pointer).
  * Composing a larger environment copies more files, which is
  * proportional work rather than a cliff -- and a set nobody declares
  * costs nothing, since the hash of the declared set is what names the
  * image.
+ *
+ * 128 since 0.2.57-677, from 64. ADR-0372 composes every output of a
+ * declared tool, so each package split grows the set: cix's own build
+ * (37 declared tools, tcc and glibc) composed about 68 packages once
+ * glibc 2.44-22 and the zlib and libarchive -dev outputs were published
+ * on 2026-11-13, and compile probe 0.2.57-745 was refused with "more
+ * than 64 packages in the composed build environment". The remaining
+ * ADR-0371 splits grow it further. At 128 the tools array is 25.6 KB
+ * and the canonical-name buffer about 16.5 KB, both on
+ * buildenv_image_for()'s stack, which is why a bound stays.
  */
-#define PKG_BUILDENV_MAX_TOOLS 64
+#define PKG_BUILDENV_MAX_TOOLS 128
 /*
- * A recipe's declared build tools and compilers, space-separated, each
- * a name or a "name@version" pin. Sized from PKG_BUILDENV_MAX_TOOLS so
- * that every declaration the composer accepts can be held. It was
- * PKG_DEPENDS_MAX, 256 bytes, which refused probe-cix-instest@1-1's 39
- * tools (#649) as "the build/tool list does not fit the build
- * declaration" while 64 packages were allowed.
+ * A recipe's DECLARED build tools and compilers, space-separated, each a
+ * name or a "name@version" pin. It was PKG_DEPENDS_MAX, 256 bytes, which
+ * refused probe-cix-instest@1-1's 39 tools (#649) as "the build/tool
+ * list does not fit the build declaration". It is sized for 64
+ * declarations, and is not tied to PKG_BUILDENV_MAX_TOOLS: a declaration
+ * is what a recipe names (cix names 37), the composed set is what those
+ * bring, and build_depends lives in struct pkg_recipe, which many
+ * functions hold on the stack, the recursive resolve_chain() included.
  */
-#define PKG_BUILD_DEPENDS_MAX (PKG_BUILDENV_MAX_TOOLS * (PKG_NAME_MAX + PKG_VERSION_MAX + 1))
+#define PKG_BUILD_DECLARED_MAX 64
+#define PKG_BUILD_DEPENDS_MAX (PKG_BUILD_DECLARED_MAX * (PKG_NAME_MAX + PKG_VERSION_MAX + 1))
 /*
  * ADR-0373 decision 2: what one build was built against, as
  * "name=abi" words, one per composed entry that declares an ABI, in
