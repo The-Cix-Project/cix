@@ -198,6 +198,19 @@ void rm_tree(const char *path)
 	nftw(path, rm_tree_visitor, 16, FTW_DEPTH | FTW_PHYS);
 }
 
+int make_test_workdir(char *out, size_t out_size, const char *name)
+{
+	const char *tmpdir = getenv("TMPDIR");
+
+	if ((size_t)snprintf(out, out_size, "%s/%s_XXXXXX",
+	                     tmpdir != NULL && tmpdir[0] != '\0' ? tmpdir : "/tmp", name) >=
+	    out_size) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	return mkdtemp(out) == NULL ? -1 : 0;
+}
+
 int sfdisk_dump_offset(const char *dump, int partition_index, long *out_start_sectors,
                         long *out_size_sectors)
 {

@@ -98,7 +98,7 @@ int main(void)
 	if (test_disk_image_require_kernel() != 0)
 		return 1;
 
-	char workdir[] = "/tmp/cix_test_console_pki_XXXXXX";
+	char workdir[PATH_MAX];
 	char stage_dir[600];
 	char root_squashfs[600];
 	char disk_img[600];
@@ -119,7 +119,7 @@ int main(void)
 		{ "cix.internal> ", "pki ca bootstrap\n" },
 	};
 
-	if (mkdtemp(workdir) == NULL) {
+	if (make_test_workdir(workdir, sizeof(workdir), "cix_test_console_pki") != 0) {
 		perror("mkdtemp");
 		return 1;
 	}

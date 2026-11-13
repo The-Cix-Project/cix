@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The boot tests write their disk images on disk, not in the build budget (0.2.57-680)
+
+- **The defect:** test_boot, test_boot_ab, test_boot_update, test_console_shell and test_console_pki_bootstrap made their workdirs in `/tmp`. In a build container that is a tmpfs counted against the shared build memory budget, and each workdir holds a disk image and two squashfs roots.
+  - The 0.2.57-679 cix hostbuild on 192.168.15.95 (2026-11-13) was 1.16 GB into tmpfs in the 2 GiB budget when test_boot_update's qemu was OOM-killed at 21:37:42. The release failed its selftest, and nothing was staged.
+  - Compile probe 0.2.57-749, the same code, had passed just under the limit.
+  - test_installer already used `$TMPDIR` for this reason. The Makefile's BOOT_SELFTESTS comment records it, and so does probe-cix-instest@1-3's OOM of 2026-10-26.
+- **Now:** `make_test_workdir()` in test_disk_image.c makes every boot test's workdir under `$TMPDIR`, falling back to `/tmp`. The release recipe and the compile probe set TMPDIR to `${build}/selftest-tmp`, on disk. test_installer uses it too, in place of its own copy.
+- 0.2.57-679 was published and never deployed; 680 carries it.
+
 ### A rolling image's dependencies roll with it (ADR-0378, 0.2.57-679)
 
 - **The gap:** an image's dependencies, the packages its entries' runtime requirements brought in, were installed once and never moved. Publishing queued only images whose manifest names the package, and the drain and the re-derivation checked only manifest entries. On 192.168.15.95 (2026-11-13), cix-hosttools, router, wifi_router, agent, jumpbox and kernel-builder held libraries a revision behind, and cix-root's had to be upgraded by hand.

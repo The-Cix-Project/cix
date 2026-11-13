@@ -422,10 +422,6 @@ int main(void)
 	 * partition (probe-cix-instest@1-3).
 	 */
 	char workdir[PATH_MAX];
-	const char *tmpdir = getenv("TMPDIR");
-
-	snprintf(workdir, sizeof(workdir), "%s/cix_test_installer_XXXXXX",
-	         tmpdir != NULL && tmpdir[0] != '\0' ? tmpdir : "/tmp");
 	char signing_key[PATH_MAX], signing_crt[PATH_MAX], signing_cer[PATH_MAX];
 	char stage_dir[600], control_plane_squashfs[600], installer_stage[600], installer_iso[600];
 	char target_disk_img[600];
@@ -440,7 +436,7 @@ int main(void)
 	enum qemu_boot_outcome outcome;
 	int ok = 1;
 
-	if (mkdtemp(workdir) == NULL) {
+	if (make_test_workdir(workdir, sizeof(workdir), "cix_test_installer") != 0) {
 		perror("mkdtemp");
 		return 1;
 	}

@@ -19,6 +19,7 @@
 int test_disk_image_require_kernel(void);
 #define TEST_DISK_IMAGE_H
 
+#include <limits.h>
 #include <stddef.h>
 
 /*
@@ -56,6 +57,23 @@ int write_text_file(const char *path, const char *content);
  * a disk image and squashfs build large enough (tens to hundreds of MB)
  * that leaving it behind on every run silently fills the disk. */
 void rm_tree(const char *path);
+
+/*
+ * A boot test's workdir: $TMPDIR/<name>_XXXXXX, or /tmp when TMPDIR is
+ * unset, made with mkdtemp(). 0, or -1 with errno set.
+ *
+ * Under $TMPDIR because a build container's /tmp is a tmpfs counted
+ * against the shared build memory budget, and these workdirs hold a
+ * disk image and two squashfs roots. The cix release recipe and the
+ * compile probe set TMPDIR to ${build}/selftest-tmp, on disk.
+ * test_installer did this already (Makefile, BOOT_SELFTESTS). The
+ * others hard-coded /tmp: the 0.2.57-679 hostbuild on 192.168.15.95
+ * (2026-11-13) had 1.16 GB of tmpfs in the 2 GiB budget when
+ * test_boot_update's qemu was OOM-killed at 21:37:42, and the release
+ * failed its selftest. Compile probe 749 of the same code had passed
+ * just under the limit.
+ */
+int make_test_workdir(char *out, size_t out_size, const char *name);
 
 /* Finds the Nth (1-based) "start=<sectors>, size=<sectors>" pair in
  * `sfdisk -d`'s dump output -- one per partition, in partition order. */

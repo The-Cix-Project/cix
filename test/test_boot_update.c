@@ -225,7 +225,7 @@ int main(void)
 	if (test_disk_image_require_kernel() != 0)
 		return 1;
 
-	char workdir[] = "/tmp/cix_test_boot_update_XXXXXX";
+	char workdir[PATH_MAX];
 	char stage_dir[600], stage_dir_new[600], web_new_dir[600];
 	char root_squashfs_a[600], root_squashfs_new[600];
 	char disk_img[600];
@@ -250,7 +250,7 @@ int main(void)
 	char esp_drive[700];
 	int ok = 1;
 
-	if (mkdtemp(workdir) == NULL) {
+	if (make_test_workdir(workdir, sizeof(workdir), "cix_test_boot_update") != 0) {
 		perror("mkdtemp");
 		return 1;
 	}
