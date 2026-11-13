@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A rolling image's dependencies roll with it (ADR-0378, 0.2.57-679)
+
+- **The gap:** an image's dependencies, the packages its entries' runtime requirements brought in, were installed once and never moved. Publishing queued only images whose manifest names the package, and the drain and the re-derivation checked only manifest entries. On 192.168.15.95 (2026-11-13), cix-hosttools, router, wifi_router, agent, jumpbox and kernel-builder held libraries a revision behind, and cix-root's had to be upgraded by hand.
+- **Now** (the owner's choice that day), in an image with at least one rolling entry, a package an installed package names in its `depends`, that is not a manifest entry, follows the newest published version:
+  - `queue_rolling_rebuilds_for()` queues an image where the published recipe, main package or output, is such a dependency and is older;
+  - `pkg_try_start_queued_rebuild()` upgrades them once the entries need nothing, one job at a time, through `pkg_install_start()`, so the ABI hold, #678 and #682 apply;
+  - `pkg_rebuild_queue_rederive()` queues an image whose only stale packages are dependencies.
+- **Held:** a recipe's `name@version` dependency; every package of an image whose entries are all pinned; and a pinned entry keeps meaning its own version only (ADR-0320).
+- **First pass on .95:** zstd in agent, jumpbox and kernel-builder; libblkid, zstd, libarchive and ncurses in cix-hosttools; openssl and ncurses in router; openssl in wifi_router. agent-1, jump, cr-1, cr-2 and ar-1 restart once. vpn names openssl itself.
+- **Gate:** `test_pkg`'s depapp/deplib case: depimgX (depapp rolling) must take deplib 2.0-1 by the drain alone, and depimgY (depapp pinned) must stay at 1.0-1.
+
 ### cixctl's prompts own the terminal, and a username echoes (0.2.57-678)
 
 - **The defect:** every cixctl command runs under the pager (`less -FRX` by default), one-shot and in the console shell alike, `login` included.

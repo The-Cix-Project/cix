@@ -5641,6 +5641,89 @@ skip_rolling_rebuild:
 	}
 
 	/*
+	 * ADR-0378: a rolling image's dependencies roll with it. depapp
+	 * depends on deplib, which is no image's manifest entry. depimgX
+	 * tracks depapp rolling and depimgY pins it, so Y's entries are all
+	 * pinned and Y is held whole. Publishing deplib 2.0 must move X's
+	 * deplib to 2.0-1 by the drain alone and leave Y's at 1.0-1. Until
+	 * this, a dependency was installed once and never moved again: on
+	 * 192.168.15.95 (2026-11-13) cix-root, cix-hosttools, router and
+	 * five other images held libraries a revision behind.
+	 */
+	{
+		static const char *const pimgs[] = { "depimgX", "depimgY" };
+		char ltar1[512], lsha1[128], ltar2[512], lsha2[128], atar[512], asha[128];
+		char ppath[160], pstate[64], vx[64] = "", vy[64] = "";
+		int pok, p, w;
+
+		pok = stage_fixture_tarball(scratch_dir, "deplib", "1.0", ltar1, sizeof(ltar1), lsha1,
+		                            sizeof(lsha1)) == 0 &&
+		      stage_fixture_tarball(scratch_dir, "deplib", "2.0", ltar2, sizeof(ltar2), lsha2,
+		                            sizeof(lsha2)) == 0 &&
+		      stage_fixture_tarball(scratch_dir, "depapp", "1.0", atar, sizeof(atar), asha,
+		                            sizeof(asha)) == 0 &&
+		      write_recipe(&client, "deplib", "1.0", ltar1, lsha1, NULL) == 0 &&
+		      write_recipe(&client, "depapp", "1.0", atar, asha, "deplib") == 0;
+		for (p = 0; pok && p < 2; p++) {
+			char body[192];
+
+			pok = create_image(&client, pimgs[p]) == 0;
+			snprintf(body, sizeof(body), "{\"name\":\"depapp\",\"image\":\"%s\"}", pimgs[p]);
+			memset(&r, 0, sizeof(r));
+			if (pok && (cix_client_request(&client, "POST", "/v1/pkg/install", body, &r) != 0 ||
+			            (r.status != 202 && r.status != 200)))
+				pok = 0;
+			cix_response_free(&r);
+			snprintf(ppath, sizeof(ppath), "depapp@%s", pimgs[p]);
+			if (pok && (poll_pkg_state(&client, ppath, pstate, sizeof(pstate), 240) != 0 ||
+			            !str_eq(pstate, "installed")))
+				pok = 0;
+			snprintf(ppath, sizeof(ppath), "/v1/images/%s/manifest", pimgs[p]);
+			snprintf(body, sizeof(body), "{\"package\":\"depapp\",\"mode\":\"%s\",\"version\":\"%s\"}",
+			         p == 0 ? "rolling" : "pinned", p == 0 ? "1.0" : "1.0-1");
+			memset(&r, 0, sizeof(r));
+			if (pok && (cix_client_request(&client, "POST", ppath, body, &r) != 0 ||
+			            r.status != 204))
+				pok = 0;
+			cix_response_free(&r);
+		}
+		if (!pok) {
+			fprintf(stderr, "FAIL: ADR-0378 could not set up depapp 1.0 in depimgX and depimgY\n");
+			ok = 0;
+		}
+		if (pok && write_recipe(&client, "deplib", "2.0", ltar2, lsha2, NULL) != 0) {
+			fprintf(stderr, "FAIL: ADR-0378 publish deplib 2.0\n");
+			ok = 0;
+			pok = 0;
+		}
+		for (w = 0; pok && w < 400; w++) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/deplib@depimgX", NULL, &r) == 0 &&
+			    r.status == 200 && str_eq(json_str_field(r.json, "state"), "installed") &&
+			    json_str_field(r.json, "version") != NULL)
+				snprintf(vx, sizeof(vx), "%s", json_str_field(r.json, "version"));
+			cix_response_free(&r);
+			if (str_eq(vx, "2.0-1"))
+				break;
+			usleep(300000);
+		}
+		if (pok) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pkg/deplib@depimgY", NULL, &r) == 0 &&
+			    r.status == 200 && json_str_field(r.json, "version") != NULL)
+				snprintf(vy, sizeof(vy), "%s", json_str_field(r.json, "version"));
+			cix_response_free(&r);
+			if (!str_eq(vx, "2.0-1") || !str_eq(vy, "1.0-1")) {
+				fprintf(stderr,
+				        "FAIL: ADR-0378 want deplib 2.0-1 in depimgX (rolling depapp) and "
+				        "1.0-1 in depimgY (pinned depapp); got %s and %s\n",
+				        vx[0] != '\0' ? vx : "(none)", vy[0] != '\0' ? vy : "(none)");
+				ok = 0;
+			}
+		}
+	}
+
+	/*
 	 * 16.6. ADR-0107/0108 per-version rootfs isolation (task #722): the
 	 * core guarantee the whole versioning epic exists to provide -- a
 	 * container created against an image stays pinned to the exact

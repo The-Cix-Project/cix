@@ -9193,6 +9193,103 @@ void pkg_image_forgotten(const char *image)
 }
 
 /*
+ * ADR-0378: an image whose manifest has at least one rolling entry
+ * rolls its dependencies too. An image whose entries are all pinned is
+ * held whole.
+ */
+static int image_rolls_dependencies(const struct image_manifest_entry *entries, int entry_count)
+{
+	int j;
+
+	for (j = 0; j < entry_count; j++)
+		if (entries[j].mode == IMAGE_PKG_ROLLING)
+			return 1;
+	return 0;
+}
+
+/*
+ * ADR-0378: does `d`, installed in `image`, follow the newest published
+ * version as a dependency? Only when the image rolls its dependencies
+ * (above), `d` is not one of its manifest entries (an entry follows its
+ * own mode), and some installed package of the image names it in its
+ * recorded `depends`. A package nothing names is not a dependency, so a
+ * stray converge will remove is never moved. A `name@version` in any
+ * `depends` is the recipe holding it there, and it stays.
+ */
+static int dependency_follows(const char *image, const struct image_manifest_entry *entries,
+                              int entry_count, const struct pkg_entry *d)
+{
+	int i, j, named = 0;
+	size_t nl = strlen(d->name);
+
+	if (!image_rolls_dependencies(entries, entry_count))
+		return 0;
+	for (j = 0; j < entry_count; j++)
+		if (strcmp(entries[j].package, d->name) == 0)
+			return 0;
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		const struct pkg_entry *o = &g_packages[i];
+		const char *p;
+
+		if (o == d || !o->in_use || o->state != PKG_STATE_INSTALLED ||
+		    strcmp(normalize_image(o->image), image) != 0)
+			continue;
+		for (p = o->depends; (p = strstr(p, d->name)) != NULL; p += nl) {
+			int starts = p == o->depends || p[-1] == ' ' || p[-1] == '\t';
+			char after = p[nl];
+
+			if (!starts)
+				continue;
+			if (after == '@')
+				return 0; /* the recipe holds it at a version */
+			if (after == '\0' || after == ' ' || after == '\t')
+				named = 1;
+		}
+	}
+	return named;
+}
+
+/*
+ * ADR-0378: the first installed dependency of `image` that follows and
+ * is behind its newest published version, by the same test as
+ * everything else (pkg_entry_drift()), or NULL. `skip_in_flight`
+ * passes over one whose recipe is already building elsewhere (#555,
+ * #681) and sets *deferred instead.
+ */
+static struct pkg_entry *image_dependency_behind(const char *image,
+                                                 const struct image_manifest_entry *entries,
+                                                 int entry_count, int skip_in_flight,
+                                                 int *deferred)
+{
+	int i;
+
+	if (!image_rolls_dependencies(entries, entry_count))
+		return NULL;
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		struct pkg_entry *d = &g_packages[i];
+		char newest[PKG_VERSION_MAX];
+
+		if (!d->in_use || d->state != PKG_STATE_INSTALLED ||
+		    strcmp(normalize_image(d->image), image) != 0)
+			continue;
+		/* Only ever up: pkg_entry_drift() says "differs from the
+		 * newest recipe", and one installed above it (a withdrawn
+		 * revision) is not a reason to move a dependency down. */
+		if (!dependency_follows(image, entries, entry_count, d) ||
+		    !pkg_entry_drift(d, newest, sizeof(newest)) ||
+		    pkg_version_compare(newest, d->version) <= 0)
+			continue;
+		if (skip_in_flight && package_job_in_flight(d->name)) {
+			if (deferred != NULL)
+				*deferred = 1;
+			continue;
+		}
+		return d;
+	}
+	return NULL;
+}
+
+/*
  * Rebuild the queue from what is actually behind, at startup (#373).
  *
  * The queue was in-memory only and nothing wrote it down, so a daemon
@@ -9234,12 +9331,12 @@ void pkg_rebuild_queue_rederive(void)
 
 	for (i = 0; i < image_count; i++) {
 		struct image_manifest_entry entries[IMAGE_MANIFEST_MAX_PACKAGES];
-		int entry_count, j;
+		int entry_count, j, queued_here = 0;
 
 		if (image_manifest_read(image_names[i], entries, &entry_count,
 		                         IMAGE_MANIFEST_MAX_PACKAGES) != IMAGE_OK)
 			continue;
-		for (j = 0; j < entry_count; j++) {
+		for (j = 0; !queued_here && j < entry_count; j++) {
 			const struct pkg_entry *e;
 
 			e = pkg_find(entries[j].package, image_names[i]);
@@ -9258,7 +9355,8 @@ void pkg_rebuild_queue_rederive(void)
 					continue;
 				rebuild_queue_enqueue(image_names[i]);
 				queued_count++;
-				break;
+				queued_here = 1;
+				continue;
 			}
 			if (entries[j].mode != IMAGE_PKG_ROLLING)
 				continue;
@@ -9282,13 +9380,21 @@ void pkg_rebuild_queue_rederive(void)
 			}
 			rebuild_queue_enqueue(image_names[i]);
 			queued_count++;
-			break;
+			queued_here = 1;
+		}
+		/* ADR-0378: an image whose only stale packages are
+		 * dependencies that follow is behind too, or a sync would
+		 * never bring it back. */
+		if (!queued_here &&
+		    image_dependency_behind(image_names[i], entries, entry_count, 0, NULL) != NULL) {
+			rebuild_queue_enqueue(image_names[i]);
+			queued_count++;
 		}
 	}
 	if (queued_count > 0)
 		logstore_write("cixd", "info",
-		                "pkg: re-derived %d image(s) behind their manifest into the rebuild "
-		                "queue (#373, ADR-0320)",
+		                "pkg: re-derived %d image(s) behind their manifest or its dependencies "
+		                "into the rebuild queue (#373, ADR-0320, ADR-0378)",
 		                queued_count);
 }
 
@@ -9314,7 +9420,7 @@ static void queue_rolling_rebuilds_for(const char *pkg_name, const char *pkg_ver
 
 	for (i = 0; i < image_count; i++) {
 		struct image_manifest_entry entries[IMAGE_MANIFEST_MAX_PACKAGES];
-		int entry_count, j;
+		int entry_count, j, hit = 0;
 
 		if (image_manifest_read(image_names[i], entries, &entry_count,
 		                         IMAGE_MANIFEST_MAX_PACKAGES) != IMAGE_OK)
@@ -9323,14 +9429,39 @@ static void queue_rolling_rebuilds_for(const char *pkg_name, const char *pkg_ver
 			if (entries[j].mode == IMAGE_PKG_ROLLING &&
 			    strcmp(entries[j].package, pkg_name) == 0 &&
 			    pkg_version_compare(pkg_version, entries[j].version) >= 0) {
-				rebuild_queue_enqueue(image_names[i]);
-				if (queued_len < (int)sizeof(queued) - 1)
-					queued_len += snprintf(queued + queued_len,
-					                        sizeof(queued) - (size_t)queued_len, "%s%s",
-					                        queued_len > 0 ? ", " : "", image_names[i]);
-				queued_count++;
+				hit = 1;
 				break;
 			}
+		}
+		/*
+		 * ADR-0378: or the published recipe -- its main package or an
+		 * output -- is a dependency of the image that follows, and is
+		 * older there.
+		 */
+		if (!hit && image_rolls_dependencies(entries, entry_count)) {
+			int k;
+
+			for (k = 0; !hit && k < PKG_MAX_PACKAGES; k++) {
+				const struct pkg_entry *d = &g_packages[k];
+				char family[PKG_NAME_MAX];
+
+				if (!d->in_use || d->state != PKG_STATE_INSTALLED ||
+				    strcmp(normalize_image(d->image), image_names[i]) != 0 ||
+				    pkg_version_compare(pkg_version, d->version) <= 0)
+					continue;
+				recipe_family(d->name, family, sizeof(family));
+				if (strcmp(family, pkg_name) == 0 &&
+				    dependency_follows(image_names[i], entries, entry_count, d))
+					hit = 1;
+			}
+		}
+		if (hit) {
+			rebuild_queue_enqueue(image_names[i]);
+			if (queued_len < (int)sizeof(queued) - 1)
+				queued_len += snprintf(queued + queued_len,
+				                        sizeof(queued) - (size_t)queued_len, "%s%s",
+				                        queued_len > 0 ? ", " : "", image_names[i]);
+			queued_count++;
 		}
 	}
 
@@ -9687,6 +9818,49 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 					               "image %s: converge could not start %s: %s (ADR-0330)", image,
 					               entries[i].package, msg);
 				}
+			}
+		}
+
+		/*
+		 * ADR-0378: once the entries need nothing, the dependencies that
+		 * follow. Through pkg_install_start(), as an entry is, so the
+		 * ABI hold (ADR-0373), the sibling rule (#678) and the path rule
+		 * (#682) apply unchanged; and one at a time, deferred while the
+		 * recipe builds elsewhere (#555, #681).
+		 */
+		if (!started && !deferred) {
+			struct pkg_entry *d;
+
+			while ((d = image_dependency_behind(image, entries, entry_count, 1, &deferred)) !=
+			       NULL) {
+				char started_name[PKG_NAME_MAX];
+				char depname[PKG_NAME_MAX];
+
+				snprintf(depname, sizeof(depname), "%s", d->name);
+				snprintf(g_next_run_trigger, sizeof(g_next_run_trigger), "%s",
+				         PKG_RUN_TRIGGER_ROLLING);
+				perr = pkg_install_start(depname, image, NULL, 1, 0, started_name,
+				                         sizeof(started_name), out_pid, out_pidfd, out_chain_idx);
+				if (perr == PKG_OK) {
+					started = 1;
+					break;
+				}
+				if (perr == PKG_ERR_BUSY) {
+					deferred = 1;
+					break;
+				}
+				refused++;
+				{
+					const char *phrase;
+					char msg[1100];
+
+					pkg_error_describe(perr, &phrase, msg, sizeof(msg));
+					logstore_write("cixd", "warn",
+					               "image %s: could not upgrade its dependency %s: %s "
+					               "(ADR-0378)",
+					               image, depname, msg);
+				}
+				break;
 			}
 		}
 
