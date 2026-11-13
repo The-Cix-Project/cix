@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A path moves between a recipe's packages in either install order (#682, 0.2.57-677)
+
+- **The defect:** dosfstools 4.2-5 moved `usr/share/man/man8/fsck.fat.8` from `dosfstools` into its `dosfstools-extra` output. On 192.168.15.95 (2026-11-13) the drain asked for `dosfstools`, #678's sibling rule queued `dosfstools-extra` first, and its install was refused against the path `dosfstools` 4.2-4 still owned. iso-builder was dropped from the rebuild queue and sat at glibc 2.44-21 until a hand install of the output and a sync.
+  - Queuing siblings first suits a path moving toward the package asked for and fails the other way. One recipe revision can move paths both ways, so no order works.
+- **Now:** `path_may_move_from()` is the one rule for a path changing hands, and the gate (`path_owner_walk()`) and `transfer_replaced_paths()` both ask it.
+  - Across recipes a path moves only with `replaces` (#553).
+  - Within one recipe it moves whenever the owner is at another version: the recipe's own output lists declare it. The same version holding one path twice is still refused.
+  - The log names which: "which it declares it replaces (cix#553)" or "an older version of a package of the same recipe (cix#682)".
+- **Gate:** `test_pkg`'s `splitmain`: 1.0 has `-x` in main and an output holding `-y`, and 2.0 gives `-x` to the output. Upgrading the main package must leave both at 2.0-1, with `-x` owned by the output and present in the image.
+
 ### A recipe is built once when images name different packages of it (#681, 0.2.57-676)
 
 - **The defect:** glibc 2.44-21 was built three times at once on 192.168.15.95 on 2026-11-12, for cix-builder, iso-builder and kernel-builder, each for about an hour.

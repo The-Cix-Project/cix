@@ -938,18 +938,22 @@ static int write_split_recipe(const struct cix_client *c, const char *name, cons
 	         "            }\n"
 	         "        }\n",
 	         name, srcdir);
+	/* split: 0, no output; 1, output <name>-tool holds usr/bin/<name>-x;
+	 * 2, the output holds usr/bin/<name>-y and -x stays in the main
+	 * package (#682 moves -x from main to the output between 2 and 1). */
 	snprintf(install_body, sizeof(install_body),
 	         "        mkdir \"${dest}/usr/bin\" parents chmod 0755\n"
 	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s\"\n"
-	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s-x\"\n",
-	         name, srcdir, name, name, srcdir, name);
+	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s-x\"\n"
+	         "        copy \"${src}/%s/%s/hello\" to \"${dest}/usr/bin/%s-y\"\n",
+	         name, srcdir, name, name, srcdir, name, name, srcdir, name);
 	decls[0] = '\0';
 	if (split)
 		snprintf(decls, sizeof(decls),
 		         "    output \"%s-tool\" {\n"
-		         "        files { \"usr/bin/%s-x\" }\n"
+		         "        files { \"usr/bin/%s-%s\" }\n"
 		         "    }\n\n",
-		         name, name);
+		         name, name, split == 2 ? "y" : "x");
 	cpdl_recipe_text_decl(content, sizeof(content), name, version, test_http_src(tarball_path),
 	                      sha256, NULL,
 	                      "            compiler \"tcc\"\n"
@@ -7911,6 +7915,93 @@ skip_resume:
 					fprintf(stderr, "FAIL: #678 want splitpkg and splitpkg-tool both at 2.0-1 "
 					                "with usr/bin/splitpkg-x owned by the output; got %s, %s\n",
 					        ver_main, ver_tool);
+					ok = 0;
+				}
+			}
+		}
+		/*
+		 * #682: the same move, the other way round. splitmain 1.0 has
+		 * usr/bin/splitmain-x in its main package and an output,
+		 * splitmain-tool, holding -y; 2.0 gives -x to the output. Asking
+		 * for the MAIN package queues the output first (#678), and the
+		 * output then installs a path the main package's 1.0 still owns.
+		 * That is dosfstools 4.2-5 on 192.168.15.95 (2026-11-13), whose
+		 * fsck.fat.8 moved into dosfstools-extra.
+		 */
+		{
+			char sha_m1[65], sha_m2[65];
+			char tarball_m1[PATH_MAX], tarball_m2[PATH_MAX];
+			char st_m[64] = "", ver_m[64], ver_mt[64];
+			int m_ok, m;
+
+			m_ok = stage_fixture_tarball(scratch_dir, "splitmain", "1.0", tarball_m1,
+			                             sizeof(tarball_m1), sha_m1, sizeof(sha_m1)) == 0 &&
+			       stage_fixture_tarball(scratch_dir, "splitmain", "2.0", tarball_m2,
+			                             sizeof(tarball_m2), sha_m2, sizeof(sha_m2)) == 0 &&
+			       write_split_recipe(&client, "splitmain", "1.0", tarball_m1, sha_m1, 2) == 0;
+			for (m = 0; m_ok && m < 2; m++) {
+				const char *pkg = m == 0 ? "splitmain" : "splitmain-tool";
+				char body[96];
+
+				snprintf(body, sizeof(body), "{\"name\":\"%s\"}", pkg);
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/pkg/install", body, &r) != 0 ||
+				    (r.status != 202 && r.status != 200))
+					m_ok = 0;
+				cix_response_free(&r);
+				st_m[0] = '\0';
+				if (m_ok && (poll_pkg_state(&client, pkg, st_m, sizeof(st_m), 240) != 0 ||
+				             !str_eq(st_m, "installed")))
+					m_ok = 0;
+			}
+			if (!m_ok) {
+				fprintf(stderr, "FAIL: #682 could not install splitmain 1.0 and its output "
+				                "(state=%s)\n",
+				        st_m);
+				ok = 0;
+			}
+			if (m_ok && write_split_recipe(&client, "splitmain", "2.0", tarball_m2, sha_m2, 1) !=
+			                    0) {
+				fprintf(stderr, "FAIL: #682 could not publish splitmain 2.0\n");
+				ok = 0;
+				m_ok = 0;
+			}
+			if (m_ok) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/pkg/install",
+				                       "{\"name\":\"splitmain\",\"upgrade\":true}", &r) != 0 ||
+				    (r.status != 202 && r.status != 200)) {
+					fprintf(stderr, "FAIL: #682 upgrade splitmain status=%d\n", r.status);
+					ok = 0;
+					m_ok = 0;
+				}
+				cix_response_free(&r);
+			}
+			/* The output's job runs first, then the main package's:
+			 * wait until the main package reaches 2.0-1 or stops. */
+			if (m_ok) {
+				int w;
+
+				for (w = 0; w < 400; w++) {
+					pkg_installed_version(&client, "splitmain", ver_m, sizeof(ver_m));
+					st_m[0] = '\0';
+					if (poll_pkg_state(&client, "splitmain", st_m, sizeof(st_m), 1) == 0 &&
+					    (str_eq(ver_m, "2.0-1") || !str_eq(st_m, "installed")))
+						break;
+					usleep(300000);
+				}
+			}
+			if (m_ok) {
+				pkg_installed_version(&client, "splitmain", ver_m, sizeof(ver_m));
+				pkg_installed_version(&client, "splitmain-tool", ver_mt, sizeof(ver_mt));
+				if (!str_eq(ver_m, "2.0-1") || !str_eq(ver_mt, "2.0-1") ||
+				    pkg_lists_file(&client, "splitmain", "usr/bin/splitmain-x") != 0 ||
+				    pkg_lists_file(&client, "splitmain-tool", "usr/bin/splitmain-x") != 1 ||
+				    access(base_path("/usr/bin/splitmain-x"), F_OK) != 0) {
+					fprintf(stderr, "FAIL: #682 want splitmain and splitmain-tool both at "
+					                "2.0-1 with usr/bin/splitmain-x owned by the output and "
+					                "present; got %s, %s\n",
+					        ver_m, ver_mt);
 					ok = 0;
 				}
 			}

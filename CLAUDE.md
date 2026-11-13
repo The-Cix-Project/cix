@@ -538,6 +538,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 
 - **A package's own previous version is not another package.** An ordinary upgrade is unaffected, and giving a path up is always allowed.
 - **Moving a path needs the declaration**: `replaces { package "NAME" }` at package level in the receiving recipe (cbs v0.1.99, cix-build-system#275). The named package's shared paths then change owner; nothing else is allowed through.
+- **Within one recipe, the recipe's own output lists are the declaration** (#682): a path moving between a recipe's main package and its outputs, across versions, changes owner at install with no `replaces`. `path_may_move_from()` is the one rule; the gate and the transfer both ask it. dosfstools 4.2-5 moved `fsck.fat.8` into `dosfstools-extra`, and the drain, asking for `dosfstools`, installed the output first and was refused (192.168.15.95, 2026-11-13). One revision can move paths both ways, so no install order avoids it. The same version claiming one path twice is still refused.
 - **A collision is a recipe bug to fix, never a path to exempt.** Do not add an allow-list.
 
 

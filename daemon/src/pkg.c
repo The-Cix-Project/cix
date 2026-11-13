@@ -2377,6 +2377,41 @@ static int name_in_list(const char *list, const char *name)
 	return 0;
 }
 
+#define PATH_MOVE_REFUSED 0
+#define PATH_MOVE_REPLACES 1 /* the recipe declares `replaces` for it (#553) */
+#define PATH_MOVE_SIBLING 2  /* an older version of a package of the same recipe (#682) */
+
+/*
+ * The one rule for a path `self` installs that `owner` already holds:
+ * may it change hands? Asked by path_owner_walk() at the gate and by
+ * transfer_replaced_paths() after the install, so the two cannot
+ * disagree.
+ *
+ * Across recipes, only when self's recipe declares `replaces` for the
+ * owner (#553). Within one recipe, whenever the owner is at another
+ * version: the recipe's own output lists are the declaration of a path
+ * moving between its packages (#682). dosfstools 4.2-5 moved fsck.fat.8
+ * from dosfstools to dosfstools-extra; the drain asked for dosfstools,
+ * #678's sibling rule queued the output first, and the install was
+ * refused against dosfstools 4.2-4 (192.168.15.95, 2026-11-13). One
+ * revision can move paths both ways, so no install order avoids it. The
+ * same version holding one path twice is still refused: that is a cbs
+ * bug, not a move.
+ */
+static int path_may_move_from(const struct pkg_entry *self, const struct pkg_entry *owner,
+                              const char *replaces)
+{
+	char fs[PKG_NAME_MAX], fo[PKG_NAME_MAX];
+
+	if (replaces != NULL && name_in_list(replaces, owner->name))
+		return PATH_MOVE_REPLACES;
+	if (strcmp(owner->version, self->version) == 0)
+		return PATH_MOVE_REFUSED;
+	recipe_family(self->name, fs, sizeof(fs));
+	recipe_family(owner->name, fo, sizeof(fo));
+	return strcmp(fs, fo) == 0 ? PATH_MOVE_SIBLING : PATH_MOVE_REFUSED;
+}
+
 /*
  * Walks a staged install tree and stops at the first regular file or
  * symlink another package owns -- the two kinds merge_tree() records in
@@ -2423,9 +2458,11 @@ static int path_owner_walk(const struct pkg_entry *self, const char *image,
 			r = path_owner_walk(self, image, idx, root, rel, replaces, err, err_size);
 		} else if (S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)) {
 			owner = path_claim_owner(idx, rel);
-			/* A package the recipe declares it replaces (cbs#275) may
-			 * hand over its paths; nothing else may. */
-			if (owner != NULL && !name_in_list(replaces, owner->name)) {
+			/* A package the recipe declares it replaces (cbs#275), or
+			 * an older version of a package of the same recipe (#682),
+			 * may hand over its paths; nothing else may. */
+			if (owner != NULL &&
+			    path_may_move_from(self, owner, replaces) == PATH_MOVE_REFUSED) {
 				snprintf(err, err_size,
 				         "%s@%s installs \"%s\", which %s@%s already owns in image \"%s\" "
 				         "-- a path belongs to one package (#553): drop it from one of the "
@@ -16329,12 +16366,14 @@ static int cstr_ptr_cmp(const void *a, const void *b)
 }
 
 /*
- * cix#553: after a verified install whose recipe declares `replaces`,
- * each named package still installed in the image gives up the paths
- * the new package now holds, so every path is owned exactly once again.
- * Done after the install rather than at the gate, so a failed install
- * leaves the previous owner's manifest untouched -- and uninstalling
- * that package later no longer deletes files that are not its own.
+ * cix#553: after a verified install, each package still installed in the
+ * image that path_may_move_from() lets hand over its paths -- one the
+ * recipe declares it replaces, or an older version of a package of the
+ * same recipe (#682) -- gives up the paths the new package now holds, so
+ * every path is owned exactly once again. Done after the install rather
+ * than at the gate, so a failed install leaves the previous owner's
+ * manifest untouched -- and uninstalling or upgrading that package
+ * later no longer deletes files that are not its own.
  */
 static void transfer_replaced_paths(const char *image, const struct pkg_entry *self,
                                     const char *replaces)
@@ -16342,7 +16381,7 @@ static void transfer_replaced_paths(const char *image, const struct pkg_entry *s
 	const char **mine;
 	int i, f;
 
-	if (replaces == NULL || replaces[0] == '\0' || self->file_count <= 0)
+	if (self->file_count <= 0)
 		return;
 	mine = malloc((size_t)self->file_count * sizeof(*mine));
 	if (mine == NULL)
@@ -16353,10 +16392,13 @@ static void transfer_replaced_paths(const char *image, const struct pkg_entry *s
 
 	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
 		struct pkg_entry *o = &g_packages[i];
-		int kept = 0, taken = 0;
+		int kept = 0, taken = 0, why;
 
 		if (o == self || !o->in_use || o->state != PKG_STATE_INSTALLED ||
-		    strcmp(normalize_image(o->image), image) != 0 || !name_in_list(replaces, o->name))
+		    strcmp(normalize_image(o->image), image) != 0)
+			continue;
+		why = path_may_move_from(self, o, replaces);
+		if (why == PATH_MOVE_REFUSED)
 			continue;
 		for (f = 0; f < o->file_count; f++) {
 			const char *key = o->files[f];
@@ -16370,10 +16412,15 @@ static void transfer_replaced_paths(const char *image, const struct pkg_entry *s
 			}
 		}
 		o->file_count = kept;
-		if (taken > 0)
+		if (taken > 0 && why == PATH_MOVE_REPLACES)
 			logstore_write("cixd", "info",
 			               "image %s: %s@%s took over %d path(s) from %s@%s, which it "
 			               "declares it replaces (cix#553)",
+			               image, self->name, self->version, taken, o->name, o->version);
+		else if (taken > 0)
+			logstore_write("cixd", "info",
+			               "image %s: %s@%s took over %d path(s) from %s@%s, an older "
+			               "version of a package of the same recipe (cix#682)",
 			               image, self->name, self->version, taken, o->name, o->version);
 	}
 	free(mine);
