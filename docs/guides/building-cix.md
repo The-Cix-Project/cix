@@ -34,42 +34,24 @@ The rebuild is a [hostbuild](writing-recipes.md#the-hostbuild-variant) of the `c
 
 A hostbuild composes its build container from the recipe's own declared build tools ([ADR-0304](../adr/0304-a-hostbuild-composes-its-build-environment-like-every-other-build.md)), so there is no build image to create. The `cix` recipe declares what it uses — TCC, make, the headers, the libraries `cixd` links (`-lssl -lcrypto -larchive -lcurl`), quickjs for the dashboard syntax gate, gcc for the two tests that use it as a linter and as a deliberate foreign producer, and the rest — and every declared tool must be installed in some image on the host, or the build fails naming it.
 
-One optional image and one required one change what the assembled root contains. Both are ordinary images built with ordinary installs, found by fixed name when the root is assembled.
+One image decides what the assembled root contains: `cix-root`. It is an ordinary image made from its recipe, and its current version **is** the control-plane root ([ADR-0371](../adr/0371-the-control-plane-root-is-one-image.md)).
 
-#### `cix-hosttools` (REQUIRED since cix#350, ADR-0337 — ADR-0078 introduced it as optional)
+#### `cix-root` (REQUIRED since ADR-0371 phase 3a)
 
-Every host tool the control-plane root carries comes from this image, and so does every library. `mkbootroot` refuses to assemble a root without it, because a root with no `cbs` cannot install a package (ADR-0307 clause 6) and a root with no `mksquashfs` cannot assemble its own successor.
+Every program, library and file the root carries comes from this image's packages: `cixd` and `cixctl` (outputs of the `cix` recipe), `kernel-modules` (an output of the `kernel` recipe), the host tools `include/controlplane_programs.h` lists (`squashfs-tools`, `cbs`, `util-linux`, `e2fsprogs`, `btrfs-progs`, `dosfstools`, `kmod`), the firmware a driver asks for during probe (`rtw88-firmware`, `wireless-regdb`), `ca-certificates`, and their libraries. `mkbootroot` adds only what ADR-0333 says is not image content -- the mount points, an empty `/etc/resolv.conf` and `/etc/os-release` -- then checks the tree and seals it. Firmware belongs here because the kernel answers `request_firmware()` out of the root it booted, before any container exists.
 
 ```
-cixctl image create --name=cix-hosttools
-cixctl pkg install --name=squashfs-tools --image=cix-hosttools
-cixctl pkg install --name=cbs --image=cix-hosttools
-cixctl pkg install --name=util-linux --image=cix-hosttools
-cixctl pkg install --name=e2fsprogs --image=cix-hosttools
-cixctl pkg install --name=btrfs-progs --image=cix-hosttools
+cixctl image recipe add --name=cix-root --file=cix-root@<version>.json
+cixctl image apply-recipe cix-root
 ```
 
-Those five supply the nine programs `include/controlplane_programs.h` assigns to this image — and that list is what `mkbootroot` stages from, so a program added there is staged with no second edit, and one missing from this image fails the assembly naming the install that fixes it. The image's full recipe is `recipes/image/cix-hosttools@<version>.json` in cix-recipes; it declares more than these five, because `coreutils`, `bash` and `perl` are build tools other work needs from the same image.
+The recipe is `recipes/image/cix-root@<version>.json` in cix-recipes. `cixd`, `cixctl` and `kernel-modules` are pinned in it, because each must be the build the host is deploying: when a `cix` hostbuild finishes, the daemon installs that build's `cixd` and `cixctl` into `cix-root` before it assembles, and the `kernel` hostbuild's `kernel-modules` the same way, moving the pins with the install (ADR-0320). An assembly never starts while `cix-root` holds anything else, or while a package job is in flight for it; `GET /system/assembly` says what it is waiting for (`waiting_for`) or why it will not start (`refused`). The other entries roll like any image's, and their dependencies with them ([ADR-0378](../adr/0378-a-rolling-images-dependencies-roll-with-it.md)).
 
-`cix-hosttools` is `HOST_TOOLS_IMAGE` in `daemon/src/main.c`; `spawn_cix_bootroot_assembly()` passes its rootfs to `mkbootroot` as the host-tools directory. `mkbootroot` also runs that image's `mksquashfs` to seal the root, with the image's own libraries on its search path ([ADR-0154](../adr/0154-host-tools-mksquashfs-ld-library-path.md)).
+`cix-root` is `ROOT_IMAGE` in `daemon/src/main.c`; `spawn_cix_bootroot_assembly()` hands its current version's rootfs to `mkbootroot`, which seals it with that tree's own `mksquashfs`.
 
-**It used to be optional, and what that cost is the reason it is not.** Without it, `mkbootroot` copied each program and a hand-listed set of libraries from the host running the assembly — which on a Cix host is the running control-plane root, so every assembly carried the previous one's copy forward and whatever a dev machine first put there stayed. Measured on 2026-10-09 and 2026-10-10: the root's `e2fsck`/`mkfs.ext4`/`resize2fs`/`sfdisk` were Debian's, and six libraries existed twice with the foreign copy first in glibc's search order, so `cixd` linked a foreign OpenSSL and a foreign libcurl (cix#589, cix#350).
+**Before phase 3a the root was assembled from three images** -- `cix-hosttools` for programs and libraries, `cix-firmware`, `cix-kmod` -- plus the two hostbuilds' outputs, unpacked at each assembly. And before `cix-hosttools` was required, `mkbootroot` copied programs and a hand-listed set of libraries from the host running the assembly, which on a Cix host is the running root, so each assembly carried the previous one's copy forward. Measured on 2026-10-09 and 2026-10-10: the root's `e2fsck`/`mkfs.ext4`/`resize2fs`/`sfdisk` were Debian's, and six libraries existed twice with the foreign copy first in glibc's search order, so `cixd` linked a foreign OpenSSL and a foreign libcurl (cix#589, cix#350). A root that is one image's tree has one place its content can come from.
 
 The root carries no `tar`, `gzip`, `xz` or `bzip2` ([ADR-0329](../adr/0329-shell-recipes-and-tar-gz-artifacts-do-not-exist.md)), and the assembly refuses to seal a root whose binaries need a library it does not contain.
-
-#### `cix-firmware` (optional, ADR-0263)
-
-A driver asks the kernel for firmware during device probe, and the kernel answers it out of the root filesystem it booted — before any container exists, so a blob inside a container can never be reached. Any host whose hardware needs firmware therefore needs it in the control-plane root:
-
-```
-cixctl image create --name=cix-firmware
-cixctl pkg install --name=rtw88-firmware --image=cix-firmware
-cixctl pkg install --name=wireless-regdb --image=cix-firmware
-```
-
-`cix-firmware` is `FIRMWARE_IMAGE` in `daemon/src/main.c`, resolved the same way: `spawn_cix_bootroot_assembly()` takes the image's current version, then its own `lib/firmware`, and hands that to `mkbootroot` as the firmware root to stage. Firmware packages install there, so its contents already mirror `/lib/firmware` — `rtw88/rtw8822b_fw.bin` and a bare `regulatory.db` land where `request_firmware()` looks.
-
-Install only what the hardware needs — the two above are what an 802.11ac access point on an RTL8822BU adapter takes. A box without this image passes an empty firmware root and `mkbootroot` skips the staging. `mkbootroot` assembles a **fresh** root every run, so the image has to exist at every assembly, or that root has no firmware in it.
 
 ### 2. Point the `cix` recipe at a tagged source snapshot
 
@@ -89,7 +71,7 @@ To make a newer self-build available: tag this repository, then publish a new `c
 cixctl pkg hostbuild cix --upgrade --wait --deploy
 ```
 
-`--upgrade` is needed on any host that has hostbuilt `cix` before: without it an already-installed hostbuild entry answers `409` ([ADR-0094](../adr/0094-hostbuild-upgrade-flag.md)). This fetches the tagged source (host-side, before the build container starts — the build container has no network access), builds `cixd`/`cixctl`/`web/` **and** `mkbootroot`, then hands off to the daemon's own assembly step: `cixd` runs the freshly built `mkbootroot` to package those artifacts into a fresh `cixd-root.squashfs` — never the CLI invoking `mkbootroot` itself, which the API-First Mandate rules out.
+`--upgrade` is needed on any host that has hostbuilt `cix` before: without it an already-installed hostbuild entry answers `409` ([ADR-0094](../adr/0094-hostbuild-upgrade-flag.md)). This fetches the tagged source (host-side, before the build container starts — the build container has no network access), builds `cixd`/`cixctl`/`web/` **and** `mkbootroot`, then hands off to the daemon's own assembly step: `cixd` installs the build's `cixd` and `cixctl` into `cix-root` and runs the freshly built `mkbootroot` to seal that image's tree into a fresh `cixd-root.squashfs` — never the CLI invoking `mkbootroot` itself, which the API-First Mandate rules out.
 
 `--wait` polls until the hostbuild job reaches `installed` — that only means the compile finished, not that the asynchronous assembly has. `--deploy` waits for the assembly to complete ([ADR-0105](../adr/0105-bootroot-assembly-freshness.md) — comparing `GET /system/assembly`'s `completed_generation` against a baseline captured before the round started) and then calls `/system/update` with the assembled image. It does not reboot.
 

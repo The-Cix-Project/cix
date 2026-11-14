@@ -1,4 +1,5 @@
 #include "test_disk_image.h"
+#include "test_root_tree.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -380,6 +381,25 @@ int build_squashfs(const char *image_root, const char *out_path)
 
 	unlink(out_path);
 	return run_subprocess(MKSQUASHFS_BIN, argv);
+}
+
+int test_root_assemble(const char *mkbootroot_bin, const char *stage_dir, const char *cixd_bin,
+                       const char *cixctl_bin, const char *web_dir, const char *out_squashfs)
+{
+	char tree[PATH_MAX];
+
+	if (snprintf(tree, sizeof(tree), "%s.tree", stage_dir) >= (int)sizeof(tree)) {
+		fprintf(stderr, "path too long: %s.tree\n", stage_dir);
+		return 1;
+	}
+	if (test_root_tree_build(tree, cixd_bin, cixctl_bin, web_dir, "", "", "", "/") != 0)
+		return 1;
+	{
+		char *argv[] = { (char *)mkbootroot_bin, tree, (char *)out_squashfs, (char *)stage_dir,
+			         NULL };
+
+		return run_subprocess(mkbootroot_bin, argv);
+	}
 }
 
 enum qemu_boot_outcome qemu_boot_capture(const struct qemu_boot_opts *opts, char *out, size_t out_size)

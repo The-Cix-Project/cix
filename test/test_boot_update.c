@@ -273,32 +273,18 @@ int main(void)
 	 * from web_new/, with one extra marker file). The "new" kernel
 	 * reuses the same real, already-built build-inputs/bzImage bytes -- see
 	 * this file's own header comment for why a second real kernel
-	 * build isn't needed for what this test is actually proving.
-	 *
-	 * The last argument is the host-tools root, "/" for the reason
-	 * test_boot.c gives: mkbootroot refuses an empty one (ADR-0307
-	 * clause 6), and the composed build container this runs in is an
-	 * image's installed rootfs carrying exactly those tools.
-	 * probe-cix-bootest@16-1 stopped on the "" this passed, in 11 ms,
-	 * on 192.168.15.95, 2026-10-23 (cix#584). */
-	{
-		char *argv_a[] = { (char *)MKBOOTROOT_BIN, stage_dir,
-			           (char *)CIXD_BIN, (char *)CIXCTL_BIN, "web", root_squashfs_a,
-			           "", "", "", "/", NULL };
-		if (run_subprocess(MKBOOTROOT_BIN, argv_a) != 0)
-			return 1;
-	}
+	 * build isn't needed for what this test is actually proving. Both
+	 * are assembled from "/" by test_root_assemble(), for the reason
+	 * test_disk_image.h gives. */
+	if (test_root_assemble(MKBOOTROOT_BIN, stage_dir, CIXD_BIN, CIXCTL_BIN, "web", root_squashfs_a) != 0)
+		return 1;
 	if (stage_alt_web_dir(web_new_dir) != 0) {
 		fprintf(stderr, "FAIL: could not stage alternate web dir\n");
 		return 1;
 	}
-	{
-		char *argv_new[] = { (char *)MKBOOTROOT_BIN, stage_dir_new,
-			             (char *)CIXD_BIN, (char *)CIXCTL_BIN, web_new_dir, root_squashfs_new,
-			             "", "", "", "/", NULL };
-		if (run_subprocess(MKBOOTROOT_BIN, argv_new) != 0)
-			return 1;
-	}
+	if (test_root_assemble(MKBOOTROOT_BIN, stage_dir_new, CIXD_BIN, CIXCTL_BIN, web_new_dir,
+	                       root_squashfs_new) != 0)
+		return 1;
 	if (stat(root_squashfs_new, &new_squashfs_st) != 0) {
 		perror(root_squashfs_new);
 		return 1;

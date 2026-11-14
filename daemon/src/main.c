@@ -2005,6 +2005,21 @@ static int g_bootroot_assembly_running;
  * rather than only a log line.
  */
 static char g_bootroot_assembly_refused[320];
+/*
+ * ADR-0371 phase 3a: the cix-root version the last assembly that started
+ * sealed, reported as `root_image_version`. In memory like the counters,
+ * and with the same meaning: what this daemon did, not what the file at
+ * image_path is.
+ */
+static char g_bootroot_assembly_root_version[IMAGE_VERSION_MAX];
+/*
+ * ADR-0371 phase 3a: what an assembly that has been asked for is waiting
+ * for before it can start -- cix-root to be brought to this host's
+ * builds, or to settle. Empty when none is waiting. Reported as
+ * `waiting_for`, so a deploy polling completed_generation sees why it
+ * has not moved yet, as `refused` says why it never will.
+ */
+static char g_bootroot_waiting[256];
 
 /*
  * cix#568: which kernel releases an assembled root's modules are for,
@@ -10391,86 +10406,47 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
 }
 
 /*
- * ADR-0078: the well-known name of the shared "host tools" image --
- * cp/gzip (coreutils.recipe/gzip.recipe; rm/sha256sum retired by #352,
- * both in-process in daemon/src/pkg.c now) plus openssl/
- * curl/tar/bzip2/xz/squashfs-tools/e2fsprogs, one real `pkg install
- * --image=cix-hosttools` per recipe -- an operator builds this
- * exactly like "cix-builder"/"iso-builder" (docs/guides/building-cix.md),
- * no special-cased creation path. spawn_cix_bootroot_assembly()
- * below passes its rootfs to mkbootroot.c's own host_tools_dir
- * argument when present, purely additive: a box that never built this
- * image keeps today's dev-host-sourced behavior (mkbootroot.c's own
- * "" fallback), never a hard failure.
+ * ADR-0371: the image whose current version IS the control-plane root.
+ * Every program, library and file the root carries comes from its
+ * packages; mkbootroot adds only the mount points, an empty
+ * /etc/resolv.conf and /etc/os-release, then seals it. Before phase 3a
+ * the root was assembled from three images (cix-hosttools, cix-firmware,
+ * cix-kmod) plus the cix and kernel hostbuilds' outputs, and only the
+ * last of those survive here, as what cix-root must hold before an
+ * assembly may start (root_image_behind()). An operator makes it like any
+ * image, from its recipe in cix-recipes.
  */
-#define HOST_TOOLS_IMAGE "cix-hosttools"
+#define ROOT_IMAGE "cix-root"
 
 /*
  * ADR-0358: the image holding the ISO toolchain (grub, shim, mokutil,
  * sbsigntools, xorriso, mtools, dosfstools and their libraries). Its
  * current version's rootfs is the tools root POST /v1/system/iso hands
- * mkinstalleriso, as HOST_TOOLS_IMAGE's is mkbootroot's.
+ * mkinstalleriso, as ROOT_IMAGE's is mkbootroot's tree.
  */
 #define ISO_BUILDER_IMAGE "iso-builder"
 
 /*
- * #30, extending ADR-0029: the well-known name of the image holding
- * device firmware, resolved and staged the same way HOST_TOOLS_IMAGE
- * above is -- an operator builds it with ordinary `pkg install
- * --image=cix-firmware` calls, no special-cased creation path, and a
- * box that never built one keeps today's behaviour through
- * mkbootroot.c's own "" fallback.
- *
- * Firmware has to live in the control-plane root specifically, and
- * that is ADR-0029's original argument rather than a new one:
- * request_firmware() is answered by the kernel out of the HOST root,
- * during driver probe, before any container exists to hold anything.
- * A firmware blob in a container is a blob the kernel will never see.
- *
- * The image's own lib/firmware is the root that gets staged, not the
- * image rootfs itself, because that is where its packages install --
- * rtw88-firmware writes lib/firmware/rtw88/rtw8822b_fw.bin and
- * wireless-regdb writes lib/firmware/regulatory.db. Handing mkbootroot
- * that subdirectory means its contents already mirror /lib/firmware
- * exactly, which is the shape it documents wanting, and it needs to
- * know nothing about which packages or drivers exist.
- */
-#define FIRMWARE_IMAGE "cix-firmware"
-
-/*
- * #347: the well-known name of the image holding the module tools --
- * modprobe/depmod/insmod/lsmod/modinfo/rmmod, all six symlinks to one
- * real kmod binary (recipes/package/kmod). Resolved and staged exactly
- * like FIRMWARE_IMAGE above, built with an ordinary `pkg install
- * --image=cix-kmod kmod`, and absent on a box that never built one.
- *
- * Its own image rather than a few more files inside cix-hosttools,
- * because mkbootroot stages THIS directory with the flat copy
- * (copy_dir_files(): every file in it, into usr/bin), not the
- * named-absolute-path copy hosttools gets. cix-hosttools' own usr/bin
- * carries curl, tar, perl and bash among others, so pointing the flat
- * copy at it would put a shell in the control-plane root -- a property
- * this platform deliberately does not have. A one-package image's
- * usr/bin holds exactly the seven files kmod installs, and nothing
- * else.
+ * #347: the image holding the module tools -- modprobe and its five
+ * siblings, all links to one kmod binary -- which the installer ISO
+ * stages onto its media so cix-install can load a real machine's NIC
+ * driver (resolve_kmod_bin_dir()). The control-plane root no longer
+ * reads it: cix-root carries kmod as one of its packages (ADR-0371).
  */
 #define KMOD_IMAGE "cix-kmod"
 
 /*
- * ADR-0057: when a hostbuild job named "cix" completes, assembles a
- * fresh control-plane squashfs from its own just-harvested artifacts
- * by forking+exec'ing the real, unmodified build/mkbootroot binary --
- * server-side, entirely within the daemon, never CLI-invoked (the
- * API-First Mandate rules out the CLI shelling out to a build tool
- * directly). Mirrors start_fetch_for()'s own "daemon already forks
- * subprocesses for curl" precedent -- this is the same class of
- * capability, not a new one. Uses THIS SAME hostbuild round's own
- * freshly built mkbootroot (cix.recipe now stages one alongside
- * cixd/cixctl/web/) rather than assuming some earlier round's
- * copy is still present anywhere -- self-contained, no bootstrap-order
- * dependency. Failure here (missing mkbootroot, fork failure) is
- * logged, never fatal to the daemon -- the hostbuild itself already
- * succeeded and its own artifacts are still there for a later retry.
+ * ADR-0057, ADR-0371: when a hostbuild named "cix" completes, the
+ * daemon assembles a fresh control-plane squashfs by forking and
+ * exec'ing that build's own mkbootroot -- server-side, never
+ * CLI-invoked (the API-First Mandate rules out the CLI shelling out to
+ * a build tool). Since ADR-0371 phase 3a the tree it seals is the
+ * cix-root image's current version, so an assembly is ASKED FOR
+ * (bootroot_want()) and starts only once cix-root holds this host's own
+ * builds: bootroot_drive() installs the hostbuild's cixd, cixctl and
+ * kernel-modules into it first. Failure here is logged and reported as
+ * `refused`, never fatal to the daemon -- the hostbuild itself already
+ * succeeded and its artifacts are still there for a later retry.
  */
 static void artifact_push_pump(void);
 /*
@@ -10481,8 +10457,9 @@ static void artifact_push_pump(void);
 static int artifact_export_start(const char *name, const char *dest_override, char *err_msg,
                                  size_t err_msg_size);
 static void hostbuild_export_drive(void);
-static void spawn_cix_bootroot_assembly(const char *artifact_dir);
-/* ADR-0327: the host roll, defined after spawn_cix_bootroot_assembly(). */
+static int bootroot_want(void);
+static void bootroot_drive(void);
+/* ADR-0327: the host roll, defined after bootroot_drive(). */
 static void hostroll_tick(void);
 static void hostroll_assembly_done(int ok);
 static void kernel_running_version(char *out, size_t out_size);
@@ -10608,16 +10585,19 @@ static void pkg_completion_followup(int next, pid_t pkg_pid, int pkg_pidfd, int 
 	 * stays fully agnostic to what any package *means*.
 	 */
 	if (hostbuild_done_name != NULL && hostbuild_done_name[0] != '\0' &&
-	    strcmp(hostbuild_done_name, "cix") == 0) {
-		char artifact_dir[PATH_MAX];
-
-		snprintf(artifact_dir, sizeof(artifact_dir), "%s/%s", ARTIFACTS_DIR,
-		         hostbuild_done_name);
-		spawn_cix_bootroot_assembly(artifact_dir);
-	}
+	    strcmp(hostbuild_done_name, "cix") == 0)
+		bootroot_want();
+	/*
+	 * ADR-0371: an assembly that was asked for waits on cix-root -- for a
+	 * job of its own installing a build there, or for one of anyone's to
+	 * leave the image settled -- and every job's end is when that can
+	 * change. A no-op when none is asked for.
+	 */
+	else
+		bootroot_drive();
 
 	/* ADR-0327: a host roll waiting for this hostbuild moves on, after
-	 * the automatic assembly above so it can see that one started. */
+	 * the assembly asked for above so it can see that one is under way. */
 	hostroll_tick();
 
 	/* ADR-0343: last, after anything above that may have started the
@@ -10627,13 +10607,11 @@ static void pkg_completion_followup(int next, pid_t pkg_pid, int pkg_pidfd, int 
 }
 
 /*
- * Where the module tools are. Two callers need the identical answer:
- * the bootroot assembly, which stages them onto the control-plane root,
- * and the installer-ISO build, which stages them onto the media so
- * cix-install can load a real machine's NIC driver (#429 follow-on).
- * Empty when the image is absent, which both treat as "stage nothing".
- * The module tree they load from is the kernel-modules output, resolved
- * through root_output_resolve() below.
+ * Where the module tools are, for the installer-ISO build, which stages
+ * them onto the media so cix-install can load a real machine's NIC
+ * driver (#429 follow-on). Empty when the image is absent, which it
+ * treats as "stage nothing". The module tree they load from is the
+ * kernel-modules output, resolved through root_output_resolve() below.
  */
 static void resolve_kmod_bin_dir(char *out, size_t out_size)
 {
@@ -10652,18 +10630,20 @@ static void resolve_kmod_bin_dir(char *out, size_t out_size)
 }
 
 /*
- * The outputs the root takes, the hostbuild whose version names each,
- * and the path each must hold once unpacked (ADR-0367 decision 5,
- * ADR-0371). None is in its owner's main package. Each is its own
- * package, cached beside the owner by cache_sibling_outputs() at the
- * owner's hostbuild version, so the root's daemon, init, dashboard and
- * client are one build, and its modules are the booting kernel's.
+ * The outputs the root takes and the hostbuild whose version names each
+ * (ADR-0367 decision 5, ADR-0371). None is in its owner's main package;
+ * each is its own package, cached beside the owner by
+ * cache_sibling_outputs() at the owner's hostbuild version, so the
+ * root's daemon, init, dashboard and client are one build, and its
+ * modules are the booting kernel's. Since ADR-0371 phase 3a they reach
+ * the root as packages installed in cix-root, and root_image_behind()
+ * holds an assembly until cix-root has each at its owner's version. The
+ * probe is the path each holds; the ISO build still unpacks the module
+ * tree itself (root_output_resolve()).
  *
  * An optional owner that is not installed means the root has none of
- * that part: with no kernel hostbuild there is no module tree, as a
- * QEMU test boots. An installed owner without its output is refused,
- * never staged without, because a root without its modules boots and
- * then cannot load a bare-metal host's NIC driver (#347).
+ * that part: with no kernel hostbuild there is no module tree to
+ * require.
  */
 static const struct {
 	const char *owner;
@@ -10737,233 +10717,120 @@ static int root_output_unpack(const char *artifact, const char *dir, const char 
 	return 0;
 }
 
-static void spawn_cix_bootroot_assembly(const char *artifact_dir)
+/*
+ * ADR-0371 phase 3a: does cix-root hold this host's own builds? Each of
+ * g_root_outputs must be installed in ROOT_IMAGE at its owner's
+ * installed hostbuild version: cixd and cixctl at the cix hostbuild's,
+ * and kernel-modules at the kernel hostbuild's when there is one. That
+ * is what g_root_outputs guaranteed when the assembly unpacked them
+ * itself, and it is the only thing that ties a root to the build being
+ * deployed: a root sealed from a cix-root still holding the previous
+ * cixd would be staged, booted, found not to be running the installed
+ * cix, and rolled again every night.
+ *
+ * Returns 0 when it does, 1 with *out_k and out_version naming the first
+ * output that is behind and the version it should be at, and -1 with
+ * reason when no assembly can be made at all.
+ */
+static int root_image_behind(int *out_k, char *out_version, size_t out_version_size, char *reason,
+                             size_t reason_size)
+{
+	char current[IMAGE_VERSION_MAX];
+	int k;
+
+	if (image_current_version(ROOT_IMAGE, current, sizeof(current)) != IMAGE_OK) {
+		snprintf(reason, reason_size,
+		         "image %s has no current version: the control-plane root is that image, so "
+		         "make it from its recipe in cix-recipes (cixctl image recipe add, then "
+		         "cixctl image apply-recipe %s) (ADR-0371)",
+		         ROOT_IMAGE, ROOT_IMAGE);
+		return -1;
+	}
+	for (k = 0; k < ROOT_OUTPUT_COUNT; k++) {
+		char want[PKG_VERSION_MAX];
+		char have[PKG_VERSION_MAX];
+
+		if (pkg_installed_version(g_root_outputs[k].owner, PKG_HOSTBUILD_IMAGE, want,
+		                          sizeof(want)) != 0) {
+			if (g_root_outputs[k].owner_optional)
+				continue;
+			snprintf(reason, reason_size,
+			         "no %s hostbuild is installed, so there is no %s build to put in %s "
+			         "(ADR-0371)",
+			         g_root_outputs[k].owner, g_root_outputs[k].name, ROOT_IMAGE);
+			return -1;
+		}
+		if (pkg_installed_version(g_root_outputs[k].name, ROOT_IMAGE, have, sizeof(have)) == 0 &&
+		    strcmp(have, want) == 0)
+			continue;
+		*out_k = k;
+		snprintf(out_version, out_version_size, "%s", want);
+		return 1;
+	}
+	return 0;
+}
+
+/*
+ * Forks this hostbuild's mkbootroot over cix-root's current version.
+ * Called only by bootroot_drive(), once root_image_behind() says the
+ * image holds this host's builds and no package job is in flight for
+ * it, so the tree does not change under the copy.
+ */
+static void spawn_cix_bootroot_assembly(void)
 {
 	char mkbootroot_bin[PATH_MAX];
-	char cixd_bin[PATH_MAX];
-	char cixctl_bin[PATH_MAX];
-	char out_artifact[ROOT_OUTPUT_COUNT][PATH_MAX];
-	char out_dir[ROOT_OUTPUT_COUNT][PATH_MAX];
-	char out_probe[ROOT_OUTPUT_COUNT][PATH_MAX];
-	int out_have[ROOT_OUTPUT_COUNT];
-	char web_dir[PATH_MAX];
+	char root_version[IMAGE_VERSION_MAX];
+	char root_tree[PATH_MAX];
 	char out_squashfs[PATH_MAX];
 	char stage_dir[PATH_MAX];
-	char host_tools_dir[PATH_MAX];
-	char firmware_dir[PATH_MAX];
-	char modules_dir[PATH_MAX];
-	char kmod_bin_dir[PATH_MAX];
-	struct stat host_tools_st;
-	char *argv[11];
+	struct stat st;
+	char *argv[5];
 	pid_t pid;
 	int pidfd;
 	int output_pipe[2];
 
-	snprintf(mkbootroot_bin, sizeof(mkbootroot_bin), "%s/mkbootroot", artifact_dir);
 	/*
-	 * /bin/cixd, /bin/cix-init and /web come from the `cixd` output,
-	 * /usr/bin/cixctl (ADR-0371 decision C) from the `cixctl` output and /lib/modules from the
-	 * `kernel-modules` output (g_root_outputs), extracted in the child
-	 * below, off the loop. No fallback to a copy in a main package: a
-	 * root assembled without its own builds' outputs is refused, and the
-	 * reason names the artifact.
+	 * ADR-0057: this round's own mkbootroot, never an earlier one -- the
+	 * tool that seals a release's root is that release's.
 	 */
-	{
-		int k;
-
-		g_bootroot_assembly_refused[0] = '\0';
-		for (k = 0; k < ROOT_OUTPUT_COUNT; k++) {
-			out_have[k] = root_output_resolve(k, BOOTROOT_DIR, out_artifact[k], out_dir[k],
-			                                  out_probe[k], g_bootroot_assembly_refused,
-			                                  sizeof(g_bootroot_assembly_refused));
-			if (out_have[k] < 0)
-				break;
-		}
-		if (g_bootroot_assembly_refused[0] != '\0') {
-			logstore_write("cixd", "error", "cix bootroot assembly: not started -- %s",
-			               g_bootroot_assembly_refused);
-			events_announce(EV_getSystemAssembly); /* ADR-0339 */
-			return;
-		}
+	snprintf(mkbootroot_bin, sizeof(mkbootroot_bin), "%s/cix/mkbootroot", ARTIFACTS_DIR);
+	if (stat(mkbootroot_bin, &st) != 0 || !S_ISREG(st.st_mode)) {
+		snprintf(g_bootroot_assembly_refused, sizeof(g_bootroot_assembly_refused),
+		         "%s is missing: the cix hostbuild ships the mkbootroot that seals its root",
+		         mkbootroot_bin);
+		logstore_write("cixd", "error", "cix bootroot assembly: not started -- %s",
+		               g_bootroot_assembly_refused);
+		events_announce(EV_getSystemAssembly); /* ADR-0339 */
+		return;
 	}
-	snprintf(cixd_bin, sizeof(cixd_bin), "%s", out_probe[0]);
-	snprintf(web_dir, sizeof(web_dir), "%s/web", out_dir[0]);
-	snprintf(cixctl_bin, sizeof(cixctl_bin), "%s", out_probe[1]);
+	if (image_current_version(ROOT_IMAGE, root_version, sizeof(root_version)) != IMAGE_OK)
+		return; /* root_image_behind() refused this a moment ago */
+	image_version_rootfs_path(ROOT_IMAGE, root_version, root_tree, sizeof(root_tree));
 	/*
-	 * BOOTROOT_DIR, not artifact_dir (#178). These are build OUTPUT:
-	 * the artifact directory is tarred wholesale when the package is
-	 * exported or published, so anything left here rode along -- a
-	 * ~10 MB squashfs and a ~12 MB staging tree on top of ~1.5 MB of
-	 * real package content. Every host pulling `cix` downloaded 22 MB
-	 * to use 1.5 MB of it, and got a stale squashfs it would never
-	 * read.
+	 * BOOTROOT_DIR, not the artifact directory (#178): these are build
+	 * OUTPUT, and the artifact directory is packaged wholesale when it is
+	 * exported or published.
 	 */
 	snprintf(out_squashfs, sizeof(out_squashfs), "%s/cixd-root.squashfs", BOOTROOT_DIR);
 	snprintf(stage_dir, sizeof(stage_dir), "%s/stage", BOOTROOT_DIR);
-
 	/*
-	 * ADR-0107/0108: resolved via HOST_TOOLS_IMAGE's own current
-	 * version, not a flat "<IMAGES_DIR>/<name>/rootfs" path -- images
-	 * are pure filesystem state, no registry lookup needed (image.h's
-	 * own doc comment), but they DO now need a manifest.json lookup.
-	 * stat() instead of assuming presence: most installs will never
-	 * have built this optional image, and mkbootroot.c's own ""
-	 * fallback already exists precisely for that case (also covers
-	 * "exists but has no current version yet," though that's
-	 * unreachable via image_create()'s own always-produces-one
-	 * guarantee).
+	 * cix#568: the kernel releases the root's modules are for are read
+	 * from this tree when the assembly succeeds. The version's own
+	 * rootfs, so a newer cix-root version recorded meanwhile cannot
+	 * answer for this root.
 	 */
-	host_tools_dir[0] = '\0';
-	{
-		char host_tools_version[IMAGE_VERSION_MAX];
-
-		if (image_current_version(HOST_TOOLS_IMAGE, host_tools_version,
-		                           sizeof(host_tools_version)) == IMAGE_OK) {
-			image_version_rootfs_path(HOST_TOOLS_IMAGE, host_tools_version, host_tools_dir,
-			                           sizeof(host_tools_dir));
-			if (stat(host_tools_dir, &host_tools_st) != 0 || !S_ISDIR(host_tools_st.st_mode))
-				host_tools_dir[0] = '\0';
-		}
-	}
-
-	/*
-	 * Same resolution as host_tools_dir above, one directory deeper:
-	 * mkbootroot wants a firmware ROOT whose contents mirror
-	 * /lib/firmware, and that is the image's own lib/firmware rather
-	 * than its rootfs.
-	 *
-	 * This argument used to be a hardcoded "" with a comment saying a
-	 * control-plane-only rebuild needs no firmware re-staging. That was
-	 * true of nothing: mkbootroot assembles a FRESH root every time, so
-	 * whatever it is not given, the resulting root does not have. The
-	 * effect was that ADR-0029's firmware staging had no caller at all
-	 * -- the capability existed in mkbootroot and no code path ever
-	 * reached it -- which is why a wireless adapter needing
-	 * rtw88/rtw8822b_fw.bin had nowhere for that file to come from.
-	 */
-	firmware_dir[0] = '\0';
-	{
-		char firmware_version[IMAGE_VERSION_MAX];
-		char firmware_root[PATH_MAX];
-		struct stat firmware_st;
-
-		if (image_current_version(FIRMWARE_IMAGE, firmware_version, sizeof(firmware_version)) ==
-		    IMAGE_OK) {
-			image_version_rootfs_path(FIRMWARE_IMAGE, firmware_version, firmware_root,
-			                           sizeof(firmware_root));
-			if (snprintf(firmware_dir, sizeof(firmware_dir), "%s/lib/firmware", firmware_root) >=
-			    (int)sizeof(firmware_dir))
-				firmware_dir[0] = '\0';
-			else if (stat(firmware_dir, &firmware_st) != 0 || !S_ISDIR(firmware_st.st_mode))
-				firmware_dir[0] = '\0';
-		}
-		/*
-		 * Logged as its own entry rather than left to mkbootroot's
-		 * captured output, which is one long message the log store
-		 * truncates -- so "did this assembly stage firmware?" was not
-		 * answerable after the fact, and that question came up the
-		 * first time a booted host was missing its firmware.
-		 *
-		 * Both branches say something. Silence on the absent path
-		 * would leave the most likely cause of a firmware-less host
-		 * looking identical to a host that was never meant to have
-		 * any.
-		 */
-		if (firmware_dir[0] != '\0')
-			logstore_write("cixd", "info", "cix bootroot assembly: staging firmware from %s",
-			               firmware_dir);
-		else
-			logstore_write("cixd", "info",
-			               "cix bootroot assembly: no firmware to stage -- image \"%s\" has no "
-			               "current version, or no lib/firmware in it",
-			               FIRMWARE_IMAGE);
-	}
-
-	/*
-	 * #347: the kernel module tree, from the kernel-modules output of
-	 * the installed kernel hostbuild (ADR-0371), unpacked by the child
-	 * below. The kernel recipe runs modules_install, which runs depmod,
-	 * so what is staged here is a complete, dependency-indexed tree
-	 * (modules.dep and friends), not a bag of .ko files modprobe cannot
-	 * resolve. It used to be read from the kernel hostbuild's artifact
-	 * directory, which holds only the main package since the modules
-	 * became their own.
-	 *
-	 * This argument used to be a hardcoded "" whose comment said a
-	 * control-plane-only rebuild touches no module tree. That is the
-	 * same mistake firmware_dir above carried, for the same reason:
-	 * mkbootroot assembles a FRESH root every time, so whatever it is
-	 * not given, the resulting root does not have. The effect was that
-	 * no kernel module could load on any Cix host ever assembled --
-	 * GET /v1/system/kmod/e1000e answered "no such module
-	 * (not built/available)" because there was no tree to find it in.
-	 * A box whose drivers are all built in never notices; a bare-metal
-	 * box, whose NIC driver is a module and which has no shell to
-	 * repair itself with, is simply unreachable.
-	 *
-	 * The tree and the booting bzImage have to come from the same
-	 * build: modules are namespaced by kernel release
-	 * (lib/modules/<release>) and modprobe selects by uname -r, so a
-	 * mismatched release degrades to "module not found", while a
-	 * matching release built from a different config is refused with
-	 * "invalid module format". Neither fails the boot -- cixd loads no
-	 * module, so the slot confirms -- which is why the releases staged
-	 * here are recorded beside the root and do_system_update() pairs
-	 * the root with a kernel of that release (cix#568).
-	 */
-	modules_dir[0] = '\0';
-	if (out_have[ROOT_OUTPUT_KERNEL_MODULES] == 1)
-		snprintf(modules_dir, sizeof(modules_dir), "%s", out_probe[ROOT_OUTPUT_KERNEL_MODULES]);
-	if (modules_dir[0] != '\0')
-		logstore_write("cixd", "info", "cix bootroot assembly: staging kernel modules from %s",
-		               modules_dir);
-	else
-		logstore_write("cixd", "info",
-		               "cix bootroot assembly: no kernel modules to stage -- no kernel hostbuild "
-		               "is installed; nothing will be loadable on the assembled host");
-	/* cix#568: the releases this root's modules are for are read from
-	 * the unpacked tree when the assembly succeeds, since the child
-	 * unpacks it. */
-	snprintf(g_bootroot_assembly_modules_dir, sizeof(g_bootroot_assembly_modules_dir), "%s",
-	         modules_dir);
-
-	/*
-	 * #347: the module tools, resolved exactly the way firmware_dir
-	 * above is -- KMOD_IMAGE's own current version, one directory
-	 * deeper, because mkbootroot wants the directory whose files land
-	 * flat in usr/bin rather than the image rootfs.
-	 *
-	 * Staged even when modules_dir came back empty. They are two
-	 * independent capabilities: an operator can load a module by hand
-	 * from a tree this assembly did not produce, and "the tools are
-	 * missing" and "the tree is missing" are different diagnoses that
-	 * should not be collapsed into one silence.
-	 */
-	resolve_kmod_bin_dir(kmod_bin_dir, sizeof(kmod_bin_dir));
-	{
-		if (kmod_bin_dir[0] != '\0')
-			logstore_write("cixd", "info", "cix bootroot assembly: staging module tools from %s",
-			               kmod_bin_dir);
-		else
-			logstore_write("cixd", "info",
-			               "cix bootroot assembly: no module tools to stage -- image \"%s\" has "
-			               "no current version, or no usr/bin in it; modprobe will be absent from "
-			               "the assembled host",
-			               KMOD_IMAGE);
-	}
-
+	snprintf(g_bootroot_assembly_modules_dir, sizeof(g_bootroot_assembly_modules_dir),
+	         "%s/lib/modules", root_tree);
+	snprintf(g_bootroot_assembly_root_version, sizeof(g_bootroot_assembly_root_version), "%s",
+	         root_version);
+	logstore_write("cixd", "info", "cix bootroot assembly: sealing %s version %s", ROOT_IMAGE,
+	               root_version);
 
 	argv[0] = mkbootroot_bin;
-	argv[1] = stage_dir;
-	argv[2] = cixd_bin;
-	argv[3] = cixctl_bin;
-	argv[4] = web_dir;
-	argv[5] = out_squashfs;
-	argv[6] = firmware_dir;  /* "" if cix-firmware was never built on this box */
-	argv[7] = modules_dir;   /* "" if this box has no kernel artifact to take a tree from */
-	argv[8] = kmod_bin_dir;  /* "" if cix-kmod was never built on this box */
-	argv[9] = host_tools_dir; /* "" if cix-hosttools was never built on this box */
-	argv[10] = NULL;
+	argv[1] = root_tree;
+	argv[2] = out_squashfs;
+	argv[3] = stage_dir;
+	argv[4] = NULL;
 
 	/*
 	 * O_CLOEXEC on both ends, same reasoning as container_create()'s own
@@ -11001,18 +10868,9 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 		return;
 	}
 	if (pid == 0) {
-		int k;
-
 		if (output_pipe[1] >= 0) {
 			dup2(output_pipe[1], STDOUT_FILENO);
 			dup2(output_pipe[1], STDERR_FILENO);
-		}
-		/* The root's outputs (g_root_outputs), each unpacked where its
-		 * probe points; one whose optional owner is absent is skipped. */
-		for (k = 0; k < ROOT_OUTPUT_COUNT; k++) {
-			if (out_have[k] == 1 &&
-			    root_output_unpack(out_artifact[k], out_dir[k], out_probe[k]) != 0)
-				_exit(1);
 		}
 		execve(mkbootroot_bin, argv, environ);
 		perror("child: execve mkbootroot");
@@ -11053,6 +10911,147 @@ static void spawn_cix_bootroot_assembly(const char *artifact_dir)
 	g_bootroot_output.rd = output_pipe[0];
 	register_bootroot_output();
 	register_bootroot_assemble_pidfd(pid, pidfd);
+}
+
+/* ---------- ADR-0371 phase 3a: an assembly is asked for, then driven ----------
+ *
+ * The root is cix-root's current version, so a cix hostbuild finishing
+ * is no longer enough to assemble: the image must first hold that
+ * build's cixd and cixctl, and the kernel hostbuild's kernel-modules.
+ * bootroot_want() records that an assembly is wanted; bootroot_drive(),
+ * run at the end of every package job and every assembly, does the next
+ * step -- installs the first build cix-root lacks, or, once it holds
+ * them all and has settled (ADR-0374's rule), starts the assembly.
+ *
+ * Driven by the condition, never by one event: the cixd and cixctl jobs
+ * each record an image version, a slot can be busy, the image can be
+ * mid-roll for a library, and an install can fail. Re-reading the state
+ * at each step answers all of them the same way.
+ *
+ * The install is an explicit one (pkg_install_start(), the request
+ * trigger), so it moves cix-root's pins for cixd, cixctl and
+ * kernel-modules with it (ADR-0320). That is phase 3a's bridge: the
+ * owner chose to have cix followed like any entry (ADR-0371 decision
+ * B), and once cix-root follows it, the drain does this install and
+ * this function only waits.
+ */
+static int g_bootroot_wanted;
+/* The version each output's install was started at for the current
+ * want, so an install that ended without reaching it is refused rather
+ * than started again forever. */
+static char g_bootroot_tried[ROOT_OUTPUT_COUNT][PKG_VERSION_MAX];
+
+static void bootroot_set_waiting(const char *what)
+{
+	if (strcmp(g_bootroot_waiting, what) == 0)
+		return;
+	snprintf(g_bootroot_waiting, sizeof(g_bootroot_waiting), "%s", what);
+	events_announce(EV_getSystemAssembly); /* ADR-0339 */
+}
+
+/* The want ends with g_bootroot_assembly_refused saying why; a roll
+ * waiting for it stops with the same reason. */
+static void bootroot_refused(void)
+{
+	g_bootroot_wanted = 0;
+	g_bootroot_waiting[0] = '\0';
+	logstore_write("cixd", "error", "cix bootroot assembly: not started -- %s",
+	               g_bootroot_assembly_refused);
+	events_announce(EV_getSystemAssembly); /* ADR-0339 */
+	hostroll_assembly_done(0);
+}
+
+static void bootroot_drive(void)
+{
+	char version[PKG_VERSION_MAX];
+	char installed[PKG_VERSION_MAX];
+	char what[sizeof(g_bootroot_waiting)];
+	char started[PKG_NAME_MAX];
+	const char *name;
+	enum pkg_error perr;
+	pid_t pid;
+	int pidfd, chain_idx, k = 0, r;
+
+	if (!g_bootroot_wanted || g_bootroot_assembly_running)
+		return;
+	r = root_image_behind(&k, version, sizeof(version), g_bootroot_assembly_refused,
+	                      sizeof(g_bootroot_assembly_refused));
+	if (r < 0) {
+		bootroot_refused();
+		return;
+	}
+	if (!pkg_image_settled(ROOT_IMAGE)) {
+		snprintf(what, sizeof(what), "a package job in %s to finish", ROOT_IMAGE);
+		bootroot_set_waiting(what);
+		return;
+	}
+	if (r == 0) {
+		g_bootroot_wanted = 0;
+		g_bootroot_waiting[0] = '\0';
+		spawn_cix_bootroot_assembly();
+		if (!g_bootroot_assembly_running) {
+			if (g_bootroot_assembly_refused[0] == '\0')
+				snprintf(g_bootroot_assembly_refused, sizeof(g_bootroot_assembly_refused),
+				         "mkbootroot could not be started -- cixctl logs names why");
+			events_announce(EV_getSystemAssembly); /* ADR-0339 */
+			hostroll_assembly_done(0);
+		}
+		return;
+	}
+
+	name = g_root_outputs[k].name;
+	if (strcmp(g_bootroot_tried[k], version) == 0) {
+		snprintf(g_bootroot_assembly_refused, sizeof(g_bootroot_assembly_refused),
+		         "%s@%s did not install into %s -- cixctl pkg ls names why (ADR-0371)", name,
+		         version, ROOT_IMAGE);
+		bootroot_refused();
+		return;
+	}
+	perr = pkg_install_start(name, ROOT_IMAGE, version,
+	                         pkg_installed_version(name, ROOT_IMAGE, installed, sizeof(installed)) ==
+	                             0,
+	                         0, started, sizeof(started), &pid, &pidfd, &chain_idx);
+	if (perr == PKG_ERR_BUSY) {
+		/* Every slot is taken: the next job's end tries again. */
+		snprintf(what, sizeof(what), "a free package slot to install %s %s into %s", name,
+		         version, ROOT_IMAGE);
+		bootroot_set_waiting(what);
+		return;
+	}
+	if (perr != PKG_OK) {
+		const char *phrase;
+		char msg[200];
+
+		pkg_error_describe(perr, &phrase, msg, sizeof(msg));
+		snprintf(g_bootroot_assembly_refused, sizeof(g_bootroot_assembly_refused),
+		         "installing %s@%s into %s could not start: %s (ADR-0371)", name, version,
+		         ROOT_IMAGE, msg);
+		bootroot_refused();
+		return;
+	}
+	register_pkg_fetch_pidfd(pid, pidfd, chain_idx);
+	snprintf(g_bootroot_tried[k], sizeof(g_bootroot_tried[k]), "%s", version);
+	logstore_write("cixd", "info",
+	               "cix bootroot assembly: installing %s %s into %s first (ADR-0371)", name,
+	               version, ROOT_IMAGE);
+	snprintf(what, sizeof(what), "%s %s to install into %s", name, version, ROOT_IMAGE);
+	bootroot_set_waiting(what);
+}
+
+/*
+ * Ask for an assembly of this host's builds. Returns 0 when one is under
+ * way -- running, waiting on cix-root, or started now -- and -1 when it
+ * was refused (g_bootroot_assembly_refused says why) or could not start.
+ * Asked while one runs, it starts after that one: the running assembly
+ * may predate the build that asked.
+ */
+static int bootroot_want(void)
+{
+	g_bootroot_wanted = 1;
+	memset(g_bootroot_tried, 0, sizeof(g_bootroot_tried));
+	g_bootroot_assembly_refused[0] = '\0';
+	bootroot_drive();
+	return g_bootroot_wanted || g_bootroot_assembly_running ? 0 : -1;
 }
 
 /* ---------- ADR-0327: the host follows its own rolling packages ----------
@@ -11140,19 +11139,16 @@ static int hostroll_build(const char *name)
 
 static void hostroll_assemble(void)
 {
-	char artifact_dir[PATH_MAX];
-
-	/* A cix hostbuild starts its own assembly (pkg_completion_followup()). */
-	if (!g_bootroot_assembly_running) {
-		snprintf(artifact_dir, sizeof(artifact_dir), "%s/cix", ARTIFACTS_DIR);
-		spawn_cix_bootroot_assembly(artifact_dir);
-	}
-	if (!g_bootroot_assembly_running) {
-		hostroll_stop("error", "the root assembly could not start%s%s",
-		              g_bootroot_assembly_refused[0] != '\0' ? ": " : "", g_bootroot_assembly_refused);
-		return;
-	}
+	/*
+	 * Set first: a refusal stops the roll through hostroll_assembly_done(),
+	 * which acts only on a roll at this step. A cix hostbuild has already
+	 * asked for its own assembly (pkg_completion_followup()), and one
+	 * running with nothing wanted is that one; asking again would restart
+	 * its count of installs tried, or seal the same tree twice.
+	 */
 	g_hostroll.step = HOSTROLL_ASSEMBLE;
+	if (!g_bootroot_wanted && !g_bootroot_assembly_running)
+		bootroot_want();
 }
 
 /*
@@ -11196,7 +11192,11 @@ static void hostroll_assembly_done(int ok)
 	if (g_hostroll.step != HOSTROLL_ASSEMBLE)
 		return;
 	if (!ok) {
-		hostroll_stop("error", "the root assembly failed -- nothing was staged%s%s", "", "");
+		/* A refusal before any child says why; a failed mkbootroot logged
+		 * its own output. */
+		hostroll_stop("error", "the root assembly failed -- nothing was staged%s%s",
+		              g_bootroot_assembly_refused[0] != '\0' ? ": " : "",
+		              g_bootroot_assembly_refused);
 		return;
 	}
 	if (g_hostroll.stage_kernel)
@@ -27843,6 +27843,18 @@ static void op_getSystemAssembly(const struct api_ctx *ctx)
 		jw_str(&w, g_bootroot_assembly_refused);
 	else
 		jw_null(&w);
+	/* ADR-0371 phase 3a: what an asked-for assembly waits on, and which
+	 * cix-root version the last one that started sealed. */
+	jw_key(&w, "waiting_for");
+	if (g_bootroot_waiting[0] != '\0')
+		jw_str(&w, g_bootroot_waiting);
+	else
+		jw_null(&w);
+	jw_key(&w, "root_image_version");
+	if (g_bootroot_assembly_root_version[0] != '\0')
+		jw_str(&w, g_bootroot_assembly_root_version);
+	else
+		jw_null(&w);
 	/*
 	 * Reported whether or not the file exists yet: its absence is a
 	 * normal state (no assembly has run this boot), and a client that
@@ -27900,21 +27912,14 @@ static void op_getSystemAssembly(const struct api_ctx *ctx)
  * had not changed. `pkg hostbuild` answers an already-installed
  * version with 409, so there was no other way to ask for one.
  *
- * That is not a hypothetical: staging kernel modules (#347) needs the
- * assembly to run once under the daemon that knows how to stage them,
- * and reaching it cost a version number that existed for no other
- * reason.
- *
- * The same function the hostbuild path calls, with the same artifact
- * directory it would have passed. Nothing about assembly changes; it
- * simply becomes reachable.
+ * The same request the hostbuild path makes (bootroot_want()): since
+ * ADR-0371 phase 3a that may first install this host's builds into
+ * cix-root, so 202 means asked for, and `waiting_for` says what it
+ * waits on before mkbootroot starts.
  */
 static void op_postSystemAssembly(const struct api_ctx *ctx)
 {
-	char artifact_dir[PATH_MAX];
-	char mkbootroot_bin[PATH_MAX];
 	char bootroot_image[PATH_MAX];
-	struct stat st;
 	struct json_writer w;
 
 	/*
@@ -27928,37 +27933,12 @@ static void op_postSystemAssembly(const struct api_ctx *ctx)
 		              "an assembly is already running -- poll GET /v1/system/assembly");
 		return;
 	}
-
-	snprintf(artifact_dir, sizeof(artifact_dir), "%s/cix", ARTIFACTS_DIR);
-	/*
-	 * mkbootroot specifically, not the directory: ADR-0057 assembles
-	 * with THIS round's own freshly built binary, so an artifact
-	 * directory without one cannot be assembled from, and saying so
-	 * here is better than a fork that fails at execve() and reports
-	 * only through the log store.
-	 */
-	snprintf(mkbootroot_bin, sizeof(mkbootroot_bin), "%s/mkbootroot", artifact_dir);
-	if (stat(mkbootroot_bin, &st) != 0 || !S_ISREG(st.st_mode)) {
-		respond_error(ctx->fd, 404, "Not Found",
-		              "no cix artifact to assemble from -- this host has never completed a "
-		              "hostbuild of \"cix\"");
-		return;
-	}
-
-	spawn_cix_bootroot_assembly(artifact_dir);
-
-	/*
-	 * g_bootroot_assembly_running is the honest answer to "did it
-	 * start", because spawn_cix_bootroot_assembly() sets it only after
-	 * a fork that succeeded and logs the failure itself otherwise.
-	 */
-	if (!g_bootroot_assembly_running && g_bootroot_assembly_refused[0] != '\0') {
-		respond_error(ctx->fd, 409, "Conflict", g_bootroot_assembly_refused);
-		return;
-	}
-	if (!g_bootroot_assembly_running) {
-		respond_error(ctx->fd, 500, "Internal Server Error",
-		              "assembly could not be started -- see GET /v1/system/logs");
+	if (!g_bootroot_wanted && bootroot_want() != 0) {
+		if (g_bootroot_assembly_refused[0] != '\0')
+			respond_error(ctx->fd, 409, "Conflict", g_bootroot_assembly_refused);
+		else
+			respond_error(ctx->fd, 500, "Internal Server Error",
+			              "assembly could not be started -- see GET /v1/system/logs");
 		return;
 	}
 
@@ -27970,6 +27950,11 @@ static void op_postSystemAssembly(const struct api_ctx *ctx)
 	jw_int(&w, g_bootroot_assembly_started);
 	jw_key(&w, "completed_generation");
 	jw_int(&w, g_bootroot_assembly_completed);
+	jw_key(&w, "waiting_for");
+	if (g_bootroot_waiting[0] != '\0')
+		jw_str(&w, g_bootroot_waiting);
+	else
+		jw_null(&w);
 	snprintf(bootroot_image, sizeof(bootroot_image), "%s/cixd-root.squashfs", BOOTROOT_DIR);
 	jw_key(&w, "image_path");
 	jw_str(&w, bootroot_image);
@@ -38365,8 +38350,16 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 		fprintf(stderr, "cix bootroot assembly: failed\n");
 		logstore_write("cixd", "error", "cix bootroot assembly: failed");
 	}
-	/* ADR-0327: a host roll waiting for this root stages it, or stops. */
-	hostroll_assembly_done(g_bootroot_assembly_completed == g_bootroot_assembly_started);
+	/*
+	 * ADR-0371: an assembly asked for while this one ran may be for a
+	 * newer build than this root holds, so it goes next, and a host roll
+	 * waits for that one. Otherwise a roll waiting for this root stages
+	 * it, or stops (ADR-0327).
+	 */
+	if (g_bootroot_wanted)
+		bootroot_drive();
+	else
+		hostroll_assembly_done(g_bootroot_assembly_completed == g_bootroot_assembly_started);
 	close(cc->fd);
 	free(cc);
 }

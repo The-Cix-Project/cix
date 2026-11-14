@@ -1135,13 +1135,35 @@ paths:
                     nullable: true
                     description: >
                       Why the last assembly asked for was refused before
-                      it started, or null. A root takes /usr/bin/cixctl from
-                      the `cixctl` package the same cix build produced
-                      (ADR-0367), so a hostbuild that left none in the
-                      local cache cannot be assembled from, and
-                      `completed_generation` will not move. Cleared when
-                      an assembly starts; held in memory like the
-                      counters.
+                      it started, or null: the cix-root image does not
+                      exist, no cix hostbuild is installed, one of that
+                      build's packages did not install into cix-root, or
+                      the build's mkbootroot is missing (ADR-0371).
+                      `completed_generation` will not move for it.
+                      Cleared when an assembly is asked for again; held
+                      in memory like the counters.
+                  waiting_for:
+                    type: string
+                    nullable: true
+                    description: >
+                      What an assembly that has been asked for waits on
+                      before mkbootroot starts, or null. The root is the
+                      cix-root image's current version (ADR-0371 phase
+                      3a), so it starts only once that image holds the
+                      installed cix hostbuild's `cixd` and `cixctl` and
+                      the kernel hostbuild's `kernel-modules`, and no
+                      package job is in flight for it; the daemon
+                      installs any it lacks first, and this names the one
+                      under way.
+                  root_image_version:
+                    type: string
+                    nullable: true
+                    description: >
+                      The cix-root image version the last assembly that
+                      started sealed, or null when none has started this
+                      daemon lifetime. In memory like the counters, so it
+                      says what this daemon did, not what the file at
+                      `image_path` is.
                   image_path:
                     type: string
                     nullable: true
@@ -1202,12 +1224,14 @@ paths:
         it consumed a version number that existed for no other reason.
 
 
-        This runs the same assembly the hostbuild path runs, from the
-        same `cix` artifact directory, with the same arguments. Nothing
-        about how a root is assembled changes; it simply becomes
-        reachable. Returns immediately -- poll the GET above and wait
-        for `completed_generation` to pass the value you captured
-        before the call.
+        This asks for the same assembly the hostbuild path asks for.
+        Since ADR-0371 phase 3a the root is the cix-root image's
+        current version, so the daemon may first install the installed
+        hostbuilds' `cixd`, `cixctl` and `kernel-modules` into cix-root;
+        `waiting_for` says which. Returns immediately -- poll the GET
+        above and wait for `completed_generation` to pass the value you
+        captured before the call, or for `refused` to say why it will
+        not.
       operationId: postSystemAssembly
       x-cix-invalidates: [getSystemAssembly]
       x-cix-permission: system:write
@@ -1215,7 +1239,9 @@ paths:
       x-cix-expose: [cli]
       responses:
         "202":
-          description: Assembly started; poll GET /system/assembly
+          description: >
+            Assembly asked for: either started (`running`) or waiting on
+            cix-root (`waiting_for`); poll GET /system/assembly
           content:
             application/json:
               schema:
@@ -1227,24 +1253,18 @@ paths:
                     type: integer
                   completed_generation:
                     type: integer
+                  waiting_for:
+                    type: string
+                    nullable: true
                   image_path:
                     type: string
-        "404":
-          description: >
-            This host has never completed a hostbuild of `cix`, so
-            there is no artifact -- and in particular no freshly built
-            mkbootroot (ADR-0057) -- to assemble from.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "409":
           description: >
-            An assembly is already running, or the assembly was refused
-            because the `cixctl` package the installed cix hostbuild
-            produced is not in the local cache (ADR-0367); the error
-            names which, and GET /system/assembly reports the refusal as
-            `refused`.
+            An assembly is already running, or the assembly was refused:
+            the cix-root image does not exist, no cix hostbuild is
+            installed, or the build's mkbootroot is missing (ADR-0371).
+            The error names which, and GET /system/assembly reports the
+            refusal as `refused`.
           content:
             application/json:
               schema:

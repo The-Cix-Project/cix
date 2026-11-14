@@ -1018,15 +1018,17 @@ int main(void)
 			 * GET /v1/system/assembly as started_generation (#182);
 			 * this test read the old one until probe-cix-testreport@6-1.
 			 *
-			 * Asserted on the generation counter rather than on a
-			 * finished image: mkbootroot will fail here (no real
-			 * artifacts, no toolchain), and that is fine. The question
-			 * is whether the daemon even TRIED, which is precisely what
-			 * was lost.
+			 * Since ADR-0371 phase 3a an assembly is asked for and then
+			 * waits on the cix-root image. This test daemon has none, so
+			 * the request is refused naming it rather than started, and
+			 * `refused` naming cix-root is the proof that the daemon
+			 * asked. Either answer passes: a started_generation that
+			 * moved, or that refusal.
 			 */
 			{
 				long gen_before = -1;
 				long gen_after = -1;
+				int refused_for_root = 0;
 
 				memset(&r, 0, sizeof(r));
 				if (cix_client_request(&client, "GET", "/v1/system/assembly", NULL, &r) == 0 &&
@@ -1087,14 +1089,19 @@ int main(void)
 
 				memset(&r, 0, sizeof(r));
 				if (cix_client_request(&client, "GET", "/v1/system/assembly", NULL, &r) == 0 &&
-				    r.json != NULL)
-					gen_after =
-					    cache_json_long(r.json, "started_generation");
+				    r.json != NULL) {
+					const char *refused =
+					    json_as_string(json_object_get(r.json, "refused"));
+
+					gen_after = cache_json_long(r.json, "started_generation");
+					refused_for_root = refused != NULL && strstr(refused, "cix-root") != NULL;
+				}
 				cix_response_free(&r);
 
-				CHECK(gen_after > gen_before,
-				      "a cache-hit cix hostbuild still triggers the bootroot assembly "
-				      "(started_generation advanced past its pre-install value)");
+				CHECK(gen_after > gen_before || refused_for_root,
+				      "a cache-hit cix hostbuild still asks for the bootroot assembly "
+				      "(started_generation advanced, or the request was refused naming "
+				      "cix-root)");
 
 				wait_cache_field(&client, "entry_count", CACHE_EQ, 4);
 				memset(&r, 0, sizeof(r));

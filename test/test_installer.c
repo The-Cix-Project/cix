@@ -453,28 +453,9 @@ int main(void)
 	 * CWD -- never staged before, so the installed system's dashboard
 	 * 404'd on every request despite the REST API working fine; found
 	 * live, after a real install). */
-	{
-		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir, (char *)CIXD_BIN,
-			                     (char *)CIXCTL_BIN, "web", control_plane_squashfs,
-			                     "", /* no real GPU firmware needed for a boot test */
-			                     "", /* no kernel modules needed for a boot test */
-			                     "", /* no kmod tools needed for a boot test */
-			                     /*
-			                      * The host-tools root. "" used to mean "not needed for a boot
-			                      * test"; mkbootroot refuses it now, because a root with none of
-			                      * the programs the control plane executes cannot install a
-			                      * package or assemble its own successor (cix#350, and ADR-0307
-			                      * clause 6 before it for cbs alone). "/" is the truthful
-			                      * answer: ADR-0078 defines this argument as an image's
-			                      * installed rootfs, and the composed build container this test
-			                      * runs in IS one -- see test_boot.c, where the same change
-			                      * carries the full reasoning.
-			                      */
-			                     "/",
-			                     NULL };
-		if (run_subprocess(MKBOOTROOT_BIN, mkbootroot_argv) != 0)
-			return 1;
-	}
+	if (test_root_assemble(MKBOOTROOT_BIN, stage_dir, CIXD_BIN, CIXCTL_BIN, "web",
+	                       control_plane_squashfs) != 0)
+		return 1;
 
 	/* 2. The real, distributable installer .iso -- the same tool and the
 	 * same kind of artifact an operator would actually use, just with

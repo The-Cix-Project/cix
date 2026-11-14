@@ -61,7 +61,6 @@ SELFTESTS = \
 	$(BUILD)/test_pgpverify $(BUILD)/test_upstreamkeys $(BUILD)/test_srcdepth $(BUILD)/test_srcupstream $(BUILD)/test_srcpolicy $(BUILD)/test_srcresolve $(BUILD)/test_pipeline $(BUILD)/test_scheduler \
 	$(BUILD)/test_btrfs $(BUILD)/test_toolchain \
 	$(BUILD)/test_cix_init $(BUILD)/test_cixinit_table  \
-	$(BUILD)/test_bootroot_args \
 	$(DAEMON_SELFTESTS)
 
 #
@@ -750,9 +749,6 @@ $(BUILD)/test_jsondiff: test/test_jsondiff.c daemon/src/jsondiff.c daemon/src/js
 $(BUILD)/test_partlabel: test/test_partlabel.c daemon/src/partlabel.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include $^ -o $@
 
-$(BUILD)/test_bootroot_args: test/test_bootroot_args.c | $(BUILD)
-	$(CC) $(CFLAGS) $^ -o $@
-
 $(BUILD)/test_diskpart: test/test_diskpart.c test/test_image_fixture.c daemon/src/disk.c daemon/src/diskpart.c daemon/src/diskrole.c daemon/src/partlabel.c daemon/src/persist.c $(CLIENT_SRCS) | $(BUILD)
 	$(CC) $(CLIENT_CFLAGS) $^ -o $@
 
@@ -1217,26 +1213,30 @@ $(BUILD)/test_apigen: test/test_apigen.c $(BUILD)/apigen | $(BUILD)
 $(BUILD)/test_treecopy: test/test_treecopy.c daemon/src/treecopy.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_treecopy.c daemon/src/treecopy.c -o $@
 
-$(BUILD)/mkbootroot: image/src/mkbootroot.c test/test_image_fixture.c daemon/src/persist.c daemon/src/osrelease.c daemon/src/elfcheck.c src/btrfs.c $(BUILD)/version.h | $(BUILD)
+# test/test_root_tree.c and test/test_image_fixture.c are linked for one
+# release only: they build the tree for mkbootroot's legacy ten-argument
+# form, which the previous release's daemon still calls (ADR-0371 phase
+# 3a). The next release removes that form and these two sources.
+$(BUILD)/mkbootroot: image/src/mkbootroot.c test/test_root_tree.c test/test_image_fixture.c daemon/src/persist.c daemon/src/osrelease.c daemon/src/elfcheck.c src/btrfs.c $(BUILD)/version.h | $(BUILD)
 	$(CC) $(CFLAGS) -Itest -Idaemon/include -Ibuild $(filter %.c,$^) -o $@
 
 $(BUILD)/test_mkbootroot_firmware: test/test_mkbootroot_firmware.c | $(BUILD)
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/test_boot: test/test_boot.c test/test_disk_image.c test/test_image_fixture.c | $(BUILD)
-	$(CC) $(CFLAGS) -Itest $^ -o $@
+$(BUILD)/test_boot: test/test_boot.c test/test_disk_image.c test/test_image_fixture.c test/test_root_tree.c daemon/src/persist.c src/btrfs.c | $(BUILD)
+	$(CC) $(CFLAGS) -Itest -Idaemon/include $^ -o $@
 
-$(BUILD)/test_boot_ab: test/test_boot_ab.c test/test_disk_image.c test/test_image_fixture.c | $(BUILD)
-	$(CC) $(CFLAGS) -Itest $^ -o $@
+$(BUILD)/test_boot_ab: test/test_boot_ab.c test/test_disk_image.c test/test_image_fixture.c test/test_root_tree.c daemon/src/persist.c src/btrfs.c | $(BUILD)
+	$(CC) $(CFLAGS) -Itest -Idaemon/include $^ -o $@
 
-$(BUILD)/test_boot_update: test/test_boot_update.c test/test_disk_image.c test/test_image_fixture.c | $(BUILD)
-	$(CC) $(CFLAGS) -Itest $^ -o $@
+$(BUILD)/test_boot_update: test/test_boot_update.c test/test_disk_image.c test/test_image_fixture.c test/test_root_tree.c daemon/src/persist.c src/btrfs.c | $(BUILD)
+	$(CC) $(CFLAGS) -Itest -Idaemon/include $^ -o $@
 
-$(BUILD)/test_console_shell: test/test_console_shell.c test/test_disk_image.c test/test_image_fixture.c | $(BUILD)
-	$(CC) $(CFLAGS) -Itest $^ -o $@
+$(BUILD)/test_console_shell: test/test_console_shell.c test/test_disk_image.c test/test_image_fixture.c test/test_root_tree.c daemon/src/persist.c src/btrfs.c | $(BUILD)
+	$(CC) $(CFLAGS) -Itest -Idaemon/include $^ -o $@
 
-$(BUILD)/test_console_pki_bootstrap: test/test_console_pki_bootstrap.c test/test_disk_image.c test/test_image_fixture.c | $(BUILD)
-	$(CC) $(CFLAGS) -Itest $^ -o $@
+$(BUILD)/test_console_pki_bootstrap: test/test_console_pki_bootstrap.c test/test_disk_image.c test/test_image_fixture.c test/test_root_tree.c daemon/src/persist.c src/btrfs.c | $(BUILD)
+	$(CC) $(CFLAGS) -Itest -Idaemon/include $^ -o $@
 
 # kmod.c: cix-install loads the NIC drivers before listing interfaces
 # (#429 follow-on), through the same kmod_load() the daemon uses rather
@@ -1345,7 +1345,7 @@ $(BUILD)/dual_console_child: test/dual_console_child.c | $(BUILD)
 $(BUILD)/mkinstalleriso: image/src/mkinstalleriso.c test/test_image_fixture.c daemon/src/persist.c src/btrfs.c include/mkinstalleriso_args.h | $(BUILD)
 	$(CC) $(CFLAGS) -Itest -Idaemon/include image/src/mkinstalleriso.c test/test_image_fixture.c daemon/src/persist.c src/btrfs.c -o $@
 
-$(BUILD)/test_installer: test/test_installer.c test/test_disk_image.c test/test_image_fixture.c test/test_image_fixture_host.c | $(BUILD)
+$(BUILD)/test_installer: test/test_installer.c test/test_disk_image.c test/test_image_fixture.c test/test_image_fixture_host.c test/test_root_tree.c daemon/src/persist.c src/btrfs.c | $(BUILD)
 	$(CC) $(CFLAGS) -Itest -Idaemon/include $^ -o $@
 
 clean:

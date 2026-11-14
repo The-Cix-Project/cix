@@ -130,47 +130,15 @@ int main(void)
 	snprintf(config_img, sizeof(config_img), "%s/config.img", workdir);
 	snprintf(ovmf_vars, sizeof(ovmf_vars), "%s/OVMF_VARS.fd", workdir);
 
-	/* 1. Build the minimal control-plane root (build/mkbootroot already
-	 * reuses test_image_fixture_build() for the cixd+ld.so+libc
-	 * staging -- not reimplemented here). */
-	{
-		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir,
-			                     (char *)CIXD_BIN, (char *)CIXCTL_BIN, "web", root_squashfs,
-			                     "", /* no real GPU firmware needed for a boot test */
-			                     "", /* no kernel modules needed for a boot test */
-			                     "", /* no kmod tools needed for a boot test */
-			                     /*
-			                      * The host-tools root. This was "" with
-			                      * the note "no host-tools image needed
-			                      * for a boot test", which WAS true and
-			                      * stopped being true: mkbootroot now
-			                      * refuses an empty one outright --
-			                      * "a root with no /usr/bin/cbs cannot
-			                      * install any package built by a CBS
-			                      * recipe, itself included (ADR-0307
-			                      * clause 6)". Measured on
-			                      * 192.168.15.95, 2026-10-09 by
-			                      * probe-cix-bootest@4-1, where this
-			                      * test died in 22 ms on exactly that.
-			                      *
-			                      * "/" is a truthful answer rather than
-			                      * a placeholder: ADR-0078 defines this
-			                      * argument as an image's installed
-			                      * rootfs, and the composed build
-			                      * container this test runs in IS one --
-			                      * its declared tools put cbs,
-			                      * mksquashfs and btrfs exactly where
-			                      * mkbootroot looks for them. It also
-			                      * makes the test exercise the real
-			                      * assembly shape, with a root that
-			                      * carries a CPDL engine, instead of a
-			                      * shape mkbootroot no longer builds.
-			                      */
-			                     "/",
-			                     NULL };
-		if (run_subprocess(MKBOOTROOT_BIN, mkbootroot_argv) != 0)
-			return 1;
-	}
+	/* 1. Build the minimal control-plane root: a tree from this
+	 * container's own root, sealed by mkbootroot's three-argument form,
+	 * which is the call production makes with cix-root's tree. The
+	 * source was a "" host-tools root until mkbootroot began refusing
+	 * one with no cbs in it (probe-cix-bootest@4-1, 192.168.15.95,
+	 * 2026-10-09); "/" is truthful, since a composed build container's
+	 * root is an image's installed rootfs carrying the declared tools. */
+	if (test_root_assemble(MKBOOTROOT_BIN, stage_dir, CIXD_BIN, CIXCTL_BIN, "web", root_squashfs) != 0)
+		return 1;
 
 	/* 2. Throwaway raw disk: GPT, one ESP + one root partition. Part 1's
 	 * own scope boundary -- the real 5-partition A/B layout is part 3's

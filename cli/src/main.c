@@ -487,7 +487,10 @@ static const char USAGE_TEXT[] =
 	        "               this existed, assembly happened only as a side effect of a\n"
 	        "               hostbuild named cix completing, so re-assembling meant\n"
 	        "               inventing a version number whose code had not changed.\n"
-	        "               Returns immediately -- poll status for completed_generation\n"
+	        "               The root is the cix-root image (ADR-0371), so this may first\n"
+	        "               install the hostbuilds' cixd, cixctl and kernel-modules\n"
+	        "               there; status says what it is waiting for. Returns\n"
+	        "               immediately -- poll status for completed_generation\n"
 	        "               to pass what it read before the call\n"
 	        "  storage  -- real host block devices, including any partitions on them\n"
 	        "               (task #844); which one is the OS disk, a disk or a partition is\n"
@@ -9156,9 +9159,14 @@ static void fmt_assembly(const struct json_value *v)
 	       (long)json_as_number(json_object_get(v, "started_generation")));
 	printf("completed_generation: %ld\n",
 	       (long)json_as_number(json_object_get(v, "completed_generation")));
+	/* ADR-0371 phase 3a: what an asked-for assembly waits on in cix-root. */
+	if (json_str_field(v, "waiting_for") != NULL)
+		printf("waiting for:          %s\n", json_str_field(v, "waiting_for"));
 	/* ADR-0367: why the last assembly asked for never started. */
 	if (json_str_field(v, "refused") != NULL)
 		printf("refused:              %s\n", json_str_field(v, "refused"));
+	if (json_str_field(v, "root_image_version") != NULL)
+		printf("cix-root version:     %s\n", json_str_field(v, "root_image_version"));
 	printf("image_path:           %s\n", image_path != NULL ? image_path : "-");
 	/*
 	 * The generation counters are this daemon's memory of what it has
@@ -16767,6 +16775,10 @@ static int get_bootroot_assembly_generation(const struct cix_client *c, long *ou
 	*out_completed = (long)json_as_number(json_object_get(r.json, "completed_generation"));
 	jrunning = json_object_get(r.json, "running");
 	*out_running = jrunning != NULL && jrunning->type == JSON_BOOL && jrunning->u.boolean;
+	/* ADR-0371 phase 3a: an assembly waiting on cix-root has not started
+	 * and has not failed; it is in flight. */
+	if (json_as_string(json_object_get(r.json, "waiting_for")) != NULL)
+		*out_running = 1;
 	/* ADR-0367: why an assembly asked for never started, if it did not. */
 	if (out_refused != NULL) {
 		const char *refused = json_as_string(json_object_get(r.json, "refused"));

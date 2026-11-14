@@ -116,6 +116,22 @@ int config_partition_write(const char *disk_img, const char *img_path, long star
  * installer environment). */
 int build_squashfs(const char *image_root, const char *out_path);
 
+/*
+ * A control-plane root squashfs at out_squashfs, assembled the way
+ * production assembles one (ADR-0371 phase 3a): test_root_tree_build()
+ * stages a tree at <stage_dir>.tree from "/", and mkbootroot seals it
+ * through stage_dir with its three-argument form -- the same call
+ * spawn_cix_bootroot_assembly() makes with the cix-root image's tree.
+ *
+ * "/" is the source because these tests run in a composed build
+ * container (or on a Cix host), whose root carries the declared Cix
+ * packages: cbs, mksquashfs, btrfs-progs and the rest of what the
+ * control plane executes. No firmware, kernel modules or kmod tools:
+ * none is needed to boot under QEMU.
+ */
+int test_root_assemble(const char *mkbootroot_bin, const char *stage_dir, const char *cixd_bin,
+                       const char *cixctl_bin, const char *web_dir, const char *out_squashfs);
+
 enum qemu_boot_outcome {
 	QEMU_BOOT_SUCCESS, /* success_marker appeared in the captured output */
 	QEMU_BOOT_PANIC,   /* panic_marker appeared in the captured output */

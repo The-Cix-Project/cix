@@ -13,18 +13,9 @@ openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 7300 \
 openssl x509 -in image/keys/cix-signing.crt -outform DER -out image/keys/cix-signing.cer
 ```
 
-## One-time (optional): AMD GPU firmware, for GPU passthrough
+## GPU firmware, for GPU passthrough
 
-Only needed if you plan to grant a `gpu:N` device to a container (ADR-0028/ADR-0029) — skip this and pass `""` below otherwise. Not vendored into this repo (redistribution/size); fetched fresh from upstream `linux-firmware`, sparse-checked-out to just the `amdgpu/` subtree so only that vendor's blobs (a few hundred MB, not the full multi-vendor firmware set) are actually downloaded:
-
-```sh
-git clone --filter=blob:none --sparse \
-    https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git \
-    /tmp/linux-firmware
-cd /tmp/linux-firmware && git sparse-checkout set amdgpu
-```
-
-This gives you `/tmp/linux-firmware/amdgpu` — pass that path as `mkbootroot`'s 6th argument below. The kernel's own `CONFIG_DRM_AMDGPU`/`CONFIG_HSA_AMD` drivers load these at boot-time driver-probe, before any container exists, so they have to live on the host root itself, not a container image.
+Only needed if you plan to grant a `gpu:N` device to a container (ADR-0028/ADR-0029). The kernel's own `CONFIG_DRM_AMDGPU`/`CONFIG_HSA_AMD` drivers load firmware at driver probe, before any container exists, so it has to live in the host root itself, not a container image. Since ADR-0371 phase 3a the host root is the `cix-root` image's tree, so firmware reaches it the way `rtw88-firmware` does: as a package installed in `cix-root`. No package carries the `amdgpu/` blobs yet; it is a recipe like `rtw88-firmware`'s, taking that subtree of upstream `linux-firmware`. Before phase 3a, `mkbootroot` took a firmware directory as an argument, and this section fetched one by hand.
 
 ## Building the ISO
 
@@ -33,11 +24,7 @@ This section covers the dev-machine path (`mkbootroot`/`mkinstalleriso` run by h
 Once `build/cixd`, `build/cixctl`, `build/cix-install`, `build/cix-recover`, `build/cix-boot.efi`, `build-inputs/bzImage`, and the signing key above all exist:
 
 ```sh
-sudo build/mkbootroot /tmp/root_stage build/cixd build/cixctl web /tmp/cixd-root.squashfs \
-     /tmp/linux-firmware/amdgpu \
-     /path/to/kernel-hostbuild-artifact/lib/modules \
-     /path/to/kmod-usr-bin \
-     /path/to/host-tools-rootfs
+sudo build/mkbootroot /path/to/cix-root-rootfs /tmp/cixd-root.squashfs /tmp/root_stage
 sudo build/mkinstalleriso build/iso_stage build/cix-install build/cix-recover \
      build/cix-boot.efi build-inputs/bzImage \
      /tmp/cixd-root.squashfs \
@@ -51,15 +38,11 @@ sudo build/mkinstalleriso build/iso_stage build/cix-install build/cix-recover \
      <gpt-disk-guid>
 ```
 
-`mkbootroot` takes nine arguments. Three of the last four may be `""`; the fourth may not:
-
-- **firmware root**: the GPU firmware above; `""` skips it.
-- **modules dir** and **kmod bin dir**: see **Kernel modules** below; `""` skips them.
-- **host-tools rootfs**: the rootfs of the `cix-hosttools` image (ADR-0078). **Required** — every program and every library in the root comes from it, and `""` is refused, because a root with no `cbs` cannot install a package and a root with no `mksquashfs` cannot assemble its own successor. It was a tolerant default until cix#350 ([ADR-0337](../adr/0337-the-root-is-derived-from-one-list-with-no-build-host-fallback.md)), and what the fallback actually did was copy the assembling host's own files — which on a Cix host is the running control-plane root, so each assembly carried the previous one's forward indefinitely.
+`mkbootroot` takes three arguments: an image tree, the squashfs to write, and a staging directory. The tree is the rootfs of a `cix-root` image version ([ADR-0371](../adr/0371-the-control-plane-root-is-one-image.md)): on a host, `image_version_rootfs_path()` of its current version, which is what `cixd` passes. Every program, library and file in the root comes from that image's packages, the firmware and the kernel's module tree included; `mkbootroot` copies it, adds the mount points, an empty `/etc/resolv.conf` and `/etc/os-release`, and refuses to seal a tree missing `cixd`, `cix-init`, the dashboard, a program `include/controlplane_programs.h` lists, or a library something in it needs. It runs the tree's own `mksquashfs`. Before ADR-0371 phase 3a it took nine arguments naming a host-tools rootfs, firmware, a module tree and module tools separately, and assembled them; the release that introduced the three-argument form still accepts the nine, for the daemon that builds it, and the next one does not.
 
 `mkinstalleriso` takes sixteen. The last five are worth a word. **isotools-root** is a rootfs with the ISO toolchain's packages installed: on a host, the `iso-builder` image's ([ADR-0358](../adr/0358-the-installer-iso-is-built-from-the-iso-builder-image.md)). `mkinstalleriso` reads `grub-mkrescue`, `xorriso`, `sbsign`, `mokutil`, shim, `mkfs.fat` and their libraries at their package paths beneath it. It is an argument because the control-plane root carries none of them.
 
-**kernel-modules-dir** and **kmod-bin-dir** are the same two inputs `mkbootroot` takes, and here they supply the installer's NIC drivers (#429). The six NIC drivers this platform supports are kernel *modules*, so without them `cix-install` can list only interfaces whose driver is built into the kernel, which in practice is `virtio_net` alone. Only the NIC modules and their dependency closure are staged, read from the tree's own `modules.dep` (`ixgbe`, `r8169` and `tg3` all pull in `libphy`/`mdio_bus`), plus `modprobe` to load them. With both `""` the media still installs on virtio, and `cix-install` says on screen which of the two it lacks.
+**kernel-modules-dir** and **kmod-bin-dir** are a kernel hostbuild's module tree and an image's `kmod` tools, and here they supply the installer's NIC drivers (#429). The six NIC drivers this platform supports are kernel *modules*, so without them `cix-install` can list only interfaces whose driver is built into the kernel, which in practice is `virtio_net` alone. Only the NIC modules and their dependency closure are staged, read from the tree's own `modules.dep` (`ixgbe`, `r8169` and `tg3` all pull in `libphy`/`mdio_bus`), plus `modprobe` to load them. With both `""` the media still installs on virtio, and `cix-install` says on screen which of the two it lacks.
 
 **seed** is optional (`""` for none) and is what makes a freshly installed box able to run a container without a network: a directory of `recipes/` and `artifacts/` copied onto the installed system's own package directories, from which the daemon installs a C library into the default image at first boot (#189). Without it, a fresh install comes up healthy but its default image has no C library, and `POST /v1/containers` refuses with a message naming what to install.
 
@@ -85,7 +68,7 @@ Supply real values in that argument instead to build media that installs one spe
 
 **Why an interface name at all**: this is a one-time bootstrap value, used to attach a physical NIC to the network `cixd`'s management address sits on at first boot. It does *not* need to be perfect. That network is an ordinary, API-managed network afterward (`GET /v1/networks`), and its interfaces can be changed without reinstalling.
 
-**Kernel modules** (ADR-0061): the modules-dir and kmod-bin-dir arguments stage a kernel module tree and `kmod`'s tools onto the installed system, so `cixd`'s boot-time `modprobe` (a curated set of common NICs; see the ADR) has something to load on hardware whose driver is not built into the kernel. Both come from Cix build artifacts: `/path/to/kernel-hostbuild-artifact/lib/modules` is the `kernel` package's hostbuild output (`cixctl pkg hostbuild kernel --wait`, see [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md)); `/path/to/kmod-usr-bin` is the `usr/bin` of an image carrying the `kmod` package (`kmod`, `modprobe`, `depmod`, …), such as `cix-kmod`. Pass `""` for both for a QEMU/CI boot test, where nothing needs a driver module.
+**Kernel modules** (ADR-0061): the installed system's module tree and `kmod`'s tools are packages in the `cix-root` image -- `kernel-modules`, an output of the `kernel` recipe, and `kmod` -- so they are in the root `mkbootroot` seals, and `cixd`'s boot-time `modprobe` (a curated set of common NICs; see the ADR) has something to load on hardware whose driver is not built into the kernel. `mkinstalleriso`'s two module arguments are for the installer itself: `/path/to/kernel-hostbuild-artifact/lib/modules` is the `kernel-modules` package's tree for the hostbuilt kernel (`cixctl pkg hostbuild kernel --wait`, see [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md)); `/path/to/kmod-usr-bin` is the `usr/bin` of an image carrying the `kmod` package, such as `cix-kmod`. Pass `""` for both for a QEMU/CI boot test, where nothing needs a driver module.
 
 **Target disk**: **VirtIO Block** (`/dev/vda`), **VirtIO SCSI** and **SATA/PATA** (`/dev/sda`) disks work, as do NVMe (`/dev/nvme0n1`) and software RAID (`/dev/mdN`). The kernel config (`image/kernel/qemu-part1.config`) builds in `CONFIG_SCSI_VIRTIO` and the common hardware RAID/HBA drivers, since a kernel with no initramfs cannot load a module off a disk it cannot yet see.
 

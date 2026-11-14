@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The control-plane root is the cix-root image's tree (ADR-0371 phase 3a, 0.2.57-681)
+
+- **Before:** `mkbootroot` took ten arguments and assembled the root from three images (`cix-hosttools` for programs and libraries, `cix-firmware`, `cix-kmod`) plus the `cixd`, `cixctl` and `kernel-modules` outputs, which the assembly unpacked itself. Phase 3's comparison (2026-11-13, #350) found `cix-root` carries the same files.
+- **Now:** `mkbootroot <tree> <out.squashfs> <staging>` seals one tree. `cixd` passes `cix-root`'s current version. `mkbootroot` adds the mount points, an empty `/etc/resolv.conf` and `/etc/os-release`, and keeps the seals, plus a new `verify_controlplane_files()`. It runs the tree's own `mksquashfs`.
+- **An assembly is asked for, then driven:**
+  - a cix hostbuild, `POST /v1/system/assembly` and the host roll call `bootroot_want()`;
+  - `bootroot_drive()`, at the end of every package job and assembly, installs the first of the hostbuilds' `cixd`, `cixctl` and `kernel-modules` that `cix-root` lacks, as an explicit install that moves the pin;
+  - it starts `mkbootroot` only when `cix-root` holds all three at the installed hostbuild versions and has settled.
+  
+  `GET /v1/system/assembly` gains `waiting_for` and `root_image_version`. `refused` names a missing `cix-root`, a missing cix hostbuild, an install that did not land, or a missing `mkbootroot`. `cixctl assembly status` prints both new fields, and `--deploy` waits through `waiting_for`. The explicit install bridges to decision B, where `cix` is followed. ADR-0371 records why.
+- **One release takes both forms.** 680's daemon assembles 681 with ten arguments, so 681's `mkbootroot` still accepts them. It builds a tree from the host-tools root with `test_root_tree_build()`, which is the old staging moved into `test/test_root_tree.c`, and seals it the new way. 681 therefore boots on a legacy-shape root, and the first one-image root is 682's.
+- **Tests:** the boot tests build a fixture tree from `/` and call the three-argument form through `test_root_assemble()`. `test_console_pki_bootstrap` keeps the ten-argument form for this release.
+  - `test_bootroot_args` is removed: it guarded `argv[6..9]` at the call site, which no longer exists.
+  - `test_pkg_cache` accepts a refusal naming `cix-root` as proof that a cache-hit cix hostbuild asked for an assembly.
+- **Docs:** building-cix.md now describes `cix-root` in place of `cix-hosttools` and `cix-firmware`. installing.md documents the three-argument form. GPU firmware becomes a `cix-root` package that does not exist yet.
+
 ### The boot tests write their disk images on disk, not in the build budget (0.2.57-680)
 
 - **The defect:** test_boot, test_boot_ab, test_boot_update, test_console_shell and test_console_pki_bootstrap made their workdirs in `/tmp`. In a build container that is a tmpfs counted against the shared build memory budget, and each workdir holds a disk image and two squashfs roots.

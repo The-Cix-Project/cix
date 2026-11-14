@@ -130,10 +130,19 @@ int main(void)
 	snprintf(config_img, sizeof(config_img), "%s/config.img", workdir);
 	snprintf(ovmf_vars, sizeof(ovmf_vars), "%s/OVMF_VARS.fd", workdir);
 
+	/*
+	 * Deliberately mkbootroot's ten-argument form, the one the previous
+	 * release's daemon calls to assemble this release's root (ADR-0371
+	 * phase 3a). Every other boot test uses the three-argument form
+	 * through test_root_assemble(); this one keeps the legacy path booted
+	 * under QEMU for the release that still has it, and moves over when
+	 * the next release removes it. The last argument is the host-tools
+	 * root: see test_boot.c's history of it.
+	 */
 	{
 		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir,
 			                     (char *)CIXD_BIN, (char *)CIXCTL_BIN, "web", root_squashfs,
-			                     "", "", "", "/", NULL }; /* host-tools root: see test_boot.c */
+			                     "", "", "", "/", NULL };
 		if (run_subprocess(MKBOOTROOT_BIN, mkbootroot_argv) != 0)
 			return 1;
 	}

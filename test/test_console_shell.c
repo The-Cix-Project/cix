@@ -163,18 +163,8 @@ int main(void)
 	snprintf(config_img, sizeof(config_img), "%s/config.img", workdir);
 	snprintf(ovmf_vars, sizeof(ovmf_vars), "%s/OVMF_VARS.fd", workdir);
 
-	{
-		char *mkbootroot_argv[] = { (char *)MKBOOTROOT_BIN, stage_dir,
-			                     (char *)CIXD_BIN, (char *)CIXCTL_BIN, "web", root_squashfs,
-			                     /* firmware, modules, kmod tools: none needed here. The last is
-			                      * the host-tools root, and "/" rather than "" because mkbootroot
-			                      * refuses a root with none of the programs the control plane
-			                      * executes (cix#350); this test runs on a Cix host or in a
-			                      * composed build container, and both are host-tools roots. */
-			                     "", "", "", "/", NULL };
-		if (run_subprocess(MKBOOTROOT_BIN, mkbootroot_argv) != 0)
-			return 1;
-	}
+	if (test_root_assemble(MKBOOTROOT_BIN, stage_dir, CIXD_BIN, CIXCTL_BIN, "web", root_squashfs) != 0)
+		return 1;
 
 	{
 		int fd = open(disk_img, O_CREAT | O_WRONLY, 0644);
