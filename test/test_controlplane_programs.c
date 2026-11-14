@@ -39,7 +39,6 @@ static const char *const scan_dirs[] = {
 
 static const char *const scan_files[] = {
 	"image/src/mkbootroot.c", "image/src/mkinstalleriso.c", "test/test_image_fixture.c",
-	"test/test_root_tree.c",
 };
 
 static int g_found; /* executed paths seen, the control against an empty scan */

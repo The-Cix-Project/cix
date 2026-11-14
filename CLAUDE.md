@@ -518,7 +518,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **A consumer whose target revision has no record yet is judged by its installed revision's record** (ADR-0373 release D). So a provider waits for its consumer's rebuild rather than moving ahead of one that may never build.
 - **The author is derived, never queued** (ADR-0373 decision 4). `pkg_abi_author_next()` writes a rebuild revision of a consumer when its newest revision's record names an ABI that the provider's newest installed version no longer offers. That installed version is what a rebuild composes. It runs from discovery's author stage and after a package declaring an ABI installs, one commit at a time. Never add a queue of pending rebuilds beside the recipes and the installed set.
 
-## The control-plane root is one image (accepted; phase 3a in 0.2.57-681, 3b next)
+## The control-plane root is one image (accepted; phase 3 in 0.2.57-681 and -682, phase 4 next)
 
 **The root becomes the current version of one image, `cix-root`, plus mount points, `resolv.conf` and `os-release`** -- [ADR-0371](docs/adr/0371-the-control-plane-root-is-one-image.md), accepted by the owner on 2026-11-03 for #350. It supersedes ADR-0291, which was never accepted.
 
@@ -530,7 +530,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
   - **the CLIs and terminfo are split out of curl, openssl, pkgconf, xz and ncurses too**, reversing the 11-03 rule that kept them in the main package. A library package's main output carries runtime libraries only. An image that runs one of those tools declares its tool output, and a build gets it through ADR-0372.
 - **The root is `cix-root`'s current version** (phase 3a). A package the root needs goes into `cix-root`'s recipe, never into `cix-hosttools`, `cix-firmware` or `cix-kmod`, which no assembly reads any more. `mkbootroot <tree> <out> <staging>` adds only the mount points, `/etc/resolv.conf` and `/etc/os-release`. Never add an input argument to it, or an image whose only job is feeding the root. `controlplane_programs.h` stays as a gate over the result, not as a source of content.
 - **An assembly is asked for, then driven** (`bootroot_want()`, `bootroot_drive()`). It starts only when `cix-root` holds the installed `cix` hostbuild's `cixd` and `cixctl` and the `kernel` hostbuild's `kernel-modules` (`root_image_behind()`), and nothing is in flight for it. The daemon installs any it lacks first, as an explicit install that moves the pins. That install is a bridge until `cix` is followed (decision B), not the design. Never start `mkbootroot` around that guard.
-- **One release accepts both forms.** 681's `mkbootroot` still takes 680's ten arguments, through `test/test_root_tree.c`, so 681 boots on a legacy-shape root. 3b removes that form, the link and `test_mkbootroot_firmware`; `test_console_pki_bootstrap` then moves to the three-argument form.
+- **681 was the one release that took both forms.** Its `mkbootroot` still took 680's ten arguments, through `test/test_root_tree.c`, so 681 booted a legacy-shape root. 682 (phase 3b) removed that form and `test_mkbootroot_firmware`; its root is the first sealed from cix-root's tree. `test/test_root_tree.c` now serves only the boot tests, which seal a tree built from "/" with the three-argument form.
 
 ## The installer ISO's tools come from the iso-builder image
 

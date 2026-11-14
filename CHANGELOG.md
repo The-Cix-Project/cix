@@ -6,6 +6,15 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### mkbootroot takes one form, and the first root sealed from cix-root boots (ADR-0371 phase 3b, 0.2.57-682)
+
+- **Removed:**
+  - `mkbootroot`'s ten-argument form, which 0.2.57-681 kept for the 680 daemon that assembled it;
+  - `mkbootroot`'s link to `test/test_root_tree.c` and `test/test_image_fixture.c`;
+  - `test_mkbootroot_firmware`, which gated that form for 681's release only.
+- **Moved:** `test_console_pki_bootstrap` now seals its fixture tree through `test_root_assemble()`, like the other boot tests.
+- **Effect:** 681's daemon assembles 682 by installing 682's `cixd` and `cixctl` into `cix-root` and sealing its tree. 682 is the first release that boots a root which is `cix-root`'s tree.
+
 ### The control-plane root is the cix-root image's tree (ADR-0371 phase 3a, 0.2.57-681)
 
 - **Before:** `mkbootroot` took ten arguments and assembled the root from three images (`cix-hosttools` for programs and libraries, `cix-firmware`, `cix-kmod`) plus the `cixd`, `cixctl` and `kernel-modules` outputs, which the assembly unpacked itself. Phase 3's comparison (2026-11-13, #350) found `cix-root` carries the same files.

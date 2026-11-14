@@ -14,18 +14,8 @@
  * programs(), require_dlopened_libs() and verify_root_closure() read the
  * assembled tree, never a list of what was meant to be in it.
  *
- * ONE RELEASE ONLY, it also takes the old ten arguments:
- *
- *   mkbootroot <staging-dir> <cixd> <cixctl> <web-dir> <out.squashfs>
- *              <firmware-root> <modules-dir> <kmod-bin-dir> <host-tools-rootfs>
- *
- * The daemon that assembles release K is always release K-1, so K's tool
- * must take K-1's call. That form builds a tree from the host-tools root
- * with test_root_tree_build() and seals it exactly as above. Release
- * K+1, assembled by a daemon that speaks the three-argument form, drops
- * it, and with it this file's link to test/test_root_tree.c and
- * test/test_image_fixture.c (ADR-0371; the same one-release rule as the
- * handover record's format, ADR-0375).
+ * Phase 3a's release (0.2.57-681) also took the old ten arguments, for
+ * the daemon that assembled it; phase 3b removed them (ADR-0371).
  */
 #include "osrelease.h"
 #include "persist.h"
@@ -34,7 +24,6 @@
 #include "btrfs.h"
 #include "controlplane_programs.h"
 #include "elfcheck.h"
-#include "test_root_tree.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -775,40 +764,10 @@ static int assemble_from_tree(const char *tree, const char *out_path, const char
 	return 0;
 }
 
-/* The ten-argument form, for one release (see the top of this file). */
-static int assemble_legacy(char **argv)
-{
-	char tree[PATH_MAX];
-	int rc;
-
-	if (snprintf(tree, sizeof(tree), "%s.tree", argv[1]) >= (int)sizeof(tree)) {
-		fprintf(stderr, "path too long: %s.tree\n", argv[1]);
-		return 1;
-	}
-	rc = test_root_tree_build(tree, argv[2], argv[3], argv[4], argv[6], argv[7], argv[8],
-	                          argv[9]) != 0
-	         ? 1
-	         : assemble_from_tree(tree, argv[5], argv[1]);
-	/*
-	 * Gone whether or not the seal worked: the next release has no code
-	 * that knows this directory exists, so one left here would sit in
-	 * BOOTROOT_DIR for good.
-	 */
-	if (persist_remove_tree(tree) != 0)
-		fprintf(stderr, "could not remove %s: %s\n", tree, strerror(errno));
-	return rc;
-}
-
 int main(int argc, char **argv)
 {
 	if (argc == 4)
 		return assemble_from_tree(argv[1], argv[2], argv[3]);
-	if (argc == 10)
-		return assemble_legacy(argv);
-	fprintf(stderr,
-	        "usage: %s <image-rootfs> <out.squashfs> <staging-dir>\n"
-	        "       (the ten-argument form is accepted for one release only, for the daemon "
-	        "that builds this release -- ADR-0371 phase 3a)\n",
-	        argv[0]);
+	fprintf(stderr, "usage: %s <image-rootfs> <out.squashfs> <staging-dir>\n", argv[0]);
 	return 2;
 }

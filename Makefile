@@ -297,28 +297,20 @@ FLOOR_SELFTESTS = \
 # on disk: it writes gigabytes, and a build container's /tmp is a tmpfs
 # counted against the build memory budget.
 #
-# test_mkbootroot_firmware joined for ADR-0371 phase 3a's release only.
-# 680's daemon assembles 681 with mkbootroot's ten-argument form, passing
-# real firmware, module and kmod directories, and this is the one test
-# that drives that form with all three non-empty. It was excluded on the
-# grounds that it needs the nine host tools and a working mksquashfs in
-# "/"; every boot test needs exactly that now, since mkbootroot refuses
-# a root without them. 3b removes the form and this test with it.
-#
 BOOT_SELFTESTS = \
 	$(BUILD)/test_boot \
 	$(BUILD)/test_boot_ab \
 	$(BUILD)/test_boot_update \
 	$(BUILD)/test_console_shell \
 	$(BUILD)/test_console_pki_bootstrap \
-	$(BUILD)/test_installer \
-	$(BUILD)/test_mkbootroot_firmware
+	$(BUILD)/test_installer
 #
 # Two tests were in this list and are deliberately NOT, because they
 # fail in a composed build container for reasons that are not defects.
 # Recorded rather than silently dropped, since "why isn't this in the
 # gate" is the question someone will ask. (A third, test_mkbootroot_
-# firmware, was excluded with them and is back for one release, above.)
+# firmware, drove mkbootroot's ten-argument form; it gated phase 3a's
+# release and went with that form in phase 3b, ADR-0371.)
 #
 #   test_harness  creates a real overlay mount and namespaces. It
 #       includes container.h and is a container-runtime test; my
@@ -542,7 +534,7 @@ testreport: all
 
 .PHONY: all clean aggressive
 
-all: $(BUILD)/cix-init $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_container_pty $(BUILD)/pty_child $(BUILD)/cixd $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/cixctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_slow_client $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_network_interfaces $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_ntp $(BUILD)/test_ldap $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_mkbootroot_firmware $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/cix-install $(BUILD)/cix-recover $(BUILD)/test_dual_console $(BUILD)/dual_console_child $(BUILD)/console_term_child $(BUILD)/console_input_child $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/test_console_pki_bootstrap $(BUILD)/test_console_exec $(BUILD)/test_container_lifecycle $(BUILD)/output_child $(BUILD)/stats_child $(BUILD)/ticker_child $(BUILD)/test_container_stats $(BUILD)/test_handover $(BUILD)/test_disk_quota $(BUILD)/test_diskpart $(BUILD)/test_sysctl $(BUILD)/test_kmod $(BUILD)/test_kmod_build $(BUILD)/test_routes $(BUILD)/test_management_address $(BUILD)/test_pkg_build_log $(BUILD)/test_pkg_concurrent_stress $(BUILD)/test_pkg_sync $(BUILD)/test_pkg_cache $(BUILD)/test_image_recipe $(BUILD)/test_container_recipe $(BUILD)/test_rolling_restart $(BUILD)/syslog_recv_child $(BUILD)/test_syslogfwd $(BUILD)/test_hostproc $(BUILD)/test_tls_throttle $(BUILD)/test_https_chain $(BUILD)/test_layout_upgrade $(BUILD)/test_treecopy $(BUILD)/test_logread $(BUILD)/test_storage_placement $(BUILD)/test_backup_config $(BUILD)/test_container_dns_servers $(BUILD)/test_hostauth $(BUILD)/test_device_hotplug $(BUILD)/test_subid $(BUILD)/test_volume $(BUILD)/volume_child $(BUILD)/test_userns_run $(BUILD)/run_child $(BUILD)/test_factory_reset $(BUILD)/test_boot_console $(BUILD)/test_signing_keys $(BUILD)/test_stallwatch $(BUILD)/test_stallwatch_steps $(BUILD)/test_logread_live $(BUILD)/test_kernelpolicy $(BUILD)/test_dhcp $(BUILD)/test_artifact_export $(BUILD)/test_esp $(BUILD)/test_btrfs $(BUILD)/test_direct_rootfs $(BUILD)/test_childdiag $(BUILD)/test_bzimage $(BUILD)/apigen $(BUILD)/test_apigen $(BUILD)/test_apiroute $(BUILD)/test_api_surfaces $(BUILD)/test_apishape $(BUILD)/test_events $(BUILD)/test_docindex $(BUILD)/test_web_vt $(BUILD)/test_web_palette $(BUILD)/test_web_syntax $(BUILD)/test_web_form $(BUILD)/test_secrets $(BUILD)/test_curl_guards $(BUILD)/test_timebounds $(BUILD)/test_procfuse $(BUILD)/test_lint $(BUILD)/test_naming $(BUILD)/test_announce $(BUILD)/test_events_drift $(BUILD)/test_disksnap $(BUILD)/test_recipe_docs $(BUILD)/test_pkicrypto $(BUILD)/test_trustanchor $(BUILD)/test_forgecommit $(BUILD)/test_pkgsource $(BUILD)/test_pkgrepo $(BUILD)/test_catalogue $(BUILD)/test_srcgitea $(BUILD)/test_srcrecord $(BUILD)/test_srctrust $(BUILD)/test_pkgbad $(BUILD)/test_upstreamkeys $(BUILD)/test_versioning $(BUILD)/test_http_put $(BUILD)/test_osrelease $(BUILD)/test_json $(BUILD)/test_jsondiff $(BUILD)/test_cbsrecipe $(BUILD)/test_cbsevents $(BUILD)/test_devicestate $(BUILD)/test_kmodpolicy $(BUILD)/test_mcp $(BUILD)/test_mcp_exposure $(BUILD)/test_mcp_gateway $(BUILD)/test_devicematch $(BUILD)/test_nsswitch $(BUILD)/test_nicreport $(BUILD)/test_mkinstalleriso_args $(BUILD)/test_controlplane_programs $(BUILD)/test_blocking_waits $(BUILD)/test_startup_steps $(BUILD)/test_handover_record $(BUILD)/test_rootswitch $(BUILD)/test_listenbind $(BUILD)/test_bootorder $(BUILD)/test_pkg_finalize $(BUILD)/test_fresh_output_dir $(BUILD)/test_datadir $(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc $(BUILD)/test_releasekey $(BUILD)/test_aggressive $(BUILD)/cix-boot.efi $(BUILD)/cix-xorriso
+all: $(BUILD)/cix-init $(BUILD)/test_toolchain $(BUILD)/test_harness $(BUILD)/harness_child $(BUILD)/test_container_pty $(BUILD)/pty_child $(BUILD)/cixd $(BUILD)/test_daemon $(BUILD)/daemon_child $(BUILD)/cixctl $(BUILD)/test_cli $(BUILD)/test_web $(BUILD)/test_slow_client $(BUILD)/test_rtnetlink $(BUILD)/test_container_net $(BUILD)/net_child $(BUILD)/net_connect $(BUILD)/test_daemon_net $(BUILD)/test_networks $(BUILD)/test_network_interfaces $(BUILD)/test_images $(BUILD)/test_container_restart $(BUILD)/test_container_files $(BUILD)/tcp_listen_child $(BUILD)/test_dns $(BUILD)/test_ntp $(BUILD)/test_ldap $(BUILD)/test_pki $(BUILD)/test_pkg $(BUILD)/mkbootroot $(BUILD)/test_boot $(BUILD)/test_boot_ab $(BUILD)/cix-install $(BUILD)/cix-recover $(BUILD)/test_dual_console $(BUILD)/dual_console_child $(BUILD)/console_term_child $(BUILD)/console_input_child $(BUILD)/mkinstalleriso $(BUILD)/test_installer $(BUILD)/test_devices $(BUILD)/dev_child $(BUILD)/test_daemon_devices $(BUILD)/test_system_update $(BUILD)/test_boot_update $(BUILD)/test_system_backup $(BUILD)/test_console_shell $(BUILD)/test_console_pki_bootstrap $(BUILD)/test_console_exec $(BUILD)/test_container_lifecycle $(BUILD)/output_child $(BUILD)/stats_child $(BUILD)/ticker_child $(BUILD)/test_container_stats $(BUILD)/test_handover $(BUILD)/test_disk_quota $(BUILD)/test_diskpart $(BUILD)/test_sysctl $(BUILD)/test_kmod $(BUILD)/test_kmod_build $(BUILD)/test_routes $(BUILD)/test_management_address $(BUILD)/test_pkg_build_log $(BUILD)/test_pkg_concurrent_stress $(BUILD)/test_pkg_sync $(BUILD)/test_pkg_cache $(BUILD)/test_image_recipe $(BUILD)/test_container_recipe $(BUILD)/test_rolling_restart $(BUILD)/syslog_recv_child $(BUILD)/test_syslogfwd $(BUILD)/test_hostproc $(BUILD)/test_tls_throttle $(BUILD)/test_https_chain $(BUILD)/test_layout_upgrade $(BUILD)/test_treecopy $(BUILD)/test_logread $(BUILD)/test_storage_placement $(BUILD)/test_backup_config $(BUILD)/test_container_dns_servers $(BUILD)/test_hostauth $(BUILD)/test_device_hotplug $(BUILD)/test_subid $(BUILD)/test_volume $(BUILD)/volume_child $(BUILD)/test_userns_run $(BUILD)/run_child $(BUILD)/test_factory_reset $(BUILD)/test_boot_console $(BUILD)/test_signing_keys $(BUILD)/test_stallwatch $(BUILD)/test_stallwatch_steps $(BUILD)/test_logread_live $(BUILD)/test_kernelpolicy $(BUILD)/test_dhcp $(BUILD)/test_artifact_export $(BUILD)/test_esp $(BUILD)/test_btrfs $(BUILD)/test_direct_rootfs $(BUILD)/test_childdiag $(BUILD)/test_bzimage $(BUILD)/apigen $(BUILD)/test_apigen $(BUILD)/test_apiroute $(BUILD)/test_api_surfaces $(BUILD)/test_apishape $(BUILD)/test_events $(BUILD)/test_docindex $(BUILD)/test_web_vt $(BUILD)/test_web_palette $(BUILD)/test_web_syntax $(BUILD)/test_web_form $(BUILD)/test_secrets $(BUILD)/test_curl_guards $(BUILD)/test_timebounds $(BUILD)/test_procfuse $(BUILD)/test_lint $(BUILD)/test_naming $(BUILD)/test_announce $(BUILD)/test_events_drift $(BUILD)/test_disksnap $(BUILD)/test_recipe_docs $(BUILD)/test_pkicrypto $(BUILD)/test_trustanchor $(BUILD)/test_forgecommit $(BUILD)/test_pkgsource $(BUILD)/test_pkgrepo $(BUILD)/test_catalogue $(BUILD)/test_srcgitea $(BUILD)/test_srcrecord $(BUILD)/test_srctrust $(BUILD)/test_pkgbad $(BUILD)/test_upstreamkeys $(BUILD)/test_versioning $(BUILD)/test_http_put $(BUILD)/test_osrelease $(BUILD)/test_json $(BUILD)/test_jsondiff $(BUILD)/test_cbsrecipe $(BUILD)/test_cbsevents $(BUILD)/test_devicestate $(BUILD)/test_kmodpolicy $(BUILD)/test_mcp $(BUILD)/test_mcp_exposure $(BUILD)/test_mcp_gateway $(BUILD)/test_devicematch $(BUILD)/test_nsswitch $(BUILD)/test_nicreport $(BUILD)/test_mkinstalleriso_args $(BUILD)/test_controlplane_programs $(BUILD)/test_blocking_waits $(BUILD)/test_startup_steps $(BUILD)/test_handover_record $(BUILD)/test_rootswitch $(BUILD)/test_listenbind $(BUILD)/test_bootorder $(BUILD)/test_pkg_finalize $(BUILD)/test_fresh_output_dir $(BUILD)/test_datadir $(BUILD)/test_elfcheck $(BUILD)/test_elfcheck_gcc $(BUILD)/test_releasekey $(BUILD)/test_aggressive $(BUILD)/cix-boot.efi $(BUILD)/cix-xorriso
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -1210,15 +1202,8 @@ $(BUILD)/test_apigen: test/test_apigen.c $(BUILD)/apigen | $(BUILD)
 $(BUILD)/test_treecopy: test/test_treecopy.c daemon/src/treecopy.c | $(BUILD)
 	$(CC) $(CFLAGS) -Idaemon/include test/test_treecopy.c daemon/src/treecopy.c -o $@
 
-# test/test_root_tree.c and test/test_image_fixture.c are linked for one
-# release only: they build the tree for mkbootroot's legacy ten-argument
-# form, which the previous release's daemon still calls (ADR-0371 phase
-# 3a). The next release removes that form and these two sources.
-$(BUILD)/mkbootroot: image/src/mkbootroot.c test/test_root_tree.c test/test_image_fixture.c daemon/src/persist.c daemon/src/osrelease.c daemon/src/elfcheck.c src/btrfs.c $(BUILD)/version.h | $(BUILD)
-	$(CC) $(CFLAGS) -Itest -Idaemon/include -Ibuild $(filter %.c,$^) -o $@
-
-$(BUILD)/test_mkbootroot_firmware: test/test_mkbootroot_firmware.c | $(BUILD)
-	$(CC) $(CFLAGS) $^ -o $@
+$(BUILD)/mkbootroot: image/src/mkbootroot.c daemon/src/persist.c daemon/src/osrelease.c daemon/src/elfcheck.c src/btrfs.c $(BUILD)/version.h | $(BUILD)
+	$(CC) $(CFLAGS) -Idaemon/include -Ibuild $(filter %.c,$^) -o $@
 
 $(BUILD)/test_boot: test/test_boot.c test/test_disk_image.c test/test_image_fixture.c test/test_root_tree.c daemon/src/persist.c src/btrfs.c | $(BUILD)
 	$(CC) $(CFLAGS) -Itest -Idaemon/include $^ -o $@

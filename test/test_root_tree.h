@@ -12,9 +12,8 @@
  * and /etc/os-release are not added: mkbootroot adds those when it
  * assembles any tree.
  *
- * For tests (a build container's composed "/" is the source) and, in
- * ADR-0371 phase 3a's release only, mkbootroot's legacy ten-argument
- * form. Returns 0, or 1 with the reason on stderr.
+ * For tests: a build container's composed "/" is the source. Returns 0,
+ * or 1 with the reason on stderr.
  */
 int test_root_tree_build(const char *image_root, const char *cixd_bin, const char *cixctl_bin,
                          const char *web_dir, const char *firmware_dir, const char *modules_dir,

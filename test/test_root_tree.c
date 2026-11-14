@@ -1,7 +1,6 @@
 /*
  * test_root_tree_build(): a control-plane root TREE assembled from a
- * source root -- for the tests that boot one, and, for one release only,
- * for mkbootroot's legacy ten-argument form.
+ * source root, for the tests that boot one.
  *
  * Moved here whole from image/src/mkbootroot.c by ADR-0371 phase 3a.
  * Production assembles from the cix-root image's tree (mkbootroot's
@@ -10,12 +9,8 @@
  * container has no such image, but its composed root ("/") carries the
  * same Cix packages as declared tools, so it stages a tree from that
  * here and hands it to the same three-argument path production uses.
- *
- * The daemon that assembles release K is always release K-1, so K's
- * mkbootroot must still accept K-1's ten arguments; it builds the tree
- * with this function and seals it the new way. K+1 drops that form and
- * mkbootroot's link to this file (ADR-0371, the same one-release rule as
- * the handover format).
+ * In phase 3a's release mkbootroot also linked this file, for the
+ * ten-argument form the previous daemon called; phase 3b removed that.
  */
 #include "test_root_tree.h"
 
