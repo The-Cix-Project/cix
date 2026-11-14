@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A cixd that reboots the host says why at the next boot (#686, 0.2.57-684)
+
+- **The gap:** two in-place root switches on 192.168.15.95 on 2026-11-14 (03:15 and 16:04) rebooted the host. Nothing from the new cixd reached the log store, and nothing captured the serial console, so the cause was lost each time.
+- **Now:** every path where cixd reboots by itself first writes its cause to `/config/state/last-fatal`, in PID-1 mode only:
+  - the fatal-signal handler, async-signal-safe;
+  - a handover the new cixd refuses, with the refusal's own text (`handover_refuse()`);
+  - an exec that fails after a root switch.
+
+  The next start logs it as `the previous cixd rebooted the host: …` and removes it.
+- **Also:** every switch logs the names of the registry entries its handover record carries. Both failed switches carried 15 entries where `GET /v1/containers` lists 14, and nothing said which the extra one was.
+
 ### Nothing reads cix-hosttools, cix-firmware or cix-kmod (ADR-0371 phase 4, 0.2.57-683)
 
 - **The installer ISO's module tools** come from the `cix-root` image's `usr/bin` instead of `cix-kmod`. `mkinstalleriso` copies only `modprobe` and `modinfo` from it, by name; it used to flat-copy the directory, which would now also put `cbs`, `cixctl` and the squashfs tools on the media.

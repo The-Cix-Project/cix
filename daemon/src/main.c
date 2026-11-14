@@ -2126,30 +2126,54 @@ static void on_signal(int sig)
  * (2026-09-14): crash handler only; broader signal ownership is a future
  * supervisor's (ADR-0246).
  */
+/*
+ * #686: why a PID-1 cixd rebooted the host, kept where the next boot can
+ * read it. Every path that reboots on its own -- a fatal signal, a
+ * handover the new cixd refuses, an exec after a root switch that fails
+ * -- tells only the console, so on a host whose serial console nobody
+ * captures the cause was lost with the reboot: twice on 192.168.15.95 on
+ * 2026-11-14, in-place switches that rebooted and left nothing in the
+ * log store. /config is the persistent config partition and stays
+ * mounted across a root switch. Written only in PID-1 mode, so a test
+ * daemon never touches it; fatal_note_report() logs it at the next start
+ * and removes it.
+ */
+#define FATAL_NOTE_PATH CONFIG_DIR "/state/last-fatal"
+static int g_fatal_note_on;
+static int g_fatal_fd = -1; /* open while the crash handler writes its line */
+
+/* Async-signal-safe: to the console, and to the note while it is open. */
+static void crash_write_bytes(const char *s, size_t n)
+{
+	ssize_t w = write(STDERR_FILENO, s, n);
+
+	(void)w;
+	if (g_fatal_fd >= 0) {
+		w = write(g_fatal_fd, s, n);
+		(void)w;
+	}
+}
+
 static void crash_write_str(const char *s)
 {
 	size_t n = 0;
-	ssize_t w;
 
 	if (s == NULL)
 		return;
 	while (s[n] != '\0')
 		n++;
-	w = write(STDERR_FILENO, s, n);
-	(void)w;
+	crash_write_bytes(s, n);
 }
 
 static void crash_write_strn(const char *s, size_t max)
 {
 	size_t n = 0;
-	ssize_t w;
 
 	if (s == NULL)
 		return;
 	while (n < max && s[n] != '\0')
 		n++;
-	w = write(STDERR_FILENO, s, n);
-	(void)w;
+	crash_write_bytes(s, n);
 }
 
 static void crash_write_hex(unsigned long v)
@@ -2157,14 +2181,50 @@ static void crash_write_hex(unsigned long v)
 	static const char hexd[] = "0123456789abcdef";
 	char b[2 + sizeof(unsigned long) * 2];
 	size_t i;
-	ssize_t w;
 
 	b[0] = '0';
 	b[1] = 'x';
 	for (i = 0; i < sizeof(unsigned long) * 2; i++)
 		b[2 + i] = hexd[(v >> ((sizeof(unsigned long) * 2 - 1 - i) * 4)) & 0xfUL];
-	w = write(STDERR_FILENO, b, sizeof(b));
+	crash_write_bytes(b, sizeof(b));
+}
+
+/* Outside a signal handler: the note is msg, one line, made durable. */
+static void fatal_note(const char *msg)
+{
+	int fd;
+	ssize_t w;
+
+	if (!g_fatal_note_on)
+		return;
+	fd = open(FATAL_NOTE_PATH, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+	if (fd < 0)
+		return;
+	w = write(fd, msg, strlen(msg));
+	w = write(fd, "\n", 1);
 	(void)w;
+	fsync(fd);
+	close(fd);
+}
+
+/* At start, once the log store is open: say why the previous cixd
+ * rebooted the host, if it left a note, and remove the note. */
+static void fatal_note_report(void)
+{
+	char line[1024];
+	FILE *fp;
+	size_t len;
+
+	if (!g_fatal_note_on || (fp = fopen(FATAL_NOTE_PATH, "re")) == NULL)
+		return;
+	len = fread(line, 1, sizeof(line) - 1, fp);
+	fclose(fp);
+	line[len] = '\0';
+	while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+		line[--len] = '\0';
+	logstore_write("cixd", "error", "the previous cixd rebooted the host: %s (#686)",
+	               len > 0 ? line : "(an empty note)");
+	unlink(FATAL_NOTE_PATH);
 }
 
 static void crash_handler(int sig, siginfo_t *si, void *uc)
@@ -2173,6 +2233,9 @@ static void crash_handler(int sig, siginfo_t *si, void *uc)
 	const char *act;
 
 	(void)uc;
+	/* #686: the same line goes into the note the next boot logs. */
+	if (g_fatal_note_on)
+		g_fatal_fd = open(FATAL_NOTE_PATH, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
 	nm = sig == SIGSEGV ? "SIGSEGV"
 	   : sig == SIGBUS  ? "SIGBUS"
 	   : sig == SIGABRT ? "SIGABRT"
@@ -2189,6 +2252,11 @@ static void crash_handler(int sig, siginfo_t *si, void *uc)
 		crash_write_strn(act, STALLWATCH_ACTIVITY_MAX);
 	}
 	crash_write_str(" -- cixd is PID 1; syncing and rebooting (#303)\n");
+	if (g_fatal_fd >= 0) {
+		fsync(g_fatal_fd);
+		close(g_fatal_fd);
+		g_fatal_fd = -1;
+	}
 	sync();
 	reboot(RB_AUTOBOOT);
 	_exit(139);
@@ -39443,6 +39511,31 @@ static void handover_exec(const char *target)
 		goto undo_switch;
 	}
 	if (target != NULL) {
+		/*
+		 * #686: which entries the record carries, by name. Both switches
+		 * that rebooted on .95 (2026-11-14) carried one more than
+		 * GET /v1/containers lists, and nothing said which.
+		 */
+		{
+			char names_line[2048];
+			size_t used = 0;
+			int k;
+
+			names_line[0] = '\0';
+			for (k = 0; k < rec.count && used + 2 < sizeof(names_line); k++) {
+				int w = snprintf(names_line + used, sizeof(names_line) - used, "%s%s%s",
+				                 k > 0 ? ", " : "", rec.containers[k].name,
+				                 rec.containers[k].running ? "" : " (not running)");
+
+				if (w < 0)
+					break;
+				used += (size_t)w;
+				if (used >= sizeof(names_line))
+					used = sizeof(names_line) - 1;
+			}
+			logstore_write("cixd", "info", "handover: the record carries %d entries: %s",
+			               rec.count, names_line);
+		}
 		/* The last log store line: from the first move on, its path
 		 * resolves into the target's read-only tree. */
 		logstore_write("cixd", "info",
@@ -39469,10 +39562,18 @@ static void handover_exec(const char *target)
 	fflush(stdout);
 	execv(exe, argv);
 	if (target != NULL) {
+		char note[PATH_MAX + 256];
+		int exec_errno = errno;
+
 		fprintf(stderr,
 		        "handover: exec of %s in slot %s's root failed after the pivot (%s); syncing "
 		        "and rebooting into the slot that was running (ADR-0375)\n",
-		        exe, target, strerror(errno));
+		        exe, target, strerror(exec_errno));
+		/* #686: the cause, for the next boot to log. */
+		snprintf(note, sizeof(note),
+		         "cixd %s switching to slot %s: exec of %s failed after the pivot (%s)",
+		         CIX_BUILD_VERSION, target, exe, strerror(exec_errno));
+		fatal_note(note);
 		sync();
 		reboot(RB_AUTOBOOT);
 		_exit(1);
@@ -39495,6 +39596,24 @@ undo_switch:
 }
 
 /*
+ * #686: why this cixd, started by a handover, refuses to start -- printed
+ * to the console as before, and kept so that main()'s reboot can leave
+ * it in the note the next boot logs.
+ */
+static char g_handover_refusal[640];
+
+static void handover_refuse(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void handover_refuse(const char *fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	vsnprintf(g_handover_refusal, sizeof(g_handover_refusal), fmt, ap);
+	va_end(ap);
+	fprintf(stderr, "%s\n", g_handover_refusal);
+}
+
+/*
  * E1 (ADR-0375): before anything else trusts the record. A refusal is a
  * failed start: init mode parks, a test daemon exits 1.
  */
@@ -39505,26 +39624,25 @@ static int handover_load(void)
 
 	handover_path(path, sizeof(path));
 	if (handover_read(path, &g_handover_rec, err, sizeof(err)) != 0) {
-		fprintf(stderr, "handover: %s; refusing to start (ADR-0375)\n", err);
+		handover_refuse("handover: %s; refusing to start (ADR-0375)", err);
 		return -1;
 	}
 	n = g_handover_rec.count > 0 ? g_handover_rec.count : 1;
 	g_handover_pidfds = calloc((size_t)n, sizeof(*g_handover_pidfds));
 	g_handover_entries = calloc((size_t)n, sizeof(*g_handover_entries));
 	if (g_handover_pidfds == NULL || g_handover_entries == NULL) {
-		fprintf(stderr, "handover: out of memory; refusing to start (ADR-0375)\n");
+		handover_refuse("handover: out of memory; refusing to start (ADR-0375)");
 		return -1;
 	}
 	if (handover_validate(&g_handover_rec, "/sys/fs/cgroup/" CGROUP_WORKLOAD_PARENT,
 	                      g_handover_pidfds, err, sizeof(err)) != 0) {
-		fprintf(stderr, "%s; refusing to start\n", err);
+		handover_refuse("%s; refusing to start", err);
 		return -1;
 	}
 	if (handover_unrecorded_container(&g_handover_rec, stray, sizeof(stray))) {
-		fprintf(stderr,
-		        "handover: container %s is running and the record does not name it; refusing "
-		        "to start (ADR-0375)\n",
-		        stray);
+		handover_refuse("handover: container %s is running and the record does not name it; "
+		                "refusing to start (ADR-0375)",
+		                stray);
 		return -1;
 	}
 	/*
@@ -39569,15 +39687,14 @@ static int handover_load(void)
 	 * container binds from: take it back, never start a second one over it. */
 	if (g_handover_rec.procfuse_pid > 0) {
 		if (!handover_pid_is_child(g_handover_rec.procfuse_pid)) {
-			fprintf(stderr,
-			        "handover: procfuse's server (pid %d) is not a child of this cixd; refusing "
-			        "to start (ADR-0375)\n",
-			        (int)g_handover_rec.procfuse_pid);
+			handover_refuse("handover: procfuse's server (pid %d) is not a child of this cixd; "
+			                "refusing to start (ADR-0375)",
+			                (int)g_handover_rec.procfuse_pid);
 			return -1;
 		}
 		if (procfuse_resume(STATE_DIR, g_handover_rec.procfuse_pid,
 		                    g_handover_rec.procfuse_load_fd, err, sizeof(err)) != 0) {
-			fprintf(stderr, "%s; refusing to start\n", err);
+			handover_refuse("%s; refusing to start", err);
 			return -1;
 		}
 	}
@@ -39743,7 +39860,7 @@ static int handover_takeover_all(void)
 		    handover_takeover_one(&g_handover_rec.containers[i], g_handover_pidfds[i], err,
 		                          sizeof(err));
 		if (g_handover_entries[i] == NULL) {
-			fprintf(stderr, "handover: %s; refusing to start (ADR-0375)\n", err);
+			handover_refuse("handover: %s; refusing to start (ADR-0375)", err);
 			return -1;
 		}
 	}
@@ -39954,6 +40071,7 @@ static int cixd_main(int argc, char **argv)
 			init_mode = 1;
 			g_init_mode = 1;
 			g_pid1_mode = 1; /* issue #131: never return from main() below */
+			g_fatal_note_on = 1; /* #686 */
 		} else if (strcmp(argv[i], "--handover") == 0)
 			g_handover = 1;
 		else if (strncmp(argv[i], "--test-handover-after=", 22) == 0)
@@ -40568,6 +40686,8 @@ static int cixd_main(int argc, char **argv)
 	if (g_data_dir_fault[0] != '\0')
 		logstore_write("cixd", "error", "data directory not persistent: %s (ADR-0364)",
 		               g_data_dir_fault);
+	/* #686: why the previous cixd rebooted the host, if it said. */
+	fatal_note_report();
 	if (g_bootstrap_move_note[0] != '\0')
 		logstore_write("cixd", "info", "%s", g_bootstrap_move_note);
 	if (g_data_move_note[0] != '\0')
@@ -41526,9 +41646,19 @@ int main(int argc, char **argv)
 	 * logged above.
 	 */
 	if (g_handover && rc != 0) {
+		char note[900];
+
 		fprintf(stderr, "\ncixd could not start after a handover (exit status %d) -- syncing and "
 		                "rebooting (ADR-0375)\n",
 		        rc);
+		/* #686: the cause, for the next boot to log. */
+		snprintf(note, sizeof(note),
+		         "cixd %s could not start after a handover (exit status %d): %s", CIX_BUILD_VERSION,
+		         rc,
+		         g_handover_refusal[0] != '\0'
+		             ? g_handover_refusal
+		             : "it refused before recording a cause; the console has the rest");
+		fatal_note(note);
 		sync();
 		reboot(RB_AUTOBOOT);
 	}
