@@ -1674,6 +1674,31 @@ int pkg_image_settled(const char *image)
 }
 
 /*
+ * #686: is any package job in flight, of any kind? A pure read of the
+ * chain slots, like pkg_image_settled() above.
+ *
+ * handover_quiescent() asked pkg_job_in_flight_for(NULL, NULL, 1), which
+ * answers only for hostbuilds, so an ordinary install could be mid-flight
+ * when a root switch began. Measured on 192.168.15.95, 2026-11-14: both
+ * in-place switches that rebooted (03:15 and 16:04) had one, the rolling
+ * install of the new cixctl into the agent image, which publishing a cix
+ * release queues and which waits on the cix hostbuild (#681). The next
+ * boot recovered it as a run that never reported an outcome, and the
+ * switch's record carried one registry entry more than GET /v1/containers
+ * lists. A queued image has no chain and is not counted: the queue is
+ * re-derived after a handover.
+ */
+int pkg_any_job_in_flight(void)
+{
+	int i;
+
+	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++)
+		if (g_chains[i].name[0] != '\0')
+			return 1;
+	return 0;
+}
+
+/*
  * The queue, for GET /v1/pkg/rebuilds (#236).
  *
  * Publishing a recipe is documented as a metadata write and also

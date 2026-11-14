@@ -16,6 +16,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
   The next start logs it as `the previous cixd rebooted the host: …` and removes it.
 - **Also:** every switch logs the names of the registry entries its handover record carries. Both failed switches carried 15 entries where `GET /v1/containers` lists 14, and nothing said which the extra one was.
+- **The likely cause, fixed:** `handover_quiescent()` asked `pkg_job_in_flight_for(NULL, NULL, 1)`, which answers only for hostbuilds. So a switch could start while an ordinary install was in flight.
+  - Both failed switches had one: the rolling install of the new `cixctl` into the `agent` image. Publishing a cix release queues it, and it waits on the cix hostbuild (#681).
+  - The boot after each failure recovered that run as one which never reported an outcome. The 03:15 run started 02:27 (681), the 16:04 run 15:21 (683).
+  - Quiescence now asks `pkg_any_job_in_flight()`, a pure read of every chain slot.
+  - Not established: that the hidden 15th entry was that job's build container, and that taking it over is what failed. The next switch's log line naming the entries settles it either way.
+- **The crash handler** is installed before a handover's record is read, so a crash there leaves its note too.
 
 ### Nothing reads cix-hosttools, cix-firmware or cix-kmod (ADR-0371 phase 4, 0.2.57-683)
 

@@ -2133,8 +2133,10 @@ static void on_signal(int sig)
  * -- tells only the console, so on a host whose serial console nobody
  * captures the cause was lost with the reboot: twice on 192.168.15.95 on
  * 2026-11-14, in-place switches that rebooted and left nothing in the
- * log store. /config is the persistent config partition and stays
- * mounted across a root switch. Written only in PID-1 mode, so a test
+ * log store. /config is the persistent config partition, and it is
+ * mounted across a root switch: the switched cixd reads its handover
+ * record from /config/state (handover_path()), which eight successful
+ * switches on .95 did. Written only in PID-1 mode, so a test
  * daemon never touches it; fatal_note_report() logs it at the next start
  * and removes it.
  */
@@ -39175,7 +39177,8 @@ static void handover_recompute_data_dir_fault(void)
 
 /*
  * ADR-0375: nothing is in flight that the exec would orphan. A helper's
- * completion is a function in this image, a package job is this
+ * completion is a function in this image, a package job of any kind (not
+ * only a hostbuild: #686) is this
  * process's memory, and every other forked child is named here by the
  * flag that says it runs, and an assembly asked for but not yet started
  * (ADR-0371) is in flight too. A container is steady when no teardown is in
@@ -39188,7 +39191,7 @@ static int handover_quiescent(void)
 	static char names[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
 	int n, i;
 
-	if (g_helpers_live != 0 || pkg_job_in_flight_for(NULL, NULL, 1) ||
+	if (g_helpers_live != 0 || pkg_any_job_in_flight() ||
 	    g_bootroot_assembly_running || g_bootroot_wanted ||
 	    (g_hostroll.step != HOSTROLL_IDLE && g_hostroll.step != HOSTROLL_SWITCH) ||
 	    pkg_push_in_flight() || pkg_sync_in_progress() ||
@@ -40104,6 +40107,38 @@ static int cixd_main(int argc, char **argv)
 	 * chance to apply a persisted port override (Part 0.5) -- nothing
 	 * between here and there reads it. */
 
+	/*
+	 * #303: catch fatal signals so a cixd crash leaves a console trace
+	 * and a deliberate reboot, not a bare kernel init-panic. Runs on an
+	 * alternate stack (SA_ONSTACK) so a stack-overflow SIGSEGV can still
+	 * run the handler, and SA_RESETHAND so a fault INSIDE the handler
+	 * re-raises with the default disposition instead of looping. The
+	 * stack is a fixed 32 KiB rather than SIGSTKSZ, which is not a
+	 * compile-time constant on current glibc.
+	 *
+	 * Before the handover branch below (#686), so a crash while a
+	 * handover's record is read and taken over leaves its trace and its
+	 * note too. It was installed after that until 0.2.57-684.
+	 */
+	{
+		static char crash_stack[32768];
+		stack_t ss;
+		struct sigaction ca;
+		int csig[] = { SIGSEGV, SIGBUS, SIGABRT, SIGFPE, SIGILL };
+		size_t ci;
+
+		ss.ss_sp = crash_stack;
+		ss.ss_size = sizeof(crash_stack);
+		ss.ss_flags = 0;
+		sigaltstack(&ss, NULL);
+		memset(&ca, 0, sizeof(ca));
+		ca.sa_sigaction = crash_handler;
+		ca.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
+		sigemptyset(&ca.sa_mask);
+		for (ci = 0; ci < sizeof(csig) / sizeof(csig[0]); ci++)
+			sigaction(csig[ci], &ca, NULL);
+	}
+
 	if (g_handover) {
 		/*
 		 * ADR-0375: cixd again, in the kernel that is running. Nothing in
@@ -40860,34 +40895,6 @@ static int cixd_main(int argc, char **argv)
 	sa.sa_handler = on_signal;
 	sigaction(SIGTERM, &sa, NULL);
 	sigaction(SIGINT, &sa, NULL);
-
-	/*
-	 * #303: catch fatal signals so a cixd crash leaves a console trace
-	 * and a deliberate reboot, not a bare kernel init-panic. Runs on an
-	 * alternate stack (SA_ONSTACK) so a stack-overflow SIGSEGV can still
-	 * run the handler, and SA_RESETHAND so a fault INSIDE the handler
-	 * re-raises with the default disposition instead of looping. The
-	 * stack is a fixed 32 KiB rather than SIGSTKSZ, which is not a
-	 * compile-time constant on current glibc.
-	 */
-	{
-		static char crash_stack[32768];
-		stack_t ss;
-		struct sigaction ca;
-		int csig[] = { SIGSEGV, SIGBUS, SIGABRT, SIGFPE, SIGILL };
-		size_t ci;
-
-		ss.ss_sp = crash_stack;
-		ss.ss_size = sizeof(crash_stack);
-		ss.ss_flags = 0;
-		sigaltstack(&ss, NULL);
-		memset(&ca, 0, sizeof(ca));
-		ca.sa_sigaction = crash_handler;
-		ca.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
-		sigemptyset(&ca.sa_mask);
-		for (ci = 0; ci < sizeof(csig) / sizeof(csig[0]); ci++)
-			sigaction(csig[ci], &ca, NULL);
-	}
 
 	/*
 	 * SIGPIPE kills this daemon silently, and any HTTP client can

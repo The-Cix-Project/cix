@@ -1365,6 +1365,8 @@ int pkg_rebuild_queue_depth(void);
 /* ADR-0374: 1 when no package job is in flight for image and it is not
  * queued for a rebuild, so its follower containers may roll onto it. */
 int pkg_image_settled(const char *image);
+/* #686: whether any package job, of any kind, is in flight; a pure read. */
+int pkg_any_job_in_flight(void);
 
 /*
  * ADR-0270: enqueue an image for convergence from outside pkg.c, which
