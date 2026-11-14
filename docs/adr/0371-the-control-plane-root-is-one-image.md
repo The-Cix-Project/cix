@@ -118,3 +118,5 @@ No code reads `cix-hosttools`, `cix-firmware` or `cix-kmod` any more:
 - **Messages** that told the operator to install into `cix-hosttools` now name `cix-root`'s recipe.
 
 Deleting the three images from 192.168.15.95 is the operator's step. Each one's packages are checked first for whether anything else composes a build from them.
+
+**Phase 4 completed on 2026-11-14.** 0.2.57-684 runs on .95. `cix-hosttools`, `cix-firmware` and `cix-kmod` are removed from that host, and `cixctl assembly start` seals the root from `cix-root` alone (ROADMAP Part 365). Their image recipes stay in cix-recipes as history; nothing reads them.

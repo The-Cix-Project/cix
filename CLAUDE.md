@@ -522,7 +522,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **A consumer whose target revision has no record yet is judged by its installed revision's record** (ADR-0373 release D). So a provider waits for its consumer's rebuild rather than moving ahead of one that may never build.
 - **The author is derived, never queued** (ADR-0373 decision 4). `pkg_abi_author_next()` writes a rebuild revision of a consumer when its newest revision's record names an ABI that the provider's newest installed version no longer offers. That installed version is what a rebuild composes. It runs from discovery's author stage and after a package declaring an ABI installs, one commit at a time. Never add a queue of pending rebuilds beside the recipes and the installed set.
 
-## The control-plane root is one image (accepted; phase 3 in 0.2.57-681 and -682, phase 4 next)
+## The control-plane root is one image (done: phases 1-4, 0.2.57-681 to -684)
 
 **The root becomes the current version of one image, `cix-root`, plus mount points, `resolv.conf` and `os-release`** -- [ADR-0371](docs/adr/0371-the-control-plane-root-is-one-image.md), accepted by the owner on 2026-11-03 for #350. It supersedes ADR-0291, which was never accepted.
 

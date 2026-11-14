@@ -2445,6 +2445,28 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 365: the root has one input, and a root switch waits for every job (#350, #686, ADR-0371 phase 4, 0.2.57-683 and -684)
+
+**Phase 4 (683).** Nothing reads `cix-hosttools`, `cix-firmware` or `cix-kmod`. The installer ISO takes `modprobe` and `modinfo` by name from `cix-root`'s `usr/bin`.
+
+**#686 (684).** Two in-place switches on 2026-11-14 rebooted .95: 680 → 681 at 03:15 and 682 → 683 at 16:04.
+- **The cause:** `handover_quiescent()` waited only for hostbuilds. Both switches began with the rolling `cixctl@agent` install in flight, which publishing a cix release queues and which waits on the cix hostbuild.
+- **How it was found:** each failed record carried 15 entries, where every successful one carried 14. The next boot each time recovered exactly that run.
+- **What 684 changes:**
+  - quiescence asks `pkg_any_job_in_flight()`;
+  - a cixd that reboots by itself leaves its cause in `/config/state/last-fatal` for the next boot to log;
+  - each switch names the entries its record carries;
+  - the crash handler is installed before a handover is read.
+
+**How it was verified.**
+- **Compile probes:** `probe-cix-compile@0.2.57-753` (683) and `@0.2.57-755` (684) passed the full selftest.
+- **The switch to 684, 2026-11-14 19:00.** The switching daemon was 682, which still waits only for hostbuilds, so the operator cancelled the queued `cixctl@agent` install first. The switch carried 14 entries and took over in place. 684 then upgraded `agent`'s `cixctl` by itself. `host-roll`, held since 17:15, was enabled again.
+- **The ISO on 684:** it staged its module tools from `…/cix-root/…/rootfs/usr/bin` and all six NIC drivers for 7.3.4.
+- **The three images removed from .95:** `cix-hosttools` was set to `manual` first. Their 26 packages were uninstalled and the images removed. No container used them, and of their packages only `squashfs-tools-extra` was installed nowhere else, and no recipe declares it as a tool.
+- **The root after the removal:** `cixctl assembly start` sealed cix-root `aa80fb8c4044…` (`completed_generation` 1, nothing refused).
+
+ADR-0371 is complete: the control-plane root is one image, `cix-root`, and nothing else feeds it.
+
 ## Part 364: the host boots the cix-root image's tree (#350, ADR-0371 phase 3b, 0.2.57-682)
 
 `mkbootroot` takes only `<tree> <out> <staging>`. The ten-argument form, its link to the test library and `test_mkbootroot_firmware` are gone.
