@@ -2445,6 +2445,23 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 364: the host boots the cix-root image's tree (#350, ADR-0371 phase 3b, 0.2.57-682)
+
+`mkbootroot` takes only `<tree> <out> <staging>`. The ten-argument form, its link to the test library and `test_mkbootroot_firmware` are gone.
+
+**How it was verified.**
+- **The root before it shipped.** `cixctl assembly start` on 681 sealed a root from cix-root, and an installer ISO built from it (`cix-installer-0.2.57-681`) was unpacked and compared with cix-root's packages:
+  - `probe-rootimage` 8-1 and 9-1 found no file whose content differs;
+  - `probe-rootimage@10-1` found no regular file outside a package. What is left are 112 empty directories from earlier upgrades (#687).
+- **Compile probe `probe-cix-compile@0.2.57-752`** (commit 8a3d2940) passed the full selftest, with every boot test on the three-argument form.
+- **The roll, 2026-11-14 13:19-14:03, with no hand step after `schedule run host-roll`.**
+  - 681 hostbuilt 682.
+  - It installed 682's `cixctl` and `cixd` into cix-root, cache hits of about 40 ms, and both pins moved to 682.
+  - It sealed cix-root version `d9702559…`, staged it on slot a, and switched in place: `slot a confirmed after the root switch`. Most containers kept their pids.
+- **The module tree in the booted root.** `GET /v1/system/kmod/e1000e` and `/igb`, for drivers that are not loaded on this VM, resolve from `/lib/modules/7.3.4`.
+
+**Next:** phase 4 retires `cix-hosttools` and `cix-firmware` as root inputs. `cix-kmod` is still read by the installer ISO.
+
 ## Part 363: the control-plane root is sealed from the cix-root image's tree (#350, ADR-0371 phase 3a, 0.2.57-681)
 
 `mkbootroot <tree> <out> <staging>` seals one image tree, and cixd passes `cix-root`'s current version. An assembly is asked for and then driven. It installs the hostbuilds' `cixd`, `cixctl` and `kernel-modules` into cix-root, and starts only when the image holds them at the installed hostbuild versions and has settled. 681's `mkbootroot` still takes the ten arguments 680's daemon passes, so 681 itself booted on a legacy-shape root.
