@@ -10427,15 +10427,6 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
 #define ISO_BUILDER_IMAGE "iso-builder"
 
 /*
- * #347: the image holding the module tools -- modprobe and its five
- * siblings, all links to one kmod binary -- which the installer ISO
- * stages onto its media so cix-install can load a real machine's NIC
- * driver (resolve_kmod_bin_dir()). The control-plane root no longer
- * reads it: cix-root carries kmod as one of its packages (ADR-0371).
- */
-#define KMOD_IMAGE "cix-kmod"
-
-/*
  * ADR-0057, ADR-0371: when a hostbuild named "cix" completes, the
  * daemon assembles a fresh control-plane squashfs by forking and
  * exec'ing that build's own mkbootroot -- server-side, never
@@ -10609,9 +10600,12 @@ static void pkg_completion_followup(int next, pid_t pkg_pid, int pkg_pidfd, int 
 /*
  * Where the module tools are, for the installer-ISO build, which stages
  * them onto the media so cix-install can load a real machine's NIC
- * driver (#429 follow-on). Empty when the image is absent, which it
- * treats as "stage nothing". The module tree they load from is the
- * kernel-modules output, resolved through root_output_resolve() below.
+ * driver (#429 follow-on): the usr/bin of cix-root, which installs kmod
+ * (ADR-0371 phase 4; it was the cix-kmod image). mkinstalleriso takes
+ * only modprobe and modinfo from it. Empty when the image is absent,
+ * which it treats as "stage nothing". The module tree they load from is
+ * the kernel-modules output, resolved through root_output_resolve()
+ * below.
  */
 static void resolve_kmod_bin_dir(char *out, size_t out_size)
 {
@@ -10620,9 +10614,9 @@ static void resolve_kmod_bin_dir(char *out, size_t out_size)
 	struct stat st;
 
 	out[0] = '\0';
-	if (image_current_version(KMOD_IMAGE, kmod_version, sizeof(kmod_version)) != IMAGE_OK)
+	if (image_current_version(ROOT_IMAGE, kmod_version, sizeof(kmod_version)) != IMAGE_OK)
 		return;
-	image_version_rootfs_path(KMOD_IMAGE, kmod_version, kmod_root, sizeof(kmod_root));
+	image_version_rootfs_path(ROOT_IMAGE, kmod_version, kmod_root, sizeof(kmod_root));
 	if (snprintf(out, out_size, "%s/usr/bin", kmod_root) >= (int)out_size)
 		out[0] = '\0';
 	else if (stat(out, &st) != 0 || !S_ISDIR(st.st_mode))
@@ -22040,16 +22034,11 @@ static void handle_disk_format_post(int fd, const char *disk_name, const char *b
 	 * copy of its image instead of a copy-on-write clone. Nobody chose
 	 * that; the default simply outlived the decision.
 	 *
-	 * "btrfs" requires a real mkfs.btrfs to
-	 * actually be staged on this box (btrfs-progs.recipe via a real
-	 * cix-hosttools image, ADR-0103's own scope note) -- if it
-	 * isn't, the job still starts (this daemon has no cheap way to
-	 * probe for the binary's presence without also handling every
-	 * other reason execve() could fail the same way) but fails fast
-	 * with a clear DISKFORMAT_STATE_FAILED/"mkfs.btrfs failed" once
-	 * the child actually tries to exec it and gets ENOENT -- consistent
-	 * with mkfs.ext4's own existing failure-reporting shape, not a
-	 * new failure mode this field introduces.
+	 * Both mkfs programs are in every control-plane root: the cix-root
+	 * image installs them and mkbootroot's program seal refuses a root
+	 * without either (ADR-0371). Were one absent anyway, the job would
+	 * still start and fail with DISKFORMAT_STATE_FAILED when the child's
+	 * exec got ENOENT, as for any other exec failure.
 	 */
 	fs_type_str = json_as_string(json_object_get(root, "fs_type"));
 	if (fs_type_str == NULL || strcmp(fs_type_str, "btrfs") == 0) {

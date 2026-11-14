@@ -76,7 +76,7 @@ static void test_no_tools(void)
 	CHECK(has(out, "defect in the media"),
 	      "does not blame the media -- an operator reading this would suspect their hardware: %s",
 	      out);
-	CHECK(has(out, "cix-kmod"),
+	CHECK(has(out, "cix-root image has no kmod"),
 	      "does not name what produced media without modprobe, which is the one actionable "
 	      "fact: %s",
 	      out);

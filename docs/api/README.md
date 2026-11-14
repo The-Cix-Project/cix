@@ -2978,7 +2978,7 @@ POST /v1/storage/sdb/format
 
 Multi-disk management Phase C: destructively formats and mounts a disk that already has an assigned role (`POST /storage-roles` — a disk with no role is `400`, `"assign one via POST /v1/storage-roles first"`). Deliberately a **separate, explicit** action from role assignment — assigning a role never has a destructive side effect of its own — confirmed with the operator during design rather than assumed. `confirm_disk_name` in the request body must match `disk_name` in the URL exactly (`400` otherwise): a deliberate double-confirmation before overwriting every byte of existing content on the disk. Always rejected for the OS disk, same as role assignment.
 
-`fs_type` is optional (ADR-0104), `"ext4"` (the default, omit the field entirely for the original behavior) or `"btrfs"` — `400` for any other value. `"btrfs"` requires a real `mkfs.btrfs` to actually be staged on this box (`btrfs-progs.recipe`, via a real `cix-hosttools` image); if it isn't, the job still starts but fails fast with `"mkfs.btrfs failed"` once the child process's own exec attempt hits `ENOENT` — the same failure shape any other `mkfs` failure already has, not a special case.
+`fs_type` is optional (ADR-0104): `"btrfs"` (the default since ADR-0207) or `"ext4"` — `400` for any other value. Both `mkfs` programs are in every control-plane root, which is the `cix-root` image's tree (ADR-0371).
 
 Async, like every other potentially-slow host operation this daemon runs (`pkg install`, ISO assembly) — `POST` returns `202` immediately with the job's initial status; poll `GET` on the same path for completion:
 

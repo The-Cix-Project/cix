@@ -615,10 +615,10 @@ const char *pkg_artifact_suffix(const char *format);
 const char *pkg_artifact_arch(void);
 
 /*
- * The CPDL engine (ADR-0305). Staged into the control-plane root by
- * mkbootroot from the cix-hosttools image, and TOLERANTLY -- a box
- * whose hosttools image predates `pkg install --image=cix-hosttools
- * cbs` simply has no engine, which is a normal state. So every use of
+ * The CPDL engine (ADR-0305). In the control-plane root because the
+ * cix-root image installs cbs (ADR-0371); mkbootroot's program seal
+ * refuses a root without it, but a host still running a root sealed
+ * before that check can have no engine. So every use of
  * this path checks it is there first and says what to install when it
  * is not, rather than failing at execve() with ENOENT.
  *

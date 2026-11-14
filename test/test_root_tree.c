@@ -398,7 +398,7 @@ static int stage_controlplane_programs(const char *image_root, const char *host_
 		char *slash;
 		struct stat st;
 
-		if (programs[i].source != CP_HOSTTOOLS)
+		if (programs[i].source != CP_TOOL)
 			continue;
 		if (snprintf(src, sizeof(src), "%s%s", host_tools_dir, programs[i].path) >=
 		        (int)sizeof(src) ||

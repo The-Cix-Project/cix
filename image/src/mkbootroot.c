@@ -365,8 +365,8 @@ static int run_mksquashfs(const char *mksquashfs_bin, const char *image_root,
 /*
  * cix#350: the libraries NOTHING IN THE ROOT DECLARES.
  *
- * Every other library the root carries is there because the
- * cix-hosttools image carries it, and every one it NEEDS is checked by
+ * Every other library the root carries is there because a package of
+ * the cix-root image installs it, and every one it NEEDS is checked by
  * verify_root_closure() reading each object's own DT_NEEDED. That pair
  * has one blind spot, and it is structural rather than an oversight: a
  * dlopen() names its library at runtime, in a string, so no amount of
@@ -427,8 +427,8 @@ static int require_dlopened_libs(const char *image_root)
 		if (!found) {
 			fprintf(stderr,
 			        "the assembled root has no %s, which nothing in it declares and "
-			        "everything that threads needs: %s. Fix it with: pkg install "
-			        "--image=cix-hosttools %s\n",
+			        "everything that threads needs: %s. Fix it by adding %s to the cix-root "
+			        "image's recipe (ADR-0371)\n",
 			        libs[l].soname, libs[l].why, libs[l].pkg);
 			return 1;
 		}
@@ -454,8 +454,8 @@ static int require_dlopened_libs(const char *image_root)
  * evidence, never on ignorance (elfcheck.h).
  *
  * SINCE cix#350 THIS IS ALSO THE SUPPLY SIDE'S GATE. There is no list
- * of libraries any more: the root gets every shared object the
- * cix-hosttools image carries, and this walk says whether that was
+ * of libraries any more: the root carries every shared object the
+ * cix-root image installs, and this walk says whether that was
  * enough. So a hit no longer means "someone forgot to add a line
  * here", it means the image is missing a package -- which is why the
  * message names the install rather than a table.
@@ -475,9 +475,9 @@ static int verify_root_closure(const char *image_root)
 	else
 		fprintf(stderr,
 		        "the assembled root's /%s needs %s, which nothing in the root provides -- "
-		        "the root carries the cix-hosttools image's shared objects and that image "
-		        "has none named %s, so install the package that provides it there, or stop "
-		        "staging /%s (cix#569, cix#350)\n",
+		        "the root is the cix-root image's tree and that image has none named %s, so "
+		        "add the package that provides it to cix-root's recipe, or the package "
+		        "shipping /%s is missing a runtime dependency (cix#569, ADR-0371)\n",
 		        file, soname, soname, file);
 	return 1;
 }
@@ -486,7 +486,7 @@ static int verify_root_closure(const char *image_root)
  * #554: refuses a root missing any program in
  * include/controlplane_programs.h, naming it. Each must be a regular
  * file, following symlinks, with an execute bit. A CP_KMOD program is
- * required only when the kmod image's usr/bin was given (have_kmod).
+ * required only when the root carries a kernel module tree (have_kmod).
  *
  * Written after 0.2.57-414: 412 dropped `cp` from the root while
  * mkbootroot still forked it, and nothing noticed until an assembly
@@ -519,8 +519,9 @@ static int verify_controlplane_programs(const char *image_root, int have_kmod)
 		if (stat(p, &st) != 0 || !S_ISREG(st.st_mode) || (st.st_mode & 0111) == 0) {
 			fprintf(stderr,
 			        "the assembled root has no executable %s, which code running on the "
-			        "control plane executes (include/controlplane_programs.h, #554)\n",
-			        programs[i].path);
+			        "control plane executes (include/controlplane_programs.h, #554): add %s "
+			        "to the cix-root image's recipe (ADR-0371)\n",
+			        programs[i].path, programs[i].pkg);
 			missing++;
 		}
 	}

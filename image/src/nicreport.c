@@ -62,8 +62,8 @@ const char *nicreport_no_nic_reason(const struct nic_load_result *r, int nics_fo
 		         "  drivers could not be loaded at all. Only a driver built into the kernel\n"
 		         "  could appear here. This is a defect in the media, not in this machine --\n"
 		         "  the ISO is built with modprobe staged, so an ISO without it was built on\n"
-		         "  a host with no cix-kmod image. Install on `lo` and set the real interface\n"
-		         "  afterwards with `cixctl management-network set`.");
+		         "  a host whose cix-root image has no kmod. Install on `lo` and set the real\n"
+		         "  interface afterwards with `cixctl management-network set`.");
 		return out;
 	}
 	if (r->failed > 0) {

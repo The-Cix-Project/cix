@@ -2891,9 +2891,9 @@ static int run_cbs(char *const argv[], const char *verb, char *out, size_t out_s
 
 	if (access(PKG_CBS_BIN, X_OK) != 0) {
 		snprintf(err, err_size,
-		         "this host has no CPDL engine: %s is absent. Install it with `pkg install "
-		         "--image=cix-hosttools cbs` and redeploy the control plane, which is what "
-		         "stages it (ADR-0305)",
+		         "this host has no CPDL engine: %s is absent. The control-plane root is the "
+		         "cix-root image's tree, so add cbs to cix-root's recipe and redeploy the "
+		         "control plane (ADR-0305, ADR-0371)",
 		         PKG_CBS_BIN);
 		return -1;
 	}
@@ -7375,7 +7375,7 @@ void pkg_repoint(const char *pkg_dir, const char *installed_state_path, const ch
  *
  * Once at startup, and that is COMPLETE rather than merely cheap: the
  * host's cbs is /usr/bin/cbs inside the control-plane root, which
- * mkbootroot stages from cix-hosttools at assembly time, and that root
+ * the cix-root image carries and mkbootroot seals into it, and that root
  * is a read-only squashfs replaced only by POST /system/update and a
  * reboot. The engine therefore cannot change while this daemon runs,
  * and every way it can change passes through a restart. A recipe

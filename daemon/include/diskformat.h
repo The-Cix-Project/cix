@@ -49,13 +49,12 @@ struct discovered_disk;
 /*
  * btrfs support (ADR-0104, closes task #732 -- the disk-*format*-time
  * half of the ext4-vs-btrfs gap; ADR-0103/task #678 already closed the
- * *quota enforcement* half). mkfs.btrfs is genuinely optional: unlike
- * mkfs.ext4 (staged into every assembled boot image unconditionally,
- * mkbootroot.c), it's only staged when a real cix-hosttools image
- * built with btrfs-progs.recipe is available -- an install without one
- * simply can't format a disk btrfs (ENOENT at exec time, surfaced as a
- * normal DISKFORMAT_STATE_FAILED, not a crash or a silently-ignored
- * request).
+ * *quota enforcement* half). Like mkfs.ext4 it is in every control-plane
+ * root: include/controlplane_programs.h lists both, the cix-root image's
+ * btrfs-progs and e2fsprogs install them, and mkbootroot refuses to seal
+ * a root missing either (ADR-0371). That an option was once
+ * optional here, staged only when an image happened to carry it, is
+ * history: the image store has required btrfs since ADR-0360.
  */
 #define DISKFORMAT_MKFS_BTRFS_BIN "/usr/sbin/mkfs.btrfs"
 

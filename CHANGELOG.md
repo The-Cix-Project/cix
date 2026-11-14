@@ -6,6 +6,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Nothing reads cix-hosttools, cix-firmware or cix-kmod (ADR-0371 phase 4, 0.2.57-683)
+
+- **The installer ISO's module tools** come from the `cix-root` image's `usr/bin` instead of `cix-kmod`. `mkinstalleriso` copies only `modprobe` and `modinfo` from it, by name; it used to flat-copy the directory, which would now also put `cbs`, `cixctl` and the squashfs tools on the media.
+- **`include/controlplane_programs.h`** classifies each program as `CP_CIX`, `CP_TOOL` or `CP_KMOD`, in place of the image that used to supply it. `cixctl`'s package is named.
+- **Messages:** `mkbootroot`'s seals and the daemon's missing-`cbs` error now say to add the package to `cix-root`'s recipe, and the program seal names the package. The installer's no-module-tools report names `cix-root` instead of `cix-kmod`.
+- **Comments and docs** that described mkfs.btrfs as optional, or the root as staged from `cix-hosttools`, are corrected, the `fs_type` paragraph in `openapi.yaml` and `docs/api/README.md` among them. The README also said ext4 was the default; it is btrfs.
+
 ### mkbootroot takes one form, and the first root sealed from cix-root boots (ADR-0371 phase 3b, 0.2.57-682)
 
 - **Removed:**

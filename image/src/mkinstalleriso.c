@@ -34,6 +34,7 @@
 #include "btrfs.h"
 #include "persist.h"
 #include "libdirs.h"
+#include "controlplane_programs.h"
 #include "test_image_fixture.h"
 
 #include <dirent.h>
@@ -909,8 +910,8 @@ int main(int argc, char **argv)
 		        "  (include/bootmodules.h) and their dependency closure are staged, read out of the tree's\n"
 		        "  own modules.dep; the rest of the tree, which now includes amdgpu, is not\n"
 		        "  something media for choosing a NIC has any use for.\n"
-		        "  kmod-bin-dir: the kmod image's usr/bin, or \"\" for none -- modprobe and\n"
-		        "  friends, without which a staged tree cannot be loaded.\n"
+		        "  kmod-bin-dir: a usr/bin holding kmod's modprobe and modinfo (the cix-root\n"
+		        "  image's), or \"\" for none -- without which a staged tree cannot be loaded.\n"
 		        "  cix-recover-bin: the break-glass recovery tool (ADR-0146), staged as\n"
 		        "  a second GRUB menu entry on the SAME media -- boots straight to a\n"
 		        "  console prompt, no kernel-args needed (it takes none).\n"
@@ -1454,16 +1455,40 @@ int main(int argc, char **argv)
 			return 1;
 		snprintf(kmod_dst, sizeof(kmod_dst), "%s/usr/bin", stage_dir);
 		/*
-		 * Flat copy, dereferencing symlinks: modprobe/depmod/insmod and
-		 * the rest are all symlinks to one real kmod binary, and this
-		 * lands real bytes at each name. kmod dispatches on argv[0], so
-		 * it behaves identically whether the name was reached through a
-		 * symlink or is a copy -- the same trade mkbootroot makes, for
-		 * the same reason.
+		 * The module tools include/controlplane_programs.h lists, by
+		 * name, dereferencing symlinks: modprobe and modinfo are links to
+		 * one real kmod binary, and this lands real bytes at each name.
+		 * kmod dispatches on argv[0], so a copy behaves as the link did.
+		 *
+		 * By name, not the whole directory: since ADR-0371 phase 4 the
+		 * directory is the cix-root image's usr/bin, which also holds
+		 * cbs, cixctl and the squashfs tools, none of which the media
+		 * runs. It was the cix-kmod image's usr/bin, holding only kmod's
+		 * links, and that works here too.
 		 */
-		if (test_image_fixture_copy_dir_files(kmod_bin_dir, kmod_dst) != 0) {
-			fprintf(stderr, "staging module tools from %s failed\n", kmod_bin_dir);
-			return 1;
+		{
+			const char *const kmod_progs[] = {
+#define CP_KMOD_PATH_(id, path, source, pkg) (source) == CP_KMOD ? (path) : NULL,
+				CONTROLPLANE_PROGRAMS(CP_KMOD_PATH_)
+#undef CP_KMOD_PATH_
+			};
+			size_t k;
+
+			for (k = 0; k < sizeof(kmod_progs) / sizeof(kmod_progs[0]); k++) {
+				const char *name;
+				char src[PATH_MAX], dst[PATH_MAX];
+
+				if (kmod_progs[k] == NULL)
+					continue;
+				name = strrchr(kmod_progs[k], '/') + 1;
+				snprintf(src, sizeof(src), "%s/%s", kmod_bin_dir, name);
+				snprintf(dst, sizeof(dst), "%s/%s", kmod_dst, name);
+				if (test_image_fixture_copy_file(src, dst) != 0) {
+					fprintf(stderr, "staging module tool %s from %s failed\n", name,
+					        kmod_bin_dir);
+					return 1;
+				}
+			}
 		}
 		printf("staged module tools from %s\n", kmod_bin_dir);
 	} else {

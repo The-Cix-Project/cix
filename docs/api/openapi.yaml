@@ -22259,12 +22259,12 @@ components:
             snapshot, so a container placed on the disk shares extents with
             its image instead of getting a full copy. It defaulted to ext4
             until ADR-0207 put ext4 on a retirement path and left the
-            default pointing at the losing side. btrfs requires a real
-            mkfs.btrfs to actually be staged on this box (btrfs-progs.recipe,
-            via a real cix-hosttools image) -- if it isn't, the job still
-            starts but fails fast with a clear "mkfs.btrfs failed" once the
-            child process's own exec attempt hits ENOENT, the same failure
-            shape any other mkfs failure already has.
+            default pointing at the losing side. Both mkfs programs are in
+            every control-plane root, which is the cix-root image's tree
+            (ADR-0371); were one absent, the job would still start and
+            fail with "mkfs.btrfs failed" when the child's exec hit
+            ENOENT, the same failure shape any other mkfs failure
+            already has.
 
     StorageFormatStatus:
       type: object

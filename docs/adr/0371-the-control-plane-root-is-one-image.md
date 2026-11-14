@@ -108,3 +108,13 @@ Step 3 above is two releases, because the daemon that assembles release K is rel
 ## Phase 3b, as built (0.2.57-682)
 
 `mkbootroot` takes only the three-argument form, and no longer links `test/test_root_tree.c` or `test/test_image_fixture.c`. `test_mkbootroot_firmware`, which drove the ten-argument form, is removed. `test_console_pki_bootstrap` seals its fixture tree with the three-argument form like the other boot tests. 681's daemon assembles 682 from `cix-root`, after installing 682's `cixd` and `cixctl` there. So 682 is the first release whose booted root is `cix-root`'s tree.
+
+## Phase 4, as built (0.2.57-683)
+
+No code reads `cix-hosttools`, `cix-firmware` or `cix-kmod` any more:
+
+- **The installer ISO** takes its module tools from `cix-root`'s `usr/bin`. `mkinstalleriso` copies only `modprobe` and `modinfo` from that directory, by name, because cix-root's `usr/bin` also holds `cbs`, `cixctl` and the squashfs tools. It used to copy the whole directory, which held only kmod's links when it was `cix-kmod`'s.
+- **`controlplane_programs.h`'s source field** says what kind of program each entry is (`CP_CIX`, `CP_TOOL`, `CP_KMOD`), not which retired image supplied it.
+- **Messages** that told the operator to install into `cix-hosttools` now name `cix-root`'s recipe.
+
+Deleting the three images from 192.168.15.95 is the operator's step. Each one's packages are checked first for whether anything else composes a build from them.
