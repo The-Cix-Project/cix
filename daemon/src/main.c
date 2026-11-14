@@ -10981,7 +10981,10 @@ static void bootroot_drive(void)
 		return;
 	}
 	if (!pkg_image_settled(ROOT_IMAGE)) {
-		snprintf(what, sizeof(what), "a package job in %s to finish", ROOT_IMAGE);
+		snprintf(what, sizeof(what),
+		         "%s to settle: a package job in flight for it, or the image queued for a "
+		         "rolling upgrade (ADR-0374)",
+		         ROOT_IMAGE);
 		bootroot_set_waiting(what);
 		return;
 	}
