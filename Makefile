@@ -297,31 +297,28 @@ FLOOR_SELFTESTS = \
 # on disk: it writes gigabytes, and a build container's /tmp is a tmpfs
 # counted against the build memory budget.
 #
+# test_mkbootroot_firmware joined for ADR-0371 phase 3a's release only.
+# 680's daemon assembles 681 with mkbootroot's ten-argument form, passing
+# real firmware, module and kmod directories, and this is the one test
+# that drives that form with all three non-empty. It was excluded on the
+# grounds that it needs the nine host tools and a working mksquashfs in
+# "/"; every boot test needs exactly that now, since mkbootroot refuses
+# a root without them. 3b removes the form and this test with it.
+#
 BOOT_SELFTESTS = \
 	$(BUILD)/test_boot \
 	$(BUILD)/test_boot_ab \
 	$(BUILD)/test_boot_update \
 	$(BUILD)/test_console_shell \
 	$(BUILD)/test_console_pki_bootstrap \
-	$(BUILD)/test_installer
+	$(BUILD)/test_installer \
+	$(BUILD)/test_mkbootroot_firmware
 #
-# Three tests were in this list and are deliberately NOT, because they
+# Two tests were in this list and are deliberately NOT, because they
 # fail in a composed build container for reasons that are not defects.
 # Recorded rather than silently dropped, since "why isn't this in the
-# gate" is the question someone will ask:
-#
-#   test_mkbootroot_firmware  asserts that every binary the daemon
-#       shells out to by absolute path -- mkfs.ext4, mkfs.btrfs,
-#       sfdisk, resize2fs, e2fsck, unsquashfs, mksquashfs, btrfs, cbs --
-#       is staged into a control-plane root. It is a check ABOUT THE
-#       HOST-TOOLS ROOT it is given: it passes where those nine exist
-#       and fails where they do not. A composed build container holds
-#       exactly the recipe's declared tools (ADR-0199), so it fails
-#       there unless the recipe declares all nine, and it also seals a
-#       real squashfs, which needs a working mksquashfs. It belongs
-#       wherever a real image is assembled, not in a build gate.
-#       (It said "from the BUILD HOST" until cix#350, which is where
-#       those binaries used to come from and no longer do.)
+# gate" is the question someone will ask. (A third, test_mkbootroot_
+# firmware, was excluded with them and is back for one release, above.)
 #
 #   test_harness  creates a real overlay mount and namespaces. It
 #       includes container.h and is a container-runtime test; my
@@ -339,7 +336,7 @@ BOOT_SELFTESTS = \
 #       gating on it would gate on a skip. It runs in the full suite on a
 #       real host, which is where a userns container actually exists.
 #
-# All three were caught by running the gate rather than by reasoning
+# All of them were caught by running the gate rather than by reasoning
 # about it, which is the argument for having it.
 #
 

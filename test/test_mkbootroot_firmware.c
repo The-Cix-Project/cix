@@ -238,7 +238,16 @@ int main(void)
 		mkdir(KMOD_BIN_SRC_DIR, 0755);
 		snprintf(path, sizeof(path), "%s/kmod", KMOD_BIN_SRC_DIR);
 		write_fake_blob(path, "fake kmod binary");
+		/* Executable, and both names include/controlplane_programs.h
+		 * lists for kmod: the seal (verify_controlplane_programs())
+		 * refuses a root with a module tree and either one missing or
+		 * not executable. The fixture staged a 0644 kmod and no modinfo
+		 * until ADR-0371 phase 3a put this test in the boot gate, which
+		 * that seal, read as written, does not accept. */
+		chmod(path, 0755);
 		snprintf(path, sizeof(path), "%s/modprobe", KMOD_BIN_SRC_DIR);
+		symlink("kmod", path);
+		snprintf(path, sizeof(path), "%s/modinfo", KMOD_BIN_SRC_DIR);
 		symlink("kmod", path);
 	}
 

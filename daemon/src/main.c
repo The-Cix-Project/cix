@@ -10457,7 +10457,7 @@ static void artifact_push_pump(void);
 static int artifact_export_start(const char *name, const char *dest_override, char *err_msg,
                                  size_t err_msg_size);
 static void hostbuild_export_drive(void);
-static int bootroot_want(void);
+static void bootroot_want(void);
 static void bootroot_drive(void);
 /* ADR-0327: the host roll, defined after bootroot_drive(). */
 static void hostroll_tick(void);
@@ -10741,8 +10741,8 @@ static int root_image_behind(int *out_k, char *out_version, size_t out_version_s
 	if (image_current_version(ROOT_IMAGE, current, sizeof(current)) != IMAGE_OK) {
 		snprintf(reason, reason_size,
 		         "image %s has no current version: the control-plane root is that image, so "
-		         "make it from its recipe in cix-recipes (cixctl image recipe add, then "
-		         "cixctl image apply-recipe %s) (ADR-0371)",
+		         "make it from its recipe in cix-recipes (cixctl image materialize %s) "
+		         "(ADR-0371)",
 		         ROOT_IMAGE, ROOT_IMAGE);
 		return -1;
 	}
@@ -11000,6 +11000,21 @@ static void bootroot_drive(void)
 	}
 
 	name = g_root_outputs[k].name;
+	/*
+	 * The hostbuild cached this output beside itself
+	 * (cache_sibling_outputs()), so the install is a cache hit. Without
+	 * it the install would build the whole cix or kernel recipe again in
+	 * a build container, inside a roll or behind an `assembly start`.
+	 * Refused instead, as the unpack refused it before phase 3a.
+	 */
+	if (!pkg_artifact_cache_has(name, version)) {
+		snprintf(g_bootroot_assembly_refused, sizeof(g_bootroot_assembly_refused),
+		         "%s@%s, an output of the %s@%s build, is not in the local cache, and %s takes "
+		         "it only from there (ADR-0367, ADR-0371)",
+		         name, version, g_root_outputs[k].owner, version, ROOT_IMAGE);
+		bootroot_refused();
+		return;
+	}
 	if (strcmp(g_bootroot_tried[k], version) == 0) {
 		snprintf(g_bootroot_assembly_refused, sizeof(g_bootroot_assembly_refused),
 		         "%s@%s did not install into %s -- cixctl pkg ls names why (ADR-0371)", name,
@@ -11039,19 +11054,18 @@ static void bootroot_drive(void)
 }
 
 /*
- * Ask for an assembly of this host's builds. Returns 0 when one is under
- * way -- running, waiting on cix-root, or started now -- and -1 when it
- * was refused (g_bootroot_assembly_refused says why) or could not start.
- * Asked while one runs, it starts after that one: the running assembly
- * may predate the build that asked.
+ * Ask for an assembly of this host's builds. Afterwards one is running,
+ * or waiting on cix-root (g_bootroot_wanted), or it was refused or could
+ * not start, and g_bootroot_assembly_refused says why. Asked while one
+ * runs, it starts after that one: the running assembly may predate the
+ * build that asked.
  */
-static int bootroot_want(void)
+static void bootroot_want(void)
 {
 	g_bootroot_wanted = 1;
 	memset(g_bootroot_tried, 0, sizeof(g_bootroot_tried));
 	g_bootroot_assembly_refused[0] = '\0';
 	bootroot_drive();
-	return g_bootroot_wanted || g_bootroot_assembly_running ? 0 : -1;
 }
 
 /* ---------- ADR-0327: the host follows its own rolling packages ----------
@@ -11321,6 +11335,10 @@ static int action_system_roll(const char *params, char *reason, size_t reason_si
 	int kernel_behind, cix_behind, kernel_not_running, cix_not_running;
 
 	(void)params;
+	/* An assembly asked for re-reads cix-root here too, so a change that
+	 * reached the image with no package job ending to drive it cannot hold
+	 * a roll at HOSTROLL_ASSEMBLE until a restart (ADR-0371). */
+	bootroot_drive();
 	/* A roll whose hostbuild ended with no completion seen (cancelled, say)
 	 * resolves now rather than claiming to be in progress forever. */
 	if (g_hostroll.step == HOSTROLL_BUILD &&
@@ -27933,7 +27951,13 @@ static void op_postSystemAssembly(const struct api_ctx *ctx)
 		              "an assembly is already running -- poll GET /v1/system/assembly");
 		return;
 	}
-	if (!g_bootroot_wanted && bootroot_want() != 0) {
+	/* Asked for already: re-read cix-root now rather than only at the next
+	 * job's end, in case nothing is left to end. */
+	if (g_bootroot_wanted)
+		bootroot_drive();
+	else
+		bootroot_want();
+	if (!g_bootroot_wanted && !g_bootroot_assembly_running) {
 		if (g_bootroot_assembly_refused[0] != '\0')
 			respond_error(ctx->fd, 409, "Conflict", g_bootroot_assembly_refused);
 		else
@@ -39093,7 +39117,8 @@ static void handover_recompute_data_dir_fault(void)
  * ADR-0375: nothing is in flight that the exec would orphan. A helper's
  * completion is a function in this image, a package job is this
  * process's memory, and every other forked child is named here by the
- * flag that says it runs. A container is steady when no teardown is in
+ * flag that says it runs, and an assembly asked for but not yet started
+ * (ADR-0371) is in flight too. A container is steady when no teardown is in
  * flight; a stop's grace is seconds, so a handover waits it out rather
  * than carry it. Console shells are the one child left running unwatched
  * (phase 3).
@@ -39104,7 +39129,7 @@ static int handover_quiescent(void)
 	int n, i;
 
 	if (g_helpers_live != 0 || pkg_job_in_flight_for(NULL, NULL, 1) ||
-	    g_bootroot_assembly_running ||
+	    g_bootroot_assembly_running || g_bootroot_wanted ||
 	    (g_hostroll.step != HOSTROLL_IDLE && g_hostroll.step != HOSTROLL_SWITCH) ||
 	    pkg_push_in_flight() || pkg_sync_in_progress() ||
 	    g_iso_build_state == ISO_BUILD_BUILDING || g_iso_publish_state == ISO_PUB_RUNNING ||

@@ -779,15 +779,24 @@ static int assemble_from_tree(const char *tree, const char *out_path, const char
 static int assemble_legacy(char **argv)
 {
 	char tree[PATH_MAX];
+	int rc;
 
 	if (snprintf(tree, sizeof(tree), "%s.tree", argv[1]) >= (int)sizeof(tree)) {
 		fprintf(stderr, "path too long: %s.tree\n", argv[1]);
 		return 1;
 	}
-	if (test_root_tree_build(tree, argv[2], argv[3], argv[4], argv[6], argv[7], argv[8],
-	                         argv[9]) != 0)
-		return 1;
-	return assemble_from_tree(tree, argv[5], argv[1]);
+	rc = test_root_tree_build(tree, argv[2], argv[3], argv[4], argv[6], argv[7], argv[8],
+	                          argv[9]) != 0
+	         ? 1
+	         : assemble_from_tree(tree, argv[5], argv[1]);
+	/*
+	 * Gone whether or not the seal worked: the next release has no code
+	 * that knows this directory exists, so one left here would sit in
+	 * BOOTROOT_DIR for good.
+	 */
+	if (persist_remove_tree(tree) != 0)
+		fprintf(stderr, "could not remove %s: %s\n", tree, strerror(errno));
+	return rc;
 }
 
 int main(int argc, char **argv)
