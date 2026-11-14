@@ -2445,6 +2445,21 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 363: the control-plane root is sealed from the cix-root image's tree (#350, ADR-0371 phase 3a, 0.2.57-681)
+
+`mkbootroot <tree> <out> <staging>` seals one image tree, and cixd passes `cix-root`'s current version. An assembly is asked for and then driven. It installs the hostbuilds' `cixd`, `cixctl` and `kernel-modules` into cix-root, and starts only when the image holds them at the installed hostbuild versions and has settled. 681's `mkbootroot` still takes the ten arguments 680's daemon passes, so 681 itself booted on a legacy-shape root.
+
+**How it was verified.**
+- **Compile probe `probe-cix-compile@0.2.57-751`** (commit d994c5f0) passed the full selftest. It includes `test_mkbootroot_firmware` and `test_console_pki_bootstrap`, which drive the ten-argument form 680 calls; the other boot tests use the three-argument form through `test_root_assemble()`.
+- **The host roll to 681 on 2026-11-14.** At 03:15 the in-place switch to slot b failed. The new cixd logged nothing, the host rebooted once onto slot a (680), and every container came back. The cause is not established (#686). A second roll at 11:45 switched in place, and most containers kept their pids. 681 has run on slot b since 11:48.
+- **The first one-image root, sealed on 681 by `cixctl assembly start`.**
+  - `waiting_for` named `cixd 0.2.57-681` while the daemon installed `cixctl`, then `cixd`, into cix-root. Both were cache hits of about 40 ms.
+  - Both pins moved 0.2.57-678 → 0.2.57-681 (ADR-0320).
+  - `mkbootroot` sealed cix-root version `ed215fd9…` in 25 s: `completed_generation` 1, `root_image_version` set, 13,565,952 bytes.
+  - That root is not staged yet; the next cix release is the first to boot one.
+
+**Next:** phase 3b, the release whose roll boots the one-image root. It removes the ten-argument form, `mkbootroot`'s link to `test/test_root_tree.c`, and `test_mkbootroot_firmware`.
+
 ## Part 362: the control-plane root exists as one image, and matches today's root byte for byte where they overlap (#350, ADR-0371 phase 2)
 
 `cix-root@1.0.0` (cix-recipes f4ef69e) names the root's content as whole packages: the `cixd`, `cixctl` and `kernel-modules` outputs, kmod, the firmware, the six tool packages `controlplane_programs.h` names, ca-certificates and glibc. On 192.168.15.95 the image was created and materialized on 2026-11-10, with 24 packages after the runtime closure. Nothing reads it yet; phase 3 makes `mkbootroot` take it.

@@ -15,7 +15,7 @@ openssl x509 -in image/keys/cix-signing.crt -outform DER -out image/keys/cix-sig
 
 ## GPU firmware, for GPU passthrough
 
-Only needed if you plan to grant a `gpu:N` device to a container (ADR-0028/ADR-0029). The kernel's own `CONFIG_DRM_AMDGPU`/`CONFIG_HSA_AMD` drivers load firmware at driver probe, before any container exists, so it has to live in the host root itself, not a container image. Since ADR-0371 phase 3a the host root is the `cix-root` image's tree, so firmware reaches it the way `rtw88-firmware` does: as a package installed in `cix-root`. No package carries the `amdgpu/` blobs yet; it is a recipe like `rtw88-firmware`'s, taking that subtree of upstream `linux-firmware`. Before phase 3a, `mkbootroot` took a firmware directory as an argument, and this section fetched one by hand.
+Only needed if you plan to grant a `gpu:N` device to a container (ADR-0028/ADR-0029). The kernel's own `CONFIG_DRM_AMDGPU`/`CONFIG_HSA_AMD` drivers load firmware at driver probe, before any container exists, so it has to live in the host root itself, not a container image. Since ADR-0371 phase 3a the host root is the `cix-root` image's tree, so firmware reaches it the way `rtw88-firmware` does: as a package installed in `cix-root`. No package carries the `amdgpu/` blobs yet ([#685](https://git.home.arpa/itdlabs/cix/issues/685)); it is a recipe like `rtw88-firmware`'s, taking that subtree of upstream `linux-firmware`. Before phase 3a, `mkbootroot` took a firmware directory as an argument, and this section fetched one by hand.
 
 ## Building the ISO
 
