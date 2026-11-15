@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### test_cli waits for the exit it checks (0.2.57-686)
+
+- **The defect:** `test_cli` polled `cixctl container inspect c1` until the output contained `exited` anywhere. The services column reads `main:exited` as soon as the service ends, before the container's own exit is recorded, so the loop could stop while `c1` still read `running`, and the `exit_status=5` check then failed. That failed the 0.2.57-685 release selftest on .95 (2026-11-15), after compile probe 757 had passed the same commit.
+- **Now:** it polls for `exit_status=5` and then checks the state column reads ` exited `. 685 was published and never deployed; 686 carries it.
+
 ### After a failed hostbuild the host roll says what it retries (#683, 0.2.57-685)
 
 - **Before:** after the 0.2.57-679 cix hostbuild failed on 2026-11-13, the next roll logged `rolling: kernel 7.3.4-1, cix  ->  `. A failed hostbuild has no installed version, and drift is computed only for an installed one. The roll itself was right.

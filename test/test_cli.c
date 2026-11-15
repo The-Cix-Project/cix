@@ -289,15 +289,25 @@ int main(void)
 		int i;
 		int seen = 0;
 
+		/*
+		 * Waits for exit_status=5, the thing checked below, never for
+		 * the word "exited": the services column reads "main:exited" as
+		 * soon as the service ends, before the container's own exit is
+		 * recorded, so matching the word anywhere broke out of this loop
+		 * while c1 still read running. That failed the 0.2.57-685 release
+		 * selftest on 192.168.15.95 (2026-11-15) after compile probe 757
+		 * had passed the same commit: the two runs fell either side of
+		 * that gap.
+		 */
 		for (i = 0; i < 50; i++) {
 			if (run_cli(argv, out, sizeof(out), &rc) == 0 && rc == 0 &&
-			    strstr(out, "exited") != NULL) {
+			    strstr(out, "exit_status=5") != NULL) {
 				seen = 1;
 				break;
 			}
 			usleep(100000);
 		}
-		if (!seen || strstr(out, "exit_status=5") == NULL) {
+		if (!seen || strstr(out, " exited ") == NULL) {
 			fprintf(stderr, "FAIL: cixctl inspect c1 never showed exited/exit_status=5, out=%s\n",
 			        out);
 			ok = 0;
