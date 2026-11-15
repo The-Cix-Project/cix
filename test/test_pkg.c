@@ -8013,6 +8013,35 @@ skip_resume:
 					ok = 0;
 				}
 			}
+			/*
+			 * #680: splitpkg-tool is now the only install of an output
+			 * of splitpkg, which is installed at the same version, so
+			 * uninstalling it would stop every build declaring
+			 * splitpkg as a tool from composing (ADR-0372). Refused
+			 * with 409, and the output stays installed. Removing
+			 * cix-hosttools did exactly this to squashfs-tools-extra
+			 * on 192.168.15.95 (2026-11-15).
+			 */
+			if (s_ok) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "DELETE", "/v1/pkg/splitpkg-tool", NULL, &r) !=
+				        0 ||
+				    r.status != 409) {
+					fprintf(stderr,
+					        "FAIL: #680 uninstalling an output's only install while its "
+					        "main package is installed should be 409, got %d\n",
+					        r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+				pkg_installed_version(&client, "splitpkg-tool", ver_tool, sizeof(ver_tool));
+				if (!str_eq(ver_tool, "2.0-1")) {
+					fprintf(stderr, "FAIL: #680 the refused uninstall removed splitpkg-tool "
+					                "anyway (version now %s)\n",
+					        ver_tool);
+					ok = 0;
+				}
+			}
 		}
 		/*
 		 * #682: the same move, the other way round. splitmain 1.0 has

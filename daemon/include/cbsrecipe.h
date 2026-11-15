@@ -208,6 +208,16 @@ const char *cbs_explain_upstream_verify(const struct cbs_explain *ex, const char
 int cbs_explain_replaces(const struct cbs_explain *ex, char *out, size_t out_size);
 
 /*
+ * The same for output `index` (cbs_explain_output_find()): its own
+ * `replaces`, which cix-build-system#314 asks explain to emit. "" when the
+ * output declares none or the engine does not emit it; -1 if the index
+ * is out of range or the list does not fit. gcc-libs takes libgcc_s.so.1
+ * from squashfs-tools this way (cix#680).
+ */
+int cbs_explain_output_replaces(const struct cbs_explain *ex, int index, char *out,
+                                size_t out_size);
+
+/*
  * The aggregate memory this recipe's whole build needs, in bytes (cbs#276,
  * cix#558): `resources.memory` of `cbs explain --json`, which cbs reports
  * already normalized from the recipe's `resources { memory "4GiB" }`.

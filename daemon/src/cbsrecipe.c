@@ -343,18 +343,14 @@ const char *cbs_explain_abi(const struct cbs_explain *ex, const char *name)
 	return json_as_string(json_object_get(outs->u.array.items[i], "abi"));
 }
 
-int cbs_explain_replaces(const struct cbs_explain *ex, char *out, size_t out_size)
+/* A `replaces` array, space-separated into out; absent or not an array
+ * is an empty list. */
+static int replaces_from(const struct json_value *items, char *out, size_t out_size)
 {
-	const struct json_value *items;
 	size_t i;
 	size_t off = 0;
 
-	if (ex == NULL || out == NULL || out_size == 0)
-		return -1;
 	out[0] = '\0';
-
-	/* cbs v0.1.99 (cbs#275): absent when the recipe declares none. */
-	items = json_object_get(ex->root, "replaces");
 	if (items == NULL || items->type != JSON_ARRAY)
 		return 0;
 	for (i = 0; i < items->u.array.count; i++) {
@@ -371,6 +367,30 @@ int cbs_explain_replaces(const struct cbs_explain *ex, char *out, size_t out_siz
 		off += (size_t)n;
 	}
 	return 0;
+}
+
+int cbs_explain_replaces(const struct cbs_explain *ex, char *out, size_t out_size)
+{
+	if (ex == NULL || out == NULL || out_size == 0)
+		return -1;
+	/* cbs v0.1.99 (cbs#275): absent when the recipe declares none. */
+	return replaces_from(json_object_get(ex->root, "replaces"), out, out_size);
+}
+
+int cbs_explain_output_replaces(const struct cbs_explain *ex, int index, char *out,
+                                size_t out_size)
+{
+	const struct json_value *outs = outputs_of(ex);
+
+	if (out == NULL || out_size == 0)
+		return -1;
+	out[0] = '\0';
+	if (outs == NULL || index < 0 || (size_t)index >= outs->u.array.count)
+		return -1;
+	/* cix-build-system#314: an engine that predates it emits no
+	 * `replaces` on an output, which reads as an empty list. */
+	return replaces_from(json_object_get(outs->u.array.items[index], "replaces"), out,
+	                     out_size);
 }
 
 int cbs_explain_resources_memory(const struct cbs_explain *ex, long long *out)

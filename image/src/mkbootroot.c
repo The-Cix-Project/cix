@@ -390,19 +390,15 @@ static int require_dlopened_libs(const char *image_root)
 		const char *why;
 	} libs[] = {
 		/*
-		 * squashfs-tools is the provider, and that is deliberate on
-		 * its side rather than an accident worth correcting: its
-		 * recipe stages this library into its own package with
-		 * `stage library "libgcc_s.so.1"` and gates it with a
-		 * `require file`, because a composed build environment does
-		 * not carry a declared tool's runtime dependencies (cix#510)
-		 * and mksquashfs is gcc-built and threads. gcc's own package
-		 * ships the same path, so the two never share an image -- if
-		 * they ever do, "one package owns a path" refuses the second
-		 * and names both, which is that gate working rather than a
-		 * problem here.
+		 * gcc-libs, gcc's runtime-library output, owns it since gcc
+		 * 16.2.0-20 (cix#680), and squashfs-tools requires it.
+		 * squashfs-tools used to stage its own copy, which made it
+		 * impossible to install beside gcc; the root keeps that copy
+		 * until gcc-libs can take the path from it (cix-build-
+		 * system#314), and this check reads the file, whichever
+		 * package carries it.
 		 */
-		{ "libgcc_s.so.1", "squashfs-tools",
+		{ "libgcc_s.so.1", "gcc-libs",
 		  "libpthread's own pthread_exit() and pthread_cancel() dlopen() it for stack "
 		  "unwinding, so a program using threads starts, runs, and aborts at its own "
 		  "normal exit with \"libgcc_s.so.1 must be installed for pthread_exit to work\" "

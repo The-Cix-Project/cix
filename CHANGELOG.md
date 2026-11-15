@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An uninstall never strands a tool's output, and an output's replaces is read (#680, 0.2.57-685)
+
+- **The guard:** `DELETE /v1/pkg/{name}` answers 409 when the package is the only install of an output whose recipe's main package is installed at that version. Removing it would stop every build that declares the main package as a tool from composing (ADR-0372). The message names the main package and its image.
+  - On 2026-11-15 removing `cix-hosttools` took the only `squashfs-tools-extra` on .95, and cix stopped building. ROADMAP Part 365 and ADR-0371's phase 4 note are corrected in place.
+  - `test_pkg`'s #678 case now checks the 409.
+- **An output's own `replaces`:** cixd reads it (`cbs_explain_output_replaces()`) instead of clearing it. cbs does not emit it yet (cix-build-system#314); once it does, the explain sweep re-derives every stored recipe and gcc's `gcc-libs` output takes `libgcc_s.so.1` from `squashfs-tools`.
+  - Until then, an output reads as declaring none, as before; it never borrows the package's.
+  - `test_cbsrecipe` covers both shapes.
+- **`mkbootroot`** names `gcc-libs` as the provider of `libgcc_s.so.1` that `pthread_exit()` dlopens.
+
 ### A recipe may declare 32 sources (#684, 0.2.57-685)
 
 - **Before:** `PKG_MAX_SOURCES` was 16. The cix release recipe already declares 16 (one main, fifteen ADR-0209 floor artifacts), so the next artifact a release needed would have made cix unpublishable. `probe-rootimage@1-1`, with 26 sources, was accepted by cbs and then refused by cixd at every parse, logging `26 sources, but 1..16 is supported` about every 4.5 minutes on .95.

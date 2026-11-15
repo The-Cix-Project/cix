@@ -631,7 +631,43 @@ static void test_outputs(void)
 	expect_str("an output's requires are its own", deps, "glibc");
 	expect_int("no such output", cbs_explain_output_find(ex, "nosuch"), -1);
 	expect_int("out of range", cbs_explain_output_name(ex, 9, NULL) == NULL, 1);
+	/* cix-build-system#314: this engine emits no replaces on an output,
+	 * which reads as none, never as the package's. */
+	expect_int("an output with no replaces reads",
+	           cbs_explain_output_replaces(ex, i, deps, sizeof(deps)), 0);
+	expect_str("and is empty", deps, "");
+	expect_int("an output index out of range is refused",
+	           cbs_explain_output_replaces(ex, 9, deps, sizeof(deps)), -1);
 	cbs_explain_free(ex);
+
+	/* cix#680: gcc-libs' own replaces, in the shape cix-build-system#314
+	 * asks explain to write, beside a package-level one it must not
+	 * borrow. */
+	{
+		static const char *const REPL =
+		    "{\"name\":\"gcc\",\"version\":\"16.2.0\",\"release\":20,\"format\":\"cixpkg\","
+		    "\"replaces\":[\"oldgcc\"],"
+		    "\"outputs\":["
+		    "{\"name\":\"gcc\",\"main\":true,\"files\":[]},"
+		    "{\"name\":\"gcc-libs\",\"main\":false,"
+		    "\"files\":[{\"pattern\":\"usr/lib/libgcc_s.so.1\",\"glob\":false}],"
+		    "\"replaces\":[\"squashfs-tools\",\"libgcc-s\"]}],"
+		    "\"sources\":[{\"name\":\"gcc\",\"urls\":[\"https://e/g.tar.gz\"],\"sha256\":\"aa\"}]}";
+
+		ex = cbs_explain_parse(REPL, strlen(REPL), err, sizeof(err));
+		if (ex == NULL) {
+			fail("a document with an output's replaces failed to parse");
+			return;
+		}
+		i = cbs_explain_output_find(ex, "gcc-libs");
+		expect_int("an output's replaces read",
+		           cbs_explain_output_replaces(ex, i, deps, sizeof(deps)), 0);
+		expect_str("an output's replaces are its own", deps, "squashfs-tools libgcc-s");
+		expect_int("the package's replaces read", cbs_explain_replaces(ex, deps, sizeof(deps)),
+		           0);
+		expect_str("the package's are separate", deps, "oldgcc");
+		cbs_explain_free(ex);
+	}
 
 	ex = cbs_explain_parse(OLD, strlen(OLD), err, sizeof(err));
 	if (ex == NULL) {

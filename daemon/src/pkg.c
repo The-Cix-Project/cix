@@ -3404,15 +3404,23 @@ static int parse_cbs_recipe(const char *path, const char *want, struct pkg_recip
 			return -1;
 		}
 		snprintf(out->name, sizeof(out->name), "%s", want);
-		out->replaces[0] = '\0';
 		out->artifact_sha256[0] = '\0';
 		snprintf(key, sizeof(key), "artifact_sha256.%s", want);
-		if (cbs_explain_output_requires(ex, oi, "runtime", "package", out->depends,
+		/*
+		 * The output's own replaces, never the package's: the package's
+		 * names what the main package may take over, and an output's
+		 * paths are the output's. Until cix-build-system#314 explain
+		 * emits none for an output, which reads as empty -- the main
+		 * package's replaces never applied to an output's paths, and
+		 * borrowing them here would let it (#680).
+		 */
+		if (cbs_explain_output_replaces(ex, oi, out->replaces, sizeof(out->replaces)) != 0 ||
+		    cbs_explain_output_requires(ex, oi, "runtime", "package", out->depends,
 		                                sizeof(out->depends)) != 0 ||
 		    cbs_explain_metadata(ex, key, out->artifact_sha256,
 		                         sizeof(out->artifact_sha256)) != 0) {
 			logstore_write("cixd", "error",
-			               "pkg: %s: output %s's runtime requirements or approval do not fit",
+			               "pkg: %s: output %s's replaces, runtime requirements or approval do not fit",
 			               explain_path, want);
 			cbs_explain_free(ex);
 			return -1;
@@ -18514,6 +18522,57 @@ static int delete_produce_completed(int chain_idx, struct pkg_entry *e, int wait
  * *out_chain_idx is the chain and the child is in *out_pid/*out_pidfd,
  * for the caller to watch as an install's producer is watched.
  */
+/*
+ * #680, ADR-0372 at removal: why the last uninstall was refused for
+ * stranding an output, for pkg_error_describe().
+ */
+static char g_output_strand_why[640];
+
+/*
+ * Would uninstalling e leave an output stranded? 1 when e is an output
+ * of a recipe (not its main package), no other image has e installed at
+ * e's version, and the main package is installed somewhere usable at
+ * that version -- so after this, no build declaring the main package as
+ * a tool could be composed: the composer needs every output of the
+ * recipe at the version the tool resolves to (ADR-0372). Fills
+ * g_output_strand_why.
+ *
+ * Removing the main package itself is never refused here: dropping a
+ * tool is an ordinary uninstall, and its outputs left behind are only
+ * files. Removing an output that is installed elsewhere too is
+ * harmless. Written after the 2026-11-15 removal of cix-hosttools on
+ * 192.168.15.95 took the only squashfs-tools-extra with it, and every
+ * build declaring squashfs-tools stopped composing.
+ */
+static int uninstall_strands_output(const struct pkg_entry *e)
+{
+	char main_name[PKG_NAME_MAX];
+	const struct pkg_entry *m;
+	const char *unusable = NULL;
+	int i;
+
+	recipe_family(e->name, main_name, sizeof(main_name));
+	if (strcmp(main_name, e->name) == 0)
+		return 0;
+	for (i = 0; i < PKG_MAX_PACKAGES; i++) {
+		const struct pkg_entry *o = &g_packages[i];
+
+		if (o->in_use && o != e && o->state == PKG_STATE_INSTALLED &&
+		    strcmp(o->name, e->name) == 0 && strcmp(o->version, e->version) == 0)
+			return 0;
+	}
+	m = buildenv_newest_installed(main_name, e->version, NULL, &unusable);
+	if (m == NULL)
+		return 0;
+	snprintf(g_output_strand_why, sizeof(g_output_strand_why),
+	         "%s@%s is the only install of an output of %s, which is installed at that "
+	         "version in image %s: a build declaring %s as a tool needs every output of its "
+	         "recipe (ADR-0372), so removing it would stop those builds composing -- "
+	         "uninstall %s there first, or install %s@%s in another image",
+	         e->name, e->version, main_name, m->image, main_name, main_name, e->name, e->version);
+	return 1;
+}
+
 static enum pkg_error delete_start(const char *name, const char *image, int is_stray,
                                    pid_t *out_pid, int *out_pidfd, int *out_chain_idx)
 {
@@ -18571,6 +18630,13 @@ static enum pkg_error delete_start(const char *name, const char *image, int is_s
 		memset(e, 0, sizeof(*e));
 		pkg_announce_jobs();
 		return save_state() == 0 ? PKG_OK : PKG_ERR_PERSIST_FAILED;
+	}
+
+	/* #680: never leave an installed tool's output installed nowhere. */
+	if (uninstall_strands_output(e)) {
+		logstore_write("cixd", "warn", "pkg %s@%s: not uninstalled -- %s", e->name,
+		               normalize_image(image), g_output_strand_why);
+		return PKG_ERR_OUTPUT_STRANDED;
 	}
 
 	/*
@@ -25716,6 +25782,10 @@ int pkg_error_describe(enum pkg_error err, const char **phrase, char *msg, size_
 	case PKG_ERR_ABI_HOLD:
 		*phrase = "Conflict";
 		snprintf(msg, msg_size, "held by the ABI check: %s", g_abi_hold_why);
+		return 409;
+	case PKG_ERR_OUTPUT_STRANDED:
+		*phrase = "Conflict";
+		snprintf(msg, msg_size, "%s", g_output_strand_why);
 		return 409;
 	case PKG_ERR_BUILD_MEMORY_OVER_CEILING:
 		*phrase = "Conflict";

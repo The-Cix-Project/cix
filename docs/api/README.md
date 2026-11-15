@@ -360,7 +360,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/pkg/build/log` | Upgrade to a WebSocket; live-tail a currently-running install/hostbuild job's own stdout/stderr |
 | GET | `/pkg` | List every known package (installed or in-flight) with its state |
 | GET | `/pkg/{name}` | Inspect one package's current state |
-| DELETE | `/pkg/{name}` | Uninstall a package, or clear a permanently-failed entry (never actually merged into any image, so no new image version is produced) |
+| DELETE | `/pkg/{name}` | Uninstall a package, or clear a permanently-failed entry (never actually merged into any image, so no new image version is produced). `409` when the package is the only install of an output whose recipe's main package is installed at that version: no build declaring the main package as a tool could compose without it (ADR-0372, #680) |
 | GET | `/pkg/buildenv` | The composed build environments this host is holding (ADR-0221) |
 | DELETE | `/pkg/buildenv/{name}` | Reclaim one now, rather than waiting for the drain (ADR-0221) |
 

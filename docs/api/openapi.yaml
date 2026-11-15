@@ -14525,8 +14525,13 @@ paths:
         "409":
           description: >
             A job for this package in this image is in flight -- an install,
-            or another uninstall -- or every package job slot is held;
-            nothing was changed
+            or another uninstall -- or every package job slot is held; or
+            the package is an output whose recipe's main package is
+            installed at that version and this is the output's only
+            install, so removing it would stop every build that declares
+            the main package as a tool from composing (ADR-0372, #680) --
+            the message names the main package and its image. Nothing was
+            changed
           content:
             application/json:
               schema:

@@ -418,7 +418,15 @@ enum pkg_error {
 	 * against another of its ABIs in one image's target set. Nothing
 	 * was started; the message names both packages and both ABIs.
 	 */
-	PKG_ERR_ABI_HOLD
+	PKG_ERR_ABI_HOLD,
+	/*
+	 * #680, ADR-0372: uninstalling this package would leave it, an
+	 * output of a recipe whose main package is installed at that
+	 * version, installed nowhere, so no build declaring the main package
+	 * as a tool could be composed. Nothing was started; the message names
+	 * the output, its main package and where that is installed.
+	 */
+	PKG_ERR_OUTPUT_STRANDED
 };
 
 /*
