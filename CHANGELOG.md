@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A recipe may declare 32 sources (#684, 0.2.57-685)
+
+- **Before:** `PKG_MAX_SOURCES` was 16. The cix release recipe already declares 16 (one main, fifteen ADR-0209 floor artifacts), so the next artifact a release needed would have made cix unpublishable. `probe-rootimage@1-1`, with 26 sources, was accepted by cbs and then refused by cixd at every parse, logging `26 sources, but 1..16 is supported` about every 4.5 minutes on .95.
+- **Now:** 32. `struct pkg_recipe` grows from about 9.2 KB to about 18.5 KB. It lives on the stack of about 25 functions, none on a thread, and one is static.
+
 ### A cixd that reboots the host says why at the next boot (#686, 0.2.57-684)
 
 - **The gap:** two in-place root switches on 192.168.15.95 on 2026-11-14 (03:15 and 16:04) rebooted the host. Nothing from the new cixd reached the log store, and nothing captured the serial console, so the cause was lost each time.

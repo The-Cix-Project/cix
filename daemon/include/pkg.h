@@ -190,11 +190,15 @@
 /* Max total packages in one resolved install chain (the target plus
  * every transitive dependency) -- a real cap, not an unbounded queue. */
 #define PKG_MAX_DEP_CHAIN 32
-/* Max pkg_source=/pkg_sha256= entries in one recipe -- lldap's own
- * real need is 9 (one main tarball + 8 CDN assets); generous headroom
- * past that, the same "bounded but roomy" precedent PKG_MAX_DEP_CHAIN
- * already sets, not an unbounded list. */
-#define PKG_MAX_SOURCES 16
+/* Max sources (main plus extras) in one recipe, bounded but roomy like
+ * PKG_MAX_DEP_CHAIN. It was 16, sized from lldap's 9, until the cix
+ * release recipe reached 16 itself (cix@0.2.57-680: one main and fifteen
+ * extras, the ADR-0209 floor artifacts) and probe-rootimage@1-1 needed
+ * 26, which cbs accepted and cixd then refused at every parse (#684).
+ * Each source costs struct pkg_recipe PKG_URL_MAX + PKG_SHA256_MAX bytes
+ * (577), so 32 makes it about 18.5 KB; it lives on the stack of about
+ * 25 functions, none of them on a thread, and one is static. */
+#define PKG_MAX_SOURCES 32
 
 /*
  * Fallback URLs, pooled across every source of one recipe (#507).
