@@ -6865,6 +6865,14 @@ int pkg_host_state(const char *name, struct pkg_host_state *out)
 	if (out->failed)
 		snprintf(out->error, sizeof(out->error), "%s", e->error);
 	pkg_entry_drift(e, out->available, sizeof(out->available));
+	/*
+	 * #683: a failed hostbuild left no installed version, and drift is
+	 * only meaningful for an installed one, so the host roll's sentence
+	 * read "cix  ->  " while it was in fact retrying. What a retry builds
+	 * is the newest recipe, so that is what is available.
+	 */
+	if (out->failed && out->available[0] == '\0')
+		recipe_latest_version(name, out->available, sizeof(out->available));
 	return 0;
 }
 

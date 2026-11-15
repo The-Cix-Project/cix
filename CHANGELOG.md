@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### After a failed hostbuild the host roll says what it retries (#683, 0.2.57-685)
+
+- **Before:** after the 0.2.57-679 cix hostbuild failed on 2026-11-13, the next roll logged `rolling: kernel 7.3.4-1, cix  ->  `. A failed hostbuild has no installed version, and drift is computed only for an installed one. The roll itself was right.
+- **Now:** `pkg_host_state()` reports the newest recipe as `available` for a failed entry, which is what the retry builds, and the sentence reads `cix failed -> 0.2.57-680`.
+
 ### An upgrade or uninstall removes the directories it empties (#687, 0.2.57-685)
 
 - **Before:** `unlink_manifest_files()` removed a package's files and never the directories they left empty. An image collected the skeleton of everything it ever held. The root sealed from cix-root on .95 carried 112 empty directories (probe-rootimage@10-1), among them `lib/modules/7.3.3` and all of `usr/include`, left by the splits.

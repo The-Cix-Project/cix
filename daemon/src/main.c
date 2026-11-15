@@ -11447,8 +11447,12 @@ static int action_system_roll(const char *params, char *reason, size_t reason_si
 	g_hostroll.reboot_by = scheduler_running_window_end();
 	g_hostroll.stage_kernel = kernel_behind || kernel_not_running;
 	g_hostroll.then_cix = kernel_behind && cix_behind;
+	/* #683: a failed hostbuild has no installed version; the sentence
+	 * says "failed" there, and available is the recipe the retry builds. */
 	snprintf(reason, reason_size, "rolling: kernel %s%s%s, cix %s%s%s",
-	         kernel.installed, kernel_behind ? " -> " : "", kernel.available, cix.installed,
+	         kernel.installed[0] != '\0' ? kernel.installed : kernel.failed ? "failed" : "none",
+	         kernel_behind ? " -> " : "", kernel.available,
+	         cix.installed[0] != '\0' ? cix.installed : cix.failed ? "failed" : "none",
 	         cix_behind ? " -> " : "", cix.available);
 	logstore_write("system", "info", "host roll: %s (ADR-0327)", reason);
 	if (kernel_behind)
