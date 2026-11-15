@@ -2565,6 +2565,44 @@ static int path_owner_gate(const struct pkg_entry *self, const char *image, cons
  * always a scratch copy-forward staging directory (ADR-0107/0108),
  * never a version's own immutable rootfs.
  */
+/*
+ * #687: the directories a removed file leaves empty, deepest first, up
+ * to the image's root. rmdir() removes only an empty directory, so the
+ * first that still holds anything -- another package's file, or a file
+ * that was kept above -- ends the walk, and nothing with content can go.
+ *
+ * Before this an upgrade or uninstall removed files and never the
+ * directories they emptied, so an image collected the skeleton of
+ * everything it ever held. Measured on 192.168.15.95 (2026-11-14,
+ * probe-rootimage@10-1): the root sealed from cix-root carried 112 empty
+ * directories, among them a module tree for a kernel it will never run
+ * (lib/modules/7.3.3) and the whole of usr/include, from the splits that
+ * moved those files into outputs cix-root does not install.
+ *
+ * A package's file list names files and links, never directories, so
+ * none is "owned" here; a directory a package ships empty is untouched
+ * unless another package had files in it, which it then did not hold
+ * empty. Runs where unlink_manifest_files() does, in the producer's
+ * helper child on a staging copy.
+ */
+static void prune_empty_parents(const char *rootfs, const char *rel)
+{
+	char dir[PATH_MAX];
+	char *slash;
+
+	if (snprintf(dir, sizeof(dir), "%s", rel) >= (int)sizeof(dir))
+		return;
+	while ((slash = strrchr(dir, '/')) != NULL) {
+		char path[PATH_MAX];
+
+		*slash = '\0';
+		if (dir[0] == '\0' ||
+		    snprintf(path, sizeof(path), "%s/%s", rootfs, dir) >= (int)sizeof(path) ||
+		    rmdir(path) != 0)
+			return;
+	}
+}
+
 static void unlink_manifest_files(const struct pkg_entry *e, const char *rootfs)
 {
 	struct path_claim_index idx;
@@ -2597,6 +2635,7 @@ static void unlink_manifest_files(const struct pkg_entry *e, const char *rootfs)
 		snprintf(path, sizeof(path), "%s/%s", rootfs, e->files[i]);
 		t = stallwatch_tally_start();
 		unlink(path);
+		prune_empty_parents(rootfs, e->files[i]);
 		stallwatch_tally("unlink old files", t);
 	}
 	path_claim_index_free(&idx);

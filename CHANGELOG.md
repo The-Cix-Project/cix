@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An upgrade or uninstall removes the directories it empties (#687, 0.2.57-685)
+
+- **Before:** `unlink_manifest_files()` removed a package's files and never the directories they left empty. An image collected the skeleton of everything it ever held. The root sealed from cix-root on .95 carried 112 empty directories (probe-rootimage@10-1), among them `lib/modules/7.3.3` and all of `usr/include`, left by the splits.
+- **Now:** after each file, `prune_empty_parents()` removes its parent directories while they are empty, deepest first, up to the image's root. `rmdir()` removes only an empty directory, so nothing with content can go, and a package's file list names no directories, so none is owned.
+- **Gate:** `test_pkg`'s `keepver` case uninstalls it and checks that `usr/share/keepver` is gone, and that `usr/share` stays when it held anything else.
+
 ### An uninstall never strands a tool's output, and an output's replaces is read (#680, 0.2.57-685)
 
 - **The guard:** `DELETE /v1/pkg/{name}` answers 409 when the package is the only install of an output whose recipe's main package is installed at that version. Removing it would stop every build that declares the main package as a tool from composing (ADR-0372). The message names the main package and its image.

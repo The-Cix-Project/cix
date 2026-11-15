@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -7299,6 +7300,53 @@ skip_hostbuild:
 			ok = 0;
 		}
 		cix_response_free(&r);
+
+		/*
+		 * #687: an uninstall removes the directories it empties. keepver
+		 * alone holds usr/share/keepver, so once it goes that directory
+		 * must go with it. usr/share must stay whenever it holds
+		 * anything else, counted here before the uninstall rather than
+		 * assumed: the walk stops at the first directory with content.
+		 * Before this an image kept the empty skeleton of everything it
+		 * ever held: 112 directories in the root sealed from cix-root on
+		 * .95 (probe-rootimage@10-1, 2026-11-14).
+		 */
+		{
+			int others = 0;
+			DIR *sd = opendir(base_path("/usr/share"));
+
+			if (sd != NULL) {
+				struct dirent *de;
+
+				while ((de = readdir(sd)) != NULL)
+					if (strcmp(de->d_name, ".") != 0 && strcmp(de->d_name, "..") != 0 &&
+					    strcmp(de->d_name, "keepver") != 0)
+						others++;
+				closedir(sd);
+			}
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "DELETE", "/v1/pkg/keepver", NULL, &r) != 0 ||
+			    r.status != 204) {
+				fprintf(stderr, "FAIL: #687 DELETE keepver expected 204, got %d\n",
+				        r.status);
+				ok = 0;
+			} else {
+				struct stat kst;
+
+				if (stat(base_path("/usr/share/keepver"), &kst) == 0) {
+					fprintf(stderr, "FAIL: #687 uninstalling keepver left "
+					                "usr/share/keepver behind, empty\n");
+					ok = 0;
+				}
+				if (others > 0 && stat(base_path("/usr/share"), &kst) != 0) {
+					fprintf(stderr, "FAIL: #687 uninstalling keepver removed usr/share, "
+					                "which held %d other entr%s\n",
+					        others, others == 1 ? "y" : "ies");
+					ok = 0;
+				}
+			}
+			cix_response_free(&r);
+		}
 	}
 skip_keepver:
 skip_keep_on_failure:
