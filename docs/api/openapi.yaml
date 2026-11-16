@@ -20650,10 +20650,17 @@ components:
               description: >
                 Null before the first run. "It has not run" and "it ran
                 and failed" are different facts and a boolean alone
-                cannot hold both.
+                cannot hold both. For an action that keeps working
+                after it returns, such as system.roll, it follows the
+                latest step, so a step that fails later turns it false.
             last_reason:
               title: Last result
               type: string
+              description: >
+                What the last run said. For system.roll it is the
+                roll's latest step (waiting, building, staged,
+                switched in place, or why it stopped), not only what
+                it said when it started (#692).
 
     PipelinePosition:
       type: object

@@ -2459,7 +2459,7 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
   - dns, ldap, ntp, syslog, cr and ar kept their pids;
   - jump, vpn-1 and agent-1 had rolled onto hibr's new versions at 10:39;
   - vpn-1 reached its dial tone at 10:39:07.
-- **#689 live:** 687 ran its first drain at 11:02:26 (`image gc: set aside 3 version(s)`). At 11:10 `cixctl process ls` showed no cixd child but procfuse and the watchdog. A look logs nothing when it finds the drops settled or still pending, so that absence alone cannot tell a working check from one that never ran. The direct measure is the gap between staging and switching: 9 s at 687 → 688 (12:22:03 to 12:22:12), against two hours at 686.
+- **#689 live:** 687 ran its first drain at 11:02:26 (`image gc: set aside 3 version(s)`). At 11:10 `cixctl process ls` showed no cixd child but procfuse and the watchdog. A look logs nothing when it finds the drops settled or still pending, so that absence alone cannot tell a working check from one that never ran. Nor does the gap between staging and switching prove it: 9 s at 687 → 688, but 5 s at 686 → 687, on the old code, so a short gap shows only that no check was pending then. What holds the change is `test_blocking_waits` and the code. A `deleted subvolumes were still being freed after 7200 s` line would show the looks ran for two hours without holding anything, and that drops are not settling on .95.
 - **#690 shown live at the next switch.** It acts in the process that *writes* the handover, and 686 wrote this one, so the kernel log again took 2,180 lines at 11:02:26. At the 687 → 688 switch (12:22:12, 687 writing), the kernel log has no line at all from two seconds before to five seconds after.
 
 ## Part 368: the host roll waits for every package job before it starts (#688, 0.2.57-688)
@@ -2469,7 +2469,7 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 **How it was verified.**
 - **Compile probe:** `probe-cix-compile@0.2.57-761` passed the full selftest; its log reads `test_hostroll_verdict PASS`.
 - **Live:** the roll run by hand at 11:43 UTC on 2026-11-16 was 687's, so it started beside the agent image's `cixctl` build of the same recipe, as the 686 roll had (#691). 688 switched in place at 12:22:12 with 14 entries, and dns, ldap, ntp, syslog, cr and ar kept their pids.
-- **The wait, live on 688 (12:46 UTC).** With the kernel current, one short package job was started (a `probe-cix-tarball` fetch) and `schedule run host-roll` was run while it was in flight.
+- **The wait, live on 688 (12:26 UTC).** With the kernel current, one short package job was started (a `probe-cix-tarball` fetch) and `schedule run host-roll` was run while it was in flight.
   - The reason read `waiting for 1 package job(s) to end before deciding what to roll (#688)`.
   - Two seconds after the job ended, the log read `host roll: current: kernel 7.3.4-1 and cix 0.2.57-688 are the newest and running`.
   - A second run answered `current`, not "already in progress".

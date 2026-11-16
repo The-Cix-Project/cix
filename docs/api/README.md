@@ -1664,6 +1664,7 @@ Actions **enqueue**; they never do heavy work inline. Each calls an entry point 
 - **`window_minutes` is a duration, not a second job.** A schedule fires an instant; an update window is an interval during which an action may keep *starting* work. Modelling it as an open job and a close job would put a state machine in the operator's hands. **`system.roll` is the one action that consumes it** — it reboots only before `scheduler_running_window_end()`, the end of the running job's window; `scheduler_in_window()` still has no caller.
 - **`POST /schedules/{name}/run` runs a disabled job too.** The enabled flag governs the schedule, not the button. It is also never a way to *define* a schedule — only to run one that exists.
 - **`last_ok` is null before the first run.** "It has not run" and "it ran and failed" are different facts, and a boolean alone cannot hold both.
+- **A `system.roll` schedule's `last_ok` and `last_reason` follow the roll** (#692). The roll keeps working after its action returns: it waits for package jobs, builds, stages and switches. Each step records its sentence as the outcome, and a confirmed switch records `switched in place to <release> on slot <x>`. So `cixctl schedule show host-roll` reads what the roll is doing now, and a step that fails later reads failed. `last_run_at` still says when it started.
 
 ### What is scheduled, and what deliberately is not
 

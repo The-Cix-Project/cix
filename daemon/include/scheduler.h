@@ -186,6 +186,18 @@ int scheduler_in_window(const struct schedule *s, long now);
  */
 long scheduler_running_window_end(void);
 
+/*
+ * #692: for an action that keeps working after it returns, such as the host
+ * roll (ADR-0327), the outcome of a later step. Sets last_ok and
+ * last_reason on the job with this action that ran most recently, and
+ * leaves when it ran unchanged. Without it, `schedule show` kept the
+ * reason the action returned ("waiting for 1 package job(s)", "rolling:
+ * ...") through the build and the switch, and read ok over a step that
+ * then failed. Persisted and announced like a run's outcome; a no-op when
+ * nothing changes or no job has the action.
+ */
+void scheduler_note_action(const char *action, int ok, const char *reason);
+
 /* "daily at 02:00 for 3h". Display only -- see the header comment. */
 void schedule_describe(const struct schedule *s, char *out, size_t out_size);
 

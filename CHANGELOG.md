@@ -6,6 +6,14 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### schedule show host-roll follows the roll (#692, 0.2.57-689)
+
+- **Before:** a schedule's outcome was written only when its action returned. The roll keeps working after that, so `schedule show host-roll` kept `waiting for 1 package job(s)` or `rolling: …` through the build, the assembly and the switch, and read `ok` over a step that failed later. The dashboard's schedule row reads the same `last_ok`.
+- **Now:**
+  - `scheduler_note_action()` sets the outcome of the job with that action that ran most recently, persisting and announcing it like a run;
+  - every roll step goes through `hostroll_say()`, which logs the line and notes it, with `ok` false only when the roll stopped short of the newest release;
+  - after a switch, the new cixd records `switched in place to <release> on slot <x>`.
+
 ### The host roll waits for every package job before it starts (#688, 0.2.57-688)
 
 - **Before:** `action_system_roll()` refused only while a hostbuild was in flight, and started its kernel or cix hostbuild beside any other package job. A refusal also cost the night, since a scheduled run is recorded once per window.

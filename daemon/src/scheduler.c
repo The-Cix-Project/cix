@@ -696,6 +696,30 @@ long scheduler_running_window_end(void)
 	return g_running_window_end;
 }
 
+void scheduler_note_action(const char *action, int ok, const char *reason)
+{
+	struct schedule *latest = NULL;
+	int i;
+
+	if (action == NULL || reason == NULL)
+		return;
+	for (i = 0; i < SCHEDULER_MAX_JOBS; i++) {
+		if (!g_jobs[i].in_use || strcmp(g_jobs[i].action, action) != 0)
+			continue;
+		if (latest == NULL || g_jobs[i].last_run_at > latest->last_run_at)
+			latest = &g_jobs[i];
+	}
+	if (latest == NULL || latest->last_run_at == 0)
+		return;
+	if (latest->last_ok == (ok != 0) && strcmp(latest->last_reason, reason) == 0)
+		return;
+	latest->last_ok = ok != 0;
+	snprintf(latest->last_reason, sizeof(latest->last_reason), "%s", reason);
+	persist_all();
+	events_announce(EV_listSchedules);
+	events_announce(EV_getSchedule);
+}
+
 static void run_one(struct schedule *s, long now)
 {
 	const struct schedule_action *a = scheduler_action_find(s->action);

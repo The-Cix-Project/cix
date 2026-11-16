@@ -7309,6 +7309,22 @@ static void stop_boot_confirm_timer(void)
 	g_boot_confirm_conn.fd = -1;
 }
 
+/*
+ * A root switch is confirmed. The host roll is the switch's only caller
+ * (ADR-0375), and the process that started it is gone, so this one
+ * records the roll's outcome on its schedule (#692).
+ */
+static void handover_switch_confirmed(const char *slot)
+{
+	char msg[160];
+
+	logstore_write("cixd", "info", "handover: slot %s confirmed after the root switch (ADR-0375)",
+	               slot);
+	snprintf(msg, sizeof(msg), "switched in place to %s on slot %s (ADR-0375)", CIX_BUILD_VERSION,
+	         slot);
+	scheduler_note_action("system.roll", 1, msg);
+}
+
 static void handle_boot_confirm_timer_event(struct conn *cc)
 {
 	uint64_t expirations;
@@ -7333,9 +7349,7 @@ static void handle_boot_confirm_timer_event(struct conn *cc)
 			fprintf(stderr, "confirm_boot failed for slot %s (continuing anyway)\n",
 			        g_boot_confirm_slot);
 		else if (g_handover_switched)
-			logstore_write("cixd", "info",
-			               "handover: slot %s confirmed after the root switch (ADR-0375)",
-			               g_boot_confirm_slot);
+			handover_switch_confirmed(g_boot_confirm_slot);
 		stop_boot_confirm_timer();
 		return;
 	}
@@ -7432,8 +7446,7 @@ static void maybe_confirm_boot(const char *slot)
 		if (confirm_boot(slot) != 0)
 			fprintf(stderr, "confirm_boot failed for slot %s (continuing anyway)\n", slot);
 		else if (g_handover_switched) {
-			logstore_write("cixd", "info",
-			               "handover: slot %s confirmed after the root switch (ADR-0375)", slot);
+			handover_switch_confirmed(slot);
 			printf("handover: slot %s confirmed after the root switch (ADR-0375)\n", slot);
 			fflush(stdout);
 		}
@@ -11196,12 +11209,31 @@ static struct {
 static int handover_quiescent(void);
 static void handover_exec(const char *target);
 
+/*
+ * Every line the roll logs, and (#692) the same sentence as its
+ * schedule's outcome, so `schedule show host-roll` reads what the roll is
+ * doing now rather than what it said when it started. ok is whether the
+ * roll is on its way to the newest release, which a reboot into the
+ * staged slot is too.
+ */
+static void hostroll_say(const char *level, int ok, const char *fmt, ...)
+{
+	char msg[512];
+	va_list ap;
+
+	va_start(ap, fmt);
+	vsnprintf(msg, sizeof(msg), fmt, ap);
+	va_end(ap);
+	logstore_write("system", level, "host roll: %s", msg);
+	scheduler_note_action("system.roll", ok, msg);
+}
+
 static void hostroll_stop(const char *level, const char *fmt, const char *a, const char *b)
 {
 	char msg[512];
 
 	snprintf(msg, sizeof(msg), fmt, a, b);
-	logstore_write("system", level, "host roll: %s (ADR-0327)", msg);
+	hostroll_say(level, 0, "%s (ADR-0327)", msg);
 	memset(&g_hostroll, 0, sizeof(g_hostroll));
 }
 
@@ -11223,7 +11255,7 @@ static int hostroll_build(const char *name)
 	register_pkg_fetch_pidfd(pid, pidfd, chain_idx);
 	g_hostroll.step = HOSTROLL_BUILD;
 	snprintf(g_hostroll.building, sizeof(g_hostroll.building), "%s", name);
-	logstore_write("system", "info", "host roll: building %s (ADR-0327)", name);
+	hostroll_say("info", 1, "building %s (ADR-0327)", name);
 	return 0;
 }
 
@@ -11262,7 +11294,7 @@ static void hostroll_tick(void)
 		              g_hostroll.building, st.error);
 		return;
 	}
-	logstore_write("system", "info", "host roll: %s %s built (ADR-0327)", g_hostroll.building,
+	hostroll_say("info", 1, "%s %s built (ADR-0327)", g_hostroll.building,
 	               st.installed);
 	if (strcmp(g_hostroll.building, "kernel") == 0 && g_hostroll.then_cix) {
 		g_hostroll.then_cix = 0;
@@ -11341,15 +11373,14 @@ static void hostroll_staged(int status, const char *slot, int updated_kernel, co
 		snprintf(g_hostroll.slot, sizeof(g_hostroll.slot), "%s", slot);
 		g_hostroll.switch_by = g_hostroll.reboot_by != 0 ? g_hostroll.reboot_by - 60
 		                                                 : now + HOSTROLL_SWITCH_WAIT_SECONDS;
-		logstore_write("system", "info",
-		               "host roll: staged root on slot %s with the running kernel -- switching "
-		               "into it in place once nothing is in flight (ADR-0375)",
-		               slot);
+		hostroll_say("info", 1,
+		             "staged root on slot %s with the running kernel -- switching into it in "
+		             "place once nothing is in flight (ADR-0375)",
+		             slot);
 		return;
 	}
-	logstore_write("system", "warn",
-	               "host roll: staged root%s on slot %s -- rebooting into it (ADR-0327)",
-	               updated_kernel ? " and kernel" : "", slot);
+	hostroll_say("warn", 1, "staged root%s on slot %s -- rebooting into it (ADR-0327)",
+	             updated_kernel ? " and kernel" : "", slot);
 	memset(&g_hostroll, 0, sizeof(g_hostroll));
 	g_shutdown_action = SHUTDOWN_ACTION_REBOOT;
 	g_stop = 1;
@@ -11373,17 +11404,19 @@ static void hostroll_switch_tick(void)
 	if (!handover_quiescent()) {
 		if ((long)time(NULL) < g_hostroll.switch_by)
 			return;
-		logstore_write("system", "warn",
-		               "host roll: work stayed in flight past the wait -- rebooting into slot %s "
-		               "instead of switching (ADR-0375)",
-		               slot);
+		hostroll_say("warn", 1,
+		             "work stayed in flight past the wait -- rebooting into slot %s instead of "
+		             "switching (ADR-0375)",
+		             slot);
 	} else {
 		memset(&g_hostroll, 0, sizeof(g_hostroll));
+		/* #692: the outcome the successor reads until it records its own. */
+		scheduler_note_action("system.roll", 1, "switching in place now (ADR-0375)");
 		handover_exec(slot);
-		logstore_write("system", "warn",
-		               "host roll: the in-place switch to slot %s did not happen -- rebooting "
-		               "into it instead (ADR-0375)",
-		               slot);
+		hostroll_say("warn", 1,
+		             "the in-place switch to slot %s did not happen -- rebooting into it "
+		             "instead (ADR-0375)",
+		             slot);
 	}
 	memset(&g_hostroll, 0, sizeof(g_hostroll));
 	g_shutdown_action = SHUTDOWN_ACTION_REBOOT;
@@ -11446,7 +11479,7 @@ static int hostroll_decide(long window_end, char *reason, size_t reason_size)
 	         kernel_behind ? " -> " : "", kernel.available,
 	         cix.installed[0] != '\0' ? cix.installed : cix.failed ? "failed" : "none",
 	         cix_behind ? " -> " : "", cix.available);
-	logstore_write("system", "info", "host roll: %s (ADR-0327)", reason);
+	hostroll_say("info", 1, "%s (ADR-0327)", reason);
 	if (kernel_behind)
 		return hostroll_build("kernel") == 0 ? 0 : roll_start_failed("kernel", reason, reason_size);
 	if (cix_behind)
@@ -11507,7 +11540,7 @@ static int action_system_roll(const char *params, char *reason, size_t reason_si
 		g_hostroll.wait_until = hostroll_wait_until(window_end, now);
 		snprintf(reason, reason_size,
 		         "waiting for %d package job(s) to end before deciding what to roll (#688)", jobs);
-		logstore_write("system", "info", "host roll: %s", reason);
+		hostroll_say("info", 1, "%s", reason);
 		return 0;
 	case HOSTROLL_START_GIVE_UP:
 		break;
@@ -11529,7 +11562,7 @@ static void hostroll_wait_tick(void)
 {
 	char reason[SCHEDULE_REASON_MAX];
 	long window_end;
-	int jobs;
+	int jobs, rc;
 
 	if (g_hostroll.step != HOSTROLL_WAIT)
 		return;
@@ -11538,10 +11571,10 @@ static void hostroll_wait_tick(void)
 	case HOSTROLL_START_WAIT:
 		return;
 	case HOSTROLL_START_GIVE_UP:
-		logstore_write("system", "warn",
-		               "host roll: %d package job(s) were still in flight when its wait ended -- "
-		               "nothing was built or staged; the next window rolls (#688)",
-		               jobs);
+		hostroll_say("warn", 0,
+		             "%d package job(s) were still in flight when its wait ended -- nothing "
+		             "was built or staged; the next window rolls (#688)",
+		             jobs);
 		memset(&g_hostroll, 0, sizeof(g_hostroll));
 		return;
 	case HOSTROLL_START_NOW:
@@ -11550,10 +11583,10 @@ static void hostroll_wait_tick(void)
 	window_end = g_hostroll.reboot_by;
 	memset(&g_hostroll, 0, sizeof(g_hostroll));
 	reason[0] = '\0';
-	hostroll_decide(window_end, reason, sizeof(reason));
+	rc = hostroll_decide(window_end, reason, sizeof(reason));
 	/* A roll that started logged its own line; say what stopped one. */
 	if (g_hostroll.step == HOSTROLL_IDLE && reason[0] != '\0')
-		logstore_write("system", "info", "host roll: %s (ADR-0327)", reason);
+		hostroll_say(rc == 0 ? "info" : "error", rc == 0, "%s (ADR-0327)", reason);
 }
 
 /*
