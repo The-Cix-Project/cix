@@ -2460,7 +2460,16 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
   - jump, vpn-1 and agent-1 had rolled onto hibr's new versions at 10:39;
   - vpn-1 reached its dial tone at 10:39:07.
 - **#689 live:** 687 ran its first drain at 11:02:26 (`image gc: set aside 3 version(s)`). At 11:10 `cixctl process ls` showed no cixd child but procfuse and the watchdog, and the log had no quota error line. After 686's drain, at 00:05, one settle helper had stayed alive for two hours.
-- **#690 not yet shown live.** It acts in the process that *writes* the handover, and 686 wrote this one: the kernel log again took 2,180 lines at 11:02:26. The next switch, with 687 as the writer, is the first live test.
+- **#690 shown live at the next switch.** It acts in the process that *writes* the handover, and 686 wrote this one, so the kernel log again took 2,180 lines at 11:02:26. At the 687 → 688 switch (12:22:12, 687 writing), the kernel log has no line at all from two seconds before to five seconds after.
+
+## Part 368: the host roll waits for every package job before it starts (#688, 0.2.57-688)
+
+**What shipped.** While any package job is in flight, the roll holds at `HOSTROLL_WAIT`, and it decides from what is installed once none is. If the window ends first, it stages and reboots nothing. `hostroll_start_verdict()` is that one decision.
+
+**How it was verified.**
+- **Compile probe:** `probe-cix-compile@0.2.57-761` passed the full selftest, `test_hostroll_verdict` included.
+- **Live:** the roll run by hand at 11:43 UTC on 2026-11-16 was 687's, so it started beside the agent image's `cixctl` build of the same recipe, as rolls always had (#691). 688 switched in place at 12:22:12 with 14 entries, and dns, ldap, ntp, syslog, cr and ar kept their pids.
+- **Not yet seen live:** the wait itself. 688 is the first daemon whose roll waits, and the next cix release's roll should log `waiting for 1 package job(s)` behind that build.
 
 ## Part 366: cix builds again, and an uninstall cannot strand a tool's output (#680, #683, #684, #687, 0.2.57-685 and -686)
 
