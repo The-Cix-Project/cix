@@ -2459,7 +2459,8 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
   - dns, ldap, ntp, syslog, cr and ar kept their pids;
   - jump, vpn-1 and agent-1 had rolled onto hibr's new versions at 10:39;
   - vpn-1 reached its dial tone at 10:39:07.
-- **Not yet shown live.** Both fixes act in the process that *writes* the handover, and 686 wrote this one: the kernel log again took 2,180 lines at 11:02:26. The next switch, with 687 as the writer, is the first live test of both.
+- **#689 live:** 687 ran its first drain at 11:02:26 (`image gc: set aside 3 version(s)`). At 11:10 `cixctl process ls` showed no cixd child but procfuse and the watchdog, and the log had no quota error line. After 686's drain, at 00:05, one settle helper had stayed alive for two hours.
+- **#690 not yet shown live.** It acts in the process that *writes* the handover, and 686 wrote this one: the kernel log again took 2,180 lines at 11:02:26. The next switch, with 687 as the writer, is the first live test.
 
 ## Part 366: cix builds again, and an uninstall cannot strand a tool's output (#680, #683, #684, #687, 0.2.57-685 and -686)
 
