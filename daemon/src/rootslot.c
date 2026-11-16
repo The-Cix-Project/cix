@@ -1,14 +1,13 @@
 /*
  * ADR-0379: which cix-root version each boot slot holds. See rootslot.h.
  *
- * The file is {"a": V, "b": V, "attempt_slot": S, "attempt_version": V,
- * "bad": V}, every field optional. It is rewritten whole on every change
- * (persist_atomic_write()), and a change that alters nothing writes
- * nothing.
+ * The file is {"a": V, "b": V, "confirmed_slot": S, "attempt_slot": S,
+ * "attempt_version": V, "bad": V}, every field optional. It is rewritten
+ * whole on every change (persist_atomic_write()), and a change that
+ * alters nothing writes nothing.
  */
 #include "rootslot.h"
 
-#include "events.h"
 #include "image.h"
 #include "json.h"
 #include "persist.h"
@@ -20,9 +19,11 @@
 static char g_path[512];
 static char g_slot_a[IMAGE_VERSION_MAX];
 static char g_slot_b[IMAGE_VERSION_MAX];
+static char g_confirmed_slot[8];
 static char g_attempt_slot[8];
 static char g_attempt_version[IMAGE_VERSION_MAX];
 static char g_bad[IMAGE_VERSION_MAX];
+static void (*g_on_change)(void);
 
 static char *slot_field(const char *slot)
 {
@@ -50,7 +51,6 @@ static void put_field(struct json_writer *w, const char *key, const char *value)
 	jw_str(w, value);
 }
 
-/* Writes the record and announces it: GET /v1/system/boot reads it. */
 static void save(void)
 {
 	struct json_writer w;
@@ -61,6 +61,7 @@ static void save(void)
 	jw_obj_open(&w);
 	put_field(&w, "a", g_slot_a);
 	put_field(&w, "b", g_slot_b);
+	put_field(&w, "confirmed_slot", g_confirmed_slot);
 	put_field(&w, "attempt_slot", g_attempt_slot);
 	put_field(&w, "attempt_version", g_attempt_version);
 	put_field(&w, "bad", g_bad);
@@ -68,7 +69,8 @@ static void save(void)
 	if (w.buf != NULL && persist_atomic_write(g_path, w.buf, w.len) != 0)
 		fprintf(stderr, "rootslot: could not write %s\n", g_path);
 	jw_free(&w);
-	events_announce(EV_getSystemBoot);
+	if (g_on_change != NULL)
+		g_on_change();
 }
 
 /* Sets field to value, saving only when that changes it. */
@@ -87,7 +89,8 @@ void rootslot_load(const char *path)
 	struct json_value *root;
 
 	snprintf(g_path, sizeof(g_path), "%s", path != NULL ? path : "");
-	g_slot_a[0] = g_slot_b[0] = g_attempt_slot[0] = g_attempt_version[0] = g_bad[0] = '\0';
+	g_slot_a[0] = g_slot_b[0] = g_confirmed_slot[0] = '\0';
+	g_attempt_slot[0] = g_attempt_version[0] = g_bad[0] = '\0';
 	if (g_path[0] == '\0' || persist_read_file(g_path, &buf, &len) != 0 || buf == NULL)
 		return;
 	root = json_parse(buf, len);
@@ -96,10 +99,16 @@ void rootslot_load(const char *path)
 		return;
 	copy_field(root, "a", g_slot_a, sizeof(g_slot_a));
 	copy_field(root, "b", g_slot_b, sizeof(g_slot_b));
+	copy_field(root, "confirmed_slot", g_confirmed_slot, sizeof(g_confirmed_slot));
 	copy_field(root, "attempt_slot", g_attempt_slot, sizeof(g_attempt_slot));
 	copy_field(root, "attempt_version", g_attempt_version, sizeof(g_attempt_version));
 	copy_field(root, "bad", g_bad, sizeof(g_bad));
 	json_free(root);
+}
+
+void rootslot_set_on_change(void (*on_change)(void))
+{
+	g_on_change = on_change;
 }
 
 const char *rootslot_version(const char *slot)
@@ -131,32 +140,65 @@ void rootslot_attempt(const char *slot)
 
 	if (v[0] == '\0')
 		return;
+	if (strcmp(g_attempt_slot, slot) == 0 && strcmp(g_attempt_version, v) == 0)
+		return;
 	snprintf(g_attempt_slot, sizeof(g_attempt_slot), "%s", slot);
 	snprintf(g_attempt_version, sizeof(g_attempt_version), "%s", v);
 	save();
 }
 
-int rootslot_resolve_start(const char *running_slot, char *failed_version,
-                           unsigned long failed_size)
+enum rootslot_start rootslot_resolve_start(const char *running_slot, char *version,
+                                           unsigned long version_size)
 {
-	if (g_attempt_slot[0] == '\0' || running_slot == NULL)
-		return 0;
-	if (strcmp(g_attempt_slot, running_slot) == 0)
-		return 0; /* confirmed or not by rootslot_confirmed(), later */
-	if (failed_version != NULL && failed_size > 0)
-		snprintf(failed_version, failed_size, "%s", g_attempt_version);
-	snprintf(g_bad, sizeof(g_bad), "%s", g_attempt_version);
-	g_attempt_slot[0] = g_attempt_version[0] = '\0';
-	save();
-	return 1;
+	if (version != NULL && version_size > 0)
+		version[0] = '\0';
+	if (running_slot == NULL || slot_field(running_slot) == NULL)
+		return ROOTSLOT_START_SAME;
+	if (g_attempt_slot[0] != '\0') {
+		if (strcmp(g_attempt_slot, running_slot) == 0)
+			return ROOTSLOT_START_SAME; /* rootslot_confirmed() resolves it later */
+		/* The switch or boot into the attempted slot failed, and the
+		 * host runs the other one. */
+		snprintf(g_bad, sizeof(g_bad), "%s", g_attempt_version);
+		g_attempt_slot[0] = g_attempt_version[0] = '\0';
+		if (version != NULL && version_size > 0)
+			snprintf(version, version_size, "%s", g_bad);
+		save();
+		return ROOTSLOT_START_FAILED;
+	}
+	if (g_confirmed_slot[0] != '\0' && strcmp(g_confirmed_slot, running_slot) != 0) {
+		/* No attempt, yet the host left the slot it last confirmed: an
+		 * operator chose this slot, or a boot rolled back. What it left
+		 * must not be deployed again by itself. */
+		const char *left = rootslot_version(g_confirmed_slot);
+
+		if (left[0] == '\0')
+			return ROOTSLOT_START_SAME;
+		snprintf(g_bad, sizeof(g_bad), "%s", left);
+		if (version != NULL && version_size > 0)
+			snprintf(version, version_size, "%s", g_bad);
+		save();
+		return ROOTSLOT_START_REJECTED;
+	}
+	return ROOTSLOT_START_SAME;
 }
 
 void rootslot_confirmed(const char *slot)
 {
-	if (g_attempt_slot[0] == '\0' || slot == NULL || strcmp(g_attempt_slot, slot) != 0)
+	int changed = 0;
+
+	if (slot == NULL || slot_field(slot) == NULL)
 		return;
-	g_attempt_slot[0] = g_attempt_version[0] = '\0';
-	save();
+	if (strcmp(g_confirmed_slot, slot) != 0) {
+		snprintf(g_confirmed_slot, sizeof(g_confirmed_slot), "%s", slot);
+		changed = 1;
+	}
+	if (g_attempt_slot[0] != '\0' && strcmp(g_attempt_slot, slot) == 0) {
+		g_attempt_slot[0] = g_attempt_version[0] = '\0';
+		changed = 1;
+	}
+	if (changed)
+		save();
 }
 
 void rootslot_attempt_failed(void)

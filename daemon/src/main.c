@@ -2148,6 +2148,12 @@ static void on_signal(int sig)
 /* ADR-0379: which cix-root version each slot holds (rootslot.h). On the
  * config partition, which outlives both slots. */
 #define ROOTSLOT_PATH CONFIG_DIR "/state/root-slots.json"
+
+/* ADR-0379: GET /v1/system/boot reads the record, so a change announces it. */
+static void rootslot_announce(void)
+{
+	events_announce(EV_getSystemBoot);
+}
 static int g_fatal_note_on;
 static int g_fatal_fd = -1; /* open while the crash handler writes its line */
 
@@ -11297,14 +11303,18 @@ static void hostroll_stop(const char *level, const char *fmt, const char *a, con
 
 	snprintf(msg, sizeof(msg), fmt, a, b);
 	hostroll_say(level, 0, "%s (ADR-0327)", msg);
-	/* ADR-0379: a root-only roll that could not assemble or stage its
-	 * version failed to deploy it, and the next job's end would start
-	 * the same roll again. */
-	if (g_hostroll.root_only && strcmp(level, "error") == 0) {
-		rootslot_mark_bad(g_hostroll.root_target);
-		hostroll_say("warn", 0,
-		             "root: cix-root %.12s is not tried again until cix-root moves (ADR-0379)",
-		             g_hostroll.root_target);
+	/*
+	 * ADR-0379: a root-only roll that stopped short waits before a job's
+	 * end starts it again, so a busy or failing host is not retried at
+	 * every job. Stopping is not failing: a fork that failed or an update
+	 * already writing the slot says nothing about the root. Only a root
+	 * mkbootroot could not build, a refused switch or a failed boot
+	 * marks the version bad (hostroll_assembly_done(), the switch tick,
+	 * rootslot_resolve_start()).
+	 */
+	if (g_hostroll.root_only) {
+		snprintf(g_rootroll_deferred, sizeof(g_rootroll_deferred), "%s", g_hostroll.root_target);
+		g_rootroll_deferred_until = (long)time(NULL) + HOSTROLL_SWITCH_WAIT_SECONDS;
 	}
 	memset(&g_hostroll, 0, sizeof(g_hostroll));
 }
@@ -11386,6 +11396,20 @@ static void hostroll_assembly_done(int ok)
 	if (g_hostroll.step != HOSTROLL_ASSEMBLE)
 		return;
 	if (!ok) {
+		/*
+		 * ADR-0379: mkbootroot ran and refused this tree, so the root
+		 * cannot be built from that cix-root version. A refusal before
+		 * any child (the guard) says nothing about the root.
+		 */
+		if (g_hostroll.root_only && g_bootroot_assembly_refused[0] == '\0' &&
+		    g_bootroot_assembly_root_version[0] != '\0') {
+			rootslot_mark_bad(g_bootroot_assembly_root_version);
+			hostroll_say("warn", 0,
+			             "root: mkbootroot could not build a root from cix-root %.12s, which is "
+			             "not tried again until cix-root moves or a roll is run by hand "
+			             "(ADR-0379)",
+			             g_bootroot_assembly_root_version);
+		}
 		/* A refusal before any child says why; a failed mkbootroot logged
 		 * its own output. */
 		hostroll_stop("error", "the root assembly failed -- nothing was staged%s%s",
@@ -11514,8 +11538,8 @@ static void hostroll_switch_tick(void)
 			rootslot_attempt_failed();
 			hostroll_say("error", 0,
 			             "root: the in-place switch to slot %s did not happen, so cix-root "
-			             "%.12s is not tried again until cix-root moves; nothing rebooted "
-			             "(ADR-0379)",
+			             "%.12s is not tried again until cix-root moves or a roll is run by "
+			             "hand; nothing rebooted (ADR-0379)",
 			             slot, target);
 			return;
 		}
@@ -11677,6 +11701,9 @@ static void rootroll_tick(void)
 
 	if (g_hostroll.step != HOSTROLL_IDLE)
 		return;
+	/* An operator's hold: with no enabled system.roll job, nothing rolls. */
+	if (!scheduler_action_enabled("system.roll"))
+		return;
 	if (root_verdict(running, sizeof(running), current, sizeof(current)) != ROOTSLOT_BEHIND)
 		return;
 	if (strcmp(g_rootroll_deferred, current) == 0 && (long)time(NULL) < g_rootroll_deferred_until)
@@ -11730,6 +11757,21 @@ static int action_system_roll(const char *params, char *reason, size_t reason_si
 		         : g_hostroll.step == HOSTROLL_SWITCH ? "waiting to switch in place"
 		                                              : "assembling");
 		return 0;
+	}
+	/*
+	 * ADR-0379: an operator running the roll by hand asks for it to try
+	 * again, so a root version marked bad, and any deferral, is
+	 * forgotten. A scheduled run never clears it.
+	 */
+	if (scheduler_running_by_hand()) {
+		if (rootslot_bad()[0] != '\0') {
+			hostroll_say("info", 1,
+			             "root: cix-root %.12s is no longer marked bad -- the roll was run by "
+			             "hand (ADR-0379)",
+			             rootslot_bad());
+			rootslot_clear_bad();
+		}
+		g_rootroll_deferred[0] = '\0';
 	}
 	window_end = scheduler_running_window_end();
 	jobs = pkg_any_job_in_flight();
@@ -41184,15 +41226,29 @@ static int cixd_main(int argc, char **argv)
 	 * failed: the switch was refused or the boot rolled back.
 	 */
 	if (g_fatal_note_on && g_slot != NULL) {
-		char failed[IMAGE_VERSION_MAX];
+		char bad[IMAGE_VERSION_MAX];
 
+		rootslot_set_on_change(rootslot_announce);
 		rootslot_load(ROOTSLOT_PATH);
-		if (rootslot_resolve_start(g_slot, failed, sizeof(failed)))
+		switch (rootslot_resolve_start(g_slot, bad, sizeof(bad))) {
+		case ROOTSLOT_START_FAILED:
 			logstore_write("system", "warn",
 			               "host roll: the root sealed from cix-root %.12s did not deploy -- "
 			               "this host runs slot %s again, and that version is not tried "
-			               "again until cix-root moves (ADR-0379)",
-			               failed, g_slot);
+			               "again until cix-root moves or a roll is run by hand (ADR-0379)",
+			               bad, g_slot);
+			break;
+		case ROOTSLOT_START_REJECTED:
+			logstore_write("system", "warn",
+			               "host roll: this host left the slot it last confirmed for slot %s "
+			               "with no roll attempting it, so the root it left (cix-root %.12s) "
+			               "is not deployed again until cix-root moves or a roll is run by "
+			               "hand (ADR-0379)",
+			               g_slot, bad);
+			break;
+		case ROOTSLOT_START_SAME:
+			break;
+		}
 	}
 	if (g_bootstrap_move_note[0] != '\0')
 		logstore_write("cixd", "info", "%s", g_bootstrap_move_note);

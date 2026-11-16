@@ -41,23 +41,36 @@ Nothing records which `cix-root` version a running root was sealed from.
    - It holds when `cix-root` is settled (`pkg_image_settled()`: no job in flight for it and not queued) and its current version differs from the running root's. Unknown counts as different.
    - It never compares content or dates. The image version is a hash of the image's package set, and so names it ([ADR-0155](0155-baseline-reseed-manifest-hash-dedup-gap.md)).
    - A `cix-root` still converging is not behind yet. The roll does not wait at its assembly step for a drain.
-3. **A version that failed is not tried again.**
+3. **A version that failed, or that the host left, is not deployed again by itself.**
    - Before switching or rebooting into a root, cixd records `attempting V on slot X`, where V is the `cix-root` version.
    - The next cixd to start (the successor after a switch, or the next boot) resolves the mark:
      - **confirmed** if it runs from slot X and the slot is confirmed (ADR-0375);
      - **failed** if it runs from the other slot, after a refused switch, a reboot fallback or the boot counter's rollback.
-   - A failed V is marked bad, and while `cix-root`'s current version is that V the root is not behind. The roll's reason says so, for example `root: cix-root 24df9a73 failed to deploy on 2026-11-17; waiting for cix-root to move`.
-   - The mark clears when `cix-root` gains any other version. This is ADR-0323's rule for a container that fails on a rolled image, applied to the root: no person published this root, so it must not be retried every night.
+   - **Leaving the confirmed slot counts too.** cixd records the slot it last confirmed. A start on the other slot with no attempt pending (an operator's `boot-next`, the #589 remedy) marks the version it left bad. Without this, a rollback by hand would be undone at the next job's end.
+   - **Also bad:** a version `mkbootroot` could not build a root from.
+   - **Never bad:** a stop that says nothing about the root, such as a fork that failed, an update already writing the slot, or a guard waiting. A root-only roll that stops that way waits 30 minutes before a job's end starts it again.
+   - While `cix-root`'s current version is a bad V, the root is not behind. The roll's reason says so, for example `root: cix-root 24df9a73 failed to deploy, waiting for cix-root to move`.
+   - **How the mark clears:**
+     - when `cix-root` gains any other version;
+     - when an operator runs the roll by hand (`cixctl schedule run host-roll`), which asks for another try. A scheduled run never clears it.
+
+     This is ADR-0323's rule for a container that fails on a rolled image, operator clear included, applied to the root: no person published this root, so it must not be retried every night.
 4. **It joins the roll's existing decision as a third reason.**
    - `hostroll_decide()` stages when the kernel or cix is behind or not running, or when the root is behind.
    - A root behind with the kernel unchanged switches in place (ADR-0375), as a cix release does. The reason names it, for example `root: cix-root 8ec94a64 -> 24df9a73`, and so does the schedule line (#692).
    - The existing guard stays: `root_image_behind()` holds the seal until `cix-root` carries the installed hostbuild's `cixd` and `cixctl` and the kernel's modules.
-5. **A settled move deploys at once, by a root-only roll that never reboots.** The owner chose this over waiting for the window.
-   - When a package job ends and `cix-root` is behind by decision 2, cixd starts a root-only roll, provided no roll is in progress, the kernel is current and running, and the version is not bad.
+5. **A settled move deploys at once, by a root-only roll that never chooses to reboot.** The owner chose this over waiting for the window.
+   - When a package job ends and `cix-root` is behind by decision 2, cixd starts a root-only roll. It needs:
+     - no roll in progress;
+     - an enabled `system.roll` schedule;
+     - the kernel and cix current and running;
+     - a version that is not bad.
+   - **Disabling `host-roll` is the operator's hold.** It stops root-only rolls as well as the scheduled ones.
    - A root-only roll assembles, stages the root alone, and switches in place. It never hostbuilds: a kernel or cix that is also behind waits for the window or a hand-run roll.
-   - **It never reboots.** The window stays the only time the host goes down (ADR-0327, CLAUDE.md), and a root-only roll switches in place or does nothing.
-     - A switch the handover refuses marks the version bad, by decision 3.
+   - **It never chooses a reboot.**
+     - A switch the handover refuses before the exec marks the version bad (decision 3), and nothing reboots.
      - If work stays in flight past the switch's 30-minute wait, the roll stops without switching. The staged slot waits for the next roll.
+   - **It can still reboot the host, once, at any hour.** After the exec the old process is gone, and ADR-0375 reboots the host when the successor refuses the handover record or the exec into the new root fails. The boot counter then returns to the slot that was running, and the next cixd marks that version bad. So a bad root costs at most one reboot, outside the window. The owner was told this cost before choosing (2026-11-16).
    - A roll started by the schedule or by hand also deploys a behind root, as part of whatever it does.
 6. **The running root's version is visible.** `GET /v1/system/boot` reports `root_image_version` (null when unknown) and `root_image_failed` (the bad version, or null). `cixctl boot` prints both.
 
@@ -70,6 +83,11 @@ A switch is confirmed by ADR-0375's checks:
 A reboot is confirmed by the same boot confirmation. **Neither proves that the new root can do everything the old one did.** The #589 root booted, reported health ok, ran every container, and could not fetch over HTTPS, because a different libcurl answered the same soname. A root that moved only by a library revision is exactly where that class of failure lives.
 
 So this ADR names the limit and does not close it. A probation that makes one TLS fetch through `curlfetch_perform()` before confirming is a separate change, offered to the owner alongside this one.
+
+## Known limits
+
+- **The fallback slot turns over with every root move.** Each roll writes the slot not running. So after a root-only roll, `boot-next` reaches back one root move, not one cix release. The first root-only roll under 0.2.57-691 overwrites the 690 slot with a second copy of 691.
+- **A scheduled roll that finds a root-only roll in progress answers "already in progress".** That window's kernel or cix roll is then lost until the next one. A root-only roll lasts minutes and `cix-root` moves only when a person publishes into its closure, so this is rare. It is the same class of loss #688 fixed for jobs, and it is tracked as its own issue rather than designed here.
 
 ## What this does not do
 
@@ -84,12 +102,17 @@ So this ADR names the limit and does not close it. A probation that makes one TL
   - a brief API pause at the switch, about 20 s when cbs changed and an explain sweep runs, while every container keeps running.
 - **Once after this ships, a root-only roll switches when nothing moved.** The release that ships it is deployed by the previous daemon's roll, which writes no record, so the running slot starts unknown. The first package job to end afterwards then starts a root-only roll, which assembles and switches once. From then on the record exists.
 - **The contract changes:** `GET /v1/system/boot` gains two fields. `docs/api/openapi.yaml` and `docs/api/README.md` change together, and the read's announcement is declared (ADR-0339).
-- **Gate:** the decision is a pure function, tested in SELFTESTS. It takes the running record, the current version, settled or not, and the bad mark, and is tested with:
-  - unknown, equal and different versions;
-  - an unsettled image;
-  - a bad current version;
-  - a bad version that `cix-root` has moved past;
-  - a roll whose kernel or cix is also behind.
+- **Gates, both in SELFTESTS:**
+  - `test_rootslot_verdict` covers the decision, `rootslot_verdict()`: unknown, equal and different versions, an unsettled image, a bad current version, and a bad version `cix-root` has moved past.
+  - `test_rootslot` runs the record against a temporary file and reloads it between steps, since each decision it feeds is made by a later process. It covers:
+    - set, clear and reload;
+    - an attempt on b resolved by a process running a (bad);
+    - an attempt on b confirmed on b (nothing bad);
+    - leaving the confirmed slot with no attempt (the version left is bad);
+    - a refused switch;
+    - clearing the mark.
+
+  Whether the kernel or cix is also behind is `hostroll_decide()`'s existing logic, read through `hostroll_parts_read()`.
 - **Live check:**
   - after the release, the first package job's end logs `host roll: root: cix-root unknown -> <current>`, and that roll switches in place without rebooting;
   - `cixctl boot` then reports `root_image_version` equal to `cixctl image show cix-root`'s current version, and a hand-run roll answers `current`, now including the root;

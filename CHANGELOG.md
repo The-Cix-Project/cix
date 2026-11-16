@@ -12,12 +12,25 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **Now:**
   - **What each slot holds.** cixd records which `cix-root` version each slot holds, in `/config/state/root-slots.json` (`rootslot.c`). The roll sets a slot's version when it stages a root its own assembly sealed. Any update clears the target slot's version before it writes.
   - **A third reason for the roll:** `root: cix-root X -> Y`, decided by `rootslot_verdict()` on a settled image. Unknown counts as behind.
-  - **Your choice, as soon as it settles.** After every package job, a `cix-root` that has settled at a new version starts a root-only roll, provided the kernel and cix are current and running. It assembles, stages the root alone and switches in place, and it never reboots:
-    - a refused switch marks the version bad;
+  - **The owner's choice: as soon as it settles.** After every package job, a `cix-root` that has settled at a new version starts a root-only roll. It needs:
+    - an enabled `system.roll` schedule (disabling `host-roll` holds it);
+    - the kernel and cix current and running.
+
+    It assembles, stages the root alone and switches in place, and it never chooses a reboot:
+    - a switch refused before the exec marks the version bad;
     - work still in flight after 30 minutes defers it, and the staged slot waits for the next roll.
-  - **Marked bad.** A version whose switch, boot, assembly or staging fails is marked bad, and is not tried again until `cix-root` moves. The next cixd resolves an attempt: one that started on the other slot failed.
+
+    A successor that refuses the handover after the exec reboots the host by ADR-0375's rule. That costs one reboot at any hour for a bad root.
+  - **Marked bad, not deployed again by itself:**
+    - a version whose switch or boot fails;
+    - a version `mkbootroot` cannot build;
+    - the version the host left when it starts on a slot other than the one it last confirmed with no attempt pending (an operator's `boot-next`).
+
+    A stop that says nothing about the root, such as a failed fork or an update already writing, only defers it 30 minutes. The mark clears when `cix-root` moves, or when an operator runs the roll by hand.
   - **Visible.** `GET /v1/system/boot` reports `root_image_version` and `root_image_failed`, and `cixctl boot` prints both.
-- **Gate:** `test_rootslot_verdict` (in SELFTESTS) covers unknown, equal and different versions, an unsettled image, a bad version, and a bad version `cix-root` has moved past.
+- **Gates, in SELFTESTS:**
+  - `test_rootslot_verdict` covers the decision;
+  - `test_rootslot` runs the record through attempt, failure, confirmation, rejection and clear, reloading between steps.
 
 ### A hostbuild runs alone (#693, 0.2.57-690)
 

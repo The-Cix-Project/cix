@@ -198,6 +198,15 @@ long scheduler_running_window_end(void);
  */
 void scheduler_note_action(const char *action, int ok, const char *reason);
 
+/* ADR-0379: 1 when some enabled job runs this action. Disabling the only
+ * system.roll job holds every roll, a root-only one included. */
+int scheduler_action_enabled(const char *action);
+
+/* ADR-0379: while an action runs, 1 when an operator asked for it
+ * (POST /v1/system/schedules/{name}/run), 0 for a scheduled run and
+ * outside an action. A hand-run roll clears a bad root version. */
+int scheduler_running_by_hand(void);
+
 /* "daily at 02:00 for 3h". Display only -- see the header comment. */
 void schedule_describe(const struct schedule *s, char *out, size_t out_size);
 

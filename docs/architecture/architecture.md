@@ -183,6 +183,8 @@ flowchart LR
 
 **A handover upgrades cixd in place** ([ADR-0375](../adr/0375-the-control-plane-upgrades-in-place.md), live since 2026-11-07). When the staged root carries the running kernel, cixd execs its successor as the same PID, so every container stays its child and keeps running. `handover.c` holds the record the old process writes last and the new one validates first. That record carries each container's runtime state and the descriptors passed across the exec. The once-per-kernel startup steps are listed in `include/startup_steps.h`, and a start with `--handover` skips them. `rootswitch.c` moves the running root's mounts into the staged slot and pivots into it, so the successor is the staged root's cixd. Until the new cixd confirms the slot, its boot entry is held, so a reboot boots the slot that was running.
 
+**The root follows its image** ([ADR-0379](../adr/0379-the-host-roll-deploys-the-root-when-cix-root-has-moved.md)). `rootslot.c` records, in `/config/state/root-slots.json`, which `cix-root` version each slot holds, the slot last confirmed, a switch in flight, and any version that failed to deploy. When `cix-root` settles at a version the running root was not sealed from, a root-only host roll assembles, stages the root alone and switches in place, through the same handover.
+
 ## Keeping this current
 
 `test_docindex` asserts that every component with a daemon source file is named in this document — a string check, which is the whole reason this is text. If you add a subsystem and the gate fails, add it to whichever diagram owns that layer; if you remove one, remove it from the diagram and the prose together. The gate is what the hand-drawn SVG made impossible, and its absence is why that diagram fell 34 ADRs behind.

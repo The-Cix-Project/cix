@@ -690,10 +690,30 @@ static void record_outcome(struct schedule *s, long now, int ok, const char *rea
 
 /* While an action runs: when its window ends (0 = no window). */
 static long g_running_window_end;
+/* While an action runs: 1 when an operator asked for it (run now). */
+static int g_running_by_hand;
 
 long scheduler_running_window_end(void)
 {
 	return g_running_window_end;
+}
+
+int scheduler_action_enabled(const char *action)
+{
+	int i;
+
+	if (action == NULL)
+		return 0;
+	for (i = 0; i < SCHEDULER_MAX_JOBS; i++) {
+		if (g_jobs[i].in_use && g_jobs[i].enabled && strcmp(g_jobs[i].action, action) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+int scheduler_running_by_hand(void)
+{
+	return g_running_by_hand;
 }
 
 void scheduler_note_action(const char *action, int ok, const char *reason)
@@ -842,7 +862,9 @@ enum schedule_error scheduler_run_now(const char *name, char *err, size_t err_si
 	 * operator standing at the console asking for this one thing; the
 	 * enabled flag governs the schedule, not the button.
 	 */
+	g_running_by_hand = 1;
 	run_one(s, (long)time(NULL));
+	g_running_by_hand = 0;
 	if (!s->last_ok) {
 		snprintf(err, err_size, "%s", s->last_reason);
 		return SCHEDULE_ERR_ACTION_FAILED;
