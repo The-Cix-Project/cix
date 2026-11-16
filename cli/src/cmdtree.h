@@ -46,6 +46,7 @@ static const char *const n_schedule_set_flags[] = {
 	"--every-hours=",
 	"--every-minutes=",
 	"--every-seconds=",
+	"--params=",
 	"--weekly-at=",
 	"--weekly-on=",
 	"--window-minutes=",
