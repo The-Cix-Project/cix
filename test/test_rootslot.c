@@ -115,16 +115,37 @@ int main(void)
 	CHECK(rootslot_resolve_start("a", bad, sizeof(bad)) == ROOTSLOT_START_SAME,
 	      "once a is confirmed, starting on a resolves nothing");
 
-	/* A failed switch in this process. */
+	/*
+	 * A refused switch in this process: the version is bad, and the
+	 * attempt stays, because the staged slot is still the next boot.
+	 * Case 1: the next start is on a (a plain restart, the old slot):
+	 * the attempt failed, and nothing good is marked bad.
+	 */
 	rootslot_clear_bad();
 	rootslot_set("b", "v3");
 	rootslot_attempt("b");
-	rootslot_attempt_failed();
+	rootslot_mark_bad("v3");
 	reload();
 	CHECK(strcmp(rootslot_bad(), "v3") == 0, "a refused switch marks its version bad, got %s",
 	      rootslot_bad());
-	CHECK(rootslot_resolve_start("a", bad, sizeof(bad)) == ROOTSLOT_START_SAME,
-	      "a refused switch leaves no attempt to resolve");
+	CHECK(rootslot_resolve_start("a", bad, sizeof(bad)) == ROOTSLOT_START_FAILED &&
+	          strcmp(rootslot_bad(), "v3") == 0,
+	      "the next start on the old slot resolves the attempt to the same bad version, "
+	      "never the good one (got %s)",
+	      rootslot_bad());
+
+	/* Case 2: a later reboot boots the staged slot b, which confirms. It
+	 * is no rejection of a, and the bad mark on b's version clears. */
+	rootslot_attempt("b");
+	rootslot_mark_bad("v3");
+	reload();
+	CHECK(rootslot_resolve_start("b", bad, sizeof(bad)) == ROOTSLOT_START_SAME,
+	      "booting the staged slot with its attempt recorded is not a rejection");
+	CHECK(strcmp(rootslot_bad(), "v3") == 0, "until it confirms, the mark stays");
+	rootslot_confirmed("b");
+	reload();
+	CHECK(rootslot_bad()[0] == '\0',
+	      "a confirmed boot of the bad version clears the mark, got %s", rootslot_bad());
 
 	/* mark_bad */
 	rootslot_mark_bad("v4");

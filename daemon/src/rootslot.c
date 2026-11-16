@@ -185,6 +185,7 @@ enum rootslot_start rootslot_resolve_start(const char *running_slot, char *versi
 
 void rootslot_confirmed(const char *slot)
 {
+	const char *running;
 	int changed = 0;
 
 	if (slot == NULL || slot_field(slot) == NULL)
@@ -197,17 +198,15 @@ void rootslot_confirmed(const char *slot)
 		g_attempt_slot[0] = g_attempt_version[0] = '\0';
 		changed = 1;
 	}
+	/* The root marked bad booted and confirmed after all (a refused
+	 * switch's staged slot, booted at a later reboot): it works. */
+	running = rootslot_version(slot);
+	if (g_bad[0] != '\0' && running[0] != '\0' && strcmp(g_bad, running) == 0) {
+		g_bad[0] = '\0';
+		changed = 1;
+	}
 	if (changed)
 		save();
-}
-
-void rootslot_attempt_failed(void)
-{
-	if (g_attempt_slot[0] == '\0')
-		return;
-	snprintf(g_bad, sizeof(g_bad), "%s", g_attempt_version);
-	g_attempt_slot[0] = g_attempt_version[0] = '\0';
-	save();
 }
 
 void rootslot_mark_bad(const char *version)

@@ -56,14 +56,19 @@ enum rootslot_start {
 enum rootslot_start rootslot_resolve_start(const char *running_slot, char *version,
                                            unsigned long version_size);
 
-/* The running slot is confirmed: it becomes the last confirmed slot, and
- * an attempt on it succeeded. */
+/*
+ * The running slot is confirmed: it becomes the last confirmed slot, an
+ * attempt on it succeeded, and a bad mark naming its version is cleared,
+ * since that root has just proved it works.
+ */
 void rootslot_confirmed(const char *slot);
 
-/* An attempt failed in this process (the handover refused the switch). */
-void rootslot_attempt_failed(void);
-
-/* A root could not be built from version (mkbootroot failed on it). */
+/*
+ * version failed to deploy: mkbootroot could not build it, or the
+ * handover refused the switch into it. A refused switch leaves its
+ * attempt recorded, because the staged slot is still the next boot: a
+ * later reboot into it is then resolved like any attempt.
+ */
 void rootslot_mark_bad(const char *version);
 
 /* The version that failed to deploy; "" for none. Never NULL. */

@@ -11511,10 +11511,14 @@ static void hostroll_switch_tick(void)
 		 * for the next roll, and this version waits a while before a
 		 * job's end starts it again. */
 		if (root_only) {
-			hostroll_say("warn", 0,
+			/* The staged slot is the next boot now, so a reboot into
+			 * it must be resolved as an attempt, not read as an
+			 * operator's choice. */
+			rootslot_attempt(slot);
+			hostroll_say("warn", 1,
 			             "root: work stayed in flight for %d min, so the root staged on slot %s "
-			             "was not switched into; it is retried in %d min, or by the next roll "
-			             "(ADR-0379)",
+			             "was not switched into; it is retried in %d min, and a reboot before "
+			             "then boots it (ADR-0379)",
 			             HOSTROLL_SWITCH_WAIT_SECONDS / 60, slot,
 			             HOSTROLL_SWITCH_WAIT_SECONDS / 60);
 			snprintf(g_rootroll_deferred, sizeof(g_rootroll_deferred), "%s", target);
@@ -11532,10 +11536,15 @@ static void hostroll_switch_tick(void)
 		scheduler_note_action("system.roll", 1, "switching in place now (ADR-0375)");
 		rootslot_attempt(slot); /* ADR-0379: the successor resolves it */
 		handover_exec(slot);
-		/* ADR-0379: the switch was refused, so this root failed to deploy;
-		 * a root-only roll stops there and never reboots. */
+		/*
+		 * ADR-0379: the switch was refused, so this root failed to
+		 * deploy; a root-only roll stops there and never reboots. The
+		 * staged slot is still the next boot (do_system_update() gave
+		 * it the newest entry), so the attempt stays recorded: a later
+		 * reboot into it is resolved like any other.
+		 */
 		if (root_only) {
-			rootslot_attempt_failed();
+			rootslot_mark_bad(target);
 			hostroll_say("error", 0,
 			             "root: the in-place switch to slot %s did not happen, so cix-root "
 			             "%.12s is not tried again until cix-root moves or a roll is run by "

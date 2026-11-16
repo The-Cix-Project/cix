@@ -47,7 +47,7 @@ Nothing records which `cix-root` version a running root was sealed from.
      - **confirmed** if it runs from slot X and the slot is confirmed (ADR-0375);
      - **failed** if it runs from the other slot, after a refused switch, a reboot fallback or the boot counter's rollback.
    - **Leaving the confirmed slot counts too.** cixd records the slot it last confirmed. A start on the other slot with no attempt pending (an operator's `boot-next`, the #589 remedy) marks the version it left bad. Without this, a rollback by hand would be undone at the next job's end.
-   - **Also bad:** a version `mkbootroot` could not build a root from.
+   - **Also bad:** a version `mkbootroot` could not build a root from, in a root-only roll. A scheduled roll that fails to assemble stops as it always has, since its kernel and cix may be what failed.
    - **Never bad:** a stop that says nothing about the root, such as a fork that failed, an update already writing the slot, or a guard waiting. A root-only roll that stops that way waits 30 minutes before a job's end starts it again.
    - While `cix-root`'s current version is a bad V, the root is not behind. The roll's reason says so, for example `root: cix-root 24df9a73 failed to deploy, waiting for cix-root to move`.
    - **How the mark clears:**
@@ -74,8 +74,8 @@ Nothing records which `cix-root` version a running root was sealed from.
      `cixctl schedule set host-roll ... --params='{"root":"window"}'` sets it.
    - A root-only roll assembles, stages the root alone, and switches in place. It never hostbuilds: a kernel or cix that is also behind waits for the window or a hand-run roll.
    - **It never chooses a reboot.**
-     - A switch the handover refuses before the exec marks the version bad (decision 3), and nothing reboots.
-     - If work stays in flight past the switch's 30-minute wait, the roll stops without switching. The staged slot waits for the next roll.
+     - A switch the handover refuses before the exec marks the version bad (decision 3), and nothing reboots. Its attempt stays recorded, because the staged slot still has the newest boot entry (`do_system_update()` writes it), so an ordinary reboot boots it as a trial. That boot is then resolved as an attempt: if it confirms, the root works after all, and the mark on that version clears; if it fails, the boot counter returns to the old slot and the version stays bad.
+     - If work stays in flight past the switch's 30-minute wait, the roll stops without switching and records the attempt, for the same reason. A later reboot boots the staged root and is resolved the same way, and a job's end starts the root-only roll again after 30 minutes.
    - **It can still reboot the host, once, at any hour.** After the exec the old process is gone, and ADR-0375 reboots the host when the successor refuses the handover record or the exec into the new root fails. The boot counter then returns to the slot that was running, and the next cixd marks that version bad. So a bad root costs at most one reboot, outside the window. The owner was told this cost before choosing (2026-11-16).
    - A roll started by the schedule or by hand also deploys a behind root, as part of whatever it does.
 6. **The running root's version is visible.** `GET /v1/system/boot` reports `root_image_version` (null when unknown) and `root_image_failed` (the bad version, or null). `cixctl boot` prints both.
