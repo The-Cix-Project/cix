@@ -11694,15 +11694,62 @@ static int hostroll_decide(long window_end, char *reason, size_t reason_size)
  * roll deploys the root too. It assembles, stages the root alone, and
  * switches in place; hostroll_switch_tick() never reboots for it.
  */
+/*
+ * ADR-0379: when a moved cix-root deploys, from the system.roll job's
+ * params: {"root": "settled"} (the default, also with no params) starts
+ * a root-only roll as soon as it settles; {"root": "window"} leaves it to
+ * the roll itself, scheduled or run by hand. -1 for anything else, with
+ * why in err, which the roll reports when it runs.
+ */
+enum roll_root_mode { ROLL_ROOT_SETTLED, ROLL_ROOT_WINDOW };
+
+static int roll_root_mode(const char *params, enum roll_root_mode *out, char *err, size_t err_size)
+{
+	struct json_value *v;
+	const struct json_value *root;
+	const char *s;
+	int rc = 0;
+
+	*out = ROLL_ROOT_SETTLED;
+	if (params == NULL || params[0] == '\0')
+		return 0;
+	v = json_parse(params, strlen(params));
+	if (v == NULL || v->type != JSON_OBJECT) {
+		snprintf(err, err_size, "params must be a JSON object");
+		json_free(v);
+		return -1;
+	}
+	root = json_object_get(v, "root");
+	if (root != NULL) {
+		s = json_as_string(root);
+		if (s != NULL && strcmp(s, "settled") == 0)
+			*out = ROLL_ROOT_SETTLED;
+		else if (s != NULL && strcmp(s, "window") == 0)
+			*out = ROLL_ROOT_WINDOW;
+		else {
+			snprintf(err, err_size,
+			         "params.root must be \"settled\" or \"window\" (ADR-0379)");
+			rc = -1;
+		}
+	}
+	json_free(v);
+	return rc;
+}
+
 static void rootroll_tick(void)
 {
-	char running[IMAGE_VERSION_MAX], current[IMAGE_VERSION_MAX];
+	char running[IMAGE_VERSION_MAX], current[IMAGE_VERSION_MAX], err[128];
 	struct hostroll_parts p;
+	enum roll_root_mode mode;
+	const char *params;
 
 	if (g_hostroll.step != HOSTROLL_IDLE)
 		return;
-	/* An operator's hold: with no enabled system.roll job, nothing rolls. */
-	if (!scheduler_action_enabled("system.roll"))
+	/* An operator's hold: with no enabled system.roll job, nothing rolls.
+	 * And {"root": "window"} leaves the root to the roll itself. */
+	params = scheduler_action_params("system.roll");
+	if (params == NULL || roll_root_mode(params, &mode, err, sizeof(err)) != 0 ||
+	    mode != ROLL_ROOT_SETTLED)
 		return;
 	if (root_verdict(running, sizeof(running), current, sizeof(current)) != ROOTSLOT_BEHIND)
 		return;
@@ -11738,8 +11785,12 @@ static int action_system_roll(const char *params, char *reason, size_t reason_si
 {
 	long now = (long)time(NULL), window_end;
 	int jobs;
+	enum roll_root_mode mode;
 
-	(void)params;
+	/* ADR-0379: a params mistake is said here, where an operator looks,
+	 * rather than silently holding the root-only roll. */
+	if (roll_root_mode(params, &mode, reason, reason_size) != 0)
+		return -1;
 	/* An assembly asked for re-reads cix-root here too, so a change that
 	 * reached the image with no package job ending to drive it cannot hold
 	 * a roll at HOSTROLL_ASSEMBLE until a restart (ADR-0371). */
@@ -40765,7 +40816,9 @@ static int cixd_main(int argc, char **argv)
 	                           action_volume_backup);
 	scheduler_register_action("system.roll",
 	                           "build what is newer of the kernel and cix, stage it and reboot "
-	                           "into it within the window (ADR-0327)",
+	                           "into it within the window (ADR-0327); a moved cix-root deploys "
+	                           "as soon as it settles, or with this roll only (params "
+	                           "{\"root\": \"settled\"|\"window\"}, ADR-0379)",
 	                           action_system_roll);
 	scheduler_register_action("pkg.sync", "fetch recipes from every configured source",
 	                           action_pkg_sync);

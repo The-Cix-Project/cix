@@ -21,6 +21,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
     - work still in flight after 30 minutes defers it, and the staged slot waits for the next roll.
 
     A successor that refuses the handover after the exec reboots the host by ADR-0375's rule. That costs one reboot at any hour for a bad root.
+  - **Configurable.** The `system.roll` job's params decide when a moved root deploys:
+    - `{"root":"settled"}`, the default, deploys as soon as it settles;
+    - `{"root":"window"}` leaves it to the roll itself.
+
+    `cixctl schedule set` gains `--params=JSON` to set them.
   - **Marked bad, not deployed again by itself:**
     - a version whose switch or boot fails;
     - a version `mkbootroot` cannot build;

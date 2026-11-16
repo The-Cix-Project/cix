@@ -20605,7 +20605,10 @@ components:
           description: >
             Handed to the action unread -- the action is the only thing
             that knows their shape, and the scheduler deliberately does
-            not learn it.
+            not learn it. GET /schedule-actions describes each action's.
+            system.roll reads `root`: `settled` (the default) deploys a
+            moved cix-root as soon as it settles, `window` leaves it to
+            the roll itself (ADR-0379).
         schedule:
           $ref: "#/components/schemas/ScheduleSpec"
           title: When

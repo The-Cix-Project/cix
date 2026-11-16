@@ -313,6 +313,8 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
   - the host leaves the slot it last confirmed with no roll attempting the other (an operator's `boot-next`).
 
   A bad mark clears when cix-root moves or an operator runs the roll by hand; a stop that says nothing about the root only defers it. **Disabling `host-roll` holds root-only rolls too.** Never add a reboot to the root-only path.
+
+  **When is configurable** (the owner, the same day: *"it should be programmable, no? (configurable)?"*). It is set by the `system.roll` job's params: `{"root":"settled"}` is the default, and `{"root":"window"}` leaves the root to the roll itself. Never add a second place for this setting.
 - **A rolling image's dependencies roll with it** ([ADR-0378](docs/adr/0378-a-rolling-images-dependencies-roll-with-it.md), the owner, 2026-11-13). In an image with at least one rolling entry, a package an installed package names in its `depends`, that is not a manifest entry, follows the newest published version. Publishing queues the image, the drain upgrades it once the entries need nothing, and the re-derivation finds it. Three things hold:
   - a recipe's `name@version` holds that dependency where it is;
   - an image whose entries are all pinned is held whole;

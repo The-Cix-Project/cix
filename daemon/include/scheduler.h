@@ -198,9 +198,13 @@ long scheduler_running_window_end(void);
  */
 void scheduler_note_action(const char *action, int ok, const char *reason);
 
-/* ADR-0379: 1 when some enabled job runs this action. Disabling the only
- * system.roll job holds every roll, a root-only one included. */
-int scheduler_action_enabled(const char *action);
+/*
+ * ADR-0379: the params of the first enabled job that runs this action
+ * ("" when it has none), or NULL when no enabled job runs it. Disabling
+ * the only system.roll job therefore holds every roll, a root-only one
+ * included, and its params say when a moved root deploys.
+ */
+const char *scheduler_action_params(const char *action);
 
 /* ADR-0379: while an action runs, 1 when an operator asked for it
  * (POST /v1/system/schedules/{name}/run), 0 for a scheduled run and

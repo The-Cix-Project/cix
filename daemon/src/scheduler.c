@@ -698,17 +698,17 @@ long scheduler_running_window_end(void)
 	return g_running_window_end;
 }
 
-int scheduler_action_enabled(const char *action)
+const char *scheduler_action_params(const char *action)
 {
 	int i;
 
 	if (action == NULL)
-		return 0;
+		return NULL;
 	for (i = 0; i < SCHEDULER_MAX_JOBS; i++) {
 		if (g_jobs[i].in_use && g_jobs[i].enabled && strcmp(g_jobs[i].action, action) == 0)
-			return 1;
+			return g_jobs[i].params;
 	}
-	return 0;
+	return NULL;
 }
 
 int scheduler_running_by_hand(void)

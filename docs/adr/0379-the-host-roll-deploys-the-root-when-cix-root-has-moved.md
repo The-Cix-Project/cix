@@ -66,6 +66,12 @@ Nothing records which `cix-root` version a running root was sealed from.
      - the kernel and cix current and running;
      - a version that is not bad.
    - **Disabling `host-roll` is the operator's hold.** It stops root-only rolls as well as the scheduled ones.
+   - **When is a setting**, the owner on 2026-11-16 (*"it should be programmable, no? (configurable)?"*). It lives in the `system.roll` job's own params, beside the schedule and the hold:
+     - `{"root": "settled"}`, the default, also with no params, deploys a moved root as soon as it settles;
+     - `{"root": "window"}` leaves it to the roll itself, at 03:00 or run by hand, so even a bad root's one reboot falls inside the window;
+     - any other value is refused when the roll runs, with the reason on its schedule line.
+
+     `cixctl schedule set host-roll ... --params='{"root":"window"}'` sets it.
    - A root-only roll assembles, stages the root alone, and switches in place. It never hostbuilds: a kernel or cix that is also behind waits for the window or a hand-run roll.
    - **It never chooses a reboot.**
      - A switch the handover refuses before the exec marks the version bad (decision 3), and nothing reboots.

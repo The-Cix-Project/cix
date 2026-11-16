@@ -18017,6 +18017,11 @@ static void schedule_usage(void)
 	        "       --window-minutes=N  how long an action may keep starting work\n"
 	        "       --catch-up          run once at startup if the time passed while down\n"
 	        "       --disabled          store it, but do not run it\n"
+	        "       --params=JSON       the action's own settings, an object; set replaces\n"
+	        "                           the whole job, so give them again to keep them.\n"
+	        "                           system.roll: {\"root\":\"settled\"} deploys a moved\n"
+	        "                           cix-root as soon as it settles (the default),\n"
+	        "                           {\"root\":\"window\"} only with the roll itself\n"
 	        "  actions come from `cixctl schedule actions` -- never free text\n");
 }
 
@@ -18076,6 +18081,8 @@ static int cmd_schedule(const struct cix_client *c, int json_mode, int argc, cha
 	if (strcmp(sub, "set") == 0) {
 		struct json_writer w;
 		const char *action = NULL, *daily_at = NULL, *weekly_on = NULL, *weekly_at = NULL;
+		const char *params = NULL; /* a JSON object the action reads */
+		struct json_value *params_v = NULL;
 		long every[4] = { 0, 0, 0, 0 }; /* seconds, minutes, hours, days */
 		int have_every = 0, window = 0, catch_up = 0, enabled = 1;
 		int i, rc;
@@ -18103,6 +18110,8 @@ static int cmd_schedule(const struct cix_client *c, int json_mode, int argc, cha
 				catch_up = 1;
 			else if (strcmp(argv[i], "--disabled") == 0)
 				enabled = 0;
+			else if (strncmp(argv[i], "--params=", 9) == 0)
+				params = argv[i] + 9;
 			else {
 				fprintf(stderr, "cixctl: unknown schedule option '%s'\n", argv[i]);
 				schedule_usage();
@@ -18121,6 +18130,17 @@ static int cmd_schedule(const struct cix_client *c, int json_mode, int argc, cha
 			fprintf(stderr, "cixctl: give exactly one of --every-*, --daily-at or "
 			                "--weekly-on/--weekly-at\n");
 			return 2;
+		}
+		/* set replaces the whole job, params included, so they are given
+		 * again on every set that keeps them. */
+		if (params != NULL) {
+			params_v = json_parse(params, strlen(params));
+			if (params_v == NULL || params_v->type != JSON_OBJECT) {
+				fprintf(stderr, "cixctl: --params must be a JSON object, e.g. "
+				                "'{\"root\":\"window\"}'\n");
+				json_free(params_v);
+				return 2;
+			}
 		}
 		jw_init(&w);
 		jw_obj_open(&w);
@@ -18170,6 +18190,11 @@ static int cmd_schedule(const struct cix_client *c, int json_mode, int argc, cha
 		jw_bool(&w, catch_up);
 		jw_key(&w, "enabled");
 		jw_bool(&w, enabled);
+		if (params_v != NULL) {
+			jw_key(&w, "params");
+			jw_value(&w, params_v);
+			json_free(params_v);
+		}
 		jw_obj_close(&w);
 
 		snprintf(path, sizeof(path), CIX_API_setSchedule, name);
