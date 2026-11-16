@@ -1292,8 +1292,25 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [build_version, build_time, slot, kernel_version, platform_devices]
+                required: [build_version, build_time, slot, kernel_version, platform_devices, root_image_version, root_image_failed]
                 properties:
+                  root_image_version:
+                    type: [string, "null"]
+                    description: >
+                      The `cix-root` version the running root was sealed
+                      from, as the host roll recorded it when it staged
+                      this slot (ADR-0379). Null when unknown: an
+                      installer-written slot, one written before
+                      0.2.57-691, or one written by any path but the
+                      roll. While it differs from `cix-root`'s current
+                      version and that image has settled, cixd deploys
+                      the root by an in-place switch.
+                  root_image_failed:
+                    type: [string, "null"]
+                    description: >
+                      The `cix-root` version whose switch or boot failed
+                      (ADR-0379), which is not tried again until
+                      `cix-root` moves to another version; null for none.
                   build_version:
                     type: string
                     description: >

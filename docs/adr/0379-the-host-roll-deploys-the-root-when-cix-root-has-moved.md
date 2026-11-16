@@ -2,7 +2,12 @@
 
 ## Status
 
-Proposed on 2026-11-16, for the owner's acceptance. It builds the half of [ADR-0371](0371-the-control-plane-root-is-one-image.md)'s decision B that is still missing, the root following its image. It is also the case that [ADR-0327](0327-the-host-follows-its-rolling-packages-in-a-nightly-window.md)'s host roll does not yet consider.
+Accepted by the owner on 2026-11-16. The owner answered three questions:
+- whether to build it: *"Accept"*;
+- when a moved `cix-root` should reach the host: *"As soon as it settles"*, over the nightly window, which decision 5 records;
+- what a failed version gets: *"Mark it bad"*.
+
+It builds the half of [ADR-0371](0371-the-control-plane-root-is-one-image.md)'s decision B that is still missing, the root following its image. It is also the case that [ADR-0327](0327-the-host-follows-its-rolling-packages-in-a-nightly-window.md)'s host roll does not yet consider.
 
 ## Context
 
@@ -25,7 +30,7 @@ Nothing records which `cix-root` version a running root was sealed from.
 
 ## Decision
 
-**The host roll compares the running root's `cix-root` version with `cix-root`'s current one. When they differ, and the current version has not failed before, it assembles, stages and switches exactly as for a new cix, in its window or when run by hand, and at no other time.**
+**cixd compares the running root's `cix-root` version with `cix-root`'s current one. When they differ, `cix-root` has settled, and the current version has not failed before, it assembles, stages and switches the root in place: at once by a root-only roll that never reboots, and as part of any scheduled or hand-run roll.**
 
 1. **cixd records what each slot holds, and only what the roll put there.**
    - Before anything writes a slot, by any path (the roll, `POST /v1/system/update`, a restore), that slot's record is cleared.
@@ -47,7 +52,13 @@ Nothing records which `cix-root` version a running root was sealed from.
    - `hostroll_decide()` stages when the kernel or cix is behind or not running, or when the root is behind.
    - A root behind with the kernel unchanged switches in place (ADR-0375), as a cix release does. The reason names it, for example `root: cix-root 8ec94a64 -> 24df9a73`, and so does the schedule line (#692).
    - The existing guard stays: `root_image_behind()` holds the seal until `cix-root` carries the installed hostbuild's `cixd` and `cixctl` and the kernel's modules.
-5. **Only the roll deploys.** A new `cix-root` version arriving at any hour starts no assembly and no switch; it waits for the 03:00 window or a hand-run roll. That keeps ADR-0327's rule that the window is the one moment the host changes, and bounds churn to one switch a night however often `cix-root` moved.
+5. **A settled move deploys at once, by a root-only roll that never reboots.** The owner chose this over waiting for the window.
+   - When a package job ends and `cix-root` is behind by decision 2, cixd starts a root-only roll, provided no roll is in progress, the kernel is current and running, and the version is not bad.
+   - A root-only roll assembles, stages the root alone, and switches in place. It never hostbuilds: a kernel or cix that is also behind waits for the window or a hand-run roll.
+   - **It never reboots.** The window stays the only time the host goes down (ADR-0327, CLAUDE.md), and a root-only roll switches in place or does nothing.
+     - A switch the handover refuses marks the version bad, by decision 3.
+     - If work stays in flight past the switch's 30-minute wait, the roll stops without switching. The staged slot waits for the next roll.
+   - A roll started by the schedule or by hand also deploys a behind root, as part of whatever it does.
 6. **The running root's version is visible.** `GET /v1/system/boot` reports `root_image_version` (null when unknown) and `root_image_failed` (the bad version, or null). `cixctl boot` prints both.
 
 ## What "confirmed" proves, and what it does not
@@ -67,11 +78,11 @@ So this ADR names the limit and does not close it. A probation that makes one TL
 
 ## Consequences
 
-- **A fix reaches the host sooner.** Once a revision of anything in the root's closure is published, it reaches the host by the next window with no further step, instead of waiting for a cix release.
-- **What a root-only roll costs:**
+- **A fix reaches the host sooner.** Once a revision of anything in the root's closure is published, it reaches the host as soon as `cix-root` settles, by an in-place switch, instead of waiting for a cix release.
+- **What a root-only roll costs, each time `cix-root` moves:**
   - one assembly (about 25 s on .95), one slot write and one in-place switch, with no reboot;
   - a brief API pause at the switch, about 20 s when cbs changed and an explain sweep runs, while every container keeps running.
-- **The first roll after this ships** finds no record, so it assembles and switches once even when nothing moved. From then on the record exists.
+- **Once after this ships, a root-only roll switches when nothing moved.** The release that ships it is deployed by the previous daemon's roll, which writes no record, so the running slot starts unknown. The first package job to end afterwards then starts a root-only roll, which assembles and switches once. From then on the record exists.
 - **The contract changes:** `GET /v1/system/boot` gains two fields. `docs/api/openapi.yaml` and `docs/api/README.md` change together, and the read's announcement is declared (ADR-0339).
 - **Gate:** the decision is a pure function, tested in SELFTESTS. It takes the running record, the current version, settled or not, and the bad mark, and is tested with:
   - unknown, equal and different versions;
@@ -79,4 +90,7 @@ So this ADR names the limit and does not close it. A probation that makes one TL
   - a bad current version;
   - a bad version that `cix-root` has moved past;
   - a roll whose kernel or cix is also behind.
-- **Live check:** the release's first roll reads `root: cix-root unknown -> <current>` and switches in place. A second hand-run roll then answers `current`, now including the root. The next real `cix-root` move is the first root-only roll.
+- **Live check:**
+  - after the release, the first package job's end logs `host roll: root: cix-root unknown -> <current>`, and that roll switches in place without rebooting;
+  - `cixctl boot` then reports `root_image_version` equal to `cixctl image show cix-root`'s current version, and a hand-run roll answers `current`, now including the root;
+  - the next real `cix-root` move is the first root-only roll with something in it.

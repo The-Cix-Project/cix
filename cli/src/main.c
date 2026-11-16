@@ -908,6 +908,18 @@ static void fmt_boot(const struct json_value *v)
 	printf("build:   %s (%s)\n", json_str_field(v, "build_version"), json_str_field(v, "build_time"));
 	printf("slot:    %s\n", (slot != NULL) ? slot : "(none)");
 	printf("kernel:  %s\n", (kernel != NULL) ? kernel : "(unknown)");
+	/* ADR-0379: the cix-root version this root was sealed from, and any
+	 * version that failed to deploy. */
+	{
+		const char *root = json_str_field(v, "root_image_version");
+		const char *failed = json_str_field(v, "root_image_failed");
+
+		printf("root:    cix-root %s\n", root != NULL ? root : "(unknown)");
+		if (failed != NULL)
+			printf("failed:  cix-root %s did not deploy; not tried again until cix-root "
+			       "moves\n",
+			       failed);
+	}
 	/*
 	 * #305: which device each platform partition resolved to by GPT
 	 * label this boot. Printed on one line per partition rather than

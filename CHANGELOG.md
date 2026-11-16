@@ -6,6 +6,19 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The root follows cix-root as soon as it settles (ADR-0379, 0.2.57-691)
+
+- **Before:** a change inside `cix-root` (openssl, glibc, cbs, gcc-libs, anything in its closure) reached the host only with the next cix release. The roll decided on the kernel and cix alone. Measured on .95 on 2026-11-16: the running root was sealed from `cix-root` `8ec94a64`, `cix-root` moved to `24df9a73`, and a roll answered `current`.
+- **Now:**
+  - **What each slot holds.** cixd records which `cix-root` version each slot holds, in `/config/state/root-slots.json` (`rootslot.c`). The roll sets a slot's version when it stages a root its own assembly sealed. Any update clears the target slot's version before it writes.
+  - **A third reason for the roll:** `root: cix-root X -> Y`, decided by `rootslot_verdict()` on a settled image. Unknown counts as behind.
+  - **Your choice, as soon as it settles.** After every package job, a `cix-root` that has settled at a new version starts a root-only roll, provided the kernel and cix are current and running. It assembles, stages the root alone and switches in place, and it never reboots:
+    - a refused switch marks the version bad;
+    - work still in flight after 30 minutes defers it, and the staged slot waits for the next roll.
+  - **Marked bad.** A version whose switch, boot, assembly or staging fails is marked bad, and is not tried again until `cix-root` moves. The next cixd resolves an attempt: one that started on the other slot failed.
+  - **Visible.** `GET /v1/system/boot` reports `root_image_version` and `root_image_failed`, and `cixctl boot` prints both.
+- **Gate:** `test_rootslot_verdict` (in SELFTESTS) covers unknown, equal and different versions, an unsettled image, a bad version, and a bad version `cix-root` has moved past.
+
 ### A hostbuild runs alone (#693, 0.2.57-690)
 
 - **The owner's decision of 2026-11-16:** while a hostbuild runs, the rolling drain starts nothing.

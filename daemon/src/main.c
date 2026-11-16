@@ -75,6 +75,8 @@
 #include "stallwatch.h"
 #include "startup_steps.h"
 #include "hostroll_verdict.h"
+#include "rootslot.h"
+#include "rootslot_verdict.h"
 #include "handover.h"
 #include "rootswitch.h"
 #include "exec.h"
@@ -2143,6 +2145,9 @@ static void on_signal(int sig)
  * and removes it.
  */
 #define FATAL_NOTE_PATH CONFIG_DIR "/state/last-fatal"
+/* ADR-0379: which cix-root version each slot holds (rootslot.h). On the
+ * config partition, which outlives both slots. */
+#define ROOTSLOT_PATH CONFIG_DIR "/state/root-slots.json"
 static int g_fatal_note_on;
 static int g_fatal_fd = -1; /* open while the crash handler writes its line */
 
@@ -3468,6 +3473,26 @@ static void handle_system_boot(int fd)
 	 * shim posture; its one consumer (cixctl's deploy wait) moved in the
 	 * same change.
 	 */
+	/*
+	 * ADR-0379: the cix-root version this slot's root was sealed from,
+	 * as the roll recorded it (null when unknown), and the version that
+	 * failed to deploy (null for none). What booted, like the rest.
+	 */
+	{
+		const char *running = g_slot != NULL ? rootslot_version(g_slot) : "";
+		const char *bad = rootslot_bad();
+
+		jw_key(&w, "root_image_version");
+		if (running[0] != '\0')
+			jw_str(&w, running);
+		else
+			jw_null(&w);
+		jw_key(&w, "root_image_failed");
+		if (bad[0] != '\0')
+			jw_str(&w, bad);
+		else
+			jw_null(&w);
+	}
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -7348,8 +7373,11 @@ static void handle_boot_confirm_timer_event(struct conn *cc)
 		if (confirm_boot(g_boot_confirm_slot) != 0)
 			fprintf(stderr, "confirm_boot failed for slot %s (continuing anyway)\n",
 			        g_boot_confirm_slot);
-		else if (g_handover_switched)
-			handover_switch_confirmed(g_boot_confirm_slot);
+		else {
+			rootslot_confirmed(g_boot_confirm_slot); /* ADR-0379 */
+			if (g_handover_switched)
+				handover_switch_confirmed(g_boot_confirm_slot);
+		}
 		stop_boot_confirm_timer();
 		return;
 	}
@@ -7445,10 +7473,14 @@ static void maybe_confirm_boot(const char *slot)
 	if (why[0] == '\0') {
 		if (confirm_boot(slot) != 0)
 			fprintf(stderr, "confirm_boot failed for slot %s (continuing anyway)\n", slot);
-		else if (g_handover_switched) {
-			handover_switch_confirmed(slot);
-			printf("handover: slot %s confirmed after the root switch (ADR-0375)\n", slot);
-			fflush(stdout);
+		else {
+			rootslot_confirmed(slot); /* ADR-0379 */
+			if (g_handover_switched) {
+				handover_switch_confirmed(slot);
+				printf("handover: slot %s confirmed after the root switch (ADR-0375)\n",
+				       slot);
+				fflush(stdout);
+			}
 		}
 		return;
 	}
@@ -10540,6 +10572,7 @@ static void bootroot_drive(void);
 /* ADR-0327: the host roll, defined after bootroot_drive(). */
 static void hostroll_tick(void);
 static void hostroll_wait_tick(void); /* #688 */
+static void rootroll_tick(void);      /* ADR-0379 */
 static void hostroll_assembly_done(int ok);
 static void kernel_running_version(char *out, size_t out_size);
 
@@ -10689,6 +10722,15 @@ static void pkg_completion_followup(int next, pid_t pkg_pid, int pkg_pidfd, int 
 	 */
 	if (next != 1 && next != 2)
 		try_start_queued_pkg_rebuild();
+
+	/*
+	 * ADR-0379: a cix-root that has settled at a new version deploys.
+	 * After the drain, which is what takes a converged image off its
+	 * queue: before it, cix-root's last job would leave it still queued,
+	 * so not settled, and nothing would ask again until another job
+	 * ended.
+	 */
+	rootroll_tick();
 
 	/* ADR-0343: last, after anything above that may have started the
 	 * next job -- a pass runs only when none is in flight. */
@@ -11213,7 +11255,19 @@ static struct {
 	char slot[8];       /* HOSTROLL_SWITCH: the slot staged */
 	long switch_by;     /* HOSTROLL_SWITCH: reboot instead once this passes */
 	long wait_until;    /* HOSTROLL_WAIT: give up once this passes */
+	/* ADR-0379: started because cix-root moved, outside any window. It
+	 * switches in place or does nothing; it never reboots. */
+	int root_only;
+	char root_target[IMAGE_VERSION_MAX]; /* the cix-root version it deploys */
 } g_hostroll;
+
+/*
+ * ADR-0379: a root-only roll whose switch outlasted its wait is not
+ * started again for the same version until this passes, so a busy host
+ * is not reassembled at every job's end. In memory: a restart retries.
+ */
+static char g_rootroll_deferred[IMAGE_VERSION_MAX];
+static long g_rootroll_deferred_until;
 
 static int handover_quiescent(void);
 static void handover_exec(const char *target);
@@ -11243,6 +11297,15 @@ static void hostroll_stop(const char *level, const char *fmt, const char *a, con
 
 	snprintf(msg, sizeof(msg), fmt, a, b);
 	hostroll_say(level, 0, "%s (ADR-0327)", msg);
+	/* ADR-0379: a root-only roll that could not assemble or stage its
+	 * version failed to deploy it, and the next job's end would start
+	 * the same roll again. */
+	if (g_hostroll.root_only && strcmp(level, "error") == 0) {
+		rootslot_mark_bad(g_hostroll.root_target);
+		hostroll_say("warn", 0,
+		             "root: cix-root %.12s is not tried again until cix-root moves (ADR-0379)",
+		             g_hostroll.root_target);
+	}
 	memset(&g_hostroll, 0, sizeof(g_hostroll));
 }
 
@@ -11363,6 +11426,8 @@ static void hostroll_staged(int status, const char *slot, int updated_kernel, co
 		hostroll_stop("error", "staging failed: %s%s", errmsg, "");
 		return;
 	}
+	/* ADR-0379: the slot holds the root this roll's own assembly sealed. */
+	rootslot_set(slot, g_bootroot_assembly_root_version);
 	if (g_hostroll.reboot_by != 0 && now > g_hostroll.reboot_by) {
 		hostroll_stop("warn",
 		              "staged on slot %s, but the window has closed -- the host reboots into it "
@@ -11390,6 +11455,7 @@ static void hostroll_staged(int status, const char *slot, int updated_kernel, co
 	}
 	hostroll_say("warn", 1, "staged root%s on slot %s -- rebooting into it (ADR-0327)",
 	             updated_kernel ? " and kernel" : "", slot);
+	rootslot_attempt(slot); /* ADR-0379: the next boot resolves it */
 	memset(&g_hostroll, 0, sizeof(g_hostroll));
 	g_shutdown_action = SHUTDOWN_ACTION_REBOOT;
 	g_stop = 1;
@@ -11406,13 +11472,32 @@ static void hostroll_staged(int status, const char *slot, int updated_kernel, co
 static void hostroll_switch_tick(void)
 {
 	char slot[8];
+	char target[IMAGE_VERSION_MAX];
+	int root_only;
 
 	if (g_hostroll.step != HOSTROLL_SWITCH)
 		return;
 	snprintf(slot, sizeof(slot), "%s", g_hostroll.slot);
+	snprintf(target, sizeof(target), "%s", g_hostroll.root_target);
+	root_only = g_hostroll.root_only;
 	if (!handover_quiescent()) {
 		if ((long)time(NULL) < g_hostroll.switch_by)
 			return;
+		/* ADR-0379: a root-only roll never reboots. The staged slot waits
+		 * for the next roll, and this version waits a while before a
+		 * job's end starts it again. */
+		if (root_only) {
+			hostroll_say("warn", 0,
+			             "root: work stayed in flight for %d min, so the root staged on slot %s "
+			             "was not switched into; it is retried in %d min, or by the next roll "
+			             "(ADR-0379)",
+			             HOSTROLL_SWITCH_WAIT_SECONDS / 60, slot,
+			             HOSTROLL_SWITCH_WAIT_SECONDS / 60);
+			snprintf(g_rootroll_deferred, sizeof(g_rootroll_deferred), "%s", target);
+			g_rootroll_deferred_until = (long)time(NULL) + HOSTROLL_SWITCH_WAIT_SECONDS;
+			memset(&g_hostroll, 0, sizeof(g_hostroll));
+			return;
+		}
 		hostroll_say("warn", 1,
 		             "work stayed in flight past the wait -- rebooting into slot %s instead of "
 		             "switching (ADR-0375)",
@@ -11421,12 +11506,25 @@ static void hostroll_switch_tick(void)
 		memset(&g_hostroll, 0, sizeof(g_hostroll));
 		/* #692: the outcome the successor reads until it records its own. */
 		scheduler_note_action("system.roll", 1, "switching in place now (ADR-0375)");
+		rootslot_attempt(slot); /* ADR-0379: the successor resolves it */
 		handover_exec(slot);
+		/* ADR-0379: the switch was refused, so this root failed to deploy;
+		 * a root-only roll stops there and never reboots. */
+		if (root_only) {
+			rootslot_attempt_failed();
+			hostroll_say("error", 0,
+			             "root: the in-place switch to slot %s did not happen, so cix-root "
+			             "%.12s is not tried again until cix-root moves; nothing rebooted "
+			             "(ADR-0379)",
+			             slot, target);
+			return;
+		}
 		hostroll_say("warn", 1,
 		             "the in-place switch to slot %s did not happen -- rebooting into it "
 		             "instead (ADR-0375)",
 		             slot);
 	}
+	rootslot_attempt(slot); /* ADR-0379: the next boot resolves it */
 	memset(&g_hostroll, 0, sizeof(g_hostroll));
 	g_shutdown_action = SHUTDOWN_ACTION_REBOOT;
 	g_stop = 1;
@@ -11451,53 +11549,149 @@ static int roll_start_failed(const char *name, char *reason, size_t reason_size)
  * the kernel and cix with what is installed and running, and start the
  * first step. window_end is the schedule window's end, 0 for none.
  */
+/*
+ * The kernel's and cix's standing against what is published and what
+ * runs: the roll's first two reasons. 0, or -1 when either was never
+ * hostbuilt here.
+ */
+struct hostroll_parts {
+	struct pkg_host_state kernel, cix;
+	int kernel_behind, cix_behind, kernel_not_running, cix_not_running;
+};
+
+static int hostroll_parts_read(struct hostroll_parts *p)
+{
+	char running_kernel[128], kernel_upstream[PKG_VERSION_MAX];
+
+	if (pkg_host_state("kernel", &p->kernel) != 0 || pkg_host_state("cix", &p->cix) != 0)
+		return -1;
+	kernel_running_version(running_kernel, sizeof(running_kernel));
+	srcresolve_upstream_of(p->kernel.installed, kernel_upstream, sizeof(kernel_upstream));
+	/* A failed hostbuild left nothing installed: it is behind, and is
+	 * retried, never staged from whatever the artifact directory holds. */
+	p->kernel_behind = p->kernel.available[0] != '\0' || p->kernel.failed;
+	p->cix_behind = p->cix.available[0] != '\0' || p->cix.failed;
+	p->kernel_not_running = p->kernel.installed[0] != '\0' &&
+	                        strcmp(kernel_upstream, running_kernel) != 0;
+	p->cix_not_running = p->cix.installed[0] != '\0' &&
+	                     strcmp(p->cix.installed, CIX_BUILD_VERSION) != 0;
+	return 0;
+}
+
+/*
+ * ADR-0379: the roll's third reason, the root against cix-root. Only in
+ * init mode with a slot, where the record exists; anywhere else the root
+ * is never behind. running and current are filled ("" when unknown or
+ * absent). A bad version cix-root has moved past is forgotten here.
+ */
+static enum rootslot_verdict root_verdict(char *running, size_t running_size, char *current,
+                                          size_t current_size)
+{
+	enum rootslot_verdict v;
+
+	running[0] = current[0] = '\0';
+	if (!g_fatal_note_on || g_slot == NULL)
+		return ROOTSLOT_CURRENT;
+	if (image_current_version(ROOT_IMAGE, current, current_size) != IMAGE_OK)
+		current[0] = '\0';
+	snprintf(running, running_size, "%s", rootslot_version(g_slot));
+	v = rootslot_verdict(running, current, pkg_image_settled(ROOT_IMAGE), rootslot_bad());
+	if (rootslot_bad()[0] != '\0' && current[0] != '\0' && strcmp(rootslot_bad(), current) != 0)
+		rootslot_clear_bad();
+	return v;
+}
+
 static int hostroll_decide(long window_end, char *reason, size_t reason_size)
 {
-	struct pkg_host_state kernel, cix;
-	char running_kernel[128], kernel_upstream[PKG_VERSION_MAX];
-	int kernel_behind, cix_behind, kernel_not_running, cix_not_running;
+	struct hostroll_parts p;
+	struct pkg_host_state *kernel = &p.kernel, *cix = &p.cix;
+	char root_running[IMAGE_VERSION_MAX], root_current[IMAGE_VERSION_MAX], root_part[96];
+	enum rootslot_verdict root_v;
+	int root_behind;
 
-	if (pkg_host_state("kernel", &kernel) != 0 || pkg_host_state("cix", &cix) != 0) {
+	if (hostroll_parts_read(&p) != 0) {
 		snprintf(reason, reason_size,
 		         "the kernel or cix was never hostbuilt on this host, so there is nothing to "
 		         "roll from");
 		return -1;
 	}
-	kernel_running_version(running_kernel, sizeof(running_kernel));
-	srcresolve_upstream_of(kernel.installed, kernel_upstream, sizeof(kernel_upstream));
-	/* A failed hostbuild left nothing installed: it is behind, and is
-	 * retried, never staged from whatever the artifact directory holds. */
-	kernel_behind = kernel.available[0] != '\0' || kernel.failed;
-	cix_behind = cix.available[0] != '\0' || cix.failed;
-	kernel_not_running = kernel.installed[0] != '\0' && strcmp(kernel_upstream, running_kernel) != 0;
-	cix_not_running = cix.installed[0] != '\0' && strcmp(cix.installed, CIX_BUILD_VERSION) != 0;
-	if (!kernel_behind && !cix_behind && !kernel_not_running && !cix_not_running) {
-		snprintf(reason, reason_size, "current: kernel %s and cix %s are the newest and running",
-		         kernel.installed, cix.installed);
+	root_v = root_verdict(root_running, sizeof(root_running), root_current,
+	                      sizeof(root_current));
+	root_behind = root_v == ROOTSLOT_BEHIND;
+	root_part[0] = '\0';
+	if (root_behind)
+		snprintf(root_part, sizeof(root_part), ", root: cix-root %.12s -> %.12s",
+		         root_running[0] != '\0' ? root_running : "unknown", root_current);
+	else if (root_v == ROOTSLOT_FAILED)
+		snprintf(root_part, sizeof(root_part),
+		         "; root: cix-root %.12s failed to deploy, waiting for cix-root to move",
+		         root_current);
+	else if (root_v == ROOTSLOT_UNSETTLED)
+		snprintf(root_part, sizeof(root_part), "; root: cix-root is still converging");
+	if (!p.kernel_behind && !p.cix_behind && !p.kernel_not_running && !p.cix_not_running &&
+	    !root_behind) {
+		snprintf(reason, reason_size,
+		         "current: kernel %s and cix %s are the newest and running%s",
+		         kernel->installed, cix->installed, root_part);
 		return 0;
 	}
 
 	memset(&g_hostroll, 0, sizeof(g_hostroll));
 	g_hostroll.reboot_by = window_end;
-	g_hostroll.stage_kernel = kernel_behind || kernel_not_running;
-	g_hostroll.then_cix = kernel_behind && cix_behind;
+	g_hostroll.stage_kernel = p.kernel_behind || p.kernel_not_running;
+	g_hostroll.then_cix = p.kernel_behind && p.cix_behind;
+	if (root_behind)
+		snprintf(g_hostroll.root_target, sizeof(g_hostroll.root_target), "%s", root_current);
 	/* #683: a failed hostbuild has no installed version; the sentence
 	 * says "failed" there, and available is the recipe the retry builds. */
-	snprintf(reason, reason_size, "rolling: kernel %s%s%s, cix %s%s%s",
-	         kernel.installed[0] != '\0' ? kernel.installed : kernel.failed ? "failed" : "none",
-	         kernel_behind ? " -> " : "", kernel.available,
-	         cix.installed[0] != '\0' ? cix.installed : cix.failed ? "failed" : "none",
-	         cix_behind ? " -> " : "", cix.available);
+	snprintf(reason, reason_size, "rolling: kernel %s%s%s, cix %s%s%s%s",
+	         kernel->installed[0] != '\0' ? kernel->installed : kernel->failed ? "failed" : "none",
+	         p.kernel_behind ? " -> " : "", kernel->available,
+	         cix->installed[0] != '\0' ? cix->installed : cix->failed ? "failed" : "none",
+	         p.cix_behind ? " -> " : "", cix->available, root_part);
 	hostroll_say("info", 1, "%s (ADR-0327)", reason);
-	if (kernel_behind)
+	if (p.kernel_behind)
 		return hostroll_build("kernel") == 0 ? 0 : roll_start_failed("kernel", reason, reason_size);
-	if (cix_behind)
+	if (p.cix_behind)
 		return hostroll_build("cix") == 0 ? 0 : roll_start_failed("cix", reason, reason_size);
 	hostroll_assemble();
 	if (g_hostroll.step == HOSTROLL_ASSEMBLE)
 		return 0;
 	snprintf(reason, reason_size, "the root assembly could not start -- cixctl logs names why");
 	return -1;
+}
+
+/*
+ * ADR-0379 decision 5, the owner's "as soon as it settles": after every
+ * package job, when cix-root has settled at a version the running root
+ * was not sealed from, start a root-only roll. It never hostbuilds, so it
+ * starts only when the kernel and cix are both current and running; a
+ * part that is behind waits for the window or a hand-run roll, whose
+ * roll deploys the root too. It assembles, stages the root alone, and
+ * switches in place; hostroll_switch_tick() never reboots for it.
+ */
+static void rootroll_tick(void)
+{
+	char running[IMAGE_VERSION_MAX], current[IMAGE_VERSION_MAX];
+	struct hostroll_parts p;
+
+	if (g_hostroll.step != HOSTROLL_IDLE)
+		return;
+	if (root_verdict(running, sizeof(running), current, sizeof(current)) != ROOTSLOT_BEHIND)
+		return;
+	if (strcmp(g_rootroll_deferred, current) == 0 && (long)time(NULL) < g_rootroll_deferred_until)
+		return;
+	if (hostroll_parts_read(&p) != 0 || p.kernel_behind || p.cix_behind ||
+	    p.kernel_not_running || p.cix_not_running)
+		return;
+	memset(&g_hostroll, 0, sizeof(g_hostroll));
+	g_hostroll.root_only = 1;
+	snprintf(g_hostroll.root_target, sizeof(g_hostroll.root_target), "%s", current);
+	hostroll_say("info", 1,
+	             "root: cix-root %.12s -> %.12s -- a root-only roll, which switches in place and "
+	             "never reboots (ADR-0379)",
+	             running[0] != '\0' ? running : "unknown", current);
+	hostroll_assemble();
 }
 
 /* #688: how long a roll waits for the package jobs in flight. To the
@@ -34698,12 +34892,31 @@ static struct park *park_new_with_body(enum park_kind kind, struct conn *cc, con
  * and checked that no update is running. 0 when parked; -1 when no
  * helper could start, and nothing was written.
  */
+/*
+ * ADR-0379: the slot an update writes, which is always the one this
+ * daemon is not running from (do_system_update()); NULL with no --slot=.
+ * Its recorded cix-root version is cleared before the write starts,
+ * whoever asked, so nothing stale survives an update the roll did not
+ * make. The roll records the version again once its staging succeeds.
+ */
+static const char *update_target_slot(void)
+{
+	if (g_slot == NULL)
+		return NULL;
+	if (strcmp(g_slot, "a") == 0)
+		return "b";
+	if (strcmp(g_slot, "b") == 0)
+		return "a";
+	return NULL;
+}
+
 static int update_submit(const char *body, size_t body_len)
 {
 	struct park *p = park_new_with_body(PARK_UPDATE, request_conn(), body, body_len);
 
 	if (p == NULL)
 		return -1;
+	rootslot_clear(update_target_slot());
 	return park_body_submit(p) == PARK_ANSWER_ASK ? 0 : -1;
 }
 
@@ -34714,6 +34927,7 @@ static int update_submit_daemon_job(const char *body)
 
 	if (p == NULL)
 		return -1;
+	rootslot_clear(update_target_slot());
 	p->daemon_job = 1;
 	if (park_submit(p) != 0) {
 		park_free(p);
@@ -40964,6 +41178,22 @@ static int cixd_main(int argc, char **argv)
 		               g_data_dir_fault);
 	/* #686: why the previous cixd rebooted the host, if it said. */
 	fatal_note_report();
+	/*
+	 * ADR-0379: which cix-root version each slot holds, in init mode with
+	 * a slot only. An attempt on the other slot than the one running
+	 * failed: the switch was refused or the boot rolled back.
+	 */
+	if (g_fatal_note_on && g_slot != NULL) {
+		char failed[IMAGE_VERSION_MAX];
+
+		rootslot_load(ROOTSLOT_PATH);
+		if (rootslot_resolve_start(g_slot, failed, sizeof(failed)))
+			logstore_write("system", "warn",
+			               "host roll: the root sealed from cix-root %.12s did not deploy -- "
+			               "this host runs slot %s again, and that version is not tried "
+			               "again until cix-root moves (ADR-0379)",
+			               failed, g_slot);
+	}
 	if (g_bootstrap_move_note[0] != '\0')
 		logstore_write("cixd", "info", "%s", g_bootstrap_move_note);
 	if (g_data_move_note[0] != '\0')

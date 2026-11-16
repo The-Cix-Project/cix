@@ -27,7 +27,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/system/hostauth/permissions` | The permission vocabulary, and which permissions each group holds (ADR-0317) |
 | PUT | `/system/hostauth/permissions/{group}` | Replace one group's permissions; `[]` removes its entry. Refused (409) if it would leave nobody holding `identity:write` |
 | DELETE | `/system/hostauth/permissions/{group}` | Remove one group's entry, under the same refusal |
-| GET | `/system/boot` | Build version/time, A/B slot, kernel version (`uname`), and which device backs each of the platform's five partitions this boot |
+| GET | `/system/boot` | Build version/time, A/B slot, kernel version (`uname`), which device backs each of the platform's five partitions this boot, and the `cix-root` version the running root was sealed from with any version that failed to deploy (ADR-0379) |
 | GET | `/system/stalls` | Times the control plane stopped going round its own loop, recorded by a watchdog process (issue #100) — each record names the daemon's own child processes and what each was doing, so a `wchan` of `do_wait` says *which* wait (issue #399) |
 | GET | `/system/data-dir` | What lives in the daemon's data directory and who owns it (#249): one entry per name, its allocated bytes, the placement that owns it, and whether that owner still lives there (`in_use`) or moved to `live_path` and left the tree behind. Separately mounted subtrees are not walked. `?entry=NAME` lists one level down: a child of `containers` says whether that container is still defined, and `.discard` is the delete queue's trash. Made in a helper child while the request waits |
 | GET | `/system/kernel-policy` | Which kernel line this box tracks, what that channel currently points at, and how far behind the running kernel is (issue #65) |
@@ -1665,6 +1665,7 @@ Actions **enqueue**; they never do heavy work inline. Each calls an entry point 
 - **`POST /schedules/{name}/run` runs a disabled job too.** The enabled flag governs the schedule, not the button. It is also never a way to *define* a schedule — only to run one that exists.
 - **`last_ok` is null before the first run.** "It has not run" and "it ran and failed" are different facts, and a boolean alone cannot hold both.
 - **A `system.roll` schedule's `last_ok` and `last_reason` follow the roll** (#692). The roll keeps working after its action returns: it waits for package jobs, builds, stages and switches. Each step records its sentence as the outcome, and a confirmed switch records `switched in place to <release> on slot <x>`. So `cixctl schedule show host-roll` reads what the roll is doing now, and a step that fails later reads failed. `last_run_at` still says when it started.
+- **The root follows `cix-root` (ADR-0379).** When `cix-root` has settled at a version the running root was not sealed from, cixd starts a root-only roll as soon as a package job ends. It assembles, stages the root alone, and switches in place. It never reboots, and it waits for the kernel and cix to be current and running. Its line reads `root: cix-root X -> Y`. `GET /system/boot` says which version the running root came from (`root_image_version`) and which failed (`root_image_failed`). A failed version is not tried again until `cix-root` moves.
 
 ### What is scheduled, and what deliberately is not
 
