@@ -2445,6 +2445,22 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 367: no helper holds a switch, and a handover keeps its kernel log position (#689, #690, 0.2.57-687)
+
+**What shipped.**
+- **#689:** a quota check takes one look per helper, and the daemon looks again from `quota_tick()`. `helper_run_result()` carries a look's answer through unchanged.
+- **#690:** the handover record carries `kmsg_seq`, and the successor skips the kernel records its predecessor stored.
+
+**How it was verified.**
+- **Compile probes:** `probe-cix-compile@0.2.57-759` and `@0.2.57-760` passed the full selftest.
+- **The roll on 2026-11-16, run by hand at 10:21 UTC:**
+  - its line read `rolling: kernel 7.3.4-1, cix 0.2.57-686 -> 0.2.57-687`, which is #683's fix seen live;
+  - it built 687, staged slot b, and switched in place at 11:02:25, 5 s after staging, carrying 14 entries;
+  - dns, ldap, ntp, syslog, cr and ar kept their pids;
+  - jump, vpn-1 and agent-1 had rolled onto hibr's new versions at 10:39;
+  - vpn-1 reached its dial tone at 10:39:07.
+- **Not yet shown live.** Both fixes act in the process that *writes* the handover, and 686 wrote this one: the kernel log again took 2,180 lines at 11:02:26. The next switch, with 687 as the writer, is the first live test of both.
+
 ## Part 366: cix builds again, and an uninstall cannot strand a tool's output (#680, #683, #684, #687, 0.2.57-685 and -686)
 
 **What shipped.**
