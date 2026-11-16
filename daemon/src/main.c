@@ -1547,6 +1547,7 @@ struct conn {
 	void (*helper_done)(int exit_status, void *ctx);
 	void *helper_ctx;
 	const char *helper_what; /* for the log line when it fails -- a literal, never freed */
+	int helper_exit_is_result; /* helper_run_result(): its exit status is an answer, not a failure */
 	enum storage_kind storage_migrate_kind; /* CONN_STORAGE_MIGRATE only */
 	char restart_name[REGISTRY_NAME_MAX];   /* CONN_RESTART_TIMER only */
 	/* CONN_SERVERHEALTH_PROBE only -- which registered server this
@@ -5559,6 +5560,8 @@ static void register_pkg_fetch_pidfd(pid_t pid, int pidfd, int chain_idx);
  * them -- pkg.sync's completion is the first caller. */
 static int helper_run(int (*work)(void *), void *work_arg, void (*done)(int, void *), void *ctx,
                       const char *what);
+static int helper_run_result(int (*work)(void *), void *work_arg, void (*done)(int, void *),
+                             void *ctx, const char *what);
 /* ADR-0335 (#344): same reason, same place -- a container create is far
  * above the pidfd handlers and adopts the library's bring-up helper.
  * The struct is defined here rather than beside the callback because
@@ -15345,98 +15348,169 @@ static int keypool_take(char **pem, size_t *len)
 
 /*
  * ADR-0343: after a batch of deletes, whether quota accounting needs a
- * rescan. Two helper children, because each blocks for as long as the
- * kernel takes and a child must not write the log store (ADR-0340): the
- * first waits for the cleaner to free every deleted subvolume and then
- * reads the quota status (cix_btrfs_quota_settle()), and the parent logs
- * and starts the second, which runs the rescan to its end. So the
- * rescan's start and finish are both logged here.
+ * rescan. A check is a series of looks (cix_btrfs_quota_look()), each
+ * in its own short helper, because the ioctls and the commit block and
+ * a child must not write the log store (ADR-0340). The daemon logs what
+ * each look found and, while btrfs's cleaner is still freeing deleted
+ * subvolumes or a rescan runs, looks again QUOTA_LOOK_INTERVAL_SECONDS
+ * later from quota_tick(). When a look finds accounting inconsistent, a
+ * second short helper starts the rescan, and the looks after it see the
+ * rescan end, so its start and finish are both logged here.
  *
- * Started whenever the discard queue drains. One at a time; a drain
- * while one runs asks for exactly one more afterwards, so a later batch
- * is covered and nothing loops.
+ * #689: no helper waits. The settle used to poll inside one helper for
+ * up to two hours, and handover_quiescent() waits for every helper, so
+ * it held the 0.2.57-686 in-place switch on 192.168.15.95 from 00:05 to
+ * 02:04 UTC on 2026-11-16. Between looks nothing is in flight, and no
+ * look starts while a host roll waits to switch.
+ *
+ * Started whenever the discard queue drains, and once at every daemon
+ * start, a handover's included, since a check in progress is this
+ * process's memory and the filesystem is where its answer lives. One at
+ * a time; a drain while one is in progress asks for exactly one more
+ * afterwards, so a later batch is covered and nothing loops.
  */
 #define QUOTA_SETTLE_WAIT_SECONDS (2 * 60 * 60)
+#define QUOTA_LOOK_INTERVAL_SECONDS 60
 
-static int g_quota_check_running;
+static int g_quota_check_running;  /* a look or a rescan start is in a helper */
 static int g_quota_check_again;
+static long g_quota_look_at;       /* when the next look is due; 0 when none is */
+static long g_quota_wait_since;    /* the check's first look, for the bound on the drops */
+static int g_quota_rescan_started; /* this check started the rescan its looks are watching */
 
-static int quota_rescan_work(void *arg)
+/* The check is over: nothing is due, and a drain that came during it
+ * starts the next one. */
+static void quota_check_end(void)
 {
-	(void)arg;
-	return cix_btrfs_quota_rescan(REBUILDABLE_DIR) == 0 ? 0 : 1;
-}
-
-static void quota_rescan_done(int exit_status, void *ctx)
-{
-	(void)ctx;
-	if (exit_status == 0)
-		logstore_write("cixd", "info",
-		                "btrfs quota rescan finished -- disk usage reads \"accounting\": \"ok\" "
-		                "again (ADR-0343)");
-	else
-		logstore_write("cixd", "error",
-		                "btrfs quota rescan did not finish (exit %d) -- disk usage keeps reading "
-		                "\"accounting\": \"stale\" until one does",
-		                exit_status);
 	g_quota_check_running = 0;
+	g_quota_look_at = 0;
+	g_quota_wait_since = 0;
+	g_quota_rescan_started = 0;
 	if (g_quota_check_again)
 		quota_check_start();
 }
 
-static int quota_settle_work(void *arg)
+static void quota_look_later(void)
 {
-	(void)arg;
-	return (int)cix_btrfs_quota_settle(REBUILDABLE_DIR, QUOTA_SETTLE_WAIT_SECONDS);
+	g_quota_check_running = 0;
+	g_quota_look_at = (long)time(NULL) + QUOTA_LOOK_INTERVAL_SECONDS;
 }
 
-static void quota_settle_done(int exit_status, void *ctx)
+static int quota_rescan_start_work(void *arg)
+{
+	(void)arg;
+	return cix_btrfs_quota_rescan_start(REBUILDABLE_DIR) == 0 ? 0 : 1;
+}
+
+static void quota_rescan_start_done(int exit_status, void *ctx)
+{
+	(void)ctx;
+	if (exit_status != 0) {
+		logstore_write("cixd", "error",
+		                "could not start the btrfs quota rescan -- disk usage keeps reading "
+		                "\"accounting\": \"stale\" until one runs");
+		quota_check_end();
+		return;
+	}
+	g_quota_rescan_started = 1;
+	quota_look_later();
+}
+
+static int quota_look_work(void *arg)
+{
+	(void)arg;
+	return (int)cix_btrfs_quota_look(REBUILDABLE_DIR);
+}
+
+static void quota_look_done(int exit_status, void *ctx)
 {
 	(void)ctx;
 	switch (exit_status) {
-	case CIX_BTRFS_SETTLE_NEEDS_RESCAN:
-		logstore_write("cixd", "warn",
-		                "btrfs quota accounting is inconsistent after the deletes settled -- "
-		                "starting a rescan; disk usage reads \"accounting\": \"stale\" until it "
-		                "finishes (ADR-0343)");
-		if (helper_run(quota_rescan_work, NULL, quota_rescan_done, NULL, "quota rescan") == 0)
-			return; /* still running; quota_rescan_done() ends it */
-		logstore_write("cixd", "error", "could not start the btrfs quota rescan (%s)",
-		                strerror(errno));
-		break;
-	case CIX_BTRFS_SETTLE_TIMEOUT:
+	case CIX_BTRFS_SETTLE_PENDING:
+		if ((long)time(NULL) - g_quota_wait_since < QUOTA_SETTLE_WAIT_SECONDS) {
+			quota_look_later();
+			return;
+		}
 		logstore_write("cixd", "warn",
 		                "deleted subvolumes were still being freed after %d s -- quota accounting "
 		                "is checked again when the next deletes drain",
 		                QUOTA_SETTLE_WAIT_SECONDS);
 		break;
-	case CIX_BTRFS_SETTLE_ERROR:
-		logstore_write("cixd", "error",
-		                "could not read btrfs quota status after the deletes drained");
+	case CIX_BTRFS_SETTLE_RESCANNING:
+		quota_look_later();
+		return;
+	case CIX_BTRFS_SETTLE_NEEDS_RESCAN:
+		if (g_quota_rescan_started) {
+			logstore_write("cixd", "error",
+			                "btrfs quota rescan ended and accounting is still inconsistent -- "
+			                "disk usage keeps reading \"accounting\": \"stale\"; checked again "
+			                "when the next deletes drain");
+			break;
+		}
+		logstore_write("cixd", "warn",
+		                "btrfs quota accounting is inconsistent after the deletes settled -- "
+		                "starting a rescan; disk usage reads \"accounting\": \"stale\" until it "
+		                "finishes (ADR-0343)");
+		if (helper_run(quota_rescan_start_work, NULL, quota_rescan_start_done, NULL,
+		               "a quota rescan start") == 0) {
+			g_quota_check_running = 1;
+			return; /* quota_rescan_start_done() goes on */
+		}
+		logstore_write("cixd", "error", "could not start the btrfs quota rescan (%s)",
+		                strerror(errno));
 		break;
-	default:
-		break; /* consistent, quotas off, or not btrfs */
+	case CIX_BTRFS_SETTLE_OK:
+		if (g_quota_rescan_started)
+			logstore_write("cixd", "info",
+			                "btrfs quota rescan finished -- disk usage reads \"accounting\": "
+			                "\"ok\" again (ADR-0343)");
+		break;
+	case CIX_BTRFS_SETTLE_NOT_BTRFS:
+		break;
+	default: /* CIX_BTRFS_SETTLE_ERROR, or a look that did not exit (-1) */
+		logstore_write("cixd", "error",
+		                "could not read btrfs quota status after the deletes drained (look "
+		                "answered %d)",
+		                exit_status);
+		break;
 	}
-	g_quota_check_running = 0;
-	if (g_quota_check_again)
-		quota_check_start();
+	quota_check_end();
 }
 
-static void quota_check_start(void)
+static void quota_look_start(void)
 {
-	if (g_quota_check_running) {
-		g_quota_check_again = 1;
-		return;
-	}
-	g_quota_check_again = 0;
-	if (helper_run(quota_settle_work, NULL, quota_settle_done, NULL, "quota settle") != 0) {
+	if (helper_run_result(quota_look_work, NULL, quota_look_done, NULL, "a quota look") != 0) {
 		logstore_write("cixd", "warn",
 		                "could not start the btrfs quota check after deletes (%s) -- the next "
 		                "drain tries again",
 		                strerror(errno));
+		quota_check_end();
 		return;
 	}
 	g_quota_check_running = 1;
+}
+
+static void quota_check_start(void)
+{
+	if (g_quota_check_running || g_quota_look_at != 0) {
+		g_quota_check_again = 1;
+		return;
+	}
+	g_quota_check_again = 0;
+	g_quota_wait_since = (long)time(NULL);
+	quota_look_start();
+}
+
+/* The next look of a check in progress, once it is due -- never while a
+ * host roll waits to switch in place, which waits for every helper. */
+static void quota_tick(void)
+{
+	if (g_quota_look_at == 0 || g_quota_check_running || g_hostroll.step == HOSTROLL_SWITCH)
+		return;
+	if ((long)time(NULL) < g_quota_look_at)
+		return;
+	g_quota_look_at = 0;
+	quota_look_start();
 }
 
 /*
@@ -31786,12 +31860,14 @@ static int helper_attach(struct conn *hc, pid_t pid, void (*done)(int, void *), 
 }
 
 /*
- * helper_run() that also reports the child's pid, for work that may have
- * to be stopped before it finishes -- a log read whose client has gone
- * (ADR-0342). *out_pid is set only when 0 is returned.
+ * The fork behind helper_run(), helper_run_pid() and
+ * helper_run_result(). With is_result 0 the child exits 0 or 1, so a
+ * nonzero return means failure and is logged as one. With is_result 1
+ * it exits with work()'s low byte, which `done` receives unchanged, and
+ * nothing is logged for it: the answer is the caller's to report.
  */
-static int helper_run_pid(int (*work)(void *), void *work_arg, void (*done)(int, void *),
-                          void *ctx, const char *what, pid_t *out_pid)
+static int helper_spawn(int (*work)(void *), void *work_arg, void (*done)(int, void *),
+                        void *ctx, const char *what, pid_t *out_pid, int is_result)
 {
 	struct conn *hc;
 	pid_t pid, parent;
@@ -31819,6 +31895,7 @@ static int helper_run_pid(int (*work)(void *), void *work_arg, void (*done)(int,
 		errno = ENOMEM;
 		return -1;
 	}
+	hc->helper_exit_is_result = is_result;
 
 	parent = getpid();
 	pid = fork();
@@ -31849,15 +31926,16 @@ static int helper_run_pid(int (*work)(void *), void *work_arg, void (*done)(int,
 
 		/*
 		 * A helper dies with its daemon. Nothing reads its result once
-		 * the daemon is gone, and a helper can wait for a long time:
-		 * the quota settle waits up to QUOTA_SETTLE_WAIT_SECONDS for
+		 * the daemon is gone. Until #689 a helper could wait for a long
+		 * time: the quota settle polled for up to two hours for
 		 * btrfs's cleaner. Measured in compile probes 0.2.57-740 and
 		 * -741 (192.168.15.95, 2026-11-12). The host had a backlog of
 		 * deleted subvolumes after a glibc roll, every test daemon that
 		 * emptied its delete queue left a settle helper waiting on it,
 		 * and 28 of them (about 50 MB of anonymous memory each) held
 		 * 1.4 GB of the 2 GiB build budget. The OOM killer then took
-		 * the boot tests' mksquashfs and qemu.
+		 * the boot tests' mksquashfs and qemu. A quota check is now one
+		 * look per helper, and the daemon's timer does the waiting.
 		 *
 		 * No helper is alive at an ADR-0375 handover:
 		 * handover_quiescent() waits for g_helpers_live to reach 0.
@@ -31877,6 +31955,8 @@ static int helper_run_pid(int (*work)(void *), void *work_arg, void (*done)(int,
 		/* The child must never return through the caller's stack: it
 		 * shares every fd and every atexit handler with a daemon that
 		 * is pid 1. _exit(), always. */
+		if (is_result)
+			_exit(work(work_arg) & 0xff);
 		_exit(work(work_arg) == 0 ? 0 : 1);
 	}
 
@@ -31887,10 +31967,33 @@ static int helper_run_pid(int (*work)(void *), void *work_arg, void (*done)(int,
 	return 0;
 }
 
+/*
+ * helper_run() that also reports the child's pid, for work that may have
+ * to be stopped before it finishes -- a log read whose client has gone
+ * (ADR-0342). *out_pid is set only when 0 is returned.
+ */
+static int helper_run_pid(int (*work)(void *), void *work_arg, void (*done)(int, void *),
+                          void *ctx, const char *what, pid_t *out_pid)
+{
+	return helper_spawn(work, work_arg, done, ctx, what, out_pid, 0);
+}
+
 static int helper_run(int (*work)(void *), void *work_arg, void (*done)(int, void *), void *ctx,
                       const char *what)
 {
-	return helper_run_pid(work, work_arg, done, ctx, what, NULL);
+	return helper_spawn(work, work_arg, done, ctx, what, NULL, 0);
+}
+
+/*
+ * helper_run() for work whose return value is an answer of up to one
+ * byte rather than success or failure (#689: a quota look's state).
+ * `done` receives it unchanged, or -1 if the child did not exit
+ * normally, and the generic failure line is not written for it.
+ */
+static int helper_run_result(int (*work)(void *), void *work_arg, void (*done)(int, void *),
+                             void *ctx, const char *what)
+{
+	return helper_spawn(work, work_arg, done, ctx, what, NULL, 1);
 }
 
 /*
@@ -31994,6 +32097,7 @@ static void handle_helper_event(struct conn *hc)
 	void (*done)(int, void *) = hc->helper_done;
 	void *ctx = hc->helper_ctx;
 	const char *what = hc->helper_what;
+	int is_result = hc->helper_exit_is_result;
 	int status = 0;
 	int exit_status;
 
@@ -32006,7 +32110,7 @@ static void handle_helper_event(struct conn *hc)
 	free(hc);
 	g_helpers_live--;
 
-	if (exit_status != 0)
+	if (exit_status != 0 && !(is_result && exit_status >= 0))
 		logstore_write("cixd", "warn", "helper for %s exited %d",
 		                what != NULL ? what : "an unnamed task", exit_status);
 	if (done != NULL)
@@ -41179,6 +41283,11 @@ static int cixd_main(int argc, char **argv)
 	containers_discard_orphan_bases();
 	rootfs_discard_sweep(IMAGES_DIR); /* ADR-0343 */
 	rootfs_discard_sweep(ARTIFACTS_DIR); /* #644: a failed hostbuild's output */
+	/* #689: a quota check in progress lived in the previous process's
+	 * memory, so every start looks once. When the sweeps queued deletes,
+	 * their drain starts it instead. */
+	if (g_rootfs_discard_running == 0 && g_rootfs_discard_head == NULL)
+		quota_check_start();
 	pki_set_key_source(keypool_take); /* ADR-0353 */
 	/* ADR-0375: a handover changes nothing about which containers run,
 	 * so the record replaces autostart (E3); a boot starts them. */
@@ -41501,6 +41610,7 @@ static int cixd_main(int argc, char **argv)
 		hostroll_switch_tick();
 		handover_old_slot_tick();
 		disksnap_tick(); /* ADR-0377 */
+		quota_tick(); /* #689 */
 
 		drain_pending_free();
 

@@ -647,14 +647,11 @@ static int root_tree_has_orphans(int fd)
 	return sa.key.nr_items > 0;
 }
 
-/* Seconds between two looks at the orphan items while drops are pending. */
-#define CIX_BTRFS_SETTLE_POLL_SECONDS 5
-
-enum cix_btrfs_settle cix_btrfs_quota_settle(const char *path, int wait_seconds)
+enum cix_btrfs_settle cix_btrfs_quota_look(const char *path)
 {
 	struct cix_btrfs_qgroup_status_item status;
 	uint32_t len;
-	int fd, waited, pending, found, saved;
+	int fd, pending, found, saved;
 
 	if (!cix_btrfs_is_backing(path))
 		return CIX_BTRFS_SETTLE_NOT_BTRFS;
@@ -662,19 +659,10 @@ enum cix_btrfs_settle cix_btrfs_quota_settle(const char *path, int wait_seconds)
 	if (fd < 0)
 		return CIX_BTRFS_SETTLE_ERROR;
 
-	for (waited = 0;; waited += CIX_BTRFS_SETTLE_POLL_SECONDS) {
-		pending = root_tree_has_orphans(fd);
-		if (pending < 0) {
-			close(fd);
-			return CIX_BTRFS_SETTLE_ERROR;
-		}
-		if (pending == 0)
-			break;
-		if (waited >= wait_seconds) {
-			close(fd);
-			return CIX_BTRFS_SETTLE_TIMEOUT;
-		}
-		sleep(CIX_BTRFS_SETTLE_POLL_SECONDS);
+	pending = root_tree_has_orphans(fd);
+	if (pending != 0) {
+		close(fd);
+		return pending < 0 ? CIX_BTRFS_SETTLE_ERROR : CIX_BTRFS_SETTLE_PENDING;
 	}
 
 	/* The status item is read from the last COMMITTED tree, which can lag
@@ -694,13 +682,14 @@ enum cix_btrfs_settle cix_btrfs_quota_settle(const char *path, int wait_seconds)
 		return CIX_BTRFS_SETTLE_OK;
 	if (status.flags & CIX_BTRFS_QGROUP_STATUS_FLAG_SIMPLE_MODE)
 		return CIX_BTRFS_SETTLE_OK; /* squota is never rescanned */
-	if ((status.flags & CIX_BTRFS_QGROUP_STATUS_FLAG_INCONSISTENT) &&
-	    !(status.flags & CIX_BTRFS_QGROUP_STATUS_FLAG_RESCAN))
+	if (status.flags & CIX_BTRFS_QGROUP_STATUS_FLAG_RESCAN)
+		return CIX_BTRFS_SETTLE_RESCANNING;
+	if (status.flags & CIX_BTRFS_QGROUP_STATUS_FLAG_INCONSISTENT)
 		return CIX_BTRFS_SETTLE_NEEDS_RESCAN;
 	return CIX_BTRFS_SETTLE_OK;
 }
 
-int cix_btrfs_quota_rescan(const char *path)
+int cix_btrfs_quota_rescan_start(const char *path)
 {
 	struct cix_btrfs_ioctl_quota_rescan_args ra;
 	int fd, saved;
@@ -710,14 +699,8 @@ int cix_btrfs_quota_rescan(const char *path)
 		return -1;
 	memset(&ra, 0, sizeof(ra));
 	/* EINPROGRESS: one is already running, which serves equally well --
-	 * the wait below waits for that one. */
+	 * the looks that follow watch that one end. */
 	if (ioctl(fd, CIX_BTRFS_IOC_QUOTA_RESCAN, &ra) != 0 && errno != EINPROGRESS) {
-		saved = errno;
-		close(fd);
-		errno = saved;
-		return -1;
-	}
-	if (ioctl(fd, CIX_BTRFS_IOC_QUOTA_RESCAN_WAIT) != 0) {
 		saved = errno;
 		close(fd);
 		errno = saved;

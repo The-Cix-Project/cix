@@ -889,6 +889,45 @@ static int check_call_set(const struct call_set *s, int *out_files)
 	return failures;
 }
 
+/*
+ * #689: a quota look never waits. handover_quiescent() waits for every
+ * helper, so a helper that sleeps until the kernel's cleaner or a rescan
+ * finishes holds an in-place switch (ADR-0375) for as long: the settle
+ * that polled with sleep() for up to two hours held the 0.2.57-686
+ * switch on 192.168.15.95 from 00:05 to 02:04 UTC on 2026-11-16. The
+ * daemon's timer does the waiting (quota_tick()). Counted, not parsed:
+ * no sleep in src/btrfs.c, and no rescan-wait ioctl defined at all.
+ */
+static int check_quota_look_never_waits(void)
+{
+	static const struct {
+		const char *path, *call;
+	} banned[] = {
+		{ "src/btrfs.c", "sleep(" },
+		{ "src/btrfs.c", "QUOTA_RESCAN_WAIT" },
+		{ "include/linux_compat.h", "QUOTA_RESCAN_WAIT" },
+	};
+	size_t i;
+	int failures = 0;
+
+	for (i = 0; i < sizeof(banned) / sizeof(banned[0]); i++) {
+		int n = count_calls(banned[i].path, banned[i].call);
+
+		if (n == 0)
+			continue;
+		failures++;
+		if (n < 0)
+			fprintf(stderr, "FAIL: cannot read %s\n", banned[i].path);
+		else
+			fprintf(stderr,
+			        "FAIL: %s has %d line(s) with %s. A btrfs quota look runs in a helper\n"
+			        "      child, and a helper that waits holds an in-place switch for as long\n"
+			        "      (#689). Return what the look found and let quota_tick() look again.\n",
+			        banned[i].path, n, banned[i].call);
+	}
+	return failures;
+}
+
 int main(void)
 {
 	int i, ok = 1, total = 0, source_files = 0;
@@ -938,6 +977,8 @@ int main(void)
 	}
 
 	if (check_walk_budgets() != 0)
+		ok = 0;
+	if (check_quota_look_never_waits() != 0)
 		ok = 0;
 	for (i = 0; i < CALL_SET_COUNT; i++)
 		if (check_call_set(&g_call_sets[i], &source_files) != 0)

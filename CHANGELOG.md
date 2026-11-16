@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A quota check never waits in a helper (#689, 0.2.57-687)
+
+- **The defect:** the 0.2.57-686 host roll staged slot a at 00:04:59 UTC on 2026-11-16 and switched in place at 02:04:57. Nothing else was in flight at 01:05. The one cixd child outside a container was the quota-settle helper (ADR-0343): it polled in `sleep()` for up to two hours while btrfs freed deleted subvolumes, and `handover_quiescent()` waits for every helper. A drain during the wait queued another full wait after it.
+- **Now:**
+  - each helper makes one look, `cix_btrfs_quota_look()`, and returns what it found: drops pending, a rescan running, or the committed status;
+  - the daemon looks again every 60 s from `quota_tick()`, within the same two-hour bound, and starts no look while a roll waits to switch;
+  - the rescan helper only starts the rescan, and later looks see it end;
+  - every daemon start, a handover's included, makes one look, since a check in progress was the previous process's memory.
+- **Also fixed:** `helper_run()` reduces any nonzero exit to 1, so the settle's timeout (2) and error (3) both arrived as "inconsistent, start a rescan" and their branches never ran. A look reports through `helper_run_result()`, which passes the exit code through unchanged and writes no generic failure line for it.
+- **Gate:** `test_blocking_waits` refuses a `sleep(` in `src/btrfs.c` and any definition or use of `QUOTA_RESCAN_WAIT`.
+
 ### test_cli waits for the exit it checks (0.2.57-686)
 
 - **The defect:** `test_cli` polled `cixctl container inspect c1` until the output contained `exited` anywhere. The services column reads `main:exited` as soon as the service ends, before the container's own exit is recorded, so the loop could stop while `c1` still read `running`, and the `exit_status=5` check then failed. That failed the 0.2.57-685 release selftest on .95 (2026-11-15), after compile probe 757 had passed the same commit.

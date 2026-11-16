@@ -2445,6 +2445,32 @@ The one small piece of real refactoring this phase needed in `main.c` itself: `i
 
 Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build targets). Full regression sweep (35 test binaries) -- zero failures (one confirmed pre-existing timing flake, `test_container_lifecycle`, reproduced clean on immediate retry). `test/test_storage_placement.c` extended a third time with the same validation-path coverage already proven correct for state and log storage, now covering all three kinds from one shared test file. Real headless-browser session (Chromium via `puppeteer-core`) confirmed all three placement sections render independently and correctly on the Disks page, and that a rebuildable-storage migration attempt against the already-active default surfaces the correct, kind-specific 409 through the dashboard's shared status mechanism.
 
+## Part 366: cix builds again, and an uninstall cannot strand a tool's output (#680, #683, #684, #687, 0.2.57-685 and -686)
+
+**What shipped.**
+- **gcc 16.2.0-20** has a `gcc-libs` output that owns `libgcc_s.so.1` and `libstdc++.so.6`. It is installed in `cix-builder`, `kernel-builder` and `iso-builder`.
+- **squashfs-tools 4.7.5-16** requires `gcc-libs` instead of shipping its own copy of `libgcc_s.so.1`. The -15 revision failed its own check (`libgcc_s.so.1 must be installed for pthread_exit to work`) because the build environment lacked `gcc-libs`.
+- **cix-builder 6.10.0** carries `squashfs-tools` and its `-extra` output. So a recipe that declares `squashfs-tools` as a tool composes again, cix included.
+- **In 685, released as 686:**
+  - an uninstall is refused when it would strand an installed tool's output (#680);
+  - cixd reads an output's own `replaces`;
+  - a recipe may declare 32 sources (#684);
+  - an upgrade or uninstall removes the directories it empties (#687);
+  - after a failed hostbuild the roll names what it retries (#683).
+- **Fixed in 686:** 685's release selftest failed `test_cli` on a race in the test itself, now fixed.
+
+**Still open.** `cix-root` keeps `squashfs-tools` 4.7.5-14 pinned until cix-build-system#314 lets `gcc-libs` replace the old package's `libgcc_s.so.1`.
+
+**How it was verified.**
+- **Compile probes:** `probe-cix-compile@0.2.57-757` and `@0.2.57-758` passed the full selftest; both composed `squashfs-tools` from `cix-builder`.
+- **The 686 roll, 2026-11-16:**
+  - the 23:24 UTC roll built 686 at 00:04, sealed a root from cix-root, and staged it on slot a with the running kernel;
+  - at 02:04:57 it switched in place: `handover: the record carries 14 entries`, procfuse's server replaced, and slot b free again after 1 s;
+  - dns, ldap, ntp, syslog, cr and ar kept their pids (226 to 260). jump, vpn-1 and agent-1 had rolled onto new image versions at 01:38–01:39, before the switch. The 2,181 kernel lines stamped 02:04:58, veths from the boot among them, are the new cixd re-reading the kernel's ring buffer (#690), not restarts;
+  - no `the previous cixd rebooted the host` line was logged;
+  - `cixctl boot` reads `0.2.57-686`, slot a.
+- **The two-hour wait before the switch** was the quota-settle helper (#689, fixed in 687).
+
 ## Part 365: the root has one input, and a root switch waits for every job (#350, #686, ADR-0371 phase 4, 0.2.57-683 and -684)
 
 **Phase 4 (683).** Nothing reads `cix-hosttools`, `cix-firmware` or `cix-kmod`. The installer ISO takes `modprobe` and `modinfo` by name from `cix-root`'s `usr/bin`.

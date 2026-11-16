@@ -561,8 +561,6 @@ struct cix_btrfs_ioctl_quota_rescan_args {
 
 /* _IOW(0x94, 44, struct btrfs_ioctl_quota_rescan_args) -- sizeof() 64 */
 #define CIX_BTRFS_IOC_QUOTA_RESCAN 0x4040942c
-/* _IO(0x94, 46) */
-#define CIX_BTRFS_IOC_QUOTA_RESCAN_WAIT 0x942e
 
 /* _IOWR(0x94, 17, struct btrfs_ioctl_search_args) -- sizeof() 4096 */
 #define CIX_BTRFS_IOC_TREE_SEARCH 0xd0009411
