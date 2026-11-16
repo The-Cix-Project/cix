@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A handover does not store the kernel log twice (#690, 0.2.57-687)
+
+- **The defect:** the `/dev/kmsg` descriptor is `O_CLOEXEC`, so after an in-place switch the new cixd opened it fresh and read the whole ring buffer again. The 686 switch on .95 (2026-11-16) stored 2,181 kernel lines a second time, all stamped 02:04:58. The boot's veths among them read as containers recreated at the switch.
+- **Now:** the log store keeps the sequence number of the last record it stored, and the handover record carries it as the optional `kmsg_seq`. The successor skips records up to that number. A record without it, from before 687, reads as before.
+- **Gate:** `test_handover_record` round-trips the field and reads a record without it.
+
 ### A quota check never waits in a helper (#689, 0.2.57-687)
 
 - **The defect:** the 0.2.57-686 host roll staged slot a at 00:04:59 UTC on 2026-11-16 and switched in place at 02:04:57. Nothing else was in flight at 01:05. The one cixd child outside a container was the quota-settle helper (ADR-0343): it polled in `sleep()` for up to two hours while btrfs freed deleted subvolumes, and `handover_quiescent()` waits for every helper. A drain during the wait queued another full wait after it.

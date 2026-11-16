@@ -63,6 +63,7 @@ static void fill(struct handover_record *rec, pid_t pid, int ctl, int rep, int s
 	snprintf(rec->uplink_unattached, sizeof(rec->uplink_unattached), "eth1");
 	free(rec->kmodscan); /* fill() runs more than once on one record */
 	rec->kmodscan = strdup("{\"ran\":false,\"not_run_reason\":\"policy \\\"off\\\"\"}");
+	rec->kmsg_seq = 123456789;
 	rec->procfuse_pid = 4242;
 	rec->procfuse_load_fd = 9;
 	rec->console_count = 2;
@@ -153,6 +154,7 @@ static void round_trip(const char *dir)
 	      "slot %s bind_addr %s uplink_unattached %s", r.slot, r.bind_addr, r.uplink_unattached);
 	CHECK(r.kmodscan != NULL && w.kmodscan != NULL && strcmp(r.kmodscan, w.kmodscan) == 0,
 	      "kmodscan %s", r.kmodscan != NULL ? r.kmodscan : "(none)");
+	CHECK(r.kmsg_seq == 123456789, "kmsg_seq %lld", r.kmsg_seq);
 	CHECK(r.procfuse_pid == 4242, "procfuse_pid %d", (int)r.procfuse_pid);
 	CHECK(r.procfuse_load_fd == 9, "procfuse_load_fd %d", r.procfuse_load_fd);
 	CHECK(r.console_count == 2 && strcmp(r.consoles[0].tty, "/dev/tty0") == 0 &&
@@ -224,9 +226,10 @@ static void refusals(const char *dir)
 	                 "\"containers\":[],\"future_key\":true}");
 #undef TOP_TAIL
 #undef WHO
-	CHECK(handover_read(path, &r, err, sizeof(err)) == 0 && r.count == 0 && r.kmodscan == NULL,
+	CHECK(handover_read(path, &r, err, sizeof(err)) == 0 && r.count == 0 && r.kmodscan == NULL &&
+	          r.kmsg_seq == -1,
 	      "an unknown key must be ignored, and a record with no kmodscan (a 664 or 665 "
-	      "writer) must read, got: %s",
+	      "writer) or no kmsg_seq (before 687) must read, got: %s",
 	      err);
 	handover_record_free(&r);
 }

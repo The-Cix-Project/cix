@@ -39352,6 +39352,7 @@ static int handover_build_record(struct handover_record *rec)
 		rec->kmodscan = w.buf != NULL ? strndup(w.buf, w.len) : NULL;
 		jw_free(&w);
 	}
+	rec->kmsg_seq = logstore_kmsg_last_seq(); /* #690 */
 	procfuse_handover_state(&rec->procfuse_pid, &rec->procfuse_load_fd);
 	rec->console_count = g_console_shell_count;
 	for (i = 0; i < g_console_shell_count; i++)
@@ -39794,6 +39795,9 @@ static int handover_load(void)
 		if (k != NULL)
 			json_free(k);
 	}
+	/* #690: the kernel records the process before already stored. */
+	if (g_handover_rec.kmsg_seq >= 0)
+		logstore_kmsg_skip_through(g_handover_rec.kmsg_seq);
 	/* procfuse's server outlived the exec and still serves the mount every
 	 * container binds from: take it back, never start a second one over it. */
 	if (g_handover_rec.procfuse_pid > 0) {

@@ -25,6 +25,10 @@
  *                   boot's sweep is still reported after a handover.
  *                   Absent from a 0.2.57-664 or -665 writer's record, and
  *                   ignored by their readers as an unknown key.
+ *   kmsg_seq        optional: the sequence number of the last /dev/kmsg
+ *                   record the writer stored, so the reader skips the
+ *                   ring buffer up to it (#690). Absent before 0.2.57-687,
+ *                   and from a writer that had read none.
  *   procfuse_pid    procfuse's server, which survives the exec; 0 for none
  *   procfuse_load_fd  the memfd holding its load page (ADR-0349), passed
  *                   across execve; -1 for none
@@ -145,6 +149,7 @@ struct handover_record {
 	char bind_addr[64];
 	char uplink_unattached[64];
 	char *kmodscan; /* heap JSON text, or NULL; freed by handover_record_free() */
+	long long kmsg_seq; /* -1 when absent */
 	pid_t procfuse_pid;
 	int procfuse_load_fd;
 	struct handover_console consoles[HANDOVER_CONSOLES_MAX];

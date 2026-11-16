@@ -23,6 +23,7 @@ int handover_record_init(struct handover_record *rec, int max)
 {
 	memset(rec, 0, sizeof(*rec));
 	rec->format = HANDOVER_FORMAT;
+	rec->kmsg_seq = -1;
 	rec->procfuse_load_fd = -1;
 	if (max <= 0)
 		return 0;
@@ -268,6 +269,10 @@ int handover_write(const char *path, const struct handover_record *rec, char *er
 	if (rec->kmodscan != NULL) {
 		jw_key(&w, "kmodscan");
 		jw_str(&w, rec->kmodscan);
+	}
+	if (rec->kmsg_seq >= 0) {
+		jw_key(&w, "kmsg_seq");
+		jw_int(&w, rec->kmsg_seq);
 	}
 	jw_key(&w, "procfuse_pid");
 	jw_int(&w, rec->procfuse_pid);
@@ -559,6 +564,11 @@ int handover_read(const char *path, struct handover_record *rec, char *err, size
 		const char *k = json_as_string(json_object_get(root, "kmodscan"));
 
 		rec->kmodscan = k != NULL ? strdup(k) : NULL;
+	}
+	{
+		const struct json_value *s = json_object_get(root, "kmsg_seq");
+
+		rec->kmsg_seq = s != NULL && s->type == JSON_NUMBER ? (long long)json_as_number(s) : -1;
 	}
 	for (i = 0; i < arr->u.array.count; i++) {
 		get_container(arr->u.array.items[i], &rec->containers[i], &missing);

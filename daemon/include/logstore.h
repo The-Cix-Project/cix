@@ -118,6 +118,13 @@ void logstore_repoint(const char *new_dir, const char *new_state_path);
 int logstore_kmsg_fd(void);
 void logstore_kmsg_readable(void);
 
+/* #690: the sequence number of the last /dev/kmsg record read (-1 for
+ * none yet), which an ADR-0375 handover record carries; and, in the
+ * process that takes over, the number below which records were already
+ * stored and are skipped. Call the setter before the loop reads kmsg. */
+long long logstore_kmsg_last_seq(void);
+void logstore_kmsg_skip_through(long long seq);
+
 /* Appends one entry. printf-style; msg is truncated to
  * LOGSTORE_MSG_MAX - 1 bytes, never a buffer overrun. source/level
  * are truncated to their own _MAX -1 similarly. Safe to call from

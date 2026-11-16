@@ -607,6 +607,30 @@ static const char *kmsg_level_name(int prio)
 	return names[prio];
 }
 
+/*
+ * #690: the sequence number of the last /dev/kmsg record read, and the
+ * one a predecessor had read. The read position belongs to the open
+ * descriptor, and the descriptor is O_CLOEXEC, so after an ADR-0375
+ * exec a fresh open starts at the oldest record in the ring: the 686
+ * switch on 192.168.15.95 (2026-11-16) stored 2,181 kernel lines a
+ * second time, every one stamped 02:04:58. The handover record carries
+ * the number, and records at or below it are skipped.
+ */
+static long long g_kmsg_last_seq = -1;
+static long long g_kmsg_skip_through = -1;
+
+long long logstore_kmsg_last_seq(void)
+{
+	return g_kmsg_last_seq;
+}
+
+void logstore_kmsg_skip_through(long long seq)
+{
+	g_kmsg_skip_through = seq;
+	if (seq > g_kmsg_last_seq)
+		g_kmsg_last_seq = seq;
+}
+
 int logstore_kmsg_fd(void)
 {
 	if (g_kmsg_fd < 0)
@@ -691,11 +715,17 @@ void logstore_kmsg_readable(void)
 			 * lines this daemon has no use for and simply truncates
 			 * away. */
 			int prio = 6;
+			long long seq = -1;
 			char *semi = strchr(buf, ';');
 			char *msg = semi != NULL ? semi + 1 : buf;
 			char *nl = strchr(msg, '\n');
 
-			sscanf(buf, "%d,", &prio);
+			if (sscanf(buf, "%d,%lld,", &prio, &seq) != 2)
+				seq = -1;
+			if (seq >= 0 && seq <= g_kmsg_skip_through)
+				continue; /* #690: the predecessor stored it */
+			if (seq > g_kmsg_last_seq)
+				g_kmsg_last_seq = seq;
 			if (nl != NULL)
 				*nl = '\0';
 			logstore_write("kernel", kmsg_level_name(prio & 7), "%s", msg);
