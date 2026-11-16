@@ -2462,6 +2462,20 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 - **#689 live:** 687 ran its first drain at 11:02:26 (`image gc: set aside 3 version(s)`). At 11:10 `cixctl process ls` showed no cixd child but procfuse and the watchdog. A look logs nothing when it finds the drops settled or still pending, so that absence alone cannot tell a working check from one that never ran. Nor does the gap between staging and switching prove it: 9 s at 687 → 688, but 5 s at 686 → 687, on the old code, so a short gap shows only that no check was pending then. What holds the change is `test_blocking_waits` and the code. A `deleted subvolumes were still being freed after 7200 s` line would show the looks ran for two hours without holding anything, and that drops are not settling on .95.
 - **#690 shown live at the next switch.** It acts in the process that *writes* the handover, and 686 wrote this one, so the kernel log again took 2,180 lines at 11:02:26. At the 687 → 688 switch (12:22:12, 687 writing), the kernel log has no line at all from two seconds before to five seconds after.
 
+## Part 369: a release builds cix once, and its schedule line follows the roll (#691, #692, 0.2.57-689)
+
+**What shipped.** `scheduler_note_action()` and `hostroll_say()`: each roll step is now the `host-roll` schedule's outcome, and a confirmed switch records `switched in place to <release> on slot <x>` (#692).
+
+**How it was verified.**
+- **Compile probe:** `probe-cix-compile@0.2.57-762` passed the full selftest.
+- **The roll, run by hand on 2026-11-16 right after publishing 689**, with 688's wait live:
+  - **13:23:25:** `waiting for 1 package job(s)`, behind the agent image's `cixctl` build of the cix recipe.
+  - **13:48:30:** that build published `cix`, `cixd` and `cixctl` (HTTP 201 each). The same second, the roll logged `building cix` and then `cix 0.2.57-689 built`. The hostbuild took the cached artifact and built nothing, and no 409 was logged.
+  - **13:48:54:** it staged slot b and switched in place; the new cixd took over 14 containers at 13:48:55.
+  - **The schedule line** read `waiting for 1 package job(s)…` and then `switched in place to 0.2.57-689 on slot b (ADR-0375)`.
+  - **Containers:** every one kept its pid but agent-1, which rolled onto the new `cixctl` at 13:48:44, before the switch. The kernel log holds no line at the switch.
+- **#691 needs no further change.** Before #688 the roll's hostbuild ran beside the agent build, so cix was built twice and the second artifact was refused with a 409. With the roll waiting, the agent build runs first and the hostbuild is a cache hit, so a release builds cix once. From publish to switch took 26 minutes.
+
 ## Part 368: the host roll waits for every package job before it starts (#688, 0.2.57-688)
 
 **What shipped.** While any package job is in flight, the roll holds at `HOSTROLL_WAIT`, and it decides from what is installed once none is. If the window ends first, it stages and reboots nothing. `hostroll_start_verdict()` is that one decision.
