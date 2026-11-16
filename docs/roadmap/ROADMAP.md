@@ -2462,6 +2462,29 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 - **#689 live:** 687 ran its first drain at 11:02:26 (`image gc: set aside 3 version(s)`). At 11:10 `cixctl process ls` showed no cixd child but procfuse and the watchdog. A look logs nothing when it finds the drops settled or still pending, so that absence alone cannot tell a working check from one that never ran. Nor does the gap between staging and switching prove it: 9 s at 687 → 688, but 5 s at 686 → 687, on the old code, so a short gap shows only that no check was pending then. What holds the change is `test_blocking_waits` and the code. A `deleted subvolumes were still being freed after 7200 s` line would show the looks ran for two hours without holding anything, and that drops are not settling on .95.
 - **#690 shown live at the next switch.** It acts in the process that *writes* the handover, and 686 wrote this one, so the kernel log again took 2,180 lines at 11:02:26. At the 687 → 688 switch (12:22:12, 687 writing), the kernel log has no line at all from two seconds before to five seconds after.
 
+## Part 370: a hostbuild runs alone, and one package owns libgcc_s.so.1 everywhere (#693, #680, 0.2.57-690)
+
+**What shipped.**
+- **#693, the owner's decision of 2026-11-16:** while a hostbuild runs, the rolling drain starts nothing, and a completion runs the drain after the roll's ticks.
+- **The root takes cbs v0.1.130,** whose explain reports an output's own `replaces` (cix-build-system#314).
+- **#680, finished in recipes and images:**
+  - gcc's `gcc-libs` output now owns `libgcc_s.so.1` in cix-root, base, jumpbox, agent and probe-cu;
+  - squashfs-tools moved to 4.7.5-16 in cix-root, rolling;
+  - nss-pam-ldapd 0.9.13-14 requires gcc-libs;
+  - jumpbox 2.9.14 and agent 1.0.7 declare gcc-libs in place of `libgcc-s`, which is now installed nowhere.
+
+**How it was verified.**
+- **Compile probe:** `probe-cix-compile@0.2.57-763` passed the full selftest.
+- **The 690 roll, run by hand, 2026-11-16:**
+  - it waited behind the agent image's cix build from 17:54, then switched in place at 18:19:13 with 14 containers, every pid kept;
+  - the new cixd logged `CPDL engine changed (cbs 0.1.129 … -> cbs 0.1.130 …): re-derived 2537 identities, 0 failed`, and was listening at 18:19:33, so the API was away for 20 s while the containers ran on;
+  - the schedule line read `switched in place to 0.2.57-690 on slot a`.
+- **The shape, before relying on it:** `probe-outrepl@3-1` ran `cbs explain --json`, the argv cixd uses, on gcc@16.2.0-20 under cbs v0.1.130. `gcc-libs` reported `"replaces":["squashfs-tools","libgcc-s"]`, which is what `replaces_from()` and `test_cbsrecipe` read.
+- **The transfer, live:** installing gcc-libs into cix-root logged `image cix-root: gcc-libs@16.2.0-20 took over 1 path(s) from squashfs-tools@4.7.5-14, which it declares it replaces (cix#553)`. After that, `GET /v1/pkg/gcc-libs@cix-root` lists `usr/lib/libgcc_s.so.1`.
+- **The root:** `cixctl assembly start` sealed cix-root `24df9a73…`, holding squashfs-tools 4.7.5-16 and gcc-libs, at 18:32:05. `require_dlopened_libs()` passed, which is the check that a root carries `libgcc_s.so.1`. It is staged by the next release's roll.
+- **jump and agent-1** rolled onto the new jumpbox and agent versions at 18:36 and were confirmed at 18:41.
+- **Not yet seen:** nslcd stopping on the new images. Its first stop there is the next roll of either container; before gcc-libs, a missing `libgcc_s.so.1` aborted that stop (#639).
+
 ## Part 369: a release builds cix once, and its schedule line follows the roll (#691, #692, 0.2.57-689)
 
 **What shipped.** `scheduler_note_action()` and `hostroll_say()`: each roll step is now the `host-roll` schedule's outcome, and a confirmed switch records `switched in place to <release> on slot <x>` (#692).
