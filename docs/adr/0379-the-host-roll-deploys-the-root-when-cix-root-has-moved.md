@@ -4,7 +4,7 @@
 
 Accepted by the owner on 2026-11-16. The owner answered three questions:
 - whether to build it: *"Accept"*;
-- when a moved `cix-root` should reach the host: *"As soon as it settles"*, over the nightly window, which decision 5 records;
+- when a moved `cix-root` should reach the host: *"As soon as it settles"*, over the nightly window, which decision 5 records. Asked again once told that a root-only roll can still reboot the host once at any hour, when a successor refuses the handover, the owner kept it: *"As soon as it settles"*;
 - what a failed version gets: *"Mark it bad"*.
 
 It builds the half of [ADR-0371](0371-the-control-plane-root-is-one-image.md)'s decision B that is still missing, the root following its image. It is also the case that [ADR-0327](0327-the-host-follows-its-rolling-packages-in-a-nightly-window.md)'s host roll does not yet consider.
@@ -87,7 +87,7 @@ So this ADR names the limit and does not close it. A probation that makes one TL
 ## Known limits
 
 - **The fallback slot turns over with every root move.** Each roll writes the slot not running. So after a root-only roll, `boot-next` reaches back one root move, not one cix release. The first root-only roll under 0.2.57-691 overwrites the 690 slot with a second copy of 691.
-- **A scheduled roll that finds a root-only roll in progress answers "already in progress".** That window's kernel or cix roll is then lost until the next one. A root-only roll lasts minutes and `cix-root` moves only when a person publishes into its closure, so this is rare. It is the same class of loss #688 fixed for jobs, and it is tracked as its own issue rather than designed here.
+- **A scheduled roll that finds a root-only roll in progress answers "already in progress".** That window's kernel or cix roll is then lost until the next one. A root-only roll lasts minutes and `cix-root` moves only when a person publishes into its closure, so this is rare. It is the same class of loss #688 fixed for jobs, tracked as #694 rather than designed here.
 
 ## What this does not do
 
