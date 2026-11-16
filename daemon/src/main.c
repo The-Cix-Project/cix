@@ -74,6 +74,7 @@
 #include "proctitle.h"
 #include "stallwatch.h"
 #include "startup_steps.h"
+#include "hostroll_verdict.h"
 #include "handover.h"
 #include "rootswitch.h"
 #include "exec.h"
@@ -10525,6 +10526,7 @@ static void bootroot_want(void);
 static void bootroot_drive(void);
 /* ADR-0327: the host roll, defined after bootroot_drive(). */
 static void hostroll_tick(void);
+static void hostroll_wait_tick(void); /* #688 */
 static void hostroll_assembly_done(int ok);
 static void kernel_running_version(char *out, size_t out_size);
 
@@ -10663,6 +10665,8 @@ static void pkg_completion_followup(int next, pid_t pkg_pid, int pkg_pidfd, int 
 	/* ADR-0327: a host roll waiting for this hostbuild moves on, after
 	 * the assembly asked for above so it can see that one is under way. */
 	hostroll_tick();
+	/* #688: and one waiting for every job to end may start now. */
+	hostroll_wait_tick();
 
 	/* ADR-0343: last, after anything above that may have started the
 	 * next job -- a pass runs only when none is in flight. */
@@ -11166,6 +11170,7 @@ static void bootroot_want(void)
  */
 enum hostroll_step {
 	HOSTROLL_IDLE = 0,
+	HOSTROLL_WAIT,     /* waiting for every package job to end before deciding (#688) */
 	HOSTROLL_BUILD,    /* waiting for g_hostroll.building's hostbuild */
 	HOSTROLL_ASSEMBLE, /* waiting for the root assembly */
 	HOSTROLL_STAGE,    /* waiting for the slot to be written (#631) */
@@ -11185,6 +11190,7 @@ static struct {
 	char building[PKG_NAME_MAX];
 	char slot[8];       /* HOSTROLL_SWITCH: the slot staged */
 	long switch_by;     /* HOSTROLL_SWITCH: reboot instead once this passes */
+	long wait_until;    /* HOSTROLL_WAIT: give up once this passes */
 } g_hostroll;
 
 static int handover_quiescent(void);
@@ -11398,38 +11404,21 @@ static int roll_start_failed(const char *name, char *reason, size_t reason_size)
  * system.roll: what is behind, and start the first step. Returns at
  * once; the steps run on completions.
  */
-static int action_system_roll(const char *params, char *reason, size_t reason_size)
+/*
+ * What the roll does once no package job is in flight (#688): compare
+ * the kernel and cix with what is installed and running, and start the
+ * first step. window_end is the schedule window's end, 0 for none.
+ */
+static int hostroll_decide(long window_end, char *reason, size_t reason_size)
 {
 	struct pkg_host_state kernel, cix;
 	char running_kernel[128], kernel_upstream[PKG_VERSION_MAX];
 	int kernel_behind, cix_behind, kernel_not_running, cix_not_running;
 
-	(void)params;
-	/* An assembly asked for re-reads cix-root here too, so a change that
-	 * reached the image with no package job ending to drive it cannot hold
-	 * a roll at HOSTROLL_ASSEMBLE until a restart (ADR-0371). */
-	bootroot_drive();
-	/* A roll whose hostbuild ended with no completion seen (cancelled, say)
-	 * resolves now rather than claiming to be in progress forever. */
-	if (g_hostroll.step == HOSTROLL_BUILD &&
-	    !pkg_job_in_flight_for(g_hostroll.building, PKG_HOSTBUILD_IMAGE, 1))
-		hostroll_tick();
-	if (g_hostroll.step != HOSTROLL_IDLE) {
-		snprintf(reason, reason_size, "a host roll is already in progress (%s)",
-		         g_hostroll.step == HOSTROLL_BUILD   ? g_hostroll.building
-		         : g_hostroll.step == HOSTROLL_STAGE ? "staging"
-		         : g_hostroll.step == HOSTROLL_SWITCH ? "waiting to switch in place"
-		                                             : "assembling");
-		return 0;
-	}
 	if (pkg_host_state("kernel", &kernel) != 0 || pkg_host_state("cix", &cix) != 0) {
 		snprintf(reason, reason_size,
 		         "the kernel or cix was never hostbuilt on this host, so there is nothing to "
 		         "roll from");
-		return -1;
-	}
-	if (kernel.building || cix.building || pkg_job_in_flight_for(NULL, NULL, 1)) {
-		snprintf(reason, reason_size, "a hostbuild is already running; the next window rolls");
 		return -1;
 	}
 	kernel_running_version(running_kernel, sizeof(running_kernel));
@@ -11447,7 +11436,7 @@ static int action_system_roll(const char *params, char *reason, size_t reason_si
 	}
 
 	memset(&g_hostroll, 0, sizeof(g_hostroll));
-	g_hostroll.reboot_by = scheduler_running_window_end();
+	g_hostroll.reboot_by = window_end;
 	g_hostroll.stage_kernel = kernel_behind || kernel_not_running;
 	g_hostroll.then_cix = kernel_behind && cix_behind;
 	/* #683: a failed hostbuild has no installed version; the sentence
@@ -11467,6 +11456,104 @@ static int action_system_roll(const char *params, char *reason, size_t reason_si
 		return 0;
 	snprintf(reason, reason_size, "the root assembly could not start -- cixctl logs names why");
 	return -1;
+}
+
+/* #688: how long a roll waits for the package jobs in flight. To the
+ * window's end, or with no window, as long as a switch waits. */
+static long hostroll_wait_until(long window_end, long now)
+{
+	return window_end != 0 ? window_end : now + HOSTROLL_SWITCH_WAIT_SECONDS;
+}
+
+/*
+ * system.roll: what is behind, and start the first step. Returns at
+ * once; the steps run on completions. While any package job is in
+ * flight it starts nothing and waits (#688): hostroll_wait_tick() decides
+ * once none is, from what is installed then.
+ */
+static int action_system_roll(const char *params, char *reason, size_t reason_size)
+{
+	long now = (long)time(NULL), window_end;
+	int jobs;
+
+	(void)params;
+	/* An assembly asked for re-reads cix-root here too, so a change that
+	 * reached the image with no package job ending to drive it cannot hold
+	 * a roll at HOSTROLL_ASSEMBLE until a restart (ADR-0371). */
+	bootroot_drive();
+	/* A roll whose hostbuild ended with no completion seen (cancelled, say)
+	 * resolves now rather than claiming to be in progress forever. */
+	if (g_hostroll.step == HOSTROLL_BUILD &&
+	    !pkg_job_in_flight_for(g_hostroll.building, PKG_HOSTBUILD_IMAGE, 1))
+		hostroll_tick();
+	if (g_hostroll.step != HOSTROLL_IDLE) {
+		snprintf(reason, reason_size, "a host roll is already in progress (%s)",
+		         g_hostroll.step == HOSTROLL_WAIT    ? "waiting for package jobs to end"
+		         : g_hostroll.step == HOSTROLL_BUILD  ? g_hostroll.building
+		         : g_hostroll.step == HOSTROLL_STAGE  ? "staging"
+		         : g_hostroll.step == HOSTROLL_SWITCH ? "waiting to switch in place"
+		                                              : "assembling");
+		return 0;
+	}
+	window_end = scheduler_running_window_end();
+	jobs = pkg_any_job_in_flight();
+	switch (hostroll_start_verdict(jobs, now, hostroll_wait_until(window_end, now))) {
+	case HOSTROLL_START_NOW:
+		return hostroll_decide(window_end, reason, reason_size);
+	case HOSTROLL_START_WAIT:
+		memset(&g_hostroll, 0, sizeof(g_hostroll));
+		g_hostroll.step = HOSTROLL_WAIT;
+		g_hostroll.reboot_by = window_end;
+		g_hostroll.wait_until = hostroll_wait_until(window_end, now);
+		snprintf(reason, reason_size,
+		         "waiting for %d package job(s) to end before deciding what to roll (#688)", jobs);
+		logstore_write("system", "info", "host roll: %s", reason);
+		return 0;
+	case HOSTROLL_START_GIVE_UP:
+		break;
+	}
+	snprintf(reason, reason_size,
+	         "%d package job(s) are in flight and the window has ended; the next window rolls",
+	         jobs);
+	return -1;
+}
+
+/*
+ * #688: a waiting roll, after every package job and on every loop pass.
+ * Once nothing is in flight it decides from what is installed then, which
+ * may be different from when it began waiting. When the wait ends with
+ * jobs still running it says so once and stops: nothing is built, staged
+ * or rebooted for it.
+ */
+static void hostroll_wait_tick(void)
+{
+	char reason[SCHEDULE_REASON_MAX];
+	long window_end;
+	int jobs;
+
+	if (g_hostroll.step != HOSTROLL_WAIT)
+		return;
+	jobs = pkg_any_job_in_flight();
+	switch (hostroll_start_verdict(jobs, (long)time(NULL), g_hostroll.wait_until)) {
+	case HOSTROLL_START_WAIT:
+		return;
+	case HOSTROLL_START_GIVE_UP:
+		logstore_write("system", "warn",
+		               "host roll: %d package job(s) were still in flight when its wait ended -- "
+		               "nothing was built or staged; the next window rolls (#688)",
+		               jobs);
+		memset(&g_hostroll, 0, sizeof(g_hostroll));
+		return;
+	case HOSTROLL_START_NOW:
+		break;
+	}
+	window_end = g_hostroll.reboot_by;
+	memset(&g_hostroll, 0, sizeof(g_hostroll));
+	reason[0] = '\0';
+	hostroll_decide(window_end, reason, sizeof(reason));
+	/* A roll that started logged its own line; say what stopped one. */
+	if (g_hostroll.step == HOSTROLL_IDLE && reason[0] != '\0')
+		logstore_write("system", "info", "host roll: %s (ADR-0327)", reason);
 }
 
 /*
@@ -41611,6 +41698,7 @@ static int cixd_main(int argc, char **argv)
 		/* ADR-0375: after the pass's output is flushed, never in the
 		 * middle of serving one. */
 		handover_test_tick();
+		hostroll_wait_tick(); /* #688: its deadline, and a job that ended unseen */
 		hostroll_switch_tick();
 		handover_old_slot_tick();
 		disksnap_tick(); /* ADR-0377 */

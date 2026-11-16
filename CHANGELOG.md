@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The host roll waits for every package job before it starts (#688, 0.2.57-688)
+
+- **Before:** `action_system_roll()` refused only while a hostbuild was in flight, and started its kernel or cix hostbuild beside any other package job. A refusal also cost the night, since a scheduled run is recorded once per window.
+- **Now:**
+  - while any package job is in flight, the roll holds at `HOSTROLL_WAIT` with the reason `waiting for N package job(s) to end before deciding what to roll`;
+  - once none is, it decides from what is installed then (`hostroll_decide()`);
+  - if jobs are still in flight when the window ends, or after 30 minutes with no window, it logs that once and builds, stages and reboots nothing.
+- `pkg_any_job_in_flight()` now returns how many jobs are in flight.
+- **Gate:** `hostroll_start_verdict()` is the one decision, and `test_hostroll_verdict` (in SELFTESTS) covers it.
+
 ### A handover does not store the kernel log twice (#690, 0.2.57-687)
 
 - **The defect:** the `/dev/kmsg` descriptor is `O_CLOEXEC`, so after an in-place switch the new cixd opened it fresh and read the whole ring buffer again. The 686 switch on .95 (2026-11-16) stored 2,181 kernel lines a second time, all stamped 02:04:58. The boot's veths among them read as containers recreated at the switch.

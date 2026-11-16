@@ -32,3 +32,8 @@ Two facts measured in the code shape the answer. The control-plane root carries 
 - A kernel.org stable release reaches the host with no person involved: discovered, authenticated, authored, built, staged, rebooted in the window, and rolled back by the boot counter if it does not boot.
 - The host reboots on its own. That is the owner's choice of when, and an operator who wants to choose the moment edits or deletes `host-roll`.
 - The roll's state is not persisted: a daemon restart mid-roll ends it, and the next window starts again from what is installed and running.
+
+## Notes
+
+- **The roll waits for every package job before it starts (#688, 0.2.57-688).** It used to refuse only while a hostbuild was in flight, and start beside anything else. A refusal costs the night, because a scheduled run is recorded once and not retried inside its window. Starting beside an ordinary build puts the heaviest build this platform runs beside one that may be as heavy. Now, while any package job is in flight, the roll holds at `HOSTROLL_WAIT`, reporting `waiting for N package job(s)`. It decides what to roll, from what is installed then, once none is. The wait asks the switch's question (`pkg_any_job_in_flight()`, #686), and `hostroll_start_verdict()` is its one decision. If jobs are still in flight when the window ends, the roll says so once and builds, stages and reboots nothing.
+- **What it does not change:** once the roll's hostbuild is running, the drain may still start ordinary builds beside it. Parallel ordinary builds are ADR-0157's design, and the measured failure that limits hostbuilds to one at a time (#362) was two hostbuilds. Whether a hostbuild should also hold ordinary builds back is a separate decision for the owner.

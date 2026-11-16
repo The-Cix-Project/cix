@@ -1687,15 +1687,18 @@ int pkg_image_settled(const char *image)
  * switch's record carried one registry entry more than GET /v1/containers
  * lists. A queued image has no chain and is not counted: the queue is
  * re-derived after a handover.
+ *
+ * #688: the answer is how many, which the host roll's wait reports, so
+ * it reads true exactly when the old 1 did.
  */
 int pkg_any_job_in_flight(void)
 {
-	int i;
+	int i, n = 0;
 
 	for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++)
 		if (g_chains[i].name[0] != '\0')
-			return 1;
-	return 0;
+			n++;
+	return n;
 }
 
 /*
