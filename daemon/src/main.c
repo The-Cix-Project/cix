@@ -10640,8 +10640,6 @@ static void pkg_completion_followup(int next, pid_t pkg_pid, int pkg_pidfd, int 
 		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
 	else if (next == 2)
 		register_pkg_produce_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
-	else
-		try_start_queued_pkg_rebuild();
 
 	/*
 	 * Issue #200: a hostbuild's output is a directory, so the push
@@ -10680,6 +10678,17 @@ static void pkg_completion_followup(int next, pid_t pkg_pid, int pkg_pidfd, int 
 	hostroll_tick();
 	/* #688: and one waiting for every job to end may start now. */
 	hostroll_wait_tick();
+
+	/*
+	 * #693: the rolling drain after the roll, never before it. A roll's
+	 * next hostbuild (cix after the kernel, or the first after its wait)
+	 * starts first, and the drain then holds while it runs. Run first,
+	 * the drain took the moment every job ended, so a waiting roll could
+	 * wait out its window behind a stream of image rolls, and an ordinary
+	 * build could start in the gap between the kernel and cix hostbuilds.
+	 */
+	if (next != 1 && next != 2)
+		try_start_queued_pkg_rebuild();
 
 	/* ADR-0343: last, after anything above that may have started the
 	 * next job -- a pass runs only when none is in flight. */

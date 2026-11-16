@@ -9734,6 +9734,18 @@ int pkg_try_start_queued_rebuild(pid_t *out_pid, int *out_pidfd, int *out_chain_
 
 	if (pkg_any_job_busy())
 		return 0;
+	/*
+	 * #693, the owner's decision of 2026-11-16: while a hostbuild runs,
+	 * the drain starts nothing. A hostbuild compiles the whole control
+	 * plane and runs its selftest, and two concurrent heavy builds once
+	 * wedged cixd on 192.168.15.95 for about 16 minutes. ADR-0157's
+	 * parallel builds otherwise stand, and an operator's explicit
+	 * install is not held. The queue is kept: every job's end calls the
+	 * drain again, the hostbuild's included. This is the mirror of
+	 * #688, where the host roll starts no hostbuild while any job runs.
+	 */
+	if (pkg_job_in_flight_for(NULL, NULL, 1))
+		return 0;
 
 	/*
 	 * ADR-0273: an INDEX walk, not "always the front".

@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A hostbuild runs alone (#693, 0.2.57-690)
+
+- **The owner's decision of 2026-11-16:** while a hostbuild runs, the rolling drain starts nothing.
+- **Before:** #688 made the roll wait for every job before its hostbuild, but the drain could still start builds beside a running hostbuild. In a completion it ran before the roll's ticks, so it also took the moment every job ended: an ordinary build could start between the kernel and cix hostbuilds, and a waiting roll could stay behind a stream of image rolls.
+- **Now:**
+  - `pkg_try_start_queued_rebuild()` returns at once while a hostbuild is in flight, and the queue is kept;
+  - in a completion the drain runs after `hostroll_tick()` and `hostroll_wait_tick()`, so the roll's next hostbuild starts first;
+  - an operator's explicit install is not held, and parallel ordinary builds (ADR-0157) otherwise stand.
+- **Also in this release:** the control-plane root takes cbs v0.1.130 from cix-root, so cixd's `cbs explain` reports an output's own `replaces` (cix-build-system#314, for #680).
+
 ### schedule show host-roll follows the roll (#692, 0.2.57-689)
 
 - **Before:** a schedule's outcome was written only when its action returned. The roll keeps working after that, so `schedule show host-roll` kept `waiting for 1 package job(s)` or `rolling: …` through the build, the assembly and the switch, and read `ok` over a step that failed later. The dashboard's schedule row reads the same `last_ok`.
