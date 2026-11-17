@@ -25,7 +25,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
     - `{"root":"settled"}`, the default, deploys as soon as it settles;
     - `{"root":"window"}` leaves it to the roll itself.
 
-    `cixctl schedule set` gains `--params=JSON` to set them.
+    `cixctl schedule set` gains `--params=JSON` to set them. A schedule read now carries `params`, which it never did for any schedule, and `cixctl schedule show` prints them.
   - **Marked bad, not deployed again by itself:**
     - a version whose switch or boot fails;
     - a version `mkbootroot` cannot build;

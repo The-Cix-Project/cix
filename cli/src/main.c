@@ -17974,8 +17974,19 @@ static void fmt_schedule_one(const struct json_value *root)
 {
 	const struct json_value *ok = json_object_get(root, "last_ok");
 
+	const struct json_value *params = json_object_get(root, "params");
+
 	printf("%-16s %s\n", "name", json_str_or(root, "name"));
 	printf("%-16s %s\n", "action", json_str_or(root, "action"));
+	/* The action's own settings, as given (ADR-0379's {"root":...}). */
+	if (params != NULL && params->type == JSON_OBJECT) {
+		struct json_writer pw;
+
+		jw_init(&pw);
+		jw_write_value(&pw, params);
+		printf("%-16s %.*s\n", "params", (int)pw.len, pw.buf != NULL ? pw.buf : "");
+		jw_free(&pw);
+	}
 	printf("%-16s %s\n", "when", json_str_or(root, "describes"));
 	printf("%-16s %s\n", "last run",
 	        ok == NULL || ok->type == JSON_NULL

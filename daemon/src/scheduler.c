@@ -930,6 +930,16 @@ void scheduler_write_json_one(const struct schedule *s, struct json_writer *w)
 	jw_key(w, "action");
 	jw_str(w, s->action);
 	/*
+	 * What the action reads, as given. It was stored and never shown, so
+	 * a setting like system.roll's {"root":"window"} (ADR-0379) could be
+	 * set and not seen. Absent when there are none, as in the request
+	 * (ScheduleWrite's params is an object, never null).
+	 */
+	if (s->params[0] != '\0') {
+		jw_key(w, "params");
+		jw_raw_text(w, s->params, strlen(s->params));
+	}
+	/*
 	 * The structured form is what a client edits; `describes` is the
 	 * one-way rendering for a CLI column or a log line, and nothing
 	 * ever parses it back (ADR-0257).

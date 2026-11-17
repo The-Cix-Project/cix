@@ -20608,7 +20608,9 @@ components:
             not learn it. GET /schedule-actions describes each action's.
             system.roll reads `root`: `settled` (the default) deploys a
             moved cix-root as soon as it settles, `window` leaves it to
-            the roll itself (ADR-0379).
+            the roll itself (ADR-0379). A schedule read carries them as
+            stored, and omits the key when there are none; before
+            0.2.57-691 a read never carried them.
         schedule:
           $ref: "#/components/schemas/ScheduleSpec"
           title: When
