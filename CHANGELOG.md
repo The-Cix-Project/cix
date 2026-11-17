@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A job that fails at its fetch asks for the root-only roll too (ADR-0379, 0.2.57-692)
+
+- **Before:** measured on .95 under 0.2.57-691, a job whose fetch failed ended in `pkg_step_dispatch()`, which only restarts the drain and never reaches `pkg_completion_followup()`. No root-only roll started; the next successful job's end started it. A failed install into cix-root could be the job that leaves the image settled, so nothing would ask again until some other job ended.
+- **Now:** that path calls `rootroll_tick()` after the drain, as a completion does.
+
 ### The root follows cix-root as soon as it settles (ADR-0379, 0.2.57-691)
 
 - **Before:** a change inside `cix-root` (openssl, glibc, cbs, gcc-libs, anything in its closure) reached the host only with the next cix release. The roll decided on the kernel and cix alone. Measured on .95 on 2026-11-16: the running root was sealed from `cix-root` `8ec94a64`, `cix-root` moved to `24df9a73`, and a roll answered `current`.

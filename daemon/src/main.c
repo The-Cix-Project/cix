@@ -38674,7 +38674,15 @@ static void pkg_step_dispatch(int r, int chain_idx, struct container_spec *spec,
 		stallwatch_step("spawn the build container"); /* #619 */
 		spawn_pkgbuild_container(chain_idx, "container spawn", spec, stdio_write_fd);
 	} else {
+		/* The job ended at its fetch, and pkg_completion_followup() is
+		 * not reached on this path. */
 		try_start_queued_pkg_rebuild();
+		/* ADR-0379: a failed install into cix-root can be the job that
+		 * leaves it settled, so this end asks too. Measured on
+		 * 192.168.15.95, 2026-11-17: under 0.2.57-691 a failed fetch
+		 * ended and no root-only roll started; the next successful job
+		 * started it. */
+		rootroll_tick();
 	}
 }
 

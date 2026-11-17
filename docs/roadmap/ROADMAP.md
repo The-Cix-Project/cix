@@ -2462,6 +2462,28 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 - **#689 live:** 687 ran its first drain at 11:02:26 (`image gc: set aside 3 version(s)`). At 11:10 `cixctl process ls` showed no cixd child but procfuse and the watchdog. A look logs nothing when it finds the drops settled or still pending, so that absence alone cannot tell a working check from one that never ran. Nor does the gap between staging and switching prove it: 9 s at 687 → 688, but 5 s at 686 → 687, on the old code, so a short gap shows only that no check was pending then. What holds the change is `test_blocking_waits` and the code. A `deleted subvolumes were still being freed after 7200 s` line would show the looks ran for two hours without holding anything, and that drops are not settling on .95.
 - **#690 shown live at the next switch.** It acts in the process that *writes* the handover, and 686 wrote this one, so the kernel log again took 2,180 lines at 11:02:26. At the 687 → 688 switch (12:22:12, 687 writing), the kernel log has no line at all from two seconds before to five seconds after.
 
+## Part 371: the root follows cix-root as soon as it settles (ADR-0379, 0.2.57-691)
+
+**What shipped.**
+- **What each slot holds:** cixd records which `cix-root` version each slot holds, the slot last confirmed, a switch in flight, and any version that failed to deploy (`rootslot.c`, `/config/state/root-slots.json`).
+- **A third reason for the roll:** the root. When `cix-root` settles at a version the running root was not sealed from, a root-only roll assembles, stages the root alone, and switches in place. It never chooses a reboot.
+- **Configurable** by the `system.roll` job's params, `{"root":"settled"}` (the default) or `{"root":"window"}`. A schedule read now carries params, and `cixctl schedule set` takes `--params`.
+- **The owner's choices** are recorded in the ADR: accepted, as soon as it settles (kept once told a successor's refusal can still reboot once), and mark it bad.
+
+**How it was verified.**
+- **Compile probes:** `probe-cix-compile@0.2.57-764` to `-767`.
+  - 764 failed only `test_clitree`: `--params=` was missing from `cmdtree.h`.
+  - 767 passed the full selftest, `test_rootslot` and `test_rootslot_verdict` included.
+- **Released armed, on 2026-11-17.** The owner set `host-roll` to `{"root":"window"}` by hand before publishing; my permission check refused the schedule write.
+  - The hand-run roll took a newly published kernel too: `rolling: kernel 7.3.4-1 -> 7.3.5-1, cix 0.2.57-690 -> 0.2.57-691`. Asked, the owner chose to reboot that afternoon. 691 booted on 7.3.5 at 15:22, and vpn-1 had its dial tone at 15:22:54.
+  - Under `window`, `schedule show host-roll` printed `params {"root":"window"}`, a job ended, and no root-only roll started. `cixctl boot` read `root: cix-root (unknown)`.
+  - The owner restored `host-roll` with no params; the definition matched the one saved before.
+  - The next job to end was a failed fetch, and it started nothing. That path does not reach `pkg_completion_followup()`, fixed for 0.2.57-692.
+  - The next successful job end logged `root: cix-root unknown -> 5ef50347683a -- a root-only roll, which switches in place and never reboots` at 16:49:47.
+  - The roll switched in place at 16:50:11 with 14 entries and confirmed slot a. dns, ldap, ntp, syslog, cr and ar kept their pids; jump, vpn-1 and agent-1 had rolled to a new hibr at 15:39. The schedule line read `switched in place to 0.2.57-691 on slot a`.
+  - `cixctl boot` then read `root: cix-root 5ef50347…`, cix-root's current version. One more job end started nothing, and a hand-run roll answered `current: kernel 7.3.5-1 and cix 0.2.57-691 are the newest and running`.
+  - This root is the first on .95 to carry gcc-libs and squashfs-tools 4.7.5-16 (#680).
+
 ## Part 370: a hostbuild runs alone, and one package owns libgcc_s.so.1 everywhere (#693, #680, 0.2.57-690)
 
 **What shipped.**
