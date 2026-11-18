@@ -93,7 +93,7 @@ So this ADR names the limit and does not close it. A probation that makes one TL
 ## Known limits
 
 - **The fallback slot turns over with every root move.** Each roll writes the slot not running. So after a root-only roll, `boot-next` reaches back one root move, not one cix release. The first root-only roll under 0.2.57-691 overwrites the 690 slot with a second copy of 691.
-- **A scheduled roll that finds a root-only roll in progress answers "already in progress".** That window's kernel or cix roll is then lost until the next one. A root-only roll lasts minutes and `cix-root` moves only when a person publishes into its closure, so this is rare. It is the same class of loss #688 fixed for jobs, tracked as #694 rather than designed here.
+- **A scheduled roll that finds a root-only roll in progress answered "already in progress", resolved in 0.2.57-693 (#694).** That window's kernel or cix roll was then lost until the next one, the same class of loss #688 fixed for jobs. Now the run is owed instead: `g_roll_owed_until` records its window's end, and the handover record carries it as the optional `roll_owed_until`, because the root-only roll usually ends by switching into a new cixd. `roll_owed_tick()` starts it as a waiting roll, #688's path, once nothing is in progress, and drops it with one line if its window has passed. A root-only roll does not start while a roll is owed.
 
 ## What this does not do
 

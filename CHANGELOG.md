@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A roll that finds a root-only roll in progress is owed, not lost (#694, 0.2.57-693)
+
+- **Before:** the 03:00 roll, or a hand-run one, that found a root-only roll (ADR-0379) in progress answered "already in progress". The scheduler records a run once per window, so that night's kernel or cix roll was lost until the next one.
+- **Now:**
+  - the run is owed until its window's end (`g_roll_owed_until`), and its line reads `a root-only roll is in progress; this roll starts as soon as it ends`;
+  - `roll_owed_tick()` starts it as a waiting roll (#688's path) once nothing is in progress;
+  - a root-only roll does not start while one is owed;
+  - the root-only roll usually ends by switching into a new cixd, so the handover record carries the owed window as the optional `roll_owed_until`;
+  - past its window, the owed roll is dropped with one line.
+- **Gate:** `test_handover_record` round-trips `roll_owed_until` and reads a record without it.
+
 ### A job that fails at its fetch asks for the root-only roll too (ADR-0379, 0.2.57-692)
 
 - **Before:** measured on .95 under 0.2.57-691, a job whose fetch failed ended in `pkg_step_dispatch()`, which only restarts the drain and never reaches `pkg_completion_followup()`. No root-only roll started; the next successful job's end started it. A failed install into cix-root could be the job that leaves the image settled, so nothing would ask again until some other job ended.

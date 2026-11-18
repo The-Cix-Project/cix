@@ -29,6 +29,12 @@
  *                   record the writer stored, so the reader skips the
  *                   ring buffer up to it (#690). Absent before 0.2.57-687,
  *                   and from a writer that had read none.
+ *   roll_owed_until optional: a scheduled or hand-run host roll that found
+ *                   a root-only roll in progress, and is owed once it ends,
+ *                   until this time (#694). The root-only roll's own switch
+ *                   is what writes the record, so without this the roll it
+ *                   held off would be lost. Absent when none is owed, and
+ *                   before 0.2.57-693.
  *   procfuse_pid    procfuse's server, which survives the exec; 0 for none
  *   procfuse_load_fd  the memfd holding its load page (ADR-0349), passed
  *                   across execve; -1 for none
@@ -150,6 +156,7 @@ struct handover_record {
 	char uplink_unattached[64];
 	char *kmodscan; /* heap JSON text, or NULL; freed by handover_record_free() */
 	long long kmsg_seq; /* -1 when absent */
+	long long roll_owed_until; /* #694: a host roll owed until then; 0 when absent */
 	pid_t procfuse_pid;
 	int procfuse_load_fd;
 	struct handover_console consoles[HANDOVER_CONSOLES_MAX];

@@ -274,6 +274,10 @@ int handover_write(const char *path, const struct handover_record *rec, char *er
 		jw_key(&w, "kmsg_seq");
 		jw_int(&w, rec->kmsg_seq);
 	}
+	if (rec->roll_owed_until > 0) {
+		jw_key(&w, "roll_owed_until");
+		jw_int(&w, rec->roll_owed_until);
+	}
 	jw_key(&w, "procfuse_pid");
 	jw_int(&w, rec->procfuse_pid);
 	jw_key(&w, "procfuse_load_fd");
@@ -569,6 +573,12 @@ int handover_read(const char *path, struct handover_record *rec, char *err, size
 		const struct json_value *s = json_object_get(root, "kmsg_seq");
 
 		rec->kmsg_seq = s != NULL && s->type == JSON_NUMBER ? (long long)json_as_number(s) : -1;
+	}
+	{
+		const struct json_value *o = json_object_get(root, "roll_owed_until");
+
+		rec->roll_owed_until =
+		        o != NULL && o->type == JSON_NUMBER ? (long long)json_as_number(o) : 0;
 	}
 	for (i = 0; i < arr->u.array.count; i++) {
 		get_container(arr->u.array.items[i], &rec->containers[i], &missing);

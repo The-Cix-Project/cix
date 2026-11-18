@@ -11275,6 +11275,15 @@ static struct {
 static char g_rootroll_deferred[IMAGE_VERSION_MAX];
 static long g_rootroll_deferred_until;
 
+/*
+ * #694: a scheduled or hand-run roll that found a root-only roll in
+ * progress is owed until this time (its own window's end), 0 for none.
+ * roll_owed_tick() starts it once the root-only roll has ended. The
+ * root-only roll usually ends by switching into a new cixd, so the
+ * handover record carries this (roll_owed_until).
+ */
+static long g_roll_owed_until;
+
 static int handover_quiescent(void);
 static void handover_exec(const char *target);
 
@@ -11752,7 +11761,8 @@ static void rootroll_tick(void)
 	enum roll_root_mode mode;
 	const char *params;
 
-	if (g_hostroll.step != HOSTROLL_IDLE)
+	/* #694: an owed roll goes first, and deploys a behind root itself. */
+	if (g_hostroll.step != HOSTROLL_IDLE || g_roll_owed_until != 0)
 		return;
 	/* An operator's hold: with no enabled system.roll job, nothing rolls.
 	 * And {"root": "window"} leaves the root to the roll itself. */
@@ -11809,6 +11819,20 @@ static int action_system_roll(const char *params, char *reason, size_t reason_si
 	if (g_hostroll.step == HOSTROLL_BUILD &&
 	    !pkg_job_in_flight_for(g_hostroll.building, PKG_HOSTBUILD_IMAGE, 1))
 		hostroll_tick();
+	/*
+	 * #694: a root-only roll (ADR-0379) runs at any hour, so the window's
+	 * roll can find one in progress. Answering "already in progress" lost
+	 * the night's kernel or cix roll; it is owed instead, and starts as
+	 * soon as the root-only roll ends, within this run's own window.
+	 */
+	if (g_hostroll.step != HOSTROLL_IDLE && g_hostroll.root_only) {
+		long end = scheduler_running_window_end();
+
+		g_roll_owed_until = end != 0 ? end : (long)time(NULL) + HOSTROLL_SWITCH_WAIT_SECONDS;
+		snprintf(reason, reason_size,
+		         "a root-only roll is in progress; this roll starts as soon as it ends (#694)");
+		return 0;
+	}
 	if (g_hostroll.step != HOSTROLL_IDLE) {
 		snprintf(reason, reason_size, "a host roll is already in progress (%s)",
 		         g_hostroll.step == HOSTROLL_WAIT    ? "waiting for package jobs to end"
@@ -11892,6 +11916,33 @@ static void hostroll_wait_tick(void)
 	/* A roll that started logged its own line; say what stopped one. */
 	if (g_hostroll.step == HOSTROLL_IDLE && reason[0] != '\0')
 		hostroll_say(rc == 0 ? "info" : "error", rc == 0, "%s (ADR-0327)", reason);
+}
+
+/*
+ * #694: once no roll is in progress, start the roll a root-only roll held
+ * off, as a waiting roll with its original window's end. From there it is
+ * #688's path: it waits for package jobs, then decides from what is
+ * installed. Past its window it is dropped, and says so once.
+ */
+static void roll_owed_tick(void)
+{
+	long now = (long)time(NULL), until = g_roll_owed_until;
+
+	if (until == 0 || g_hostroll.step != HOSTROLL_IDLE)
+		return;
+	g_roll_owed_until = 0;
+	if (now >= until) {
+		hostroll_say("warn", 0,
+		             "the roll a root-only roll held off is past its window; the next window "
+		             "rolls (#694)");
+		return;
+	}
+	memset(&g_hostroll, 0, sizeof(g_hostroll));
+	g_hostroll.step = HOSTROLL_WAIT;
+	g_hostroll.reboot_by = until;
+	g_hostroll.wait_until = until;
+	hostroll_say("info", 1,
+	             "starting the roll a root-only roll held off, within its window (#694)");
 }
 
 /*
@@ -39806,6 +39857,7 @@ static int handover_build_record(struct handover_record *rec)
 		jw_free(&w);
 	}
 	rec->kmsg_seq = logstore_kmsg_last_seq(); /* #690 */
+	rec->roll_owed_until = g_roll_owed_until; /* #694 */
 	procfuse_handover_state(&rec->procfuse_pid, &rec->procfuse_load_fd);
 	rec->console_count = g_console_shell_count;
 	for (i = 0; i < g_console_shell_count; i++)
@@ -40251,6 +40303,9 @@ static int handover_load(void)
 	/* #690: the kernel records the process before already stored. */
 	if (g_handover_rec.kmsg_seq >= 0)
 		logstore_kmsg_skip_through(g_handover_rec.kmsg_seq);
+	/* #694: a roll the predecessor's root-only roll held off is still owed. */
+	if (g_handover_rec.roll_owed_until > 0)
+		g_roll_owed_until = (long)g_handover_rec.roll_owed_until;
 	/* procfuse's server outlived the exec and still serves the mount every
 	 * container binds from: take it back, never start a second one over it. */
 	if (g_handover_rec.procfuse_pid > 0) {
@@ -42096,6 +42151,7 @@ static int cixd_main(int argc, char **argv)
 		/* ADR-0375: after the pass's output is flushed, never in the
 		 * middle of serving one. */
 		handover_test_tick();
+		roll_owed_tick();     /* #694: a roll a root-only roll held off */
 		hostroll_wait_tick(); /* #688: its deadline, and a job that ended unseen */
 		hostroll_switch_tick();
 		handover_old_slot_tick();
