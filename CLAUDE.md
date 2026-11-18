@@ -460,6 +460,16 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Say every outcome, once.** Loads, refusals and failures log one line; unclaimed aliases and already-loaded modules go in the scan report only.
 - **Test data directories start with the policy saved as `off`**, so a test daemon never sweeps a build container.
 
+## A device gets its firmware after install, by itself
+
+**Firmware is not root content and never on the ISO. A host keeps it in its own `firmware` image, which cixd points the kernel's firmware path at. cixd installs, by itself, the `linux-firmware` output that provides a file a loaded driver declares and the host lacks, then probes the device again.** That is [ADR-0381](docs/adr/0381-a-device-gets-its-firmware-after-install.md), the owner's decisions of 2026-11-18 for #685 (*"can it not be downloaded after the initial install?"*, *"Automatic only"*).
+
+- **Never put firmware into `cix-root`'s recipe or the installer.** `rtw88-firmware` leaves `cix-root` too (*"Move it"*). `wireless-regdb` is not runtime firmware: `regulatory.db` is built into the kernel.
+- **The index is CBS outputs' `files` selectors, never a metadata key.** A firmware package is an output of the `linux-firmware` recipe, and it claims its files, for example `glob "lib/firmware/amdgpu/**"`.
+- **One setter writes `/sys/module/firmware_class/parameters/path`** (`firmware_path_apply()`): the stable link `REBUILDABLE_DIR/firmware`, at every start, before the boot sweep. The kernel resolves it in pid 1's (cixd's) root (`kernel_read_file_from_path_initns`, measured in 7.3.5), so it follows an in-place switch.
+- **Only what a driver declares, for a module the kmod policy let load.** An index miss is said once, never retried until the index changes.
+- **Provenance:** the blobs come only from kernel.org's signed `linux-firmware` tarball, with their licence files, as an owner-approved exception like `rtw88-firmware` (*"Approve"*).
+
 ## A container's load average is sampled from its own threads
 
 **procfuse's own process samples every cgroup under the workload parent every 5 s, by the kernel's `calc_load()`, and `/proc/loadavg` and `GET /v1/containers/{name}/stats` serve that one figure.** That is [ADR-0349](docs/adr/0349-a-containers-load-average-is-sampled-from-its-own-threads.md), for #625. The owner agreed the mechanism on 2026-10-21.
