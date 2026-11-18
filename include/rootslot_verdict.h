@@ -18,6 +18,12 @@
  *          none. While it is the current version, the root is not
  *          behind; once cix-root moves past it, the mark no longer
  *          applies.
+ * current_cixd, bad_cixd (ADR-0380): the cixd version the current
+ *          version holds, and the one the bad version held; "" when
+ *          unknown or none. Once cixd rolls in cix-root a release is a
+ *          cixd version, so a current version still holding the bad
+ *          cixd is not behind either, whatever else moved in it: a
+ *          rejected release stays off until cixd moves.
  */
 enum rootslot_verdict {
 	ROOTSLOT_CURRENT,   /* the running root was sealed from the current version */
@@ -28,7 +34,9 @@ enum rootslot_verdict {
 };
 
 static inline enum rootslot_verdict rootslot_verdict(const char *running, const char *current,
-                                                     int settled, const char *bad)
+                                                     int settled, const char *bad,
+                                                     const char *current_cixd,
+                                                     const char *bad_cixd)
 {
 	if (current == NULL || current[0] == '\0')
 		return ROOTSLOT_NO_IMAGE;
@@ -38,7 +46,21 @@ static inline enum rootslot_verdict rootslot_verdict(const char *running, const 
 		return ROOTSLOT_UNSETTLED;
 	if (bad != NULL && strcmp(bad, current) == 0)
 		return ROOTSLOT_FAILED;
+	if (bad_cixd != NULL && bad_cixd[0] != '\0' && current_cixd != NULL &&
+	    strcmp(bad_cixd, current_cixd) == 0)
+		return ROOTSLOT_FAILED;
 	return ROOTSLOT_BEHIND;
+}
+
+/* ADR-0380: is a bad mark still in force for the current version? It is
+ * forgotten once cix-root has moved past the bad version AND its cixd. */
+static inline int rootslot_bad_applies(const char *current, const char *bad,
+                                       const char *current_cixd, const char *bad_cixd)
+{
+	if (bad != NULL && bad[0] != '\0' && current != NULL && strcmp(bad, current) == 0)
+		return 1;
+	return bad_cixd != NULL && bad_cixd[0] != '\0' && current_cixd != NULL &&
+	       strcmp(bad_cixd, current_cixd) == 0;
 }
 
 #endif

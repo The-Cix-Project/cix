@@ -77,6 +77,8 @@ Stated by the owner on 2026-09-17, in these words: *"Nothing runs in the sandbox
 
   **A THIRTY-SEVENTH on 2026-11-14: a whole command, `python_unused=; f=CHANGELOG.md; true`, sent between the #686 quiescence fix and its CHANGELOG entry, doing nothing.** No interpreter ran. It is the thirty-first's shape: the remains of a shell edit, decided against for the Edit tool, sent anyway.
 
+  **A THIRTY-EIGHTH on 2026-11-18: `python_unused=;` in front of a `sed -i` adding a field to openapi.yaml's required list (ADR-0380 release A).** No interpreter ran. It came in the middle of a long multi-file implementation, the eleventh's context again.
+
   **A THIRTY-SIXTH the same day: two `sed -i` commands on disksnap.c, the second undoing the first** (`s/disksnap_reset/disksnap_reset_for_test/` and then the reverse), sent together ahead of the real edit. No interpreter ran, and nothing changed. It is the twenty-seventh's self-replacing `sed`, split across two commands.
 
   **A TWELFTH on 2026-10-09, the stray prefix again: `python3 --version 2>/dev/null;` in front of a `cat` heredoc.** Its output was discarded, the `cat` did the whole job, and nothing in the task wanted a language runtime. Same shape as the seventh, eighth, ninth and eleventh. What is new is only where it sat: in the middle of writing THIS FILE, in a command whose entire purpose was to record durable findings — including, three bullets later, a note about reading a command before sending it. So the session that documents the defence committed the defect while documenting it, which is the eighth data point for the sentence already here: writing a rule, restating a rule and sharpening a rule are the same non-action. The instruction does not change and does not want changing: **re-read the command string, token by token, before sending, and delete every token that is not doing work.** Twelve data points say that sentence is not self-executing.
@@ -312,7 +314,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
   - `mkbootroot` cannot build it;
   - the host leaves the slot it last confirmed with no roll attempting the other (an operator's `boot-next`).
 
-  A bad mark clears when cix-root moves or an operator runs the roll by hand; a stop that says nothing about the root only defers it. **Disabling `host-roll` holds root-only rolls too.** Never add a reboot to the root-only path.
+  A bad mark clears when cix-root moves past the version and the `cixd` it held (ADR-0380), or an operator runs the roll by hand; a stop that says nothing about the root only defers it. **Disabling `host-roll` holds root-only rolls too.** Never add a reboot to the root-only path.
 
   **When is configurable** (the owner, the same day: *"it should be programmable, no? (configurable)?"*). It is set by the `system.roll` job's params: `{"root":"settled"}` is the default, and `{"root":"window"}` leaves the root to the roll itself. Never add a second place for this setting.
 
@@ -546,6 +548,16 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **The root is `cix-root`'s current version** (phase 3a). A package the root needs goes into `cix-root`'s recipe, never into `cix-hosttools`, `cix-firmware` or `cix-kmod`, which no assembly reads any more, and the installer ISO takes its module tools from cix-root too (phase 4). `mkbootroot <tree> <out> <staging>` adds only the mount points, `/etc/resolv.conf` and `/etc/os-release`. Never add an input argument to it, or an image whose only job is feeding the root. `controlplane_programs.h` stays as a gate over the result, not as a source of content.
 - **An assembly is asked for, then driven** (`bootroot_want()`, `bootroot_drive()`). It starts only when `cix-root` holds the installed `cix` hostbuild's `cixd` and `cixctl` and the `kernel` hostbuild's `kernel-modules` (`root_image_behind()`), and nothing is in flight for it. The daemon installs any it lacks first, as an explicit install that moves the pins. That install is a bridge until `cix` is followed (decision B), not the design. Never start `mkbootroot` around that guard.
 - **681 was the one release that took both forms.** Its `mkbootroot` still took 680's ten arguments, through `test/test_root_tree.c`, so 681 booted a legacy-shape root. 682 (phase 3b) removed that form and `test_mkbootroot_firmware`; its root is the first sealed from cix-root's tree. `test/test_root_tree.c` now serves only the boot tests, which seal a tree built from "/" with the three-argument form.
+
+## A cix release is a publish (in progress: release A)
+
+**`cixd` and `cixctl` become rolling entries of `cix-root`, so publishing `cix@N` deploys it: the drain builds it once, `cix-root` moves, and a root-only roll (ADR-0379) switches into it in place. Nothing hostbuilds cix.** That is [ADR-0380](docs/adr/0380-cix-is-followed-in-cix-root-and-a-release-is-a-publish.md), accepted by the owner on 2026-11-18 (*"Accept"*). It finishes ADR-0371's decision B. Two releases get there, each deployed by its predecessor's path: A moves the readers, B drops the bridge, and then `cix-root`'s recipe makes the two entries rolling.
+
+- **The release being sealed seals itself.** The assembly runs `usr/libexec/cix/mkbootroot` from the `cix-root` tree it seals (the `cixd` output ships it), against the running root's own loader and libraries, never the tree's.
+- **The installer tools are the `cix-installer-tools` output, in `iso-builder`,** under `usr/libexec/cix/`. An ISO is refused (409) unless they are the release `cix-root`'s `cixd` is, and the ISO's signature and disk GUID both derive from that release.
+- **A rejected release stays off.** A bad mark carries the `cixd` its root held. A `cix-root` version still holding that `cixd` is not deployed by a root-only roll, and a scheduled roll does not stage it, whatever else moved. It clears when `cixd` moves or the roll is run by hand. So an operator's rollback is `boot-next` and nothing more.
+- **Only a built kernel waiting for its reboot holds a root-only roll.** A kernel that is only published holds nothing, since discovery publishes kernels hourly.
+- **Until release B is live, a release still goes the old way:** compile probe, tag, publish, `cixctl schedule run host-roll`. Never hostbuild cix to deploy it after B, and never install a release into `cix-root` by hand.
 
 ## The installer ISO's tools come from the iso-builder image
 

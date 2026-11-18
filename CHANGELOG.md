@@ -6,6 +6,22 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A cix release is a publish, release A: the readers move to the images (ADR-0380, 0.2.57-693)
+
+- **Before:**
+  - the assembly ran `mkbootroot` from the cix hostbuild's artifact directory, and `POST /v1/system/iso` read `mkinstalleriso`, `cix-install`, `cix-recover` and `cix-boot.efi` from there too;
+  - a bad root's mark named only its `cix-root` version, so once `cixd` rolls, rejecting a release and then moving anything else in `cix-root` would deploy that release again;
+  - a kernel that was only published, not built, held every root-only roll until the window;
+  - the ISO's disk GUID derived from the running daemon's version while its signature stamped the hostbuild's, which differ whenever a release is built and not running.
+- **Now:**
+  - **The release being sealed seals itself.** The assembly runs `usr/libexec/cix/mkbootroot` from the `cix-root` tree it seals, which the `cixd` output ships, against the running root's loader and libraries.
+  - **The installer tools come from `iso-builder`.** They are the `cix-installer-tools` output, under `usr/libexec/cix/`. An ISO build answers 409 unless they are the release `cix-root`'s `cixd` is, and both the disk GUID and the signature take that release.
+  - **A rejected release stays off.** Each slot, the attempt and the bad mark also record the `cixd` version (`root-slots.json`'s `a_cixd`, `b_cixd`, `attempt_cixd`, `bad_cixd`, absent from an older record). A `cix-root` version still holding the bad `cixd` is not deployed by a root-only roll, and a scheduled roll stops before staging it, with `held: cix-root X (cixd N) holds the root marked bad`. Running the roll by hand clears it, as before. When the other slot is confirmed running the same `cixd`, only the version stays bad.
+  - **A published kernel holds nothing.** A root-only roll waits only for an installed kernel that is not the running one.
+  - `GET /v1/system/boot` gains `root_image_failed_cixd`, and `cixctl boot` prints it.
+- **The recipe** adds the new paths beside the main package's six copies, which 692's hostbuild still reads to deploy this release. Release B removes them and the bridge.
+- **Gates:** `test_rootslot` covers the `cixd` fields, a shared `cixd` across slots and a record without them; `test_rootslot_verdict` covers a rejected `cixd` in a moved `cix-root`.
+
 ### A roll that finds a root-only roll in progress is owed, not lost (#694, 0.2.57-692)
 
 - **Before:** the 03:00 roll, or a hand-run one, that found a root-only roll (ADR-0379) in progress answered "already in progress". The scheduler records a run once per window, so that night's kernel or cix roll was lost until the next one.

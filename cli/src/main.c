@@ -913,9 +913,14 @@ static void fmt_boot(const struct json_value *v)
 	{
 		const char *root = json_str_field(v, "root_image_version");
 		const char *failed = json_str_field(v, "root_image_failed");
+		const char *failed_cixd = json_str_field(v, "root_image_failed_cixd");
 
 		printf("root:    cix-root %s\n", root != NULL ? root : "(unknown)");
-		if (failed != NULL)
+		if (failed != NULL && failed_cixd != NULL)
+			printf("failed:  cix-root %s (cixd %s) did not deploy; held until cixd moves or "
+			       "the roll is run by hand\n",
+			       failed, failed_cixd);
+		else if (failed != NULL)
 			printf("failed:  cix-root %s did not deploy; not tried again until cix-root "
 			       "moves\n",
 			       failed);

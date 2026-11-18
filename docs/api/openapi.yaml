@@ -1292,7 +1292,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [build_version, build_time, slot, kernel_version, platform_devices, root_image_version, root_image_failed]
+                required: [build_version, build_time, slot, kernel_version, platform_devices, root_image_version, root_image_failed, root_image_failed_cixd]
                 properties:
                   root_image_version:
                     type: [string, "null"]
@@ -1311,6 +1311,17 @@ paths:
                       The `cix-root` version whose switch or boot failed
                       (ADR-0379), which is not tried again until
                       `cix-root` moves to another version; null for none.
+                  root_image_failed_cixd:
+                    type: [string, "null"]
+                    description: >
+                      The `cixd` version the failed version held, or the
+                      release an operator left with `boot-next`
+                      (ADR-0380). A `cix-root` version that still holds
+                      it is not deployed either, whatever else moved in
+                      it, and a scheduled roll does not stage it: a
+                      rejected release stays off until `cixd` moves or the
+                      roll is run by hand. Null for none, or when the
+                      mark predates ADR-0380.
                   build_version:
                     type: string
                     description: >
@@ -6800,10 +6811,11 @@ paths:
         operator had to run by hand; this makes ISO assembly a real
         daemon capability, forked and pidfd-tracked exactly like POST
         /pkg/hostbuild's own async jobs (the response is 202, poll GET
-        /system/iso for the result). Reuses whatever the most recent
-        "cix"/"kernel" hostbuild rounds already harvested, and the
-        ISO toolchain the iso-builder image holds (ADR-0358) -- it does
-        not trigger any of them itself.
+        /system/iso for the result). Reuses the most recent "kernel"
+        hostbuild, the assembled root, and the ISO toolchain the
+        iso-builder image holds (ADR-0358), which includes cix's own
+        installer tools, the cix-installer-tools output (ADR-0380) --
+        it does not trigger any of them itself.
 
 
         The media carries a **package seed** (issue #135, ADR-0229):
@@ -6889,8 +6901,9 @@ paths:
         "400":
           description: >
             Invalid JSON body, or a real precondition is missing --
-            the "cix"/"kernel" hostbuild artifacts, an iso-builder
-            image with a current version (ADR-0358), the
+            the "kernel" hostbuild artifact, an iso-builder image with a
+            current version (ADR-0358) holding the cix-installer-tools
+            output (ADR-0380), the
             operator-provided signing key pair, or a package seed that
             cannot be staged at all (a seed package installed nowhere,
             or no installed version of one carrying either a cached
@@ -6906,7 +6919,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: An ISO build is already in progress
+          description: >
+            An ISO build is already in progress; or the installer tools
+            and the root are different releases: iso-builder's
+            cix-installer-tools and cix-root's cixd differ, or one is not
+            installed (ADR-0380). The two images each follow cix, so
+            they differ while one converges; retry once both settle.
           content:
             application/json:
               schema:

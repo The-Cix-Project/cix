@@ -2016,6 +2016,9 @@ static char g_bootroot_assembly_refused[320];
  * image_path is.
  */
 static char g_bootroot_assembly_root_version[IMAGE_VERSION_MAX];
+/* ADR-0380: the cixd version cix-root held when that assembly started
+ * (""  when it held none), recorded with the slot and any bad mark. */
+static char g_bootroot_assembly_root_cixd[ROOTSLOT_CIXD_MAX];
 /*
  * ADR-0371 phase 3a: what an assembly that has been asked for is waiting
  * for before it can start -- cix-root to be brought to this host's
@@ -3496,6 +3499,12 @@ static void handle_system_boot(int fd)
 		jw_key(&w, "root_image_failed");
 		if (bad[0] != '\0')
 			jw_str(&w, bad);
+		else
+			jw_null(&w);
+		/* ADR-0380: the release that mark holds off. */
+		jw_key(&w, "root_image_failed_cixd");
+		if (rootslot_bad_cixd()[0] != '\0')
+			jw_str(&w, rootslot_bad_cixd());
 		else
 			jw_null(&w);
 	}
@@ -10544,12 +10553,25 @@ static void register_bootroot_assemble_pidfd(pid_t pid, int pidfd)
 #define ROOT_IMAGE "cix-root"
 
 /*
+ * ADR-0380: where cix's own host tools sit in an image, relative to its
+ * rootfs. The cixd output ships mkbootroot there, so the cix-root version
+ * being sealed carries the tool that seals it; the cix-installer-tools
+ * output ships the installer's tools, which the iso-builder image holds.
+ */
+#define CIX_LIBEXEC "usr/libexec/cix"
+#define ROOT_MKBOOTROOT_PATH CIX_LIBEXEC "/mkbootroot"
+
+/*
  * ADR-0358: the image holding the ISO toolchain (grub, shim, mokutil,
  * sbsigntools, xorriso, mtools, dosfstools and their libraries). Its
  * current version's rootfs is the tools root POST /v1/system/iso hands
- * mkinstalleriso, as ROOT_IMAGE's is mkbootroot's tree.
+ * mkinstalleriso, as ROOT_IMAGE's is mkbootroot's tree. Since ADR-0380 it
+ * also holds cix's installer tools (the cix-installer-tools output),
+ * which must be the release cix-root's cixd is.
  */
 #define ISO_BUILDER_IMAGE "iso-builder"
+#define ISO_INSTALLER_TOOLS "cix-installer-tools"
+#define ISO_TOOLS_FROM "the " ISO_INSTALLER_TOOLS " output, in the " ISO_BUILDER_IMAGE " image"
 
 /*
  * ADR-0057, ADR-0371: when a hostbuild named "cix" completes, the
@@ -10930,23 +10952,28 @@ static void spawn_cix_bootroot_assembly(void)
 	int pidfd;
 	int output_pipe[2];
 
+	if (image_current_version(ROOT_IMAGE, root_version, sizeof(root_version)) != IMAGE_OK)
+		return; /* root_image_behind() refused this a moment ago */
+	image_version_rootfs_path(ROOT_IMAGE, root_version, root_tree, sizeof(root_tree));
 	/*
-	 * ADR-0057: this round's own mkbootroot, never an earlier one -- the
-	 * tool that seals a release's root is that release's.
+	 * ADR-0057: the release being sealed seals itself, never an earlier
+	 * one -- so the mkbootroot in the very tree it seals, which the cixd
+	 * output ships (ADR-0380). It runs as the hostbuild's copy did:
+	 * exec'd from its path against the running root's own loader and
+	 * libraries, never the tree's, since the running loader with the
+	 * tree's libc.so.6 would mix two glibc builds.
 	 */
-	snprintf(mkbootroot_bin, sizeof(mkbootroot_bin), "%s/cix/mkbootroot", ARTIFACTS_DIR);
+	snprintf(mkbootroot_bin, sizeof(mkbootroot_bin), "%s/%s", root_tree, ROOT_MKBOOTROOT_PATH);
 	if (stat(mkbootroot_bin, &st) != 0 || !S_ISREG(st.st_mode)) {
 		snprintf(g_bootroot_assembly_refused, sizeof(g_bootroot_assembly_refused),
-		         "%s is missing: the cix hostbuild ships the mkbootroot that seals its root",
-		         mkbootroot_bin);
+		         "%s version %.12s has no /%s: the cixd output ships the mkbootroot that seals "
+		         "its root (ADR-0380)",
+		         ROOT_IMAGE, root_version, ROOT_MKBOOTROOT_PATH);
 		logstore_write("cixd", "error", "cix bootroot assembly: not started -- %s",
 		               g_bootroot_assembly_refused);
 		events_announce(EV_getSystemAssembly); /* ADR-0339 */
 		return;
 	}
-	if (image_current_version(ROOT_IMAGE, root_version, sizeof(root_version)) != IMAGE_OK)
-		return; /* root_image_behind() refused this a moment ago */
-	image_version_rootfs_path(ROOT_IMAGE, root_version, root_tree, sizeof(root_tree));
 	/*
 	 * BOOTROOT_DIR, not the artifact directory (#178): these are build
 	 * OUTPUT, and the artifact directory is packaged wholesale when it is
@@ -10964,6 +10991,9 @@ static void spawn_cix_bootroot_assembly(void)
 	         "%s/lib/modules", root_tree);
 	snprintf(g_bootroot_assembly_root_version, sizeof(g_bootroot_assembly_root_version), "%s",
 	         root_version);
+	if (pkg_installed_version("cixd", ROOT_IMAGE, g_bootroot_assembly_root_cixd,
+	                          sizeof(g_bootroot_assembly_root_cixd)) != 0)
+		g_bootroot_assembly_root_cixd[0] = '\0';
 	logstore_write("cixd", "info", "cix bootroot assembly: sealing %s version %s", ROOT_IMAGE,
 	               root_version);
 
@@ -11412,7 +11442,8 @@ static void hostroll_assembly_done(int ok)
 		 */
 		if (g_hostroll.root_only && g_bootroot_assembly_refused[0] == '\0' &&
 		    g_bootroot_assembly_root_version[0] != '\0') {
-			rootslot_mark_bad(g_bootroot_assembly_root_version);
+			rootslot_mark_bad(g_bootroot_assembly_root_version,
+			                  g_bootroot_assembly_root_cixd);
 			hostroll_say("warn", 0,
 			             "root: mkbootroot could not build a root from cix-root %.12s, which is "
 			             "not tried again until cix-root moves or a roll is run by hand "
@@ -11424,6 +11455,26 @@ static void hostroll_assembly_done(int ok)
 		hostroll_stop("error", "the root assembly failed -- nothing was staged%s%s",
 		              g_bootroot_assembly_refused[0] != '\0' ? ": " : "",
 		              g_bootroot_assembly_refused);
+		return;
+	}
+	/*
+	 * ADR-0380: a roll never stages a root that holds what was marked bad,
+	 * the version or its cixd. A root-only roll cannot get here with one
+	 * (root_verdict() refused it); this is the window's roll, which
+	 * assembles whatever cix-root holds. Running the roll by hand clears
+	 * the mark first, so this is the scheduled roll being held.
+	 */
+	if (rootslot_bad_applies(g_bootroot_assembly_root_version, rootslot_bad(),
+	                         g_bootroot_assembly_root_cixd, rootslot_bad_cixd())) {
+		char held[128];
+
+		snprintf(held, sizeof(held), "cix-root %.12s (cixd %s)", g_bootroot_assembly_root_version,
+		         g_bootroot_assembly_root_cixd[0] != '\0' ? g_bootroot_assembly_root_cixd
+		                                                  : "unknown");
+		hostroll_stop("warn",
+		              "held: %s holds the root marked bad, so nothing was staged -- publish a "
+		              "newer cix, or run the roll by hand to deploy it anyway%s (ADR-0380)",
+		              held, "");
 		return;
 	}
 	if (g_hostroll.stage_kernel)
@@ -11460,7 +11511,7 @@ static void hostroll_staged(int status, const char *slot, int updated_kernel, co
 		return;
 	}
 	/* ADR-0379: the slot holds the root this roll's own assembly sealed. */
-	rootslot_set(slot, g_bootroot_assembly_root_version);
+	rootslot_set(slot, g_bootroot_assembly_root_version, g_bootroot_assembly_root_cixd);
 	if (g_hostroll.reboot_by != 0 && now > g_hostroll.reboot_by) {
 		hostroll_stop("warn",
 		              "staged on slot %s, but the window has closed -- the host reboots into it "
@@ -11553,7 +11604,7 @@ static void hostroll_switch_tick(void)
 		 * reboot into it is resolved like any other.
 		 */
 		if (root_only) {
-			rootslot_mark_bad(target);
+			rootslot_mark_bad(target, rootslot_cixd(slot));
 			hostroll_say("error", 0,
 			             "root: the in-place switch to slot %s did not happen, so cix-root "
 			             "%.12s is not tried again until cix-root moves or a roll is run by "
@@ -11630,15 +11681,24 @@ static enum rootslot_verdict root_verdict(char *running, size_t running_size, ch
                                           size_t current_size)
 {
 	enum rootslot_verdict v;
+	char cixd[ROOTSLOT_CIXD_MAX];
 
 	running[0] = current[0] = '\0';
 	if (!g_fatal_note_on || g_slot == NULL)
 		return ROOTSLOT_CURRENT;
 	if (image_current_version(ROOT_IMAGE, current, current_size) != IMAGE_OK)
 		current[0] = '\0';
+	/* ADR-0380: the cixd in it, for a mark that names a release */
+	if (pkg_installed_version("cixd", ROOT_IMAGE, cixd, sizeof(cixd)) != 0)
+		cixd[0] = '\0';
 	snprintf(running, running_size, "%s", rootslot_version(g_slot));
-	v = rootslot_verdict(running, current, pkg_image_settled(ROOT_IMAGE), rootslot_bad());
-	if (rootslot_bad()[0] != '\0' && current[0] != '\0' && strcmp(rootslot_bad(), current) != 0)
+	v = rootslot_verdict(running, current, pkg_image_settled(ROOT_IMAGE), rootslot_bad(), cixd,
+	                     rootslot_bad_cixd());
+	/* Forgotten only once cix-root has moved past the version and its
+	 * cixd, and only for a settled image whose cixd is known to be read. */
+	if ((rootslot_bad()[0] != '\0' || rootslot_bad_cixd()[0] != '\0') && current[0] != '\0' &&
+	    pkg_image_settled(ROOT_IMAGE) &&
+	    !rootslot_bad_applies(current, rootslot_bad(), cixd, rootslot_bad_cixd()))
 		rootslot_clear_bad();
 	return v;
 }
@@ -11707,9 +11767,11 @@ static int hostroll_decide(long window_end, char *reason, size_t reason_size)
  * ADR-0379 decision 5, the owner's "as soon as it settles": after every
  * package job, when cix-root has settled at a version the running root
  * was not sealed from, start a root-only roll. It never hostbuilds, so it
- * starts only when the kernel and cix are both current and running; a
- * part that is behind waits for the window or a hand-run roll, whose
- * roll deploys the root too. It assembles, stages the root alone, and
+ * starts only when the installed kernel is the running one and cix is
+ * current and running; a part that is behind waits for the window or a
+ * hand-run roll, whose roll deploys the root too. A kernel only
+ * published, not built, holds nothing (ADR-0380). It assembles, stages
+ * the root alone, and
  * switches in place; hostroll_switch_tick() never reboots for it.
  */
 /*
@@ -11774,8 +11836,16 @@ static void rootroll_tick(void)
 		return;
 	if (strcmp(g_rootroll_deferred, current) == 0 && (long)time(NULL) < g_rootroll_deferred_until)
 		return;
-	if (hostroll_parts_read(&p) != 0 || p.kernel_behind || p.cix_behind ||
-	    p.kernel_not_running || p.cix_not_running)
+	/*
+	 * ADR-0380 decision 4: a kernel that is published but not built holds
+	 * nothing, since cix-root's modules are still the running kernel's;
+	 * discovery publishes kernels hourly, and holding on that kept a
+	 * release for the window whenever one was out. A built kernel waiting
+	 * for its reboot does hold: cix-root carries its modules, which the
+	 * running kernel cannot load.
+	 */
+	if (hostroll_parts_read(&p) != 0 || p.cix_behind || p.kernel_not_running ||
+	    p.cix_not_running)
 		return;
 	memset(&g_hostroll, 0, sizeof(g_hostroll));
 	g_hostroll.root_only = 1;
@@ -11987,6 +12057,9 @@ static char g_iso_signature_path[PATH_MAX];
  * signature, so it is a signed claim rather than an editable label.
  */
 static char g_iso_built_version[64];
+/* ADR-0380: the release the ISO being built is, set by iso_build_start()
+ * from the installer tools it checked against cix-root's cixd. */
+static char g_iso_cix_version[PKG_VERSION_MAX];
 
 
 /*
@@ -12857,10 +12930,10 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 		const char *what;
 		int whole;
 	} required[] = {
-	    {mkinstalleriso_bin, "mkinstalleriso (from a \"cix\" hostbuild)", 0},
-	    {cix_install_bin, "cix-install (from a \"cix\" hostbuild)", 0},
-	    {cix_recover_bin, "cix-recover (from a \"cix\" hostbuild, ADR-0146)", 0},
-	    {cix_boot_bin, "cix-boot.efi (from a \"cix\" hostbuild, ADR-0215)", 0},
+	    {mkinstalleriso_bin, "mkinstalleriso (" ISO_TOOLS_FROM ")", 0},
+	    {cix_install_bin, "cix-install (" ISO_TOOLS_FROM ")", 0},
+	    {cix_recover_bin, "cix-recover (" ISO_TOOLS_FROM ", ADR-0146)", 0},
+	    {cix_boot_bin, "cix-boot.efi (" ISO_TOOLS_FROM ", ADR-0215)", 0},
 	    {bzimage_path, "bzImage (from a \"kernel\" hostbuild)", 0},
 	    {squashfs_path, "cixd-root.squashfs (assembled after a \"cix\" hostbuild)", 1},
 	    {isotools_root, "the " ISO_BUILDER_IMAGE " image's rootfs (ADR-0358)", 0},
@@ -12870,13 +12943,6 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	};
 	size_t i;
 
-	snprintf(mkinstalleriso_bin, sizeof(mkinstalleriso_bin), "%s/cix/mkinstalleriso",
-	         ARTIFACTS_DIR);
-	snprintf(cix_install_bin, sizeof(cix_install_bin), "%s/cix/cix-install",
-	         ARTIFACTS_DIR);
-	snprintf(cix_recover_bin, sizeof(cix_recover_bin), "%s/cix/cix-recover",
-	         ARTIFACTS_DIR);
-	snprintf(cix_boot_bin, sizeof(cix_boot_bin), "%s/cix/cix-boot.efi", ARTIFACTS_DIR);
 	snprintf(bzimage_path, sizeof(bzimage_path), "%s/kernel/bzImage", ARTIFACTS_DIR);
 	snprintf(squashfs_path, sizeof(squashfs_path), "%s/cixd-root.squashfs", BOOTROOT_DIR);
 	/* ADR-0358: the image's current version, resolved now; the version
@@ -12891,6 +12957,40 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	}
 	image_version_rootfs_path(ISO_BUILDER_IMAGE, iso_tools_version, isotools_root,
 	                          sizeof(isotools_root));
+	/*
+	 * ADR-0380: cix's installer tools are in that same tree, from the
+	 * cix-installer-tools output, and must be the release cix-root's cixd
+	 * is: the installer writes that root. One hostbuild used to make them
+	 * equal; now two images each follow cix, so they can briefly differ
+	 * while one converges, and an ISO is not built from the pair then.
+	 */
+	snprintf(mkinstalleriso_bin, sizeof(mkinstalleriso_bin), "%s/%s/mkinstalleriso",
+	         isotools_root, CIX_LIBEXEC);
+	snprintf(cix_install_bin, sizeof(cix_install_bin), "%s/%s/cix-install", isotools_root,
+	         CIX_LIBEXEC);
+	snprintf(cix_recover_bin, sizeof(cix_recover_bin), "%s/%s/cix-recover", isotools_root,
+	         CIX_LIBEXEC);
+	snprintf(cix_boot_bin, sizeof(cix_boot_bin), "%s/%s/cix-boot.efi", isotools_root,
+	         CIX_LIBEXEC);
+	{
+		char tools[PKG_VERSION_MAX], cixd[PKG_VERSION_MAX];
+
+		if (pkg_installed_version(ISO_INSTALLER_TOOLS, ISO_BUILDER_IMAGE, tools,
+		                          sizeof(tools)) != 0)
+			tools[0] = '\0';
+		if (pkg_installed_version("cixd", ROOT_IMAGE, cixd, sizeof(cixd)) != 0)
+			cixd[0] = '\0';
+		if (tools[0] == '\0' || cixd[0] == '\0' || strcmp(tools, cixd) != 0) {
+			snprintf(err_msg, err_msg_size,
+			         "the installer tools and the root are different releases: %s has %s %s "
+			         "and %s has cixd %s -- wait for both images to settle (ADR-0380)",
+			         ISO_BUILDER_IMAGE, ISO_INSTALLER_TOOLS,
+			         tools[0] != '\0' ? tools : "not installed", ROOT_IMAGE,
+			         cixd[0] != '\0' ? cixd : "not installed");
+			return -2;
+		}
+		snprintf(g_iso_cix_version, sizeof(g_iso_cix_version), "%s", tools);
+	}
 	snprintf(signing_key, sizeof(signing_key), "%s/cix-signing.key", SIGNING_KEYS_DIR);
 	snprintf(signing_cert_pem, sizeof(signing_cert_pem), "%s/cix-signing.crt", SIGNING_KEYS_DIR);
 	snprintf(signing_cert_der, sizeof(signing_cert_der), "%s/cix-signing.cer", SIGNING_KEYS_DIR);
@@ -12993,15 +13093,18 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	 * -- exported to cix-xorriso, and turned into the PARTUUID it
 	 * writes into grub.cfg -- so the two cannot disagree.
 	 *
-	 * CIX_BUILD_VERSION is the same string g_iso_built_version records
-	 * for the finished media, so an ISO's PARTUUID and the release it
-	 * reports are derived from one fact.
+	 * g_iso_cix_version is the release the ISO's tools and root are
+	 * (ADR-0380), and the same string its signature stamps, so an ISO's
+	 * PARTUUID and the release it reports are derived from one fact.
+	 * This used to be CIX_BUILD_VERSION while the signature stamped the
+	 * cix hostbuild's version, which differ whenever a release is built
+	 * and not yet running.
 	 */
-	if (iso_disk_guid_derive(CIX_BUILD_VERSION, iso_disk_guid, sizeof(iso_disk_guid)) != 0) {
+	if (iso_disk_guid_derive(g_iso_cix_version, iso_disk_guid, sizeof(iso_disk_guid)) != 0) {
 		snprintf(err_msg, err_msg_size,
 		         "could not derive the installer ISO's GPT disk GUID from "
-		         "build version \"%s\"",
-		         CIX_BUILD_VERSION);
+		         "release \"%s\"",
+		         g_iso_cix_version);
 		return -1;
 	}
 	argv[MKISO_ARG_DISK_GUID] = iso_disk_guid;
@@ -13335,34 +13438,17 @@ static void sign_finished_iso(void)
 	 * these bytes are, not merely that Cix signed something.
 	 */
 	/*
-	 * #434: stamp the version the ISO's ARTIFACTS were built as, not
-	 * CIX_BUILD_VERSION (the running daemon). The ISO is assembled from
-	 * ARTIFACTS_DIR/cix (mkinstalleriso) and ARTIFACTS_DIR/kernel
-	 * (bzImage) -- hostbuild output that is routinely NEWER than the
-	 * running daemon on any box that has built a release it has not yet
-	 * deployed. Stamping the daemon's version made built_version and the
-	 * published name claim bytes the ISO does not contain, publishable
-	 * straight over a name already in the cache (measured on
-	 * 192.168.15.95, 2026-09-12: running v2.57.127, ISO assembled from
-	 * v2.57.129 artifacts, stamped v2.57.127). pkg_hostbuild_artifact_info
-	 * ("cix") returns the version ARTIFACTS_DIR/cix was harvested at --
-	 * the ISO's own true version. The fallback to CIX_BUILD_VERSION
-	 * covers only the absence of a cix hostbuild entry, where the ISO
-	 * build would already have failed its own file checks (iso_build
-	 * _start reads ARTIFACTS_DIR/cix/mkinstalleriso), so it is a belt,
-	 * not a load-bearing path.
+	 * #434: stamp the release the ISO's contents are, not
+	 * CIX_BUILD_VERSION (the running daemon), which is routinely older
+	 * than a built release not yet deployed. Stamping the daemon's
+	 * version made built_version and the published name claim bytes the
+	 * ISO does not contain (measured on 192.168.15.95, 2026-09-12:
+	 * running v2.57.127, ISO assembled from v2.57.129 artifacts, stamped
+	 * v2.57.127). Since ADR-0380 that release is g_iso_cix_version: the
+	 * cix-installer-tools version iso_build_start() checked equal to
+	 * cix-root's cixd.
 	 */
-	{
-		char cix_artifact_version[64];
-		char cix_artifact_dir[PATH_MAX];
-		const char *iso_version = CIX_BUILD_VERSION;
-
-		if (pkg_hostbuild_artifact_info("cix", cix_artifact_version,
-		                                sizeof(cix_artifact_version), cix_artifact_dir,
-		                                sizeof(cix_artifact_dir)) == PKG_OK)
-			iso_version = cix_artifact_version;
-		snprintf(comment, sizeof(comment), "cix installer iso, %s", iso_version);
-	}
+	snprintf(comment, sizeof(comment), "cix installer iso, %s", g_iso_cix_version);
 	rc = releasekey_sign_file(ISO_OUTPUT_PATH, sig_path, comment);
 	if (rc != RELEASEKEY_OK) {
 		logstore_write("cixd", "error", "iso assembly: signing failed: %s",
@@ -14643,6 +14729,7 @@ static void handle_system_iso_post(int fd, const char *body, size_t body_len)
 	const char *interface = NULL;
 	char err_msg[256];
 	struct json_writer w;
+	int rc;
 
 	if (body != NULL && body_len > 0) {
 		root = json_parse(body, body_len);
@@ -14663,10 +14750,16 @@ static void handle_system_iso_post(int fd, const char *body, size_t body_len)
 		respond_error(fd, 409, "Conflict", "an ISO build is already in progress");
 		return;
 	}
-	if (iso_build_start(disk, ip, prefix, gateway, interface, err_msg, sizeof(err_msg)) != 0) {
+	rc = iso_build_start(disk, ip, prefix, gateway, interface, err_msg, sizeof(err_msg));
+	if (rc != 0) {
 		if (root != NULL)
 			json_free(root);
-		respond_error(fd, 400, "Bad Request", err_msg);
+		/* -2: the installer tools and the root are different releases,
+		 * which converging images resolve (ADR-0380) */
+		if (rc == -2)
+			respond_error(fd, 409, "Conflict", err_msg);
+		else
+			respond_error(fd, 400, "Bad Request", err_msg);
 		return;
 	}
 	if (root != NULL)
