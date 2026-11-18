@@ -34,7 +34,7 @@
  *                   until this time (#694). The root-only roll's own switch
  *                   is what writes the record, so without this the roll it
  *                   held off would be lost. Absent when none is owed, and
- *                   before 0.2.57-693.
+ *                   before 0.2.57-692.
  *   procfuse_pid    procfuse's server, which survives the exec; 0 for none
  *   procfuse_load_fd  the memfd holding its load page (ADR-0349), passed
  *                   across execve; -1 for none

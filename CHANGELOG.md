@@ -6,7 +6,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
-### A roll that finds a root-only roll in progress is owed, not lost (#694, 0.2.57-693)
+### A roll that finds a root-only roll in progress is owed, not lost (#694, 0.2.57-692)
 
 - **Before:** the 03:00 roll, or a hand-run one, that found a root-only roll (ADR-0379) in progress answered "already in progress". The scheduler records a run once per window, so that night's kernel or cix roll was lost until the next one.
 - **Now:**

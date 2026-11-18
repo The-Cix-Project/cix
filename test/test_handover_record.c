@@ -231,7 +231,7 @@ static void refusals(const char *dir)
 	CHECK(handover_read(path, &r, err, sizeof(err)) == 0 && r.count == 0 && r.kmodscan == NULL &&
 	          r.kmsg_seq == -1 && r.roll_owed_until == 0,
 	      "an unknown key must be ignored, and a record with no kmodscan (a 664 or 665 "
-	      "writer), no kmsg_seq (before 687) or no roll_owed_until (before 693) must read, "
+	      "writer), no kmsg_seq (before 687) or no roll_owed_until (before 692) must read, "
 	      "got: %s",
 	      err);
 	handover_record_free(&r);
