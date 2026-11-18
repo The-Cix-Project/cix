@@ -28,6 +28,16 @@ void rootslot_load(const char *path);
 /* Called after every change that was written; NULL for none. */
 void rootslot_set_on_change(void (*on_change)(void));
 
+/*
+ * ADR-0380: the cixd version this process is (CIX_BUILD_VERSION, which
+ * is the cixd package's version string). A bad mark never names it: the
+ * daemon recording the mark is running that cixd, so it is not what
+ * failed. Without this, a failed root-only roll that moved only a
+ * library, where both roots hold the running cixd, would hold every
+ * later root until the next release.
+ */
+void rootslot_set_running_cixd(const char *cixd);
+
 /* The cix-root version slot holds; "" when unknown. Never NULL. */
 const char *rootslot_version(const char *slot);
 

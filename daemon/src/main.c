@@ -41448,6 +41448,7 @@ static int cixd_main(int argc, char **argv)
 
 		rootslot_set_on_change(rootslot_announce);
 		rootslot_load(ROOTSLOT_PATH);
+		rootslot_set_running_cixd(CIX_BUILD_VERSION); /* ADR-0380 */
 		switch (rootslot_resolve_start(g_slot, bad, sizeof(bad))) {
 		case ROOTSLOT_START_FAILED:
 			logstore_write("system", "warn",

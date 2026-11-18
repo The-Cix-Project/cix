@@ -29,7 +29,16 @@ static char g_attempt_version[IMAGE_VERSION_MAX];
 static char g_attempt_cixd[ROOTSLOT_CIXD_MAX];
 static char g_bad[IMAGE_VERSION_MAX];
 static char g_bad_cixd[ROOTSLOT_CIXD_MAX];
+static char g_running_cixd[ROOTSLOT_CIXD_MAX];
 static void (*g_on_change)(void);
+
+/* ADR-0380: the cixd a bad mark records, which is never the running one. */
+static void set_bad_cixd(const char *cixd)
+{
+	if (cixd == NULL || (g_running_cixd[0] != '\0' && strcmp(cixd, g_running_cixd) == 0))
+		cixd = "";
+	snprintf(g_bad_cixd, sizeof(g_bad_cixd), "%s", cixd);
+}
 
 static char *slot_field(const char *slot)
 {
@@ -128,6 +137,18 @@ void rootslot_set_on_change(void (*on_change)(void))
 	g_on_change = on_change;
 }
 
+void rootslot_set_running_cixd(const char *cixd)
+{
+	snprintf(g_running_cixd, sizeof(g_running_cixd), "%s", cixd != NULL ? cixd : "");
+	/* A mark read back from the file can name it too: a refused switch
+	 * recorded under an older process that did not know this rule. */
+	if (g_bad_cixd[0] != '\0' && g_running_cixd[0] != '\0' &&
+	    strcmp(g_bad_cixd, g_running_cixd) == 0) {
+		g_bad_cixd[0] = '\0';
+		save();
+	}
+}
+
 const char *rootslot_version(const char *slot)
 {
 	const char *v = slot_field(slot);
@@ -195,7 +216,7 @@ enum rootslot_start rootslot_resolve_start(const char *running_slot, char *versi
 		/* The switch or boot into the attempted slot failed, and the
 		 * host runs the other one. */
 		snprintf(g_bad, sizeof(g_bad), "%s", g_attempt_version);
-		snprintf(g_bad_cixd, sizeof(g_bad_cixd), "%s", g_attempt_cixd);
+		set_bad_cixd(g_attempt_cixd);
 		g_attempt_slot[0] = g_attempt_version[0] = g_attempt_cixd[0] = '\0';
 		if (version != NULL && version_size > 0)
 			snprintf(version, version_size, "%s", g_bad);
@@ -211,7 +232,7 @@ enum rootslot_start rootslot_resolve_start(const char *running_slot, char *versi
 		if (left[0] == '\0')
 			return ROOTSLOT_START_SAME;
 		snprintf(g_bad, sizeof(g_bad), "%s", left);
-		snprintf(g_bad_cixd, sizeof(g_bad_cixd), "%s", rootslot_cixd(g_confirmed_slot));
+		set_bad_cixd(rootslot_cixd(g_confirmed_slot));
 		if (version != NULL && version_size > 0)
 			snprintf(version, version_size, "%s", g_bad);
 		save();
@@ -258,12 +279,12 @@ void rootslot_mark_bad(const char *version, const char *cixd)
 {
 	if (version == NULL || version[0] == '\0')
 		return;
-	if (cixd == NULL)
+	if (cixd == NULL || (g_running_cixd[0] != '\0' && strcmp(cixd, g_running_cixd) == 0))
 		cixd = "";
 	if (strcmp(g_bad, version) == 0 && strcmp(g_bad_cixd, cixd) == 0)
 		return;
 	snprintf(g_bad, sizeof(g_bad), "%s", version);
-	snprintf(g_bad_cixd, sizeof(g_bad_cixd), "%s", cixd);
+	set_bad_cixd(cixd);
 	save();
 }
 

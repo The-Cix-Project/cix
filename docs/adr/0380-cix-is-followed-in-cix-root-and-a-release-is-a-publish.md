@@ -36,6 +36,7 @@ The kernel is different. A new kernel needs a reboot, which only the window may 
    - The `iso-builder` image's recipe declares the output, as ADR-0358 says of every tool the ISO needs, and `POST /v1/system/iso` reads them from that image's current tree.
    - **The installer and the root must be one release.** An ISO build refuses with a 409 when `iso-builder`'s `cix-installer-tools` and `cix-root`'s `cixd` are different versions, naming both. Today one hostbuild guarantees it.
    - **The ISO's release is that version,** for its signature and its disk GUID alike. They used to derive from two different releases: the GUID from the running daemon, the signature from the hostbuild.
+   - **Release A compares with `cix-root`'s installed `cixd`,** which is not quite the right comparator: the media carries the last *assembled* root, and after B that can lag `cix-root` (with `root: window`, or a deferred roll). Release B compares with the release the assembled root itself names, so an ISO can never stamp N+1 on an N root (#434's failure).
 3. **`cix-root`'s recipe makes `cixd` and `cixctl` rolling.**
    - The bridge's cix rows go: `g_root_outputs[]` keeps only `kernel-modules`, and `root_image_behind()` asks only about the kernel.
    - The two are separate installs. The assembly refuses a `cix-root` whose `cixd` and `cixctl` are different versions, and names them. The image is not settled while either is queued (ADR-0374), so this is a guard, not a wait.
@@ -45,7 +46,7 @@ The kernel is different. A new kernel needs a reboot, which only the window may 
 5. **A rejected release stays off.**
    - ADR-0379 marks a `cix-root` version bad, and any other move clears the mark. With `cixd` rolling, that means rejecting release N and then publishing anything else, cbs say, would deploy N again.
    - So a bad or rejected root also records the `cixd` version it held. A `cix-root` whose `cixd` is that version is not deployed, whatever else moved, until `cixd` moves or an operator runs the roll by hand. That holds for the window's roll too, which assembles whatever `cix-root` holds: it stops before staging such a root.
-   - When the slot the host is running confirms with that same `cixd`, the `cixd` evidently works and only the version stays bad. Both slots hold one `cixd` after a root-only roll that moved a library.
+   - **A bad mark never names the `cixd` the recording daemon runs:** that `cixd` is evidently not what failed. Both slots hold one `cixd` after a root-only roll that moved a library, so without this a failed switch of such a roll, or a boot that fell back from it, would blame the running release and hold every later root until the next one. For the same reason, when the running slot confirms with the marked `cixd`, only the version stays bad.
    - **The operator's rollback is two steps:** `boot-next` to the previous slot, and nothing more. The rejection rule holds the release off, and the next release, or a hand-run roll, brings a root back. CLAUDE.md's #589 entry, where a published bad release redeployed itself unattended, is the failure this prevents.
 6. **No second route.** Never hostbuild cix to deploy it, and never install a release into `cix-root` by hand. The main `cix` package keeps nothing a deploy reads.
 

@@ -180,6 +180,50 @@ int main(void)
 	CHECK(rootslot_bad()[0] == '\0' && rootslot_bad_cixd()[0] == '\0',
 	      "clear_bad clears both");
 
+	/*
+	 * ADR-0380: a bad mark never names the cixd this process runs. A
+	 * root-only roll that moved a library failed its switch: both roots
+	 * hold the running cixd, which is not what failed.
+	 */
+	rootslot_set_running_cixd("c7");
+	rootslot_set("a", "v7", "c7");
+	rootslot_set("b", "v8", "c7");
+	rootslot_confirmed("a");
+	rootslot_attempt("b");
+	rootslot_mark_bad("v8", "c7");
+	CHECK(strcmp(rootslot_bad(), "v8") == 0 && rootslot_bad_cixd()[0] == '\0',
+	      "a refused switch with the running cixd marks only the version, got %s / %s",
+	      rootslot_bad(), rootslot_bad_cixd());
+	reload();
+	rootslot_set_running_cixd("c7");
+	CHECK(rootslot_resolve_start("a", bad, sizeof(bad)) == ROOTSLOT_START_FAILED &&
+	          strcmp(rootslot_bad(), "v8") == 0 && rootslot_bad_cixd()[0] == '\0',
+	      "the failed attempt, resolved by a process running its cixd, marks only the "
+	      "version, got %s / %s",
+	      rootslot_bad(), rootslot_bad_cixd());
+	rootslot_mark_bad("v8", "c8");
+	CHECK(strcmp(rootslot_bad_cixd(), "c8") == 0,
+	      "another cixd is still recorded, got %s", rootslot_bad_cixd());
+	rootslot_mark_bad("v8", "c7");
+	reload();
+	CHECK(rootslot_bad_cixd()[0] == '\0', "a mark naming it is not written, got %s",
+	      rootslot_bad_cixd());
+	{
+		FILE *f = fopen(g_path, "w");
+
+		if (f != NULL) {
+			fputs("{\"bad\":\"v8\",\"bad_cixd\":\"c7\"}", f);
+			fclose(f);
+		}
+		reload();
+		rootslot_set_running_cixd("c7");
+		CHECK(strcmp(rootslot_bad(), "v8") == 0 && rootslot_bad_cixd()[0] == '\0',
+		      "a mark read back naming the running cixd forgets the cixd, got %s / %s",
+		      rootslot_bad(), rootslot_bad_cixd());
+	}
+	rootslot_set_running_cixd("");
+	rootslot_clear_bad();
+
 	/* A record written before ADR-0380 has no cixd fields. */
 	{
 		FILE *f = fopen(g_path, "w");
