@@ -549,7 +549,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **An assembly is asked for, then driven** (`bootroot_want()`, `bootroot_drive()`). It starts only when `cix-root` holds the installed `cix` hostbuild's `cixd` and `cixctl` and the `kernel` hostbuild's `kernel-modules` (`root_image_behind()`), and nothing is in flight for it. The daemon installs any it lacks first, as an explicit install that moves the pins. That install is a bridge until `cix` is followed (decision B), not the design. Never start `mkbootroot` around that guard.
 - **681 was the one release that took both forms.** Its `mkbootroot` still took 680's ten arguments, through `test/test_root_tree.c`, so 681 booted a legacy-shape root. 682 (phase 3b) removed that form and `test_mkbootroot_firmware`; its root is the first sealed from cix-root's tree. `test/test_root_tree.c` now serves only the boot tests, which seal a tree built from "/" with the three-argument form.
 
-## A cix release is a publish (in progress: release A)
+## A cix release is a publish (in progress: release A live in 0.2.57-693, B next)
 
 **`cixd` and `cixctl` become rolling entries of `cix-root`, so publishing `cix@N` deploys it: the drain builds it once, `cix-root` moves, and a root-only roll (ADR-0379) switches into it in place. Nothing hostbuilds cix.** That is [ADR-0380](docs/adr/0380-cix-is-followed-in-cix-root-and-a-release-is-a-publish.md), accepted by the owner on 2026-11-18 (*"Accept"*). It finishes ADR-0371's decision B. Two releases get there, each deployed by its predecessor's path: A moves the readers, B drops the bridge, and then `cix-root`'s recipe makes the two entries rolling.
 

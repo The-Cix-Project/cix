@@ -2462,6 +2462,29 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 - **#689 live:** 687 ran its first drain at 11:02:26 (`image gc: set aside 3 version(s)`). At 11:10 `cixctl process ls` showed no cixd child but procfuse and the watchdog. A look logs nothing when it finds the drops settled or still pending, so that absence alone cannot tell a working check from one that never ran. Nor does the gap between staging and switching prove it: 9 s at 687 → 688, but 5 s at 686 → 687, on the old code, so a short gap shows only that no check was pending then. What holds the change is `test_blocking_waits` and the code. A `deleted subvolumes were still being freed after 7200 s` line would show the looks ran for two hours without holding anything, and that drops are not settling on .95.
 - **#690 shown live at the next switch.** It acts in the process that *writes* the handover, and 686 wrote this one, so the kernel log again took 2,180 lines at 11:02:26. At the 687 → 688 switch (12:22:12, 687 writing), the kernel log has no line at all from two seconds before to five seconds after.
 
+## Part 373: a cix release is a publish, release A (ADR-0380, 0.2.57-693)
+
+**What shipped.**
+- **Assembly:** it runs `usr/libexec/cix/mkbootroot` from the `cix-root` tree it seals; the `cixd` output ships it.
+- **Installer tools:** a new output, `cix-installer-tools`, in `iso-builder` (image recipe 1.8.0). `POST /v1/system/iso` reads the tools there and answers 409 unless they are `cix-root`'s `cixd` release.
+- **A rejected release stays off.** A bad root's mark carries the `cixd` it held, never the running one.
+- **Kernel hold:** a kernel that is only published no longer holds a root-only roll.
+
+**How it was verified.**
+- **Compile probe:** `probe-cix-compile@0.2.57-770` (ff9482e2) passed the full selftest, including the new `test_rootslot` and `test_rootslot_verdict` cases.
+- **The roll, run by hand on 2026-11-18:**
+  - 692's roll hostbuilt 693 by 23:08:12 and switched in place to slot a at 23:08:42;
+  - all 14 containers kept running;
+  - `GET /v1/pkg/cixd@cix-root` then listed `usr/libexec/cix/mkbootroot` at 0.2.57-693.
+- **Assembly under 693:** a hand `assembly start` succeeded (generation 1, 14438400 bytes, sealing `cix-root 324e377f…`). The code has one `mkbootroot` path, so that is the new path working.
+- **The ISO:**
+  - `iso-builder@1.8.0` was committed and synced, and `cix-installer-tools` 0.2.57-693 installed into `iso-builder`;
+  - `POST /v1/system/iso` then built a ready ISO of 59326464 bytes, `built_version` `0.2.57-693`, from that image's tools.
+- **Not seen live:**
+  - the rejection rule and the held scheduled roll, since nothing has been rejected;
+  - the 409 for a skewed pair;
+  - a root-only roll with a kernel only published.
+
 ## Part 372: a roll a root-only roll held off is owed, not lost (#694, 0.2.57-692)
 
 **What shipped.**
