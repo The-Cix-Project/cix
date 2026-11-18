@@ -94,7 +94,7 @@ Each is deployed by the path its predecessor already has.
 ## Live checks
 
 - **Release A:**
-  - the next root-only roll seals with `cix-root`'s `usr/libexec/cix/mkbootroot`, and its assembly log names that path;
+  - an assembly under A succeeds: the code has one `mkbootroot` path, `cix-root`'s `usr/libexec/cix/mkbootroot`, so success is that path working (done 2026-11-18, ROADMAP Part 373);
   - an ISO build succeeds from `iso-builder`'s tree, and refuses when `cix-installer-tools` is held back on purpose;
   - with a kernel published but not built, a root-only roll still runs.
 - **Release B:** the release after it is published and nothing else is done. Its row builds once, `cix-root` moves, a root-only roll switches into it, and `cixctl boot` reports the new release. No hostbuild of cix runs.

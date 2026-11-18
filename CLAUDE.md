@@ -466,8 +466,9 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 
 - **Never put firmware into `cix-root`'s recipe or the installer.** `rtw88-firmware` leaves `cix-root` too (*"Move it"*). `wireless-regdb` is not runtime firmware: `regulatory.db` is built into the kernel.
 - **The index is CBS outputs' `files` selectors, never a metadata key.** A firmware package is an output of the `linux-firmware` recipe, and it claims its files, for example `glob "lib/firmware/amdgpu/**"`.
-- **One setter writes `/sys/module/firmware_class/parameters/path`** (`firmware_path_apply()`): the stable link `REBUILDABLE_DIR/firmware`, at every start, before the boot sweep. The kernel resolves it in pid 1's (cixd's) root (`kernel_read_file_from_path_initns`, measured in 7.3.5), so it follows an in-place switch.
-- **Only what a driver declares, for a module the kmod policy let load.** An index miss is said once, never retried until the index changes.
+- **One setter writes `/sys/module/firmware_class/parameters/path`** (`firmware_path_apply()`): the stable link `REBUILDABLE_DIR/firmware`, at every start, before the boot sweep, **in init mode only**. A test daemon must never repoint the host's loader. The kernel resolves it in pid 1's (cixd's) root (`kernel_read_file_from_path_initns`, read in 7.3.5's source); that it follows an in-place switch is inferred until the first real load after one.
+- **Only what a driver declares, for a module the kmod policy let load,** read from the device's bound driver and its dependency closure, at every start and plug. The declaring module is often not the one the alias matched (rtw88's firmware is declared in its chip module). An index miss is said once, never retried until the index changes.
+- **Never re-probe a bound device.** Only a device with no driver bound is bound again after its firmware arrives; a bound one only reports, since a rebind takes the uplink or ar-1's radio down.
 - **Provenance:** the blobs come only from kernel.org's signed `linux-firmware` tarball, with their licence files, as an owner-approved exception like `rtw88-firmware` (*"Approve"*).
 
 ## A container's load average is sampled from its own threads

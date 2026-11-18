@@ -20,7 +20,9 @@ A driver asks for firmware with `request_firmware()` when it probes a device. Si
 
 - **The loader's search list starts with one configurable directory** (`drivers/base/firmware_loader/main.c:471-485`). It is `fw_path_para[256]` before `/lib/firmware/updates/<release>`, `/lib/firmware/updates`, `/lib/firmware/<release>` and `/lib/firmware`, set by `module_param_string(path, ..., 0644)`. So `/sys/module/firmware_class/parameters/path` is writable at runtime and takes up to 255 bytes.
 - **It is resolved in pid 1's filesystem view.** The loader calls `kernel_read_file_from_path_initns()` (`main.c:549`), which opens the path under `scoped_with_init_fs()` (`fs/kernel_read_file.c:147-166`). On a Cix host pid 1 is cixd. So the path names cixd's own mounts and moves with them across an in-place root switch (ADR-0375).
-- **This kernel has no firmware user helper** (`FW_LOADER=y`, `FW_LOADER_USER_HELPER` unset). The file must be on disk when the driver probes. A probe that failed for a missing file is not retried by the kernel; it is retried by binding the device again.
+- **This kernel has no firmware user helper** (`FW_LOADER=y`, `FW_LOADER_USER_HELPER` unset). The file must be on disk when the driver probes.
+
+Not measured, and to be measured in release 1: that a probe which failed for a missing file is not retried by the kernel, and that binding the device again retries it. That is the kernel's documented behaviour, not something this probe read.
 
 Also from cixd's code: the data disks are mounted (`diskformat_remount_present_role_disks()`) before the boot's module sweep (`kmodscan_boot_sweep`). So an image's tree exists when drivers first probe.
 
@@ -39,18 +41,26 @@ Also from cixd's code: the data disks are mounted (`diskformat_remount_present_r
    - One setter does both, `firmware_path_apply()`, and nothing else writes the parameter. A path over 255 bytes is refused and said, never truncated.
 3. **What a driver declares.**
    - A module declares the files it may request (`MODULE_FIRMWARE`, the `.modinfo` section's `firmware=` entries).
-   - When ADR-0348's queue loads a module for a device, at the boot sweep, a plug or an explicit request, its helper child also reads those names, then checks each against the firmware image's current tree and the root's `/lib/firmware`.
-   - The names, and those missing, go on the device record (ADR-0344). The dashboard and cixctl show the same answer: `firmware: missing N of M (amdgpu/navi10_sos.bin, ...)`.
+   - **The module is the device's driver and that module's dependency closure**, never only the module matched to the device's alias. The declaration often sits in a chip module the bus module depends on: rtw88's `rtw8822b_fw.bin` is declared in `rtw8822b.c` (its recipe header), while the dongle's alias names a USB module. For a bound device the driver comes from its sysfs `driver` link; for an unbound one, from the module ADR-0348's policy matched.
+   - **It is read at every start and on every plug,** never only when a module loads. Releases arrive by in-place switch, where no sweep runs, so a load-time read alone would leave every record empty after a switch. The read runs in the disk snapshot's helper-child style (ADR-0377): sysfs and `.ko` reads, off the loop.
+   - Each name is checked against the firmware image's current tree and the root's `/lib/firmware`. The names, and those missing, go on the device record (ADR-0344). The dashboard and cixctl show the same answer: `firmware: missing N of M (amdgpu/navi10_sos.bin, ...)`.
+   - **Missing is normal for working hardware.** A module declares files for every chip it supports, so a bound, working device can list missing names. The record says so; it is not a fault.
 4. **Acquisition, by itself.**
    - For the missing names, cixd asks the output index: the `files` selectors `cbs explain` reported for every recipe it holds, matched under `lib/firmware/` with CBS's own rules (`*` within a component, `**` across components, an exact selector also claiming the tree beneath it).
    - Each output that matches at least one missing name is installed into `firmware`, as an ordinary package job (git-first recipes, cache, ABI hold and approvals all apply). One output per driver family keeps this to one install for a device.
+   - **A name two outputs claim is refused and said, never picked** (ADR-0324's rule for a name two sources offer).
+   - Acquisition runs for bound devices too, so a later re-probe or reboot finds the files. Only the re-probe below is limited to unbound devices.
    - **An index miss is said once and never retried by itself.** `firmware: amdgpu/xyz.bin is in no package` names the file and the module. It retries when a recipe sync changes the index.
    - **Only what the device's driver declares is fetched,** and only for modules ADR-0348's policy let load, so the blacklist holds firmware off too.
-5. **Probe again.** When a `firmware` version that added a device's missing names is recorded, cixd binds that device to its driver again, in the module queue's helper child. A bind waits on the driver's probe, which can take seconds. The outcome goes on the device record and the log, once.
-6. **One home.**
+5. **Probe again, only a device with no driver bound.**
+   - When a `firmware` version that added an unbound device's missing names is recorded, cixd binds that device to its driver, in the module queue's helper child. A bind waits on the driver's probe, which can take seconds. The outcome goes on the device record and the log, once.
+   - **A bound device is never re-probed by cixd.** Rebinding the uplink NIC or ar-1's radio for a firmware roll would take them down, and ADR-0347 would fail the container holding the radio. A bound device only reports; new firmware reaches it at its next probe (a re-plug or a reboot).
+   - **Limit:** a driver that loads firmware asynchronously can stay bound with its device dead when the file was missing. cixd does not detect that; the record's `missing` list and the kernel log say it.
+6. **Only on a real host.** The path write and the `firmware` image are init mode only, gated as the wireless country is (ADR-0354). The path is kernel-global, and selftest daemons run on .95 with `CAP_SYS_ADMIN`: a test daemon must never repoint the host's loader.
+7. **One home.**
    - `rtw88-firmware` and every other firmware package become outputs of `linux-firmware`, and leave `cix-root`'s recipe. The old `rtw88-firmware` recipe is retired, since one name has one source (ADR-0324).
    - `wireless-regdb` stays as it is: `regulatory.db` is built into the kernel image (`CONFIG_EXTRA_FIRMWARE`), so it is not runtime firmware.
-7. **Provenance.**
+8. **Provenance.**
    - The blobs run on the device, never on the host CPU. They come only from kernel.org's signed `linux-firmware` release tarball, verified by its signature (ADR-0323's first rung), and are pinned by content.
    - Each output ships upstream's licence files for what it carries.
    - The recipe's header records the exception in `rtw88-firmware`'s words, and the owner approved it on 2026-11-18. The artifacts are published to the cache like any package.
@@ -70,17 +80,25 @@ Also from cixd's code: the data disks are mounted (`diskformat_remount_present_r
    - It installs nothing yet; the record shows what would be fetched.
 2. **The recipe.**
    - `linux-firmware` with `amdgpu-firmware` and `rtw88-firmware` outputs (git first), and the old `rtw88-firmware` recipe retired.
-   - Built once on .95, a fetch and a copy. Priced before it runs, since the source is 642 MB.
+   - Upstream declares symlinked names in `WHENCE` (`Link:` lines), which its own install script creates. The recipe creates those under each family it ships, or a raw copy of the tree misses names a driver asks for.
+   - Built once on .95, a fetch and a copy. Priced before it runs, since the source is 642 MB. If `linux-firmware` rolls, each upstream release is another 642 MB fetch and build; it is pinned unless the owner chooses otherwise.
 3. **Acquisition and re-probe.**
-   - Live proof on .95 is ar-1's radio: `rtw88-firmware` arrives in `firmware`, then `cix-root`'s recipe drops it.
-   - In that window the root still holds a copy, and the path searched first is the image's, so the radio never loses its firmware.
+   - cixd acquires `rtw88-firmware` into `firmware` for ar-1's radio, while the root still holds a copy.
+   - **Then a watched switchover, asked of the owner first,** because ar-1's access point is what it risks:
+     1. `cix-root`'s recipe drops `rtw88-firmware`, and the root-only roll switches;
+     2. ar-1 is stopped and the radio re-plugged or re-probed, so rtw88 reads its firmware again (it reads at probe, not at an access point start);
+     3. ar-1 is started and its access point checked.
+   - The rollback is reverting that `cix-root` recipe commit.
+   - This is also the first real proof that the path follows an in-place switch, which is an inference from two source reads until then.
 
 ## Live checks
 
 - **After release 1:**
   - `/sys/module/firmware_class/parameters/path` reads the stable path, read through a console;
-  - ar-1's radio's device record lists `rtw88/rtw8822b_fw.bin`, found in the root.
+  - ar-1's radio's device record lists `rtw88/rtw8822b_fw.bin`, found in the root, through its chip module;
+  - the records survive an in-place switch;
+  - the binding-again retry is measured, on an unbound device or a probe.
 - **After release 3:**
   - `rtw88-firmware` is installed in `firmware` by cixd, not by hand;
-  - after `cix-root` drops it, ar-1 restarts and its access point comes up;
+  - the watched switchover brings ar-1's access point back with the root's copy gone;
   - an AMD host, when one exists, gets `amdgpu-firmware` with no operator step.
