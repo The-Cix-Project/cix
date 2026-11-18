@@ -2462,6 +2462,22 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 - **#689 live:** 687 ran its first drain at 11:02:26 (`image gc: set aside 3 version(s)`). At 11:10 `cixctl process ls` showed no cixd child but procfuse and the watchdog. A look logs nothing when it finds the drops settled or still pending, so that absence alone cannot tell a working check from one that never ran. Nor does the gap between staging and switching prove it: 9 s at 687 → 688, but 5 s at 686 → 687, on the old code, so a short gap shows only that no check was pending then. What holds the change is `test_blocking_waits` and the code. A `deleted subvolumes were still being freed after 7200 s` line would show the looks ran for two hours without holding anything, and that drops are not settling on .95.
 - **#690 shown live at the next switch.** It acts in the process that *writes* the handover, and 686 wrote this one, so the kernel log again took 2,180 lines at 11:02:26. At the 687 → 688 switch (12:22:12, 687 writing), the kernel log has no line at all from two seconds before to five seconds after.
 
+## Part 372: a roll a root-only roll held off is owed, not lost (#694, 0.2.57-692)
+
+**What shipped.**
+- **#694:** a scheduled or hand-run roll that finds a root-only roll in progress is owed until its window's end, and starts once that roll ends. The handover record carries the owed window (`roll_owed_until`), because a root-only roll usually ends by switching.
+- **A failed fetch now asks for the root-only roll too,** found by Part 371's live check.
+
+**How it was verified.**
+- **Compile probes:** `probe-cix-compile@0.2.57-768` (efd2c1fd) and `@0.2.57-769` (e6d58fd5) passed the full selftest. `test_handover_record` round-trips `roll_owed_until` and reads a record without it.
+- **The 692 roll, run by hand on 2026-11-18:**
+  - it waited behind the agent image's cix build from 17:08 and built cix by 17:35:47;
+  - it switched in place to slot b at 17:36, taking over 14 containers and 2 console shells from 0.2.57-691;
+  - `cixctl boot` reads `root: cix-root e81bd47f…`, cix-root's current version, which now holds 692's cixd and cixctl;
+  - a hand-run roll then answered `current: kernel 7.3.5-1 and cix 0.2.57-692 are the newest and running`;
+  - vpn-1 kept running across the switch, at about 1 packet a second each way.
+- **Not seen live:** the owed path itself. It needs a scheduled roll to fire during a root-only roll, which no single test on .95 can arrange on demand.
+
 ## Part 371: the root follows cix-root as soon as it settles (ADR-0379, 0.2.57-691)
 
 **What shipped.**
