@@ -2785,8 +2785,13 @@ int main(void)
 		 * reserved for documentation and routed nowhere. The URL is
 		 * the fixture, so this one names its own source rather than
 		 * pointing at the test's HTTP server. */
+		/* A sha256 nothing has fetched: the source cache (ADR-0382) is
+		 * keyed by content, and the shared fixture's sha256 would be
+		 * served from it, which is correct and is not this case. */
 		if (publish_cpdl_recipe_url(&client, "unreachable", "1.0",
-		                             "https://192.0.2.1/nothing.tar.gz", sha256, CPDL_STD_TOOLS,
+		                             "https://192.0.2.1/nothing.tar.gz",
+		                             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		                             CPDL_STD_TOOLS,
 		                             "        run \"true\" {\n        }\n",
 		                             "        mkdir \"${dest}/usr/share\" chmod 0755\n") != 0) {
 			fprintf(stderr, "FAIL: could not publish the unreachable recipe\n");
@@ -2967,12 +2972,30 @@ int main(void)
 	{
 		static const char *const toks[][2] = { { "tka", "ownertoken" },
 		                                       { "tkb", "othertoken" } };
-		const char *plain = test_http_src(tarball_path);
-		const char *host = strstr(plain, "://") != NULL ? strstr(plain, "://") + 3 : plain;
-		const char *path = strchr(host, '/');
+		/*
+		 * ADR-0382: a tarball of their own, and tokother first. The
+		 * source cache is keyed by content: with the shared fixture's
+		 * sha256, or after tokown's successful fetch, tokother would be
+		 * served from the cache and its fetch never asked for a token,
+		 * so its refusal would prove nothing about whose token is spent.
+		 */
+		char tok_tarball[512], tok_sha[128];
+		const char *plain;
+		const char *host;
+		const char *path;
 		char cred[64], url[1024], content[4096], post[256];
 		char *body;
-		size_t i;
+		size_t i, k;
+
+		if (stage_fixture_tarball(scratch_dir, "tokpriv", "1.0", tok_tarball, sizeof(tok_tarball),
+		                          tok_sha, sizeof(tok_sha)) != 0) {
+			fprintf(stderr, "FAIL: ADR-0324 could not stage the private tarball\n");
+			ok = 0;
+			tok_tarball[0] = '\0';
+		}
+		plain = test_http_src(tok_tarball);
+		host = strstr(plain, "://") != NULL ? strstr(plain, "://") + 3 : plain;
+		path = strchr(host, '/');
 
 		for (i = 0; i < 2; i++) {
 			snprintf(post, sizeof(post),
@@ -3000,7 +3023,7 @@ int main(void)
 		         path != NULL ? (int)(path - host) : 0, host, cred, path != NULL ? path : "");
 
 		/* Several sources, none named, nobody owns it: refused, naming both. */
-		cpdl_recipe_text(content, sizeof(content), "tokorphan", "1.0", url, sha256, NULL,
+		cpdl_recipe_text(content, sizeof(content), "tokorphan", "1.0", url, tok_sha, NULL,
 		                 CPDL_STD_TOOLS, NULL, "        run \"false\" {\n        }\n",
 		                 "        mkdir \"${dest}/usr/share\" chmod 0755\n");
 		body = cpdl_publish_body("tokorphan", content, NULL);
@@ -3016,13 +3039,13 @@ int main(void)
 		cix_response_free(&r);
 		free(body);
 
-		for (i = 0; i < 2; i++) {
+		for (k = 0, i = 1; k < 2; k++, i = 1 - k) { /* tokother first (ADR-0382) */
 			const char *pkg = i == 0 ? "tokown" : "tokother";
 			const char *want = i == 0 ? "build" : "fetch";
 			char gpath[64];
 			const char *stage;
 
-			cpdl_recipe_text(content, sizeof(content), pkg, "1.0", url, sha256, NULL,
+			cpdl_recipe_text(content, sizeof(content), pkg, "1.0", url, tok_sha, NULL,
 			                 CPDL_STD_TOOLS, NULL, "        run \"false\" {\n        }\n",
 			                 "        mkdir \"${dest}/usr/share\" chmod 0755\n");
 			if (publish_cpdl_content_from(&client, pkg, "1.0", content, toks[i][0]) != 0) {
