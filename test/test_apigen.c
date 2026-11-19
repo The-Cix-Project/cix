@@ -422,12 +422,13 @@ int main(void)
 	 * 353 as of ADR-0365: GET and POST /pkg/bootstrap retired.
 	 * 355 as of ADR-0368: GET and PUT /system/mcp, the MCP switch.
 	 * 356 as of ADR-0368 step 2: POST /mcp, the gateway itself.
+	 * 359 as of ADR-0383: GET and POST /dhcp/relays, DELETE /dhcp/relays/{container}.
 	 */
 	status = run_apigen("docs/api/openapi.yaml", NULL, out, sizeof(out));
 	if (status != 0)
 		fail("apigen rejected the real spec: %.300s", out);
-	else if (atoi(out) != 356)
-		fail("apigen found %d operations in the real spec, expected 356 -- if the spec "
+	else if (atoi(out) != 359)
+		fail("apigen found %d operations in the real spec, expected 359 -- if the spec "
 		     "genuinely changed, update this number deliberately; a silently different "
 		     "count is how a lost route hides",
 		     atoi(out));
@@ -673,7 +674,7 @@ int main(void)
 	 * reads it makes stale. The events stream announces from these, so
 	 * a gap is a page that stays stale with nothing saying so -- a
 	 * build failure, as a missing permission is. The real spec passing
-	 * above is the positive control: all 150 reads and 206 changes.
+	 * above is the positive control: all of its reads and changes.
 	 */
 	expect_refusal("a read with no x-cix-read",
 	               VOCAB
@@ -824,7 +825,7 @@ int main(void)
 	/*
 	 * ADR-0368: every operation says whether MCP clients may call it,
 	 * and only tool or none is a value. The real spec passing above is
-	 * the positive control: all 356 operations declare it.
+	 * the positive control: all 359 operations declare it.
 	 */
 	expect_refusal("an operation with no x-cix-mcp",
 	               VOCAB
@@ -1040,9 +1041,9 @@ int main(void)
 			}
 			fclose(f);
 			unlink(routes_path);
-			if (rows != 356 || with_permission != rows)
+			if (rows != 359 || with_permission != rows)
 				fail("the generated route table has %d rows and %d carry a permission; "
-				     "expected 356 and 356 (ADR-0317)",
+				     "expected 359 and 359 (ADR-0317)",
 				     rows, with_permission);
 		}
 	}
@@ -1120,13 +1121,13 @@ int main(void)
 		}
 		unlink(slots_path);
 		unlink(table_path);
-		if (count != 128 || defines != count || read_rows != count)
+		if (count != 129 || defines != count || read_rows != count)
 			fail("the events slots say %d reads, define %d EV_ constants and the table has "
-			     "%d read rows; all three should be 128 (ADR-0339)",
+			     "%d read rows; all three should be 129 (ADR-0339)",
 			     count, defines, read_rows);
-		if (change_count != 206 || change_rows != change_count)
+		if (change_count != 208 || change_rows != change_count)
 			fail("the events table declares %d changes and has %d change rows; both should "
-			     "be 206, one per non-GET operation (ADR-0339)",
+			     "be 208, one per non-GET operation (ADR-0339)",
 			     change_count, change_rows);
 		if (stream_count != 7 || stream_rows != stream_count)
 			fail("the events table declares %d subscribable reads and has %d stream rows; "
@@ -1231,10 +1232,10 @@ int main(void)
 			fclose(f);
 			unlink(hdr_path);
 		}
-		if (defines != 356)
-			fail("CLI header has %d path defines, expected one per operation (356)", defines);
-		if (methods != 356)
-			fail("CLI header has %d method defines, expected one per operation (356)", methods);
+		if (defines != 359)
+			fail("CLI header has %d path defines, expected one per operation (359)", defines);
+		if (methods != 359)
+			fail("CLI header has %d method defines, expected one per operation (359)", methods);
 		if (braces != 0)
 			fail("%d CLI path define(s) still contain '{' -- a parameter was not converted "
 			     "to %%s and would put a literal brace in the URL",
@@ -1561,8 +1562,8 @@ int main(void)
 			fclose(f);
 			unlink(js_path);
 		}
-		if (shapes != 356)
-			fail("web api.js has %d _SHAPE entries, expected one per operation (356)",
+		if (shapes != 359)
+			fail("web api.js has %d _SHAPE entries, expected one per operation (359)",
 			     shapes);
 		if (!saw_fields)
 			fail("web api.js has no FIELDS table -- the renderers have nothing to render "
@@ -1787,8 +1788,8 @@ int main(void)
 			     "raise it rather than check a prefix of them%s",
 			     "APIGEN_TEST_MAX_REQ", "");
 		if (n_names == 0)
-			fail("no operation in api.js names a request schema -- 129 of the "
-			     "contract's 356 carry a requestBody, so this is a reader that "
+			fail("no operation in api.js names a request schema -- many of the "
+			     "contract's operations carry a requestBody, so this is a reader that "
 			     "resolved none of them");
 		if (dangling > 0)
 			fail("%d operation(s) name a request schema with no FIELDS entry, the first "

@@ -26680,6 +26680,14 @@ static void dhcp_host_facts(const char *name, struct dhcprelay_host *h)
 		a->ip_be = e->nets[j].ip_be;
 		a->prefix_len = nd != NULL ? nd->prefix_len : 32;
 		snprintf(a->ifname, sizeof(a->ifname), "%s", e->nets[j].ifname);
+		/* The runtime's own default route: via the first attachment's
+		 * network address, when that network has one
+		 * (container_net_child_configure() in src/container_net.c). */
+		if (j == 0 && nd != NULL && nd->has_address && h->route_count < DHCPRELAY_MAX_ROUTES) {
+			h->routes[h->route_count].dest_be = 0;
+			h->routes[h->route_count].prefix_len = 0;
+			h->route_count++;
+		}
 	}
 	if (def != NULL && def->body != NULL) {
 		struct json_value *root = json_parse(def->body, def->body_len);

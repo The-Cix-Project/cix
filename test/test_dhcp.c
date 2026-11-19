@@ -545,28 +545,28 @@ int main(void)
 
 	/*
 	 * 7b. ADR-0383: a range relayed to a server that is not on its
-	 * network. selftest-relayed has no server on it; dhcprelay1 is on it
+	 * network. st-relayed has no server on it; dhcprelay1 is on it
 	 * and on selftest-dhcp, where the servers are.
 	 */
 	expect(&client, "POST", "/v1/networks",
-	        "{\"name\":\"selftest-relayed\",\"subnet\":\"172.30.10.0\",\"prefix_len\":24,"
+	        "{\"name\":\"st-relayed\",\"subnet\":\"172.30.10.0\",\"prefix_len\":24,"
 	        "\"address\":\"172.30.10.1\"}",
 	        201, "create the relayed network");
 	expect(&client, "POST", "/v1/containers",
 	        "{\"name\":\"dhcprelay1\",\"image\":\"dhcptest\","
 	        "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"]}],"
-	        "\"networks\":[\"selftest-dhcp\",\"selftest-relayed\"],"
+	        "\"networks\":[\"selftest-dhcp\",\"st-relayed\"],"
 	        "\"restart\":\"always\"}",
 	        201, "create the relay container, on both networks");
-	/* A server with a default route back through the host bridge, the
-	 * shape dns-1 has on .95. dhcpsrv has no route at all. */
+	/* A server whose only route back to the relayed network is the
+	 * runtime's own default route, via selftest-dhcp's address -- so
+	 * the check must count that route, not only declared ones. */
 	expect(&client, "POST", "/v1/containers",
 	        "{\"name\":\"dhcpsrv3\",\"image\":\"dhcptest\","
 	        "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\",\"cmd\":[\"/bin/daemon_child\",\"60\",\"0\"]}],"
 	        "\"networks\":[\"selftest-dhcp\"],"
-	        "\"routes\":[{\"dest\":\"0.0.0.0\",\"prefix_len\":0,\"via\":\"172.30.7.1\"}],"
 	        "\"restart\":\"always\"}",
-	        201, "create a server with a default route");
+	        201, "create a server whose default route is the runtime's");
 	expect(&client, "POST", "/v1/dhcp/servers", "{\"container\":\"dhcpsrv3\"}", 201,
 	        "register it as a DHCP server");
 	expect(&client, "POST", "/v1/dhcp/relays", "{\"container\":\"dhcpsrv\"}", 409,
@@ -580,28 +580,24 @@ int main(void)
 	expect(&client, "POST", "/v1/dhcp/relays",
 	        "{\"container\":\"dhcprelay1x\",\"service\":\"bad name\"}", 404,
 	        "a container that does not exist");
-	expect(&client, "PUT", "/v1/dhcp/networks/selftest-relayed",
+	expect(&client, "PUT", "/v1/dhcp/networks/st-relayed",
 	        "{\"enabled\":true,\"range_start\":\"172.30.10.100\",\"range_end\":\"172.30.10.150\","
 	        "\"servers\":[\"dhcpsrv3\"]}",
 	        400, "a server not on the network, and no relay");
-	expect(&client, "PUT", "/v1/dhcp/networks/selftest-relayed",
+	expect(&client, "PUT", "/v1/dhcp/networks/st-relayed",
 	        "{\"enabled\":true,\"range_start\":\"172.30.10.100\",\"range_end\":\"172.30.10.150\","
 	        "\"servers\":[\"dhcpsrv3\"],\"relays\":[\"nosuchrelay\"]}",
 	        400, "a relay that is not registered");
-	expect(&client, "PUT", "/v1/dhcp/networks/selftest-relayed",
-	        "{\"enabled\":true,\"range_start\":\"172.30.10.100\",\"range_end\":\"172.30.10.150\","
-	        "\"servers\":[\"dhcpsrv\"],\"relays\":[\"dhcprelay1\"]}",
-	        400, "a server with no route back to the relay");
 	expect(&client, "PUT", "/v1/dhcp/networks/selftest-dhcp", "{\"relays\":[\"dhcprelay1\"]}",
 	        400, "relays on a range whose servers are all attached");
-	expect(&client, "PUT", "/v1/dhcp/networks/selftest-relayed",
+	expect(&client, "PUT", "/v1/dhcp/networks/st-relayed",
 	        "{\"enabled\":true,\"range_start\":\"172.30.10.100\",\"range_end\":\"172.30.10.150\","
 	        "\"router\":\"172.30.10.1\",\"servers\":[\"dhcpsrv3\"],\"relays\":[\"dhcprelay1\"]}",
 	        200, "a relayed range");
 	/* The server's range carries the netmask (dnsmasq's manual, for a
 	 * relayed network); its attached range would not. */
 	if (!wait_for_file(&client, "/v1/containers/dhcpsrv3/files?path=/etc/dnsmasq-dhcp.conf",
-	                    "dhcp-range=set:selftest-relayed,172.30.10.100,172.30.10.150,"
+	                    "dhcp-range=set:st-relayed,172.30.10.100,172.30.10.150,"
 	                    "255.255.255.0,3600s"))
 		fprintf(stderr, "FAIL: the server's relayed range has no netmask\n");
 	/* The relay's file: DNS off, a line from its address on the relayed
@@ -620,7 +616,7 @@ int main(void)
 	                    "interface=eth1\n"))
 		fprintf(stderr, "FAIL: the relay does not listen on the relayed network\n");
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "GET", "/v1/dhcp/networks/selftest-relayed", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/dhcp/networks/st-relayed", NULL, &r) != 0 ||
 	    r.status != 200 || r.body == NULL || strstr(r.body, "\"relays\":[\"dhcprelay1\"]") == NULL) {
 		fprintf(stderr, "FAIL: the range does not report its relay\n");
 		ok = 0;
@@ -632,13 +628,13 @@ int main(void)
 	expect(&client, "DELETE", "/v1/dhcp/relays/dhcprelay1", NULL, 404,
 	        "unregister a relay that is not one");
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "GET", "/v1/dhcp/networks/selftest-relayed", NULL, &r) != 0 ||
+	if (cix_client_request(&client, "GET", "/v1/dhcp/networks/st-relayed", NULL, &r) != 0 ||
 	    r.status != 200 || r.body == NULL || strstr(r.body, "\"enabled\":false") == NULL) {
 		fprintf(stderr, "FAIL: a range left with no relay to its only server stayed enabled\n");
 		ok = 0;
 	}
 	cix_response_free(&r);
-	expect(&client, "DELETE", "/v1/dhcp/networks/selftest-relayed", NULL, 204,
+	expect(&client, "DELETE", "/v1/dhcp/networks/st-relayed", NULL, 204,
 	        "remove the relayed range");
 	expect(&client, "DELETE", "/v1/containers/dhcprelay1", NULL, 204, "remove the relay");
 	expect(&client, "DELETE", "/v1/containers/dhcpsrv3", NULL, 204, "remove the third server");
@@ -675,7 +671,7 @@ int main(void)
 	expect(&client, "DELETE", "/v1/networks/selftest-dhcp2", NULL, 204, "remove the second network");
 	/* ADR-0383's relayed network: its containers were deleted above and
 	 * test_cleanup_containers_and_network() waited out their teardown. */
-	expect(&client, "DELETE", "/v1/networks/selftest-relayed", NULL, 204,
+	expect(&client, "DELETE", "/v1/networks/st-relayed", NULL, 204,
 	        "remove the relayed network");
 
 	if (test_assert_no_drift(&client, NULL) != 0)

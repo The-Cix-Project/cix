@@ -446,7 +446,8 @@ static void check_deletes_confirm(const char *app)
 		/* Confirmed by the shared button that calls them. */
 		"removeDnsServer", "removeLdapServer", "removeNtpServer",
 		"removeSyslogTarget",                                 /* unregisterButton() */
-		"renderDhcpServers", "renderDhcpRanges", "renderDhcpStatic", /* dhcpActionButton() */
+		"renderDhcpServers", "renderDhcpRelays", "renderDhcpRanges",
+		"renderDhcpStatic", /* dhcpActionButton() */
 		/* Destroy nothing, so are not destructive actions at all. */
 		"removeDiskRole",  /* unassigns a role; diskActionEligibility marks it neutral */
 		"clearBootNext",   /* disarms a one-shot boot choice; normal selection resumes */
