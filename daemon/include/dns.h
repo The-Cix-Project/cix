@@ -82,9 +82,24 @@ void dns_write_json_list(struct json_writer *w);
 
 /*
  * Serializes every current record as "<ip> <name>" lines (dnsmasq's
- * --addn-hosts format) and writes them atomically to abs_path.
+ * --addn-hosts format) and writes them to abs_path, only when that
+ * differs from what is there (#697): 1 written, 0 already identical,
+ * -1 failed. A caller reloads the server only on 1.
  */
 int dns_write_hosts_file(const char *abs_path);
+
+/*
+ * #697: the two files a DNS server reads, rendered to a buffer so the
+ * create path stages them before the server starts -- as ADR-0197 does
+ * for the DHCP files -- and a restart never depends on a reload
+ * reaching it. Bytes, or -1 when it did not fit (the hosts render
+ * truncates at a record boundary instead, as it always has).
+ */
+#define DNS_HOSTS_RENDER_MAX 131072
+int dns_render_hosts(char *out, size_t out_size);
+int dns_render_servers(char *out, size_t out_size);
+/* The hosts path a registered DNS server reads, or NULL. */
+const char *dns_server_hosts_path(const char *container_name);
 
 #define DNS_SERVER_MAX 32
 #define DNS_SERVER_NAME_MAX 64   /* matches REGISTRY_NAME_MAX */

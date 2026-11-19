@@ -316,6 +316,21 @@ void dhcp_servers_write_json(struct json_writer *w)
 	jw_arr_close(w);
 }
 
+/* 1 when the file at path is absent or holds something other than
+ * want. Every rendered file is compared before it is written, so a
+ * resync after every container start rewrites, and reloads or restarts,
+ * nothing that has not changed (#697, ADR-0383). */
+static int file_differs(const char *path, const char *want)
+{
+	char *cur = NULL;
+	size_t cur_len = 0, len = strlen(want);
+	int same = persist_read_file(path, &cur, &cur_len) == 0 && cur != NULL && cur_len == len &&
+	           memcmp(cur, want, len) == 0;
+
+	free(cur);
+	return !same;
+}
+
 /* ---- Relays (ADR-0383) ---- */
 
 int dhcp_relay_is_registered(const char *container)
@@ -591,9 +606,6 @@ void dhcp_relays_sync(char changed[][DHCP_SERVER_NAME_MAX], int max_changed,
 	for (i = 0; i < count; i++) {
 		struct registry_entry *entry = registry_find(names[i]);
 		char path[PATH_MAX];
-		char *cur = NULL;
-		size_t cur_len = 0;
-		int same;
 
 		if (entry == NULL || !entry->running)
 			continue;
@@ -604,10 +616,7 @@ void dhcp_relays_sync(char changed[][DHCP_SERVER_NAME_MAX], int max_changed,
 			continue;
 		}
 		container_file_host_path(names[i], DHCP_RELAY_CONF_PATH, path, sizeof(path));
-		same = persist_read_file(path, &cur, &cur_len) == 0 && cur != NULL &&
-		       cur_len == strlen(conf) && memcmp(cur, conf, cur_len) == 0;
-		free(cur);
-		if (same)
+		if (!file_differs(path, conf))
 			continue;
 		if (persist_atomic_write(path, conf, strlen(conf)) != 0) {
 			logstore_write("cixd", "error", "dhcp: could not write relay %s's config to %s",
@@ -1153,14 +1162,22 @@ void dhcp_sync_all(char changed[][DHCP_SERVER_NAME_MAX], int max_changed, int *o
 		 * indefinitely with nothing recorded (#269). */
 		container_file_host_path(names[i], DHCP_CONF_PATH,
 		                          path, sizeof(path));
-		if (persist_atomic_write(path, conf, strlen(conf)) != 0)
+		if (file_differs(path, conf) && persist_atomic_write(path, conf, strlen(conf)) != 0)
 			logstore_write("cixd", "error", "dhcp: could not write %s config to %s",
 			                names[i], path);
 		container_file_host_path(names[i], DHCP_HOSTS_PATH,
 		                          path, sizeof(path));
-		if (persist_atomic_write(path, hosts, strlen(hosts)) != 0)
+		/* #697: written, and the server told, only when the
+		 * reservations changed -- this runs after every container
+		 * start, and a reload with nothing new is a reload for
+		 * nothing. */
+		if (!file_differs(path, hosts))
+			continue;
+		if (persist_atomic_write(path, hosts, strlen(hosts)) != 0) {
 			logstore_write("cixd", "error", "dhcp: could not write %s hosts to %s",
 			                names[i], path);
+			continue;
+		}
 		/* Puts the hosts file into force immediately. The conf file is
 		 * untouched by this signal -- see the header. */
 		sys_pidfd_send_signal(entry->handle.pidfd, SIGHUP);

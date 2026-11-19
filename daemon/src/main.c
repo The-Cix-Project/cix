@@ -18593,6 +18593,38 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 	}
 	/*
+	 * #697: a registered DNS server gets its records and forwarders the
+	 * same way, before its process starts. They used to be written only
+	 * after the start and put in force by a SIGHUP to the container --
+	 * which reaches cix-init, pid 1, and is discarded. Measured on .95,
+	 * 2026-11-19: a DHCP range change restarted dns-1/dns-2, dnsmasq
+	 * started on the empty forwarders placeholder, and both answered
+	 * REFUSED to every query until the service was restarted by hand.
+	 */
+	if (dns_server_is_registered(name)) {
+		static char hosts_buf[DNS_HOSTS_RENDER_MAX];
+		char servers_buf[DNS_FORWARDERS_MAX * (DNS_FORWARDER_LEN + 16)];
+		const char *hosts_path = dns_server_hosts_path(name);
+		int hn = dns_render_hosts(hosts_buf, sizeof(hosts_buf));
+		int sn = dns_render_servers(servers_buf, sizeof(servers_buf));
+
+		if (hosts_path != NULL && hn >= 0 &&
+		    stage_container_file(stage_dir, hosts_path, hosts_buf, 0644, (uid_t)-1, (gid_t)-1,
+		                         stage_id_offset) == 0 &&
+		    file_count < CONTAINER_MAX_FILES) {
+			snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s", hosts_path);
+			file_count++;
+		}
+		if (sn >= 0 &&
+		    stage_container_file(stage_dir, DNS_SERVERS_FILE_PATH, servers_buf, 0644, (uid_t)-1,
+		                         (gid_t)-1, stage_id_offset) == 0 &&
+		    file_count < CONTAINER_MAX_FILES) {
+			snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s",
+			         DNS_SERVERS_FILE_PATH);
+			file_count++;
+		}
+	}
+	/*
 	 * ADR-0383: a registered relay gets its rendered file the same way,
 	 * from the attachments this create planned (the registry does not
 	 * hold it yet), so its relay service starts with the one in force

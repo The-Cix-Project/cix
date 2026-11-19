@@ -449,20 +449,63 @@ int dns_forwarders_get(char out[][DNS_FORWARDER_LEN], int max)
 }
 
 /* Renders dnsmasq's own servers-file format: one "server=<ip>" per
- * line. An empty list writes an empty file, which is meaningful --
- * it means "no recursion", not "unchanged". */
+ * line. An empty list renders an empty file, which is meaningful --
+ * it means "no recursion", not "unchanged". Bytes, or -1 when it did
+ * not fit. */
+int dns_render_servers(char *out, size_t out_size)
+{
+	size_t off = 0;
+	int i, n;
+
+	if (out_size == 0)
+		return -1;
+	out[0] = '\0';
+	for (i = 0; i < g_forwarder_count; i++) {
+		n = snprintf(out + off, out_size - off, "server=%s\n", g_forwarders[i]);
+		if (n < 0 || (size_t)n >= out_size - off)
+			return -1;
+		off += (size_t)n;
+	}
+	return (int)off;
+}
+
+/*
+ * #697: writes a rendered file into a container only when it differs
+ * from what is there, creating its parent directories first (a minimal
+ * image may have no /etc). 1 written, 0 already identical, -1 failed.
+ * In place, not a rename (#276). A caller signals only on 1, so a
+ * resync after every container start reloads nothing that has not
+ * changed.
+ */
+static int write_if_changed(const char *abs_path, const char *buf, size_t len)
+{
+	char parent[DNS_SERVER_PATH_MAX + 32];
+	char *slash, *cur = NULL;
+	size_t cur_len = 0;
+	int same;
+
+	if (snprintf(parent, sizeof(parent), "%s", abs_path) >= (int)sizeof(parent))
+		return -1;
+	slash = strrchr(parent, '/');
+	if (slash != NULL && slash != parent) {
+		*slash = '\0';
+		if (persist_mkdir_p(parent) != 0)
+			return -1;
+	}
+	same = persist_read_file(abs_path, &cur, &cur_len) == 0 && cur != NULL && cur_len == len &&
+	       memcmp(cur, buf, len) == 0;
+	free(cur);
+	if (same)
+		return 0;
+	return persist_write_file_inplace(abs_path, buf, len) == 0 ? 1 : -1;
+}
+
 static int dns_write_servers_file(const char *abs_path)
 {
-	FILE *f = fopen(abs_path, "w");
-	int i;
+	char buf[DNS_FORWARDERS_MAX * (DNS_FORWARDER_LEN + 16)];
+	int n = dns_render_servers(buf, sizeof(buf));
 
-	if (f == NULL)
-		return -1;
-	for (i = 0; i < g_forwarder_count; i++)
-		fprintf(f, "server=%s\n", g_forwarders[i]);
-	if (fflush(f) != 0 || fclose(f) != 0)
-		return -1;
-	return 0;
+	return n < 0 ? -1 : write_if_changed(abs_path, buf, (size_t)n);
 }
 
 /*
@@ -486,41 +529,20 @@ void dns_forwarders_sync_all(void)
 		/* Host-side path, not the container's own id-mapped view (#269). */
 		container_file_host_path(g_bindings[i].container_name,
 		                          DNS_SERVERS_FILE_PATH, full_path, sizeof(full_path));
-		if (dns_write_servers_file(full_path) != 0)
+		if (dns_write_servers_file(full_path) <= 0) /* unchanged: nothing to reload (#697) */
 			continue;
 		sys_pidfd_send_signal(entry->handle.pidfd, SIGHUP);
 	}
 }
 
-int dns_write_hosts_file(const char *abs_path)
+int dns_render_hosts(char *buf, size_t buf_size)
 {
-	/*
-	 * DNS_MAX_RECORDS * (dotted-quad + space + DNS_NAME_MAX + newline)
-	 * is at most ~256 * 270 =~ 69KB; sized comfortably above that so
-	 * the truncation guard below is a defensive backstop that should
-	 * never actually trigger, not a real, silent record-dropping path.
-	 */
-	char buf[131072];
-	char parent[DNS_SERVER_PATH_MAX + 32];
-	char *slash;
 	size_t off = 0;
 	int i;
 
-	/*
-	 * abs_path's parent directories aren't guaranteed to exist -- a
-	 * minimal container image may have no /etc at all. mkdir -p them
-	 * first (through the same /proc/<pid>/root/ path, so this still
-	 * goes through the container's real overlay correctly).
-	 */
-	if (snprintf(parent, sizeof(parent), "%s", abs_path) >= (int)sizeof(parent))
+	if (buf_size == 0)
 		return -1;
-	slash = strrchr(parent, '/');
-	if (slash != NULL && slash != parent) {
-		*slash = '\0';
-		if (persist_mkdir_p(parent) != 0)
-			return -1;
-	}
-
+	buf[0] = '\0';
 	for (i = 0; i < DNS_MAX_RECORDS; i++) {
 		struct in_addr a;
 		char ipstr[INET_ADDRSTRLEN];
@@ -530,19 +552,40 @@ int dns_write_hosts_file(const char *abs_path)
 			continue;
 		a.s_addr = g_records[i].ip_be;
 		inet_ntop(AF_INET, &a, ipstr, sizeof(ipstr));
-		written = snprintf(buf + off, sizeof(buf) - off, "%s %s\n", ipstr, g_records[i].name);
-		if (written < 0 || (size_t)written >= sizeof(buf) - off)
+		written = snprintf(buf + off, buf_size - off, "%s %s\n", ipstr, g_records[i].name);
+		if (written < 0 || (size_t)written >= buf_size - off) {
+			buf[off] = '\0';
 			break; /* record set too large for the buffer; truncate gracefully */
+		}
 		off += (size_t)written;
 	}
+	return (int)off;
+}
 
-	/* In place, not a rename, for the same reason ldap_write_config_
-	 * file() is: this file is inside a running container, and a rename
-	 * into an overlay upper layer never becomes visible through the
-	 * merged mount (#276). DNS has the identical exposure -- a record
-	 * added after the first write silently never reached the server on
-	 * any host whose container storage is not btrfs. */
-	return persist_write_file_inplace(abs_path, buf, off);
+int dns_write_hosts_file(const char *abs_path)
+{
+	/*
+	 * DNS_MAX_RECORDS * (dotted-quad + space + DNS_NAME_MAX + newline)
+	 * is at most ~256 * 270 =~ 69KB; sized comfortably above that so
+	 * the truncation guard in dns_render_hosts() is a defensive
+	 * backstop, not a real, silent record-dropping path.
+	 */
+	static char buf[DNS_HOSTS_RENDER_MAX];
+	int n = dns_render_hosts(buf, sizeof(buf));
+
+	/* In place, not a rename (#276), and only on a difference (#697). */
+	return n < 0 ? -1 : write_if_changed(abs_path, buf, (size_t)n);
+}
+
+const char *dns_server_hosts_path(const char *container_name)
+{
+	int i;
+
+	for (i = 0; i < DNS_SERVER_MAX; i++)
+		if (g_bindings[i].container_name[0] != '\0' &&
+		    strcmp(g_bindings[i].container_name, container_name) == 0)
+			return g_bindings[i].hosts_path;
+	return NULL;
 }
 
 static struct dns_server_binding *binding_find(const char *container_name)
@@ -589,7 +632,7 @@ enum dns_server_error dns_server_register(const char *container_name, pid_t pid,
 		                          full_path, sizeof(full_path));
 	}
 
-	if (dns_write_hosts_file(full_path) != 0)
+	if (dns_write_hosts_file(full_path) < 0)
 		return DNS_SERVER_ERR_WRITE_FAILED;
 
 	/*
@@ -612,7 +655,7 @@ enum dns_server_error dns_server_register(const char *container_name, pid_t pid,
 		                          DNS_SERVERS_FILE_PATH, servers_full_path,
 		                          sizeof(servers_full_path));
 	}
-	if (dns_write_servers_file(servers_full_path) != 0)
+	if (dns_write_servers_file(servers_full_path) < 0)
 		return DNS_SERVER_ERR_WRITE_FAILED;
 
 	sys_pidfd_send_signal(pidfd, SIGHUP);
@@ -697,7 +740,7 @@ void dns_server_sync_all(void)
 		/* Host-side path, not the container's own id-mapped view (#269). */
 		container_file_host_path(g_bindings[i].container_name,
 		                          g_bindings[i].hosts_path, full_path, sizeof(full_path));
-		if (dns_write_hosts_file(full_path) != 0)
+		if (dns_write_hosts_file(full_path) <= 0) /* unchanged: nothing to reload (#697) */
 			continue;
 		sys_pidfd_send_signal(entry->handle.pidfd, SIGHUP);
 	}
