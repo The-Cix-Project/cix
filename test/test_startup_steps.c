@@ -9,9 +9,11 @@
  *     step that is gone;
  *   - every call of one sits within a few lines after a first_in_kernel()
  *     test, so none runs again on a handover;
- *   - the bare init_mode tests left in cixd_main() are exactly the three
- *     classified ones (the uevent socket, the shutdown's sync and the
- *     shutdown itself -- the handover's own check runs for any
+ *   - the bare init_mode tests left in cixd_main() are exactly the four
+ *     classified ones (the uevent socket, the kernel's firmware path --
+ *     run again on a handover, since the write is idempotent and storage
+ *     placement can move the link (ADR-0381) -- the shutdown's sync and
+ *     the shutdown itself; the handover's own check runs for any
  *     --handover since phase 2), so a new init-mode step cannot slip in
  *     unclassified.
  *
@@ -26,7 +28,7 @@
 #define MAIN_C "daemon/src/main.c"
 #define MAX_LINES 4000
 #define WINDOW 25
-#define BARE_INIT_MODE_ALLOWED 3
+#define BARE_INIT_MODE_ALLOWED 4
 
 static char g_lines[MAX_LINES][512];
 static int g_n;
