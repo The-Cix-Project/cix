@@ -78,8 +78,8 @@ Also from cixd's code: the data disks are mounted (`diskformat_remount_present_r
 1. **The index and the record**, in two halves.
    - **1a:** cixd creates the `firmware` image, keeps the stable link following its current version (`firmware_link_set()`, at start and after every package job), and applies the kernel path before the boot's sweep (`firmware_path_apply()`). It installs nothing, so the link names an empty directory until the image holds a package.
    - **1b:** cixd reads output selectors and a loaded module's declared firmware, and puts `firmware` on device records. It installs nothing yet; the record shows what would be fetched.
-2. **The recipe.**
-   - `linux-firmware` with `amdgpu-firmware` and `rtw88-firmware` outputs (git first), and the old `rtw88-firmware` recipe retired.
+2. **The recipe** (done 2026-11-19: `linux-firmware@20261019-1`, cix-recipes ca2638c7, with the `amdgpu-firmware` output only).
+   - `linux-firmware` with the `amdgpu-firmware` output (git first). The `rtw88-firmware` output joins in release 3, with the old `rtw88-firmware` recipe retired in the same change. That name is one recipe's today (ADR-0324), and `cix-root` rolls it, so an earlier output would have moved ar-1's radio to new firmware at once (161,240 bytes in 20261019 against `rtw88-firmware@3`'s 150,984).
    - Upstream declares symlinked names in `WHENCE` (`Link:` lines), which its own install script creates. The recipe creates those under each family it ships, or a raw copy of the tree misses names a driver asks for.
    - Built once on .95, a fetch and a copy. Priced before it runs, since the source is 642 MB. If `linux-firmware` rolls, each upstream release is another 642 MB fetch and build; it is pinned unless the owner chooses otherwise.
 3. **Acquisition and re-probe.**

@@ -2462,6 +2462,19 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 - **#689 live:** 687 ran its first drain at 11:02:26 (`image gc: set aside 3 version(s)`). At 11:10 `cixctl process ls` showed no cixd child but procfuse and the watchdog. A look logs nothing when it finds the drops settled or still pending, so that absence alone cannot tell a working check from one that never ran. Nor does the gap between staging and switching prove it: 9 s at 687 → 688, but 5 s at 686 → 687, on the old code, so a short gap shows only that no check was pending then. What holds the change is `test_blocking_waits` and the code. A `deleted subvolumes were still being freed after 7200 s` line would show the looks ran for two hours without holding anything, and that drops are not settling on .95.
 - **#690 shown live at the next switch.** It acts in the process that *writes* the handover, and 686 wrote this one, so the kernel log again took 2,180 lines at 11:02:26. At the 687 → 688 switch (12:22:12, 687 writing), the kernel log has no line at all from two seconds before to five seconds after.
 
+## Part 377: the linux-firmware recipe, and the source cache's first hits (ADR-0381 release 2, ADR-0382)
+
+**What shipped.** `linux-firmware@20261019-1` (cix-recipes ca2638c7): kernel.org's `linux-firmware-20261019`, with the `amdgpu-firmware` output (`lib/firmware/amdgpu` and its licence), and `WHENCE` in the main package.
+
+**How it was verified, on 192.168.15.95, 2026-11-19.**
+- **What the recipe copies:** `probe-linuxfw@2-1` and `@3-1` read the tarball. There are no `Link:` entries under `amdgpu/` or `rtw88/`. `amdgpu/` is 699 files, 115,672,486 bytes, under `LICENSES/LICENSE.amdgpu`; `rtw88/` is 12 files and a README, under `LICENSES/LICENCE.rtlwifi_firmware.txt`.
+- **ADR-0382 live:**
+  - `probe-linuxfw@2-1` fetched the 672,694,092 bytes in 11 minutes (10:32 to 10:44 UTC; the same file took 70 minutes that morning). Afterwards `GET /v1/pkg/cache` read `source_total_bytes: 672694092, source_entry_count: 1`.
+  - `probe-linuxfw@3-1` logged `source 0 (672694092 bytes) came from the source cache, not the network`, 3 seconds after its commit;
+  - the `amdgpu-firmware` build logged the same line.
+- **The build:** `amdgpu-firmware@20261019-1` was installed into a scratch image, `fwbuild`, at 10:53, about 4.5 minutes after its commit. Its file list held all 699 `lib/firmware/amdgpu/` files and `usr/share/licenses/amdgpu-firmware/LICENSE.amdgpu`. Both artifacts were signed and published to the LAN cache. The scratch image was removed.
+- **Not built into any real image:** nothing on .95 needs amdgpu firmware, and release 3's acquisition is what installs it where a device asks.
+
 ## Part 376: built-in drivers' firmware, and a verified source is kept (0.2.57-698, -699, ADR-0382)
 
 **What shipped.**
