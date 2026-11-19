@@ -2462,6 +2462,37 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 - **#689 live:** 687 ran its first drain at 11:02:26 (`image gc: set aside 3 version(s)`). At 11:10 `cixctl process ls` showed no cixd child but procfuse and the watchdog. A look logs nothing when it finds the drops settled or still pending, so that absence alone cannot tell a working check from one that never ran. Nor does the gap between staging and switching prove it: 9 s at 687 → 688, but 5 s at 686 → 687, on the old code, so a short gap shows only that no check was pending then. What holds the change is `test_blocking_waits` and the code. A `deleted subvolumes were still being freed after 7200 s` line would show the looks ran for two hours without holding anything, and that drops are not settling on .95.
 - **#690 shown live at the next switch.** It acts in the process that *writes* the handover, and 686 wrote this one, so the kernel log again took 2,180 lines at 11:02:26. At the 687 → 688 switch (12:22:12, 687 writing), the kernel log has no line at all from two seconds before to five seconds after.
 
+## Part 380: DHCP relays, and a reload that reaches the server (ADR-0383, ADR-0384, 0.2.57-703, -704)
+
+**What shipped.**
+- **703, ADR-0383:** a DHCP range may name relays, containers on its network that run dnsmasq in relay-only mode from a file cixd renders; a change restarts only the relay service.
+- **704, #697 and ADR-0384:**
+  - a DNS server's records and forwarders are staged at create;
+  - every sync writes and reloads only on a difference;
+  - a service declares `reload_signal`, and `CIXINIT_OP_RELOAD` (cix-init version 4) delivers it, replacing a SIGHUP to the container's pid 1 that had been discarded since ADR-0260.
+- **On .95:**
+  - cr-1 and cr-2 run the relay (router 1.2.0, cr-* 1.7.0);
+  - dns-1 and dns-2 left `access` (dns-* 1.9.0, which also declare `reload_signal`);
+  - `access` and `remote-access` are both served through the cores.
+
+**How it was verified, on 192.168.15.95, 2026-11-19.**
+- **Compile probes:**
+  - `0.2.57-781` failed, finding three things: a network name over 15 characters in `test_dhcp`; the route-back check missing the runtime's own default route; and gate counts.
+  - `782` passed (703); `783` and `784` passed (704).
+- **dnsmasq read first:**
+  - its relay, the relayed server side and the interface checks (`probe-dnsrelay@1-1` to `@4-1`);
+  - the DNS server a relayed client is told, its receiving interface's address (`@5-1`, `@6-1`);
+  - dhcp-helper 1.2 has no configuration file (`probe-dhcphelper@2-1`).
+- **The relay, live:**
+  - a `dhcpcd` client on `remote-access` leased 192.168.152.184 from dns-2, and renewed it every minute on a 120 s lease (expiry 22:56:53, 22:57:58, 22:58:53, 22:59:48 UTC);
+  - after the move, a client on `access` leased 192.168.151.154 from dns-1;
+  - cr-1's relay file names both networks and both servers, and listens on those two networks only.
+- **The reload, live:**
+  - before 704, a new record sat in dns-1's hosts file while both servers answered NXDOMAIN;
+  - after, a record added with dns-2 on the new cix-init resolved from dns-2 at once (dns-1, not yet recreated, still said NXDOMAIN);
+  - a range change that restarted both servers left them answering NOERROR straight away, where at 703 it had left them answering REFUSED.
+- **The outage on the way, and its cause:** recreating the cores without `--secret=RIP_PASSWORD` put the literal placeholder in `bird.conf`. The site gateway then rejected their RIP, and the routes back to services, access and remote-access expired. Fixed by re-applying with the secret; #696 is to make an unfilled placeholder refuse the apply.
+
 ## Part 379: re-probe, and the radio's firmware comes from the firmware image (ADR-0381 release 3, 0.2.57-701, -702)
 
 **What shipped.**
