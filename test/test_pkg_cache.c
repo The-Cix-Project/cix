@@ -678,7 +678,7 @@ int main(void)
 	/* #500: an install into an image that does not exist is refused, so
 	 * every image this test installs into is created first. */
 	{
-		static const char *const imgs[] = { "imgA", "imgB", "imgC", "imgD" };
+		static const char *const imgs[] = { "imgA", "imgB", "imgC", "imgD", "imgE" };
 		size_t k;
 
 		for (k = 0; k < sizeof(imgs) / sizeof(imgs[0]); k++) {
@@ -1067,13 +1067,13 @@ int main(void)
 
 				memset(&r, 0, sizeof(r));
 				CHECK(cix_client_request(&client, "POST", "/v1/pkg/install",
-				                         "{\"name\":\"cix\",\"image\":\"imgD\"}", &r) == 0 &&
+				                         "{\"name\":\"cix\",\"image\":\"imgE\"}", &r) == 0 &&
 				              r.status == 202,
-				      "POST /v1/pkg/install cix@imgD (artifact tier, no build container)");
+				      "POST /v1/pkg/install cix@imgE (artifact tier, no build container)");
 				cix_response_free(&r);
 
-				CHECK(wait_for_pkg_state(&client, "cix", "imgD", "installed", 300) == 0,
-				      "cix@imgD reaches state=installed from the artifact");
+				CHECK(wait_for_pkg_state(&client, "cix", "imgE", "installed", 300) == 0,
+				      "cix@imgE reaches state=installed from the artifact");
 
 				wait_cache_field(&client, "entry_count", CACHE_EQ, 4);
 				memset(&r, 0, sizeof(r));
