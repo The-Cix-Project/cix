@@ -2462,6 +2462,19 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 - **#689 live:** 687 ran its first drain at 11:02:26 (`image gc: set aside 3 version(s)`). At 11:10 `cixctl process ls` showed no cixd child but procfuse and the watchdog. A look logs nothing when it finds the drops settled or still pending, so that absence alone cannot tell a working check from one that never ran. Nor does the gap between staging and switching prove it: 9 s at 687 → 688, but 5 s at 686 → 687, on the old code, so a short gap shows only that no check was pending then. What holds the change is `test_blocking_waits` and the code. A `deleted subvolumes were still being freed after 7200 s` line would show the looks ran for two hours without holding anything, and that drops are not settling on .95.
 - **#690 shown live at the next switch.** It acts in the process that *writes* the handover, and 686 wrote this one, so the kernel log again took 2,180 lines at 11:02:26. At the 687 → 688 switch (12:22:12, 687 writing), the kernel log has no line at all from two seconds before to five seconds after.
 
+## Part 378: a device gets its firmware by itself, acquisition (ADR-0381 release 3, 0.2.57-700)
+
+**What shipped.**
+- **The provider index:** the firmware scan's child matches each name the `firmware` image lacks against every recipe's outputs' `lib/firmware` selectors.
+- **The record:** gains `provided_by` and `unprovided`.
+- **The decision:** `fwacquire_verdict()` declares a provided name's output into the `firmware` image, rolling, for the drain to install. It does this only from a source with `trust_keys` (the owner's "Trusted sources only") and only when the kmod policy would load the driver automatically.
+
+**How it was verified, on 192.168.15.95, 2026-11-19.**
+- **Compile probe:** `probe-cix-compile@0.2.57-778` passed, `test_fwacquire_verdict` included.
+- **The release, by publishing alone:** published at 13:41 UTC; the roll read `root: cix-root 1d5373b858f6 -> 82ddf22cafe4` at 14:10:24 and switched in place to 0.2.57-700 on slot b at 14:10:55. All 14 containers kept running.
+- **The radio's record under 700:** `"declared":1,"missing":[],"provided_by":[],"unprovided":[],"complete":true`. Nothing was acquired, which is right: its one file is in the root, and no output provides it until the `rtw88-firmware` output is published, which waits for the owner.
+- **Not seen live yet:** a declaration. .95 has no device whose firmware an output provides and the image lacks.
+
 ## Part 377: the linux-firmware recipe, and the source cache's first hits (ADR-0381 release 2, ADR-0382)
 
 **What shipped.** `linux-firmware@20261019-1` (cix-recipes ca2638c7): kernel.org's `linux-firmware-20261019`, with the `amdgpu-firmware` output (`lib/firmware/amdgpu` and its licence), and `WHENCE` in the main package.
