@@ -2462,6 +2462,24 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 - **#689 live:** 687 ran its first drain at 11:02:26 (`image gc: set aside 3 version(s)`). At 11:10 `cixctl process ls` showed no cixd child but procfuse and the watchdog. A look logs nothing when it finds the drops settled or still pending, so that absence alone cannot tell a working check from one that never ran. Nor does the gap between staging and switching prove it: 9 s at 687 → 688, but 5 s at 686 → 687, on the old code, so a short gap shows only that no check was pending then. What holds the change is `test_blocking_waits` and the code. A `deleted subvolumes were still being freed after 7200 s` line would show the looks ran for two hours without holding anything, and that drops are not settling on .95.
 - **#690 shown live at the next switch.** It acts in the process that *writes* the handover, and 686 wrote this one, so the kernel log again took 2,180 lines at 11:02:26. At the 687 → 688 switch (12:22:12, 687 writing), the kernel log has no line at all from two seconds before to five seconds after.
 
+## Part 376: built-in drivers' firmware, and a verified source is kept (0.2.57-698, -699, ADR-0382)
+
+**What shipped.**
+- **698:** a built-in driver's firmware declarations come from `modules.builtin.modinfo`.
+- **699, ADR-0382:** a source that verified against its recipe's `sha256` is kept in `<pkg>/source-cache/<sha256>` and served to any later fetch declaring it. The fetch child hashes every source, off the loop. `DELETE /v1/pkg/cache` clears both caches. `GET /v1/pkg/cache` reports `source_total_bytes` and `source_entry_count`.
+
+**How it was verified, on 192.168.15.95, 2026-11-19.**
+- **Compile probes:**
+  - `probe-cix-compile@0.2.57-775` passed for 698;
+  - `@0.2.57-776` failed two `test_pkg` scenarios that expected a fetch to fail while declaring a sha256 an earlier scenario had fetched. The cache served them, which is ADR-0382 working; the tests now use their own content;
+  - `@0.2.57-777` passed for 699.
+- **Both releases deployed by publishing alone,** each switching in place with every container running:
+  - 698: published 06:26, switched 06:57 on slot b;
+  - 699: published 10:03, switched 10:32 on slot a.
+- **698's fix, live:** every device record reads `complete: true`. Before, `ahci`, `xhci_pci`, `virtio_pci`, `ehci_pci`, `simpledrm` and `usbhid` read false.
+- **699's motive, measured:** `GET /v1/system/stalls` recorded `event pkg-fetch (3150 ms)` at ts 1795075672, the parent hashing `linux-firmware`'s 672 MB source on the loop.
+- **Not seen live yet:** a hit. The cache was empty after the switch (`source_entry_count: 0`), because 699's own build ran under 698. The `linux-firmware` WHENCE probe, started under 699 at 10:32, is the first source it keeps.
+
 ## Part 375: the first release by publishing alone; a host's firmware image (ADR-0381 1a, 1b, 0.2.57-697)
 
 **What shipped.**
