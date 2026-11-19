@@ -2044,6 +2044,42 @@ static char g_bootroot_waiting[256];
  */
 #define ROOT_KERNEL_RELEASES_SUFFIX ".kernel-releases"
 static char g_bootroot_assembly_kernel_releases[512];
+
+/*
+ * ADR-0380: which cix release an assembled root carries, kept beside it
+ * as <image>.cixd for the same reason: the cixd version cix-root held
+ * when that assembly started. The installer ISO puts this root on its
+ * media, so it compares its installer tools with this record, never
+ * with cix-root, which can be ahead of the last assembly. Written only
+ * when the assembly succeeds; a root whose cix-root held no cixd leaves
+ * none, and an ISO is then refused until a root is assembled again.
+ */
+#define ROOT_CIXD_SUFFIX ".cixd"
+
+/* The release image_path's root carries, read from its record: 1 with
+ * out filled, 0 when there is none. */
+static int root_cixd_release(const char *image_path, char *out, size_t out_size)
+{
+	char path[PATH_MAX];
+	ssize_t n;
+	int fd;
+
+	out[0] = '\0';
+	if (snprintf(path, sizeof(path), "%s%s", image_path, ROOT_CIXD_SUFFIX) >= (int)sizeof(path))
+		return 0;
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+	n = read(fd, out, out_size - 1);
+	close(fd);
+	if (n <= 0) {
+		out[0] = '\0';
+		return 0;
+	}
+	out[n] = '\0';
+	out[strcspn(out, "\n")] = '\0';
+	return out[0] != '\0';
+}
 static char g_bootroot_assembly_modules_dir[PATH_MAX];
 
 /*
@@ -7835,8 +7871,9 @@ static void migrate_legacy_intervals(void)
  *   catalogue ADR-0315 points the host at. An every-N job that has
  *   never run is due at once, so the first sync happens at first boot.
  * - host-roll, system.roll nightly at 03:00 for 3h (ADR-0327, the
- *   owner's window of 2026-10-03): build what is newer of the kernel
- *   and cix, and reboot into it inside the window.
+ *   owner's window of 2026-10-03): build a newer kernel and deploy it
+ *   with the root inside the window. A cix release deploys as cix-root
+ *   moves, by a root-only roll (ADR-0379, ADR-0380).
  */
 #define DEFAULT_RECIPE_SYNC_NAME "recipe-sync"
 #define DEFAULT_RECIPE_SYNC_SECONDS (6 * 3600)
@@ -10694,8 +10731,7 @@ static int container_direct_rootfs(const char *name, char *out, size_t out_size)
 /* ADR-0343: defined beside the discard queue it feeds. */
 static void image_retain_run(void);
 
-static void pkg_completion_followup(int next, pid_t pkg_pid, int pkg_pidfd, int pkg_chain_idx,
-                                     const char *hostbuild_done_name)
+static void pkg_completion_followup(int next, pid_t pkg_pid, int pkg_pidfd, int pkg_chain_idx)
 {
 	if (next == 1)
 		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
@@ -10716,23 +10752,14 @@ static void pkg_completion_followup(int next, pid_t pkg_pid, int pkg_pidfd, int 
 	artifact_push_pump();
 
 	/*
-	 * ADR-0057: "cix" is the one hostbuild name this daemon gives
-	 * any further meaning to -- everything else pkg.c handles is
-	 * completely generic. Deliberately a plain string match here in
-	 * main.c, not a flag/callback registered in pkg.c itself: pkg.c
-	 * stays fully agnostic to what any package *means*.
-	 */
-	if (hostbuild_done_name != NULL && hostbuild_done_name[0] != '\0' &&
-	    strcmp(hostbuild_done_name, "cix") == 0)
-		bootroot_want();
-	/*
 	 * ADR-0371: an assembly that was asked for waits on cix-root -- for a
 	 * job of its own installing a build there, or for one of anyone's to
 	 * leave the image settled -- and every job's end is when that can
-	 * change. A no-op when none is asked for.
+	 * change. A no-op when none is asked for. No hostbuild asks for one
+	 * by itself any more: a cix hostbuild did until ADR-0380 release B,
+	 * and nothing hostbuilds cix now.
 	 */
-	else
-		bootroot_drive();
+	bootroot_drive();
 
 	/* ADR-0327: a host roll waiting for this hostbuild moves on, after
 	 * the assembly asked for above so it can see that one is under way. */
@@ -10742,11 +10769,10 @@ static void pkg_completion_followup(int next, pid_t pkg_pid, int pkg_pidfd, int 
 
 	/*
 	 * #693: the rolling drain after the roll, never before it. A roll's
-	 * next hostbuild (cix after the kernel, or the first after its wait)
-	 * starts first, and the drain then holds while it runs. Run first,
-	 * the drain took the moment every job ended, so a waiting roll could
-	 * wait out its window behind a stream of image rolls, and an ordinary
-	 * build could start in the gap between the kernel and cix hostbuilds.
+	 * next hostbuild (the kernel, after its wait) starts first, and the
+	 * drain then holds while it runs. Run first, the drain took the moment
+	 * every job ended, so a waiting roll could wait out its window behind
+	 * a stream of image rolls.
 	 */
 	if (next != 1 && next != 2)
 		try_start_queued_pkg_rebuild();
@@ -10793,16 +10819,19 @@ static void resolve_kmod_bin_dir(char *out, size_t out_size)
 }
 
 /*
- * The outputs the root takes and the hostbuild whose version names each
- * (ADR-0367 decision 5, ADR-0371). None is in its owner's main package;
- * each is its own package, cached beside the owner by
- * cache_sibling_outputs() at the owner's hostbuild version, so the
- * root's daemon, init, dashboard and client are one build, and its
- * modules are the booting kernel's. Since ADR-0371 phase 3a they reach
- * the root as packages installed in cix-root, and root_image_behind()
- * holds an assembly until cix-root has each at its owner's version. The
- * probe is the path each holds; the ISO build still unpacks the module
+ * The outputs the root takes from a hostbuild, and the hostbuild whose
+ * version names each (ADR-0367 decision 5, ADR-0371): today only the
+ * kernel's modules, so the root's modules are the booting kernel's. The
+ * output is its own package, cached beside the kernel by
+ * cache_sibling_outputs() at the hostbuild's version; it reaches the
+ * root as a package installed in cix-root, and root_image_behind() holds
+ * an assembly until cix-root has it at the kernel hostbuild's version.
+ * The probe is the path it holds; the ISO build still unpacks the module
  * tree itself (root_output_resolve()).
+ *
+ * cixd and cixctl were rows here until ADR-0380 release B. They are
+ * rolling entries of cix-root now, so a release reaches the root by
+ * cix-root moving, and nothing hostbuilds cix.
  *
  * An optional owner that is not installed means the root has none of
  * that part: with no kernel hostbuild there is no module tree to
@@ -10814,12 +10843,10 @@ static const struct {
 	const char *probe;
 	int owner_optional;
 } g_root_outputs[] = {
-	{ "cix", "cixd", "bin/cixd", 0 },
-	{ "cix", "cixctl", "usr/bin/cixctl", 0 },
 	{ "kernel", "kernel-modules", "lib/modules", 1 },
 };
 #define ROOT_OUTPUT_COUNT ((int)(sizeof(g_root_outputs) / sizeof(g_root_outputs[0])))
-#define ROOT_OUTPUT_KERNEL_MODULES 2
+#define ROOT_OUTPUT_KERNEL_MODULES 0
 
 /*
  * Output k of g_root_outputs, to be unpacked under base: 1 with
@@ -10883,13 +10910,10 @@ static int root_output_unpack(const char *artifact, const char *dir, const char 
 /*
  * ADR-0371 phase 3a: does cix-root hold this host's own builds? Each of
  * g_root_outputs must be installed in ROOT_IMAGE at its owner's
- * installed hostbuild version: cixd and cixctl at the cix hostbuild's,
- * and kernel-modules at the kernel hostbuild's when there is one. That
- * is what g_root_outputs guaranteed when the assembly unpacked them
- * itself, and it is the only thing that ties a root to the build being
- * deployed: a root sealed from a cix-root still holding the previous
- * cixd would be staged, booted, found not to be running the installed
- * cix, and rolled again every night.
+ * installed hostbuild version: kernel-modules at the kernel hostbuild's
+ * when there is one, so a staged kernel boots with its own modules.
+ * Since ADR-0380 release B that is the only row: the release cix-root
+ * holds is the release, since cixd and cixctl roll in it.
  *
  * Returns 0 when it does, 1 with *out_k and out_version naming the first
  * output that is behind and the version it should be at, and -1 with
@@ -11086,9 +11110,9 @@ static void spawn_cix_bootroot_assembly(void)
 
 /* ---------- ADR-0371 phase 3a: an assembly is asked for, then driven ----------
  *
- * The root is cix-root's current version, so a cix hostbuild finishing
- * is no longer enough to assemble: the image must first hold that
- * build's cixd and cixctl, and the kernel hostbuild's kernel-modules.
+ * The root is cix-root's current version, so the image must first hold
+ * the kernel hostbuild's kernel-modules (cixd and cixctl roll in it
+ * since ADR-0380 release B, so the release it holds is the release).
  * bootroot_want() records that an assembly is wanted; bootroot_drive(),
  * run at the end of every package job and every assembly, does the next
  * step -- installs the first build cix-root lacks, or, once it holds
@@ -11244,8 +11268,10 @@ static void bootroot_want(void)
 
 /* ---------- ADR-0327: the host follows its own rolling packages ----------
  *
- * The host's two packages are the kernel and cix (the control-plane
- * root), both hostbuilt into PKG_HOSTBUILD_IMAGE. A container follows
+ * The host's two parts are the kernel, hostbuilt into
+ * PKG_HOSTBUILD_IMAGE, and the control-plane root, which is cix-root's
+ * current version (ADR-0371); cix itself was hostbuilt too until
+ * ADR-0380 release B, and is now cix-root's rolling cixd. A container follows
  * its image; until this, nothing moved the host: a newer kernel recipe
  * waited for someone to run a hostbuild and reboot.
  *
@@ -11286,7 +11312,6 @@ static struct {
 	enum hostroll_step step;
 	long reboot_by;     /* the window's end; 0 = none, reboot when staged */
 	int stage_kernel;   /* the kernel artifact differs from what runs */
-	int then_cix;       /* cix is still to build after the kernel */
 	char building[PKG_NAME_MAX];
 	char slot[8];       /* HOSTROLL_SWITCH: the slot staged */
 	long switch_by;     /* HOSTROLL_SWITCH: reboot instead once this passes */
@@ -11384,10 +11409,10 @@ static void hostroll_assemble(void)
 {
 	/*
 	 * Set first: a refusal stops the roll through hostroll_assembly_done(),
-	 * which acts only on a roll at this step. A cix hostbuild has already
-	 * asked for its own assembly (pkg_completion_followup()), and one
-	 * running with nothing wanted is that one; asking again would restart
-	 * its count of installs tried, or seal the same tree twice.
+	 * which acts only on a roll at this step. An assembly already wanted
+	 * or running (an operator's POST /v1/system/assembly, say) is the
+	 * one this roll takes; asking again would restart its count of
+	 * installs tried, or seal the same tree twice.
 	 */
 	g_hostroll.step = HOSTROLL_ASSEMBLE;
 	if (!g_bootroot_wanted && !g_bootroot_assembly_running)
@@ -11417,11 +11442,6 @@ static void hostroll_tick(void)
 	}
 	hostroll_say("info", 1, "%s %s built (ADR-0327)", g_hostroll.building,
 	               st.installed);
-	if (strcmp(g_hostroll.building, "kernel") == 0 && g_hostroll.then_cix) {
-		g_hostroll.then_cix = 0;
-		hostroll_build("cix");
-		return;
-	}
 	hostroll_assemble();
 }
 
@@ -11639,35 +11659,34 @@ static int roll_start_failed(const char *name, char *reason, size_t reason_size)
  */
 /*
  * What the roll does once no package job is in flight (#688): compare
- * the kernel and cix with what is installed and running, and start the
- * first step. window_end is the schedule window's end, 0 for none.
+ * the kernel and the root with what is installed and running, and start
+ * the first step. window_end is the schedule window's end, 0 for none.
  */
 /*
- * The kernel's and cix's standing against what is published and what
- * runs: the roll's first two reasons. 0, or -1 when either was never
- * hostbuilt here.
+ * The kernel's standing against what is published and what runs: the
+ * roll's first reason, the root (root_verdict()) being the other. 0, or
+ * -1 when the kernel was never hostbuilt here. cix was a reason of its
+ * own until ADR-0380 release B; a release is cix-root moving now, which
+ * the root's reason covers.
  */
 struct hostroll_parts {
-	struct pkg_host_state kernel, cix;
-	int kernel_behind, cix_behind, kernel_not_running, cix_not_running;
+	struct pkg_host_state kernel;
+	int kernel_behind, kernel_not_running;
 };
 
 static int hostroll_parts_read(struct hostroll_parts *p)
 {
 	char running_kernel[128], kernel_upstream[PKG_VERSION_MAX];
 
-	if (pkg_host_state("kernel", &p->kernel) != 0 || pkg_host_state("cix", &p->cix) != 0)
+	if (pkg_host_state("kernel", &p->kernel) != 0)
 		return -1;
 	kernel_running_version(running_kernel, sizeof(running_kernel));
 	srcresolve_upstream_of(p->kernel.installed, kernel_upstream, sizeof(kernel_upstream));
 	/* A failed hostbuild left nothing installed: it is behind, and is
 	 * retried, never staged from whatever the artifact directory holds. */
 	p->kernel_behind = p->kernel.available[0] != '\0' || p->kernel.failed;
-	p->cix_behind = p->cix.available[0] != '\0' || p->cix.failed;
 	p->kernel_not_running = p->kernel.installed[0] != '\0' &&
 	                        strcmp(kernel_upstream, running_kernel) != 0;
-	p->cix_not_running = p->cix.installed[0] != '\0' &&
-	                     strcmp(p->cix.installed, CIX_BUILD_VERSION) != 0;
 	return 0;
 }
 
@@ -11706,15 +11725,15 @@ static enum rootslot_verdict root_verdict(char *running, size_t running_size, ch
 static int hostroll_decide(long window_end, char *reason, size_t reason_size)
 {
 	struct hostroll_parts p;
-	struct pkg_host_state *kernel = &p.kernel, *cix = &p.cix;
+	struct pkg_host_state *kernel = &p.kernel;
 	char root_running[IMAGE_VERSION_MAX], root_current[IMAGE_VERSION_MAX], root_part[96];
 	enum rootslot_verdict root_v;
 	int root_behind;
 
 	if (hostroll_parts_read(&p) != 0) {
 		snprintf(reason, reason_size,
-		         "the kernel or cix was never hostbuilt on this host, so there is nothing to "
-		         "roll from");
+		         "the kernel was never hostbuilt on this host, so there is nothing to roll "
+		         "from");
 		return -1;
 	}
 	root_v = root_verdict(root_running, sizeof(root_running), root_current,
@@ -11730,32 +11749,28 @@ static int hostroll_decide(long window_end, char *reason, size_t reason_size)
 		         root_current);
 	else if (root_v == ROOTSLOT_UNSETTLED)
 		snprintf(root_part, sizeof(root_part), "; root: cix-root is still converging");
-	if (!p.kernel_behind && !p.cix_behind && !p.kernel_not_running && !p.cix_not_running &&
-	    !root_behind) {
+	/* ADR-0380: the running cix is behind exactly when the root is, since
+	 * a release is cix-root's cixd; root_part says so. */
+	if (!p.kernel_behind && !p.kernel_not_running && !root_behind) {
 		snprintf(reason, reason_size,
 		         "current: kernel %s and cix %s are the newest and running%s",
-		         kernel->installed, cix->installed, root_part);
+		         kernel->installed, CIX_BUILD_VERSION, root_part);
 		return 0;
 	}
 
 	memset(&g_hostroll, 0, sizeof(g_hostroll));
 	g_hostroll.reboot_by = window_end;
 	g_hostroll.stage_kernel = p.kernel_behind || p.kernel_not_running;
-	g_hostroll.then_cix = p.kernel_behind && p.cix_behind;
 	if (root_behind)
 		snprintf(g_hostroll.root_target, sizeof(g_hostroll.root_target), "%s", root_current);
 	/* #683: a failed hostbuild has no installed version; the sentence
 	 * says "failed" there, and available is the recipe the retry builds. */
-	snprintf(reason, reason_size, "rolling: kernel %s%s%s, cix %s%s%s%s",
+	snprintf(reason, reason_size, "rolling: kernel %s%s%s, cix %s%s",
 	         kernel->installed[0] != '\0' ? kernel->installed : kernel->failed ? "failed" : "none",
-	         p.kernel_behind ? " -> " : "", kernel->available,
-	         cix->installed[0] != '\0' ? cix->installed : cix->failed ? "failed" : "none",
-	         p.cix_behind ? " -> " : "", cix->available, root_part);
+	         p.kernel_behind ? " -> " : "", kernel->available, CIX_BUILD_VERSION, root_part);
 	hostroll_say("info", 1, "%s (ADR-0327)", reason);
 	if (p.kernel_behind)
 		return hostroll_build("kernel") == 0 ? 0 : roll_start_failed("kernel", reason, reason_size);
-	if (p.cix_behind)
-		return hostroll_build("cix") == 0 ? 0 : roll_start_failed("cix", reason, reason_size);
 	hostroll_assemble();
 	if (g_hostroll.step == HOSTROLL_ASSEMBLE)
 		return 0;
@@ -11767,12 +11782,13 @@ static int hostroll_decide(long window_end, char *reason, size_t reason_size)
  * ADR-0379 decision 5, the owner's "as soon as it settles": after every
  * package job, when cix-root has settled at a version the running root
  * was not sealed from, start a root-only roll. It never hostbuilds, so it
- * starts only when the installed kernel is the running one and cix is
- * current and running; a part that is behind waits for the window or a
- * hand-run roll, whose roll deploys the root too. A kernel only
- * published, not built, holds nothing (ADR-0380). It assembles, stages
- * the root alone, and
- * switches in place; hostroll_switch_tick() never reboots for it.
+ * starts only when the installed kernel is the running one; a built
+ * kernel waiting for its reboot waits for the window or a hand-run roll,
+ * whose roll deploys the root too. A kernel only published, not built,
+ * holds nothing (ADR-0380). Since ADR-0380 release B this is how a cix
+ * release deploys: cix-root's cixd moves, and this roll switches into
+ * it. It assembles, stages the root alone, and switches in place;
+ * hostroll_switch_tick() never reboots for it.
  */
 /*
  * ADR-0379: when a moved cix-root deploys, from the system.roll job's
@@ -11844,8 +11860,7 @@ static void rootroll_tick(void)
 	 * for its reboot does hold: cix-root carries its modules, which the
 	 * running kernel cannot load.
 	 */
-	if (hostroll_parts_read(&p) != 0 || p.cix_behind || p.kernel_not_running ||
-	    p.cix_not_running)
+	if (hostroll_parts_read(&p) != 0 || p.kernel_not_running)
 		return;
 	memset(&g_hostroll, 0, sizeof(g_hostroll));
 	g_hostroll.root_only = 1;
@@ -12959,10 +12974,13 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 	                          sizeof(isotools_root));
 	/*
 	 * ADR-0380: cix's installer tools are in that same tree, from the
-	 * cix-installer-tools output, and must be the release cix-root's cixd
-	 * is: the installer writes that root. One hostbuild used to make them
-	 * equal; now two images each follow cix, so they can briefly differ
-	 * while one converges, and an ISO is not built from the pair then.
+	 * cix-installer-tools output, and must be the release of the root
+	 * this ISO carries: the installer writes that root. One hostbuild
+	 * used to make them equal; now each follows cix on its own, so they
+	 * can differ, and an ISO is not built from such a pair. The root's
+	 * release is the record beside it (root_cixd_release()), never
+	 * cix-root's, which can be ahead of the last assembly (#434's
+	 * failure: N+1 stamped on an N root).
 	 */
 	snprintf(mkinstalleriso_bin, sizeof(mkinstalleriso_bin), "%s/%s/mkinstalleriso",
 	         isotools_root, CIX_LIBEXEC);
@@ -12978,15 +12996,15 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 		if (pkg_installed_version(ISO_INSTALLER_TOOLS, ISO_BUILDER_IMAGE, tools,
 		                          sizeof(tools)) != 0)
 			tools[0] = '\0';
-		if (pkg_installed_version("cixd", ROOT_IMAGE, cixd, sizeof(cixd)) != 0)
-			cixd[0] = '\0';
+		root_cixd_release(squashfs_path, cixd, sizeof(cixd));
 		if (tools[0] == '\0' || cixd[0] == '\0' || strcmp(tools, cixd) != 0) {
 			snprintf(err_msg, err_msg_size,
 			         "the installer tools and the root are different releases: %s has %s %s "
-			         "and %s has cixd %s -- wait for both images to settle (ADR-0380)",
+			         "and the assembled root carries %s -- wait for both to settle, or "
+			         "assemble the root again (ADR-0380)",
 			         ISO_BUILDER_IMAGE, ISO_INSTALLER_TOOLS,
-			         tools[0] != '\0' ? tools : "not installed", ROOT_IMAGE,
-			         cixd[0] != '\0' ? cixd : "not installed");
+			         tools[0] != '\0' ? tools : "not installed",
+			         cixd[0] != '\0' ? cixd : "no recorded release");
 			return -2;
 		}
 		snprintf(g_iso_cix_version, sizeof(g_iso_cix_version), "%s", tools);
@@ -22682,7 +22700,7 @@ static void handle_stop(int fd, const char *name)
 			int next = pkg_build_completed(name, e->exit_status, &pkg_pid, &pkg_pidfd,
 			                               &pkg_chain_idx, hostbuild_done_name, &kept_ignored);
 
-			pkg_completion_followup(next, pkg_pid, pkg_pidfd, pkg_chain_idx, hostbuild_done_name);
+			pkg_completion_followup(next, pkg_pid, pkg_pidfd, pkg_chain_idx);
 		}
 	}
 	containerdef_set_stopped(name, 1);
@@ -27625,6 +27643,20 @@ static void handle_pkg_hostbuild(int fd, const char *body, size_t body_len)
 		respond_error(fd, 400, "Bad Request", "name is required");
 		return;
 	}
+	/*
+	 * ADR-0380: a cix release reaches the root as cix-root's rolling cixd,
+	 * built once by the drain and deployed by a root-only roll. A cix
+	 * hostbuild would be a second deploy route, and nothing reads its
+	 * output any more. The refusal belongs to the request: the daemon
+	 * itself never hostbuilds cix either.
+	 */
+	if (strcmp(name, "cix") == 0) {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request",
+		              "cix is not hostbuilt: publish cix@VERSION and cix-root's rolling cixd "
+		              "deploys it by a root-only roll (ADR-0380)");
+		return;
+	}
 	/* ADR-0107: omitted (NULL) resolves to name's highest available
 	 * recipe version. */
 	version = json_as_string(json_object_get(root, "version"));
@@ -27963,7 +27995,7 @@ static void handle_pkg_cancel(int fd, const char *body, size_t body_len)
 			                               &pkg_pidfd, &pkg_chain_idx, hostbuild_done_name,
 			                               &kept_ignored);
 
-			pkg_completion_followup(next, pkg_pid, pkg_pidfd, pkg_chain_idx, hostbuild_done_name);
+			pkg_completion_followup(next, pkg_pid, pkg_pidfd, pkg_chain_idx);
 		} else {
 			/*
 			 * #339: the build container is gone from the registry
@@ -27993,7 +28025,7 @@ static void handle_pkg_cancel(int fd, const char *body, size_t body_len)
 			int next = pkg_build_completed(build_container_name, -1, &pkg_pid, &pkg_pidfd,
 			                               &pkg_chain_idx, hostbuild_done_name, &kept_ignored);
 
-			pkg_completion_followup(next, pkg_pid, pkg_pidfd, pkg_chain_idx, hostbuild_done_name);
+			pkg_completion_followup(next, pkg_pid, pkg_pidfd, pkg_chain_idx);
 		}
 	}
 
@@ -38554,7 +38586,7 @@ static void container_exit_finalize(struct registry_entry *entry)
 		registry_remove(entry->name);
 	}
 	stallwatch_step("container exit: completion follow-up");
-	pkg_completion_followup(chained, pkg_pid, pkg_pidfd, pkg_chain_idx, hostbuild_done_name);
+	pkg_completion_followup(chained, pkg_pid, pkg_pidfd, pkg_chain_idx);
 	stallwatch_step("container exit: teardown");
 
 	/*
@@ -38811,7 +38843,7 @@ static void pkg_step_dispatch(int r, int chain_idx, struct container_spec *spec,
 			nc_hostbuild[0] = '\0';
 			nc_chained = pkg_build_completed(nc_name, 0, &nc_pid, &nc_pidfd, &nc_chain,
 			                                  nc_hostbuild, &nc_kept);
-			pkg_completion_followup(nc_chained, nc_pid, nc_pidfd, nc_chain, nc_hostbuild);
+			pkg_completion_followup(nc_chained, nc_pid, nc_pidfd, nc_chain);
 			return;
 		}
 
@@ -38993,7 +39025,7 @@ static void handle_pkg_produce_event(struct conn *cc)
 	 * on it, before what follows starts the next job. */
 	if (deleted_chain >= 0)
 		pkg_delete_answer(deleted_chain, delete_result);
-	pkg_completion_followup(next, pkg_pid, pkg_pidfd, pkg_chain_idx, hostbuild_done_name);
+	pkg_completion_followup(next, pkg_pid, pkg_pidfd, pkg_chain_idx);
 }
 
 /*
@@ -39100,6 +39132,22 @@ static void handle_bootroot_assemble_event(struct conn *cc)
 				               "cix bootroot assembly: could not record which kernel the "
 				               "root's modules are for (%s): %s -- an update will not "
 				               "check its kernel against them",
+				               record, strerror(errno));
+			}
+			/* ADR-0380: and which release it carries. A record that
+			 * cannot be written leaves none, which refuses an ISO
+			 * rather than pairing it with a previous root's release. */
+			snprintf(record, sizeof(record), "%s/cixd-root.squashfs%s", BOOTROOT_DIR,
+			         ROOT_CIXD_SUFFIX);
+			if (g_bootroot_assembly_root_cixd[0] == '\0')
+				unlink(record);
+			else if (persist_atomic_write(record, g_bootroot_assembly_root_cixd,
+			                              strlen(g_bootroot_assembly_root_cixd)) != 0) {
+				unlink(record);
+				logstore_write("cixd", "error",
+				               "cix bootroot assembly: could not record which release the "
+				               "root carries (%s): %s -- an installer ISO is refused until "
+				               "a root is assembled again",
 				               record, strerror(errno));
 			}
 		}
@@ -40980,8 +41028,9 @@ static int cixd_main(int argc, char **argv)
 	scheduler_register_action("volume.backup", "snapshot every volume that opted in",
 	                           action_volume_backup);
 	scheduler_register_action("system.roll",
-	                           "build what is newer of the kernel and cix, stage it and reboot "
-	                           "into it within the window (ADR-0327); a moved cix-root deploys "
+	                           "build a newer kernel, stage it with the root and reboot into it "
+	                           "within the window (ADR-0327); a moved cix-root, a cix release "
+	                           "included (ADR-0380), deploys "
 	                           "as soon as it settles, or with this roll only (params "
 	                           "{\"root\": \"settled\"|\"window\"}, ADR-0379)",
 	                           action_system_roll);

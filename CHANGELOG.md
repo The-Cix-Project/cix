@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A cix release is a publish, release B: nothing hostbuilds cix (ADR-0380, 0.2.57-694)
+
+- **Before:** the host roll hostbuilt cix when a release was published, the bridge installed that hostbuild's `cixd` and `cixctl` into `cix-root`, a cix hostbuild asked for an assembly when it finished, and `cixctl pkg hostbuild cix --deploy` was a hand route to the same root.
+- **Now:**
+  - **No cix hostbuild.** `POST /v1/pkg/hostbuild` answers 400 for `cix`, naming ADR-0380. Nothing asks for an assembly because a hostbuild finished, and `cixctl`'s `--deploy` has no cix rule.
+  - **The bridge keeps only `kernel-modules`.**
+  - **The roll's reasons are the kernel and the root.** The running cix is behind exactly when the root is, since a release is `cix-root`'s `cixd`. Its line still reads `current: kernel K and cix C are the newest and running`.
+  - **The ISO compares with the root it carries.** The assembly records the release a root carries beside it, as `cixd-root.squashfs.cixd`. The installer ISO compares its tools with that record, never with `cix-root`, which can be ahead of the last assembly; a root with no record refuses an ISO until it is assembled again.
+- **What completes it:** `cix-root`'s recipe making `cixd` and `cixctl` rolling, committed after this release is live. From then on, publishing `cix@N` is the release.
+- **Gate:** `test_pkg_cache`'s cix case now checks the hostbuild refusal and installs `cix` into an image, keeping its check that an output-bearing recipe's siblings are cached with it.
+
 ### A cix release is a publish, release A: the readers move to the images (ADR-0380, 0.2.57-693)
 
 - **Before:**

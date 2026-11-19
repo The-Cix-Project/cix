@@ -8,14 +8,20 @@ The control plane and the software installed into images update through differen
 
 ### The control plane (`cixd`/`cixctl`/`web/`)
 
+There is nothing to run. The control-plane root is the `cix-root` image's current version, and `cixd` and `cixctl` are rolling entries of it ([ADR-0380](../adr/0380-cix-is-followed-in-cix-root-and-a-release-is-a-publish.md)). A new `cix` release reaches the host in three steps:
+
+1. it is published to a recipe source the host syncs;
+2. the host builds it once, or takes the artifact from the cache, and `cix-root` moves;
+3. a root-only roll assembles a new root and switches into it in place, with every container running ([ADR-0379](../adr/0379-the-host-roll-deploys-the-root-when-cix-root-has-moved.md), [ADR-0375](../adr/0375-the-control-plane-upgrades-in-place.md)).
+
 ```
-cixctl pkg hostbuild cix --upgrade --deploy
-cixctl reboot
+cixctl boot                      # the release running, and the cix-root version its root came from
+cixctl schedule show host-roll   # the last roll's line: root: cix-root X -> Y, switched in place ...
 ```
 
-`cix` is a hostbuild package. `pkg hostbuild cix --upgrade` fetches the signed artifact from the artifact cache when one is published there, and builds only when it is not ([ADR-0289](../adr/0289-a-hostbuild-package-is-consumed-from-the-cache-like-any-other.md)). `kernel` works the same way. `--deploy` waits for the result and writes it to the inactive A/B slot with `update`. It does not reboot.
+To take releases only in the nightly window, set the `host-roll` job's params to `{"root":"window"}`; to stop them, disable `host-roll`. A release that fails to deploy, or that you leave with `cixctl boot-next`, is not deployed again by itself until a newer one is published or the roll is run by hand. `cix` is never hostbuilt; `pkg hostbuild cix` is refused. The kernel is the one hostbuild package, and it rolls in the window ([`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md)).
 
-Writing and booting are separate steps, as for a kernel update, and the newly booted daemon confirms the slot itself once it is healthy (see [how A/B updates work](kernel-build-and-ab-updates.md#background-how-ab-kernel-updates-work-here); root and kernel share the slot and its boot counter). To write a squashfs you already have, use `update` directly. An installed host has no shell, so the daemon fetches the image itself:
+A root written by hand, below, boots at the next reboot; the newly booted daemon confirms the slot itself once it is healthy (see [how A/B updates work](kernel-build-and-ab-updates.md#background-how-ab-kernel-updates-work-here); root and kernel share the slot and its boot counter). To write a squashfs you already have, use `update` directly. An installed host has no shell, so the daemon fetches the image itself:
 
 ```
 cixctl update --image-url=<URL> --image-sha256=<HEX>

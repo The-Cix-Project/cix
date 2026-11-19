@@ -45,7 +45,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/system/reboot` | Stop `cixd`; restarts the host too when running as real PID 1 |
 | POST | `/system/update` | Write a fresh control-plane squashfs and/or a fresh kernel onto this daemon's own inactive A/B slot |
 | GET | `/system/assembly` | What control-plane assembly is doing right now (issue #182, ADR-0230): `waiting_for` names what an asked-for assembly waits on in the cix-root image, `refused` why it will not start, and `root_image_version` the cix-root version the last one sealed (ADR-0371 phase 3a) |
-| POST | `/system/assembly` | Assemble a control-plane root now — the route for a hostbuild that is already installed (issue #308). The root is the cix-root image's current version, so this may first install the installed hostbuilds' `cixd`, `cixctl` and `kernel-modules` into cix-root; `409` when cix-root, the cix hostbuild or its mkbootroot is missing (ADR-0371) |
+| POST | `/system/assembly` | Assemble a control-plane root now — the same assembly the host roll asks for (issue #308). The root is the cix-root image's current version, sealed by its own `usr/libexec/cix/mkbootroot`, so this may first install the kernel hostbuild's `kernel-modules` into cix-root; `409` when cix-root or that mkbootroot is missing (ADR-0371, ADR-0380) |
 | GET | `/system/boot-next` | What is armed to boot next, if anything |
 | POST | `/system/boot-next` | Boot a slot **once**, then revert to normal selection (#154) |
 | — | container `userns` field | User namespaces by default; opt-out per container or platform-wide (ADR-0207) |
@@ -3909,7 +3909,7 @@ Note: no C runtime is seeded into an image ([ADR-0333](../adr/0333-an-images-con
 
 ### Hostbuild: standalone artifacts instead of merging into an image
 
-Most installs merge their build output into a target image's rootfs. A hostbuild job is the second mode of the exact same pipeline: it harvests the output as a standalone artifact on the host instead — used to build the Linux kernel `cixd` boots, and to self-build `cixd`/`cixctl`/`web` themselves from a running Cix host (see [`docs/guides/kernel-build-and-ab-updates.md`](../guides/kernel-build-and-ab-updates.md) and [`docs/guides/building-cix.md`](../guides/building-cix.md) for the full operator runbooks).
+Most installs merge their build output into a target image's rootfs. A hostbuild job is the second mode of the exact same pipeline: it harvests the output as a standalone artifact on the host instead — used to build the Linux kernel `cixd` boots. `cix` itself is never hostbuilt and its hostbuild is a `400`: a release reaches the root as `cix-root`'s rolling `cixd`, deployed by a root-only roll ([ADR-0380](../adr/0380-cix-is-followed-in-cix-root-and-a-release-is-a-publish.md)) (see [`docs/guides/kernel-build-and-ab-updates.md`](../guides/kernel-build-and-ab-updates.md) and [`docs/guides/building-cix.md`](../guides/building-cix.md) for the full operator runbooks).
 
 ```
 POST /v1/pkg/hostbuild

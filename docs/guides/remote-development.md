@@ -10,13 +10,7 @@ An installed Cix host has no SSH server and no general shell ([ADR-0034](../adr/
 
 ## Getting a new build onto the box
 
-The normal route builds on the box itself: tag this repository, publish a `cix` recipe for the tag, and run
-
-```sh
-cixctl --host=<box> pkg hostbuild cix --upgrade --wait --deploy
-```
-
-which compiles, assembles the control-plane root, and writes it to the inactive slot — see [`building-cix.md`](building-cix.md#rebuilding-cix-on-a-running-host). A kernel is the same shape: `pkg hostbuild kernel`, then `update --kernel=` with the path the hostbuild reports ([`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md)). In both cases the file is already on the box's own disk.
+The normal route builds on the box itself: tag this repository and publish a `cix` recipe for the tag (`cixctl pkg recipe commit`, git first). That is the whole release ([ADR-0380](../adr/0380-cix-is-followed-in-cix-root-and-a-release-is-a-publish.md)): the box builds it once, `cix-root`'s rolling `cixd` and `cixctl` move to it, and a root-only roll assembles the root and switches into it in place — see [`building-cix.md`](building-cix.md#rebuilding-cix-on-a-running-host). `pkg hostbuild cix` is refused. A kernel is a hostbuild, rolled in the nightly window ([`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md)).
 
 A control-plane image that is **not** on the box's disk — one produced by another Cix host, served over HTTP — is fetched by the daemon itself:
 

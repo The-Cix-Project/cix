@@ -1136,9 +1136,10 @@ paths:
                     description: >
                       Why the last assembly asked for was refused before
                       it started, or null: the cix-root image does not
-                      exist, no cix hostbuild is installed, one of that
-                      build's packages did not install into cix-root, or
-                      the build's mkbootroot is missing (ADR-0371).
+                      exist, the kernel hostbuild's `kernel-modules` did
+                      not install into cix-root, or cix-root's version
+                      has no `usr/libexec/cix/mkbootroot` (ADR-0371,
+                      ADR-0380).
                       `completed_generation` will not move for it.
                       Cleared when an assembly is asked for again; held
                       in memory like the counters.
@@ -1150,11 +1151,11 @@ paths:
                       before mkbootroot starts, or null. The root is the
                       cix-root image's current version (ADR-0371 phase
                       3a), so it starts only once that image holds the
-                      installed cix hostbuild's `cixd` and `cixctl` and
-                      the kernel hostbuild's `kernel-modules`, and no
-                      package job is in flight for it; the daemon
-                      installs any it lacks first, and this names the one
-                      under way.
+                      kernel hostbuild's `kernel-modules`, and no package
+                      job is in flight for it; the daemon installs them
+                      first when it lacks them, and this names that
+                      install. `cixd` and `cixctl` roll in cix-root
+                      (ADR-0380), so its release needs no install here.
                   root_image_version:
                     type: string
                     nullable: true
@@ -1224,11 +1225,11 @@ paths:
         it consumed a version number that existed for no other reason.
 
 
-        This asks for the same assembly the hostbuild path asks for.
-        Since ADR-0371 phase 3a the root is the cix-root image's
-        current version, so the daemon may first install the installed
-        hostbuilds' `cixd`, `cixctl` and `kernel-modules` into cix-root;
-        `waiting_for` says which. Returns immediately -- poll the GET
+        This asks for the same assembly the host roll asks for. Since
+        ADR-0371 phase 3a the root is the cix-root image's current
+        version, sealed by that version's own mkbootroot (ADR-0380), so
+        the daemon may first install the kernel hostbuild's
+        `kernel-modules` into cix-root; `waiting_for` says so. Returns immediately -- poll the GET
         above and wait for `completed_generation` to pass the value you
         captured before the call, or for `refused` to say why it will
         not.
@@ -1261,8 +1262,8 @@ paths:
         "409":
           description: >
             An assembly is already running, or the assembly was refused:
-            the cix-root image does not exist, no cix hostbuild is
-            installed, or the build's mkbootroot is missing (ADR-0371).
+            the cix-root image does not exist, or its current version has
+            no `usr/libexec/cix/mkbootroot` (ADR-0371, ADR-0380).
             The error names which, and GET /system/assembly reports the
             refusal as `refused`.
           content:
@@ -5833,8 +5834,9 @@ paths:
                   type: string
                   description: >
                     A file already on this host, e.g. the cix-boot.efi
-                    a "cix" hostbuild just produced
-                    (/var/lib/cix/rebuildable/artifacts/cix/cix-boot.efi).
+                    the iso-builder image's cix-installer-tools output
+                    carries (ADR-0380), under that image's current
+                    version at usr/libexec/cix/cix-boot.efi.
                 url:
                   title: URL
                   type: string
@@ -14166,7 +14168,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/PkgEntry"
         "400":
-          description: name missing, or no such recipe / it failed to parse
+          description: >
+            name missing, or no such recipe / it failed to parse; or the
+            name is `cix`, which is never hostbuilt: a cix release
+            reaches the root as cix-root's rolling cixd, deployed by a
+            root-only roll (ADR-0380)
           content:
             application/json:
               schema:
@@ -23359,9 +23365,10 @@ components:
           type: string
           nullable: true
           description: >
-            The version of the `cix` artifact this ISO was assembled
-            from -- the `cix` hostbuild version whose `mkinstalleriso`
-            and `web`/`cixd` bytes the installer actually carries -- read
+            The cix release this ISO was assembled from -- the release
+            of its installer tools (iso-builder's cix-installer-tools),
+            which the build checked equal to the release the root it
+            carries records (ADR-0380) -- read
             back from the trusted comment inside its own signature, so it
             describes the artifact rather than whatever daemon is running
             now. Before #434 this was stamped with the running daemon's

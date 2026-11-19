@@ -16764,103 +16764,6 @@ static int poll_hostbuild(const struct cix_client *c, const char *name, struct c
 	}
 }
 
-/*
- * Real GET /system/boot read for the cix bootroot-assembly
- * generation counters (task #737, ADR-0058/ADR-0104-adjacent fix).
- * Returns 0 with *out_completed/*out_running filled, -1 if the daemon
- * became unreachable.
- */
-static int get_bootroot_assembly_generation(const struct cix_client *c, long *out_completed,
-                                             int *out_running, char *out_image_path,
-                                             size_t out_image_path_size, char *out_refused,
-                                             size_t out_refused_size)
-{
-	struct cix_response r;
-	const struct json_value *jrunning;
-	const char *image_path;
-
-	/* Assembly state moved off /system/boot to its own endpoint
-	 * (#182, ADR-0230): that endpoint's subject is what booted, not
-	 * what is being built. */
-	if (poll_request(c, CIX_API_getSystemAssembly_METHOD, CIX_API_getSystemAssembly, &r) != 0) {
-		fprintf(stderr,
-		        "cixctl: daemon did not answer after %d attempts while waiting for the bootroot "
-		        "assembly -- nothing was deployed\n",
-		        POLL_RETRY_ATTEMPTS);
-		return -1;
-	}
-	*out_completed = (long)json_as_number(json_object_get(r.json, "completed_generation"));
-	jrunning = json_object_get(r.json, "running");
-	*out_running = jrunning != NULL && jrunning->type == JSON_BOOL && jrunning->u.boolean;
-	/* ADR-0371 phase 3a: an assembly waiting on cix-root has not started
-	 * and has not failed; it is in flight. */
-	if (json_as_string(json_object_get(r.json, "waiting_for")) != NULL)
-		*out_running = 1;
-	/* ADR-0367: why an assembly asked for never started, if it did not. */
-	if (out_refused != NULL) {
-		const char *refused = json_as_string(json_object_get(r.json, "refused"));
-
-		snprintf(out_refused, out_refused_size, "%s", refused != NULL ? refused : "");
-	}
-	/*
-	 * The daemon reports where it put the assembled image (#178). This
-	 * client used to compose that path itself from the artifact
-	 * directory, which stopped being true when the image moved out of
-	 * the artifact -- and was always the CLI knowing a server-side
-	 * filesystem layout it has no business knowing.
-	 */
-	if (out_image_path != NULL) {
-		out_image_path[0] = '\0';
-		image_path = json_as_string(json_object_get(r.json, "image_path"));
-		if (image_path != NULL)
-			snprintf(out_image_path, out_image_path_size, "%s", image_path);
-	}
-	cix_response_free(&r);
-	return 0;
-}
-
-/*
- * The real fix for task #737: `cixd-root.squashfs` existing is not
- * the same as it being *this* hostbuild round's own fresh artifact --
- * it's a leftover from whichever server-side bootroot assembly
- * (ADR-0057) last succeeded, which may still be a round or more behind
- * the hostbuild round --deploy just watched finish. Waits for the real
- * completed generation to advance past baseline_completed (captured by
- * the caller before this hostbuild round was even started) rather than
- * trusting file-exists. Distinguishes "still assembling" (keep polling)
- * from "that attempt is over and never advanced past baseline" (a real,
- * reported failure, not an infinite spin) via bootroot_assembly_running.
- * Returns 0 once a genuinely fresh artifact is confirmed on disk, -1
- * otherwise (daemon unreachable, or the assembly failed).
- */
-static int wait_for_fresh_bootroot_assembly(const struct cix_client *c, long baseline_completed,
-                                            char *out_image_path, size_t out_image_path_size)
-{
-	for (;;) {
-		long completed;
-		int running;
-		char refused[320];
-
-		if (get_bootroot_assembly_generation(c, &completed, &running, out_image_path,
-		                                     out_image_path_size, refused,
-		                                     sizeof(refused)) != 0)
-			return -1;
-		if (completed > baseline_completed)
-			return 0;
-		if (!running && refused[0] != '\0') {
-			fprintf(stderr, "cixctl: cix bootroot assembly was refused: %s\n", refused);
-			return -1;
-		}
-		if (!running) {
-			fprintf(stderr,
-			        "cixctl: cix bootroot assembly did not produce a fresh artifact "
-			        "(see GET /system/logs for the real failure)\n");
-			return -1;
-		}
-		usleep(500000);
-	}
-}
-
 static int cmd_pkg_hostbuild(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *name = NULL;
@@ -16869,7 +16772,6 @@ static int cmd_pkg_hostbuild(const struct cix_client *c, int json_mode, int argc
 	int i;
 	struct json_writer w;
 	struct cix_response r;
-	long bootroot_baseline_completed = 0;
 
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--version=", 10) == 0)
@@ -16902,24 +16804,6 @@ static int cmd_pkg_hostbuild(const struct cix_client *c, int json_mode, int argc
 	}
 	if (deploy)
 		wait = 1;
-
-	/*
-	 * task #737: capture the real baseline *before* this hostbuild
-	 * round even starts -- comparing against a snapshot taken any
-	 * later (e.g. right before the deploy step) could itself already
-	 * be racing a slow-but-real assembly from an EARLIER round that
-	 * just hasn't finished yet, which would wrongly look like "the
-	 * baseline" to a check done later. "cix" only: every other
-	 * hostbuild name deploys straight from its own artifact_path with
-	 * no server-side follow-on assembly to wait for.
-	 */
-	if (deploy && strcmp(name, "cix") == 0) {
-		int running;
-
-		if (get_bootroot_assembly_generation(c, &bootroot_baseline_completed, &running,
-		                                     NULL, 0, NULL, 0) != 0)
-			return 1;
-	}
 
 	jw_init(&w);
 	jw_obj_open(&w);
@@ -16986,40 +16870,9 @@ static int cmd_pkg_hostbuild(const struct cix_client *c, int json_mode, int argc
 		 * every possible hostbuild recipe name. */
 		if (strcmp(name, "kernel") == 0)
 			snprintf(deploy_arg, sizeof(deploy_arg), "--kernel=%s/bzImage", artifact_path);
-		else if (strcmp(name, "cix") == 0) {
-			/*
-			 * cixd-root.squashfs is assembled server-side by the
-			 * daemon itself (ADR-0057), asynchronously, once this
-			 * hostbuild's own artifacts finish harvesting -- state
-			 * =="installed" only means pkg_build_completed() ran, not
-			 * that the follow-on mkbootroot child has finished, let
-			 * alone that it's THIS round's own attempt rather than a
-			 * stale file left by an earlier one (task #737, the real
-			 * gap this closes: file-exists is not the same as fresh).
-			 * This CLI still never invokes mkbootroot itself
-			 * (API-First Mandate) -- it just waits for the daemon's own
-			 * real completed-generation counter (GET /system/boot,
-			 * ADR-0057-follow-on) to confirm a genuinely new success
-			 * before trusting the path below at all.
-			 */
-			char bootroot_image[PATH_MAX];
-
-			if (wait_for_fresh_bootroot_assembly(c, bootroot_baseline_completed,
-			                                     bootroot_image,
-			                                     sizeof(bootroot_image)) != 0) {
-				cix_response_free(&r);
-				return 1;
-			}
-			if (bootroot_image[0] == '\0') {
-				cix_response_free(&r);
-				fprintf(stderr,
-				        "cixctl: the daemon did not report where it put the "
-				        "assembled image (bootroot_image_path) -- it predates "
-				        "the field\n");
-				return 1;
-			}
-			snprintf(deploy_arg, sizeof(deploy_arg), "--image=%s", bootroot_image);
-		} else {
+		else {
+			/* ADR-0380: cix is not hostbuilt, so it has no rule here;
+			 * the daemon refuses its hostbuild before this. */
 			cix_response_free(&r);
 			fprintf(stderr, "cixctl: --deploy has no rule for hostbuild '%s' yet\n", name);
 			return 1;

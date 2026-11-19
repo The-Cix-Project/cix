@@ -64,17 +64,18 @@ url "https://osakka:{{REPO_TOKEN}}@git.home.arpa/api/v1/repos/itdlabs/cix/archiv
 
 To make a newer self-build available: tag this repository, then publish a new `cix` recipe for that tag with `cixctl pkg recipe commit --name=cix --file=cix@<tag>.cbs`, which commits it to cix-recipes first and only then publishes it (ADR-0323). A new tag's archive has a new `sha256`; learn it from the box rather than downloading it elsewhere, with a throwaway `probe-*` recipe that declares a deliberately wrong hash. The fetch then fails and the daemon logs the real one as `computed=<64 hex>` (`probe-cix-tarball` in cix-recipes is the template).
 
-### 3. Run the hostbuild
+### 3. Watch it deploy
+
+Publishing is the release ([ADR-0380](../adr/0380-cix-is-followed-in-cix-root-and-a-release-is-a-publish.md)). `cix-root` declares the `cixd` and `cixctl` outputs as rolling entries, so the drain builds the recipe once: it fetches the tagged source host-side (the build container has no network access) and builds `cixd`, `cixctl`, `web/`, `mkbootroot` and the installer tools. `cix-root` then moves to the new `cixd`, which carries `usr/libexec/cix/mkbootroot`, and a root-only roll seals that tree with the release's own `mkbootroot` and switches into it in place ([ADR-0379](../adr/0379-the-host-roll-deploys-the-root-when-cix-root-has-moved.md)):
 
 ```
-cixctl pkg hostbuild cix --upgrade --wait --deploy
+cixctl schedule show host-roll   # root: cix-root X -> Y, then switched in place to <release>
+cixctl boot                      # build: <release>
 ```
 
-`--upgrade` is needed on any host that has hostbuilt `cix` before: without it an already-installed hostbuild entry answers `409` ([ADR-0094](../adr/0094-hostbuild-upgrade-flag.md)). This fetches the tagged source (host-side, before the build container starts — the build container has no network access), builds `cixd`/`cixctl`/`web/` **and** `mkbootroot`, then hands off to the daemon's own assembly step: `cixd` installs the build's `cixd` and `cixctl` into `cix-root` and runs the freshly built `mkbootroot` to seal that image's tree into a fresh `cixd-root.squashfs` — never the CLI invoking `mkbootroot` itself, which the API-First Mandate rules out.
+`pkg hostbuild cix` is refused: it was a second route to the same root. With the `host-roll` job's params at `{"root":"window"}` a release waits for the nightly window instead.
 
-`--wait` polls until the hostbuild job reaches `installed` — that only means the compile finished, not that the asynchronous assembly has. `--deploy` waits for the assembly to complete ([ADR-0105](../adr/0105-bootroot-assembly-freshness.md) — comparing `GET /system/assembly`'s `completed_generation` against a baseline captured before the round started) and then calls `/system/update` with the assembled image. It does not reboot.
-
-Driving it by hand instead:
+Driving the assembly by hand, which only an operator repairing a host needs:
 
 ```
 cixctl assembly status        # image_path, image_complete, image_mtime

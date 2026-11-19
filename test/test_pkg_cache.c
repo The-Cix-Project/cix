@@ -1000,43 +1000,21 @@ int main(void)
 			cix_response_free(&r);
 
 			/*
-			 * ---- a cache-hit hostbuild must still run its follow-up ----
+			 * ---- an output-bearing recipe's siblings come with it ----
 			 *
-			 * An artifact hit skips the build container entirely (#144),
-			 * which is the point. What must NOT be skipped is the work
-			 * that follows a build completing -- and for a hostbuild
-			 * named "cix" that includes triggering the bootroot
-			 * assembly (ADR-0057).
+			 * An artifact hit skips the build container entirely (#144).
+			 * A recipe with outputs is one build, so the outputs' copies
+			 * are taken from the repository with the main package's and
+			 * cached beside it (cache_sibling_outputs()).
 			 *
-			 * This regressed exactly once and was invisible: the
-			 * cache-hit path chained and pushed but never triggered
-			 * assembly, so `pkg hostbuild cix --deploy` reported the
-			 * package installed and produced no image at all. On a real
-			 * host the only sign was
-			 * bootroot_assembly_started_generation staying at 0 while
-			 * everything else claimed success. That field moved to
-			 * GET /v1/system/assembly as started_generation (#182);
-			 * this test read the old one until probe-cix-testreport@6-1.
-			 *
-			 * Since ADR-0371 phase 3a an assembly is asked for and then
-			 * waits on the cix-root image. This test daemon has none, so
-			 * the request is refused naming it rather than started, and
-			 * `refused` naming cix-root is the proof that the daemon
-			 * asked. Either answer passes: a started_generation that
-			 * moved, or that refusal.
+			 * This case used to install `cix` as a hostbuild and check
+			 * that the hostbuild asked for the bootroot assembly
+			 * (ADR-0057). Since ADR-0380 release B nothing hostbuilds
+			 * cix: a release reaches the root as cix-root's rolling cixd,
+			 * and a hostbuild named cix is refused. So the case installs
+			 * cix into an image, as the drain does, and checks the refusal.
 			 */
 			{
-				long gen_before = -1;
-				long gen_after = -1;
-				int refused_for_root = 0;
-
-				memset(&r, 0, sizeof(r));
-				if (cix_client_request(&client, "GET", "/v1/system/assembly", NULL, &r) == 0 &&
-				    r.json != NULL)
-					gen_before =
-					    cache_json_long(r.json, "started_generation");
-				cix_response_free(&r);
-
 				/* The same tree, packaged as `cix` under the name the
 				 * daemon will ask for: <base>/<name>-<version>-<arch>.cixpkg. */
 				snprintf(cix_pkg, sizeof(cix_pkg), "%s/cix-1.0-1-%s.cixpkg",
@@ -1076,32 +1054,26 @@ int main(void)
 					      "only by the artifact tier");
 				}
 
+				/* ADR-0380: a hostbuild named cix is a second deploy
+				 * route, and is refused naming the ADR. */
 				memset(&r, 0, sizeof(r));
 				CHECK(cix_client_request(&client, "POST", "/v1/pkg/hostbuild",
 				                         "{\"name\":\"cix\"}",
 				                         &r) == 0 &&
-				              r.status == 202,
-				      "POST /v1/pkg/hostbuild cix (artifact tier, no build container)");
+				              r.status == 400 && r.body != NULL &&
+				              strstr(r.body, "ADR-0380") != NULL,
+				      "POST /v1/pkg/hostbuild cix is refused (ADR-0380)");
 				cix_response_free(&r);
-
-				CHECK(wait_for_pkg_state(&client, "cix", "__hostbuild", "installed", 300) == 0,
-				      "the cix hostbuild reaches state=installed from the artifact");
 
 				memset(&r, 0, sizeof(r));
-				if (cix_client_request(&client, "GET", "/v1/system/assembly", NULL, &r) == 0 &&
-				    r.json != NULL) {
-					const char *refused =
-					    json_as_string(json_object_get(r.json, "refused"));
-
-					gen_after = cache_json_long(r.json, "started_generation");
-					refused_for_root = refused != NULL && strstr(refused, "cix-root") != NULL;
-				}
+				CHECK(cix_client_request(&client, "POST", "/v1/pkg/install",
+				                         "{\"name\":\"cix\",\"image\":\"imgD\"}", &r) == 0 &&
+				              r.status == 202,
+				      "POST /v1/pkg/install cix@imgD (artifact tier, no build container)");
 				cix_response_free(&r);
 
-				CHECK(gen_after > gen_before || refused_for_root,
-				      "a cache-hit cix hostbuild still asks for the bootroot assembly "
-				      "(started_generation advanced, or the request was refused naming "
-				      "cix-root)");
+				CHECK(wait_for_pkg_state(&client, "cix", "imgD", "installed", 300) == 0,
+				      "cix@imgD reaches state=installed from the artifact");
 
 				wait_cache_field(&client, "entry_count", CACHE_EQ, 4);
 				memset(&r, 0, sizeof(r));
