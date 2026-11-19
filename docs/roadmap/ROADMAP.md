@@ -2462,6 +2462,20 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 - **#689 live:** 687 ran its first drain at 11:02:26 (`image gc: set aside 3 version(s)`). At 11:10 `cixctl process ls` showed no cixd child but procfuse and the watchdog. A look logs nothing when it finds the drops settled or still pending, so that absence alone cannot tell a working check from one that never ran. Nor does the gap between staging and switching prove it: 9 s at 687 → 688, but 5 s at 686 → 687, on the old code, so a short gap shows only that no check was pending then. What holds the change is `test_blocking_waits` and the code. A `deleted subvolumes were still being freed after 7200 s` line would show the looks ran for two hours without holding anything, and that drops are not settling on .95.
 - **#690 shown live at the next switch.** It acts in the process that *writes* the handover, and 686 wrote this one, so the kernel log again took 2,180 lines at 11:02:26. At the 687 → 688 switch (12:22:12, 687 writing), the kernel log has no line at all from two seconds before to five seconds after.
 
+## Part 379: re-probe, and the radio's firmware comes from the firmware image (ADR-0381 release 3, 0.2.57-701, -702)
+
+**What shipped.**
+- **701, re-probe:** when the firmware link moves, a helper child writes each unbound device's name to its bus's `drivers_probe`, for a device whose modules declare firmware, and logs which bound. A bound device is never touched.
+- **702:** a change to the recipe store asks for a firmware scan, so a published output is acquired at once.
+- **The rtw88 switchover**, on the owner's "Go ahead now": `rtw88-firmware` left `cix-root` (`cix-root@1.3.0`, cix-recipes `da7461c4`); the `rtw88-firmware` recipe was retired (`a5857299`); `linux-firmware@20261019-2` carries it as an output.
+
+**How it was verified, on 192.168.15.95, 2026-11-19.**
+- **Compile probes:** `probe-cix-compile@0.2.57-779` (701) and `@0.2.57-780` (702) passed. The kernel behaviour re-probe relies on was read from 7.3.5's source by `probe-reprobe@1-1`; .95 has no unbound device to exercise it.
+- **The releases, by publishing alone:** 701 switched in place on slot a at 15:15:38 UTC, 702 on slot b at 16:35:58, all 14 containers running throughout.
+- **The root's copy left first:** `pkg rm rtw88-firmware@cix-root`, then a root-only roll to `40aa432f88a4`, switched in place at 16:39:38.
+- **Acquisition, live for the first time:** 20 seconds after `linux-firmware@20261019-2` was published, cixd logged *"usb:2357:012e@0000:07:1b.0-usb2-1's rtw88_8822b declares rtw88/rtw8822b_fw.bin, which the firmware image lacks -- declared rtw88-firmware (rolling, from linux-firmware@20261019-2) for the drain to install"*. `pkg ls` then showed `rtw88-firmware firmware 20261019-2 installed`, built from the source cache and published to the LAN cache.
+- **The watched switchover:** ar-1 stopped at 16:45:51 UTC; `kmod unload` and `kmod load rtw88_8822bu`; the kernel logged `rtw88_8822bu 1-1:1.0: Firmware version 30.20.0, H2C version 14`, against `27.2.0, H2C version 13` at every earlier probe (11-11 to 11-17). The root no longer carries any rtw88 blob, so it came through the stable link, two in-place switches after the path was set. ar-1 started and logged `radio-ap: AP-ENABLED` at 16:46:32.
+
 ## Part 378: a device gets its firmware by itself, acquisition (ADR-0381 release 3, 0.2.57-700)
 
 **What shipped.**

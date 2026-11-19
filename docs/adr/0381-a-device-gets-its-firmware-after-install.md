@@ -92,8 +92,15 @@ Also from cixd's code: the data disks are mounted (`diskformat_remount_present_r
      1. `cix-root`'s recipe drops `rtw88-firmware`, and the root-only roll switches;
      2. ar-1 is stopped and the radio re-plugged or re-probed, so rtw88 reads its firmware again (it reads at probe, not at an access point start);
      3. ar-1 is started and its access point checked.
-   - The rollback is reverting that `cix-root` recipe commit.
+   - The rollback is putting `rtw88-firmware` back in `cix-root` at the old version, and reloading the module.
    - This is also the first real proof that the path follows an in-place switch, which is an inference from two source reads until then.
+   - **Done on 2026-11-19, on the owner's "Go ahead now", with the root's copy removed first,** which left no gap that mattered, since rtw88 reads its firmware only at probe and nothing probed the radio until the reload:
+     - `rtw88-firmware` left `cix-root` first (root-only roll to `40aa432f88a4`, switched in place at 16:39:38 UTC), while the radio kept running the firmware it had loaded;
+     - the `rtw88-firmware` recipe was retired (cix-recipes `a5857299`) and `linux-firmware@20261019-2` published with the output;
+     - the publish asked for a scan (0.2.57-702), which declared the output by itself: *"usb:2357:012e@0000:07:1b.0-usb2-1's rtw88_8822b declares rtw88/rtw8822b_fw.bin, which the firmware image lacks -- declared rtw88-firmware (rolling, from linux-firmware@20261019-2) for the drain to install"*, and the drain installed it from the source cache;
+     - ar-1 stopped at 16:45:51; `kmod unload` and `kmod load rtw88_8822bu`; the kernel logged `Firmware version 30.20.0, H2C version 14`, where every earlier probe logged `27.2.0, H2C version 13`. With the root's copy gone, that blob can only have come through the stable link, two in-place switches after the path was set: the inference above is now a measurement;
+     - ar-1 started; `hostapd: radio-ap: AP-ENABLED` at 16:46:32 UTC.
+   - `cix-root@1.3.0` records the live manifest (cix-recipes `da7461c4`).
 
 ## Live checks
 

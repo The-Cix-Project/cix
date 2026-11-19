@@ -19,7 +19,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - a target is a directory the last scan found with no driver while a module claimed its modalias, for a device whose modules declare firmware;
   - measured first in 7.3.5's own source (`probe-reprobe@1-1`): that write calls `device_attach()` only for a device with no driver, tries every registered driver, and nothing but a dead device stops a retry;
   - a bound device is never touched, and a device bound to a driver with no module link no longer contributes a modalias guess.
-- **Not yet:** the rtw88 output, whose publishing the owner approves.
+- **A change to the recipe store asks for a scan (0.2.57-702):** `pkg_announce_recipes()` calls a hook cixd points at the scan, so a published or synced firmware output is acquired at once rather than at the next module job or uevent.
+- **The rtw88 switchover (2026-11-19, the owner's "Go ahead now"):**
+  - `rtw88-firmware` left `cix-root` (`cix-root@1.3.0`), the `rtw88-firmware` recipe was retired, and `linux-firmware@20261019-2` carries it as an output;
+  - cixd declared that output into the `firmware` image by itself and the drain installed it;
+  - ar-1 was stopped, `rtw88_8822bu` reloaded, and the radio loaded firmware 30.20.0 (was 27.2.0) through the firmware image; ar-1's access point came back (`AP-ENABLED`).
 - **Gate:** `test_fwacquire_verdict`.
 
 ### A verified source is kept by its checksum (ADR-0382)
