@@ -227,8 +227,11 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/dhcp/servers` | Registered DHCP servers, and whether each also resolves its own leases |
 | POST | `/dhcp/servers` | Register a container as a DHCP server |
 | DELETE | `/dhcp/servers/{container}` | Unregister one -- also drops it from every range that named it |
+| GET | `/dhcp/relays` | Registered DHCP relays, and the service each runs its relay as (ADR-0383) |
+| POST | `/dhcp/relays` | Register a container as a DHCP relay |
+| DELETE | `/dhcp/relays/{container}` | Unregister one -- also drops it from every range that named it |
 | GET | `/dhcp/networks/{network}` | A network's DHCP range |
-| PUT | `/dhcp/networks/{network}` | Set it: enabled, range, lease time, router, and which servers serve it |
+| PUT | `/dhcp/networks/{network}` | Set it: enabled, range, lease time, router, which servers serve it, and the relays that reach servers not on it |
 | DELETE | `/dhcp/networks/{network}` | Remove it |
 | GET | `/dhcp/leases` | Current leases, read from each server's own lease file |
 | POST | `/dhcp/static` | Reserve an address for a MAC (live -- no restart) |
@@ -3425,7 +3428,34 @@ If you need true primary/backup with a failover protocol — a hot standby that 
 
 **Static reservations are live; range changes are not.** dnsmasq re-reads the reservations file on `SIGHUP`, so `POST /v1/dhcp/static` takes effect immediately. It reads ranges only at startup — so **changing a range restarts the servers that serve it**, through the same jittered rolling-restart timer a rolling image update uses, and only those whose own rendered conf actually changed.
 
-Everything that could not serve is refused at the point of asking: a range outside the network's own subnet, a range covering the network's own address, a range that runs backwards, a lease time outside 60s–30d, no servers named, a server that is not registered, a server not attached to that network, or a range with fewer addresses than servers to split it between. Two reservations for one address is a `409`. MACs and hostnames are refused, never sanitised.
+Everything that could not serve is refused at the point of asking: a range outside the network's own subnet, a range covering the network's own address, a range that runs backwards, a lease time outside 60s–30d, no servers named, a server that is not registered, a server not attached to that network with no relay to reach it, or a range with fewer addresses than servers to split it between. Two reservations for one address is a `409`. MACs and hostnames are refused, never sanitised.
+
+### Relays: serving a network the servers are not on (ADR-0383)
+
+```
+POST   /v1/dhcp/relays             {"container": "cr-1", "service": "dhcp-relay"}
+PUT    /v1/dhcp/networks/remote-access
+                                   {"enabled": true, "range_start": "192.168.152.100",
+                                    "range_end": "192.168.152.200", "router": "192.168.152.254",
+                                    "servers": ["dns-1", "dns-2"], "relays": ["cr-1", "cr-2"]}
+```
+
+A **relay** is a container attached to a network that carries its DHCP requests to servers that are not on it — the cores relaying `remote-access`, which dns-1 and dns-2 have no interface on. It runs dnsmasq in relay-only mode from `/etc/dnsmasq-relay.conf`, which Cix renders from DHCP's own state, exactly as it does a server's files:
+
+```
+port=0
+dhcp-relay=192.168.152.253,192.168.150.101,services
+dhcp-relay=192.168.152.253,192.168.150.102,services
+interface=remote-access
+```
+
+Each line relays from the relay's address on the relayed network (which becomes `giaddr`, how the server picks the range and where it replies) to one server's address on a network the two share, accepting replies on that shared interface. `interface=` names only the relayed networks, so a core never acts on broadcasts from another (a LAN with its own DHCP server); replies are matched before that check, so they still arrive. A server's range for a network it is not on carries the netmask, which dnsmasq cannot learn from an interface it does not have; an attached range renders as before.
+
+**A change restarts the relay service, never its container.** The cores also run bird and keepalived. Cix rewrites the file only when it differs from the one in the container, then asks that container's cix-init to restart the service named at registration (`service`, default `dhcp-relay`). The file is staged at create too, so a container restart starts with it, and it is re-rendered when a server or relay comes, goes or changes address, since it names their addresses.
+
+Refused at the point of asking: a relay that is not registered or not on the range's network; a server not on the network that a named relay shares no network with, or that has no route back to the relay's address there (a connected network or a static route covering it, a default route included); relays on a range whose servers are all attached, since a relay would only repeat what they hear. A container is a server or a relay, never both (`409`): on a shared interface dnsmasq's relay function wins. Unregistering a relay drops it from every range that named it, and a range left unable to reach a server is disabled.
+
+The relay container declares the service: `/usr/sbin/dnsmasq -k -u root --pid-file= --conf-file=/etc/dnsmasq-relay.conf`, with `on_exit: restart`, so a bad relay never takes the container's other services down with it.
 
 ### Setting up a serving container
 
@@ -3441,7 +3471,7 @@ Create the container with `files[]` entries for the first two (empty is fine —
 
 > **Enabling DHCP on a network that reaches a real LAN will answer requests from machines that are not this platform's.** A home or office LAN almost certainly already has a DHCP server, and a second one is not a redundant pair — it is two servers with separate lease databases handing out overlapping addresses. Nothing here prevents it, because nothing here can tell a lab bridge from an uplinked one. Use an isolated network unless you own the LAN's addressing.
 
-`cixctl dhcp server ls|add|rm`, `cixctl dhcp enable --network=… --range=… --server=… [--server=…]`, `cixctl dhcp static add|rm`, `cixctl dhcp show|leases` is the CLI surface; the dashboard has DHCP under Services (Servers / Ranges / Reservations / Leases), with each network's own page showing the leases on it.
+`cixctl dhcp server ls|add|rm`, `cixctl dhcp relay ls|add|rm`, `cixctl dhcp enable --network=… --range=… --server=… [--server=…] [--relay=…]`, `cixctl dhcp static add|rm`, `cixctl dhcp show|leases` is the CLI surface; the dashboard has DHCP under Services (Servers / Relays / Ranges / Reservations / Leases), with each network's own page showing the leases on it.
 
 ## Samepage merging: KSM (issue #50)
 

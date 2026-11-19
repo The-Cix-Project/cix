@@ -105,11 +105,28 @@ cixctl dhcp show
 ```
 
 - `--server=` is repeatable. dnsmasq has no failover protocol, so a range named to more than one server is split into disjoint slices, one per server in the order given; `dhcp show` prints which server holds which slice. Each server keeps serving its own slice if the other is down.
-- Each named server must be registered for DHCP and attached to that network.
+- Each named server must be registered for DHCP and attached to that network, unless the range names relays (below).
 - The range must sit inside the network's subnet, must not cover the network's own address, and must have at least as many addresses as servers. Lease time is 60 seconds to 30 days.
 - `--router=` is the default route handed to clients. The update is partial, so omitting `--router=` keeps the stored value; pass `--router=0.0.0.0` to hand out none.
 - **Changing a range restarts the servers that serve it**, because dnsmasq reads ranges only at startup. Only servers whose rendered configuration changed are restarted.
 - A network that reaches a real LAN will answer DHCP requests from machines that are not part of this platform.
+
+### A range relayed to servers on another network
+
+A relay serves a network the DHCP servers have no interface on: a container on that network (the cores, `cr-1` and `cr-2`) runs dnsmasq as a relay and carries the requests to the servers ([ADR-0383](../adr/0383-a-dhcp-range-may-be-relayed.md)). The relay container declares a `dhcp-relay` service running `/usr/sbin/dnsmasq -k -u root --pid-file= --conf-file=/etc/dnsmasq-relay.conf` with `on_exit: restart`; the daemon writes that file.
+
+```sh
+cixctl dhcp relay add cr-1            # --service=NAME if the service is not called dhcp-relay
+cixctl dhcp relay add cr-2
+cixctl dhcp relay ls
+cixctl dhcp enable --network=remote-access --range=192.168.152.100-192.168.152.200 \
+    --server=dns-1 --server=dns-2 --relay=cr-1 --relay=cr-2 --router=192.168.152.254
+```
+
+- Each relay must be attached to the range's network and share a network with each server it reaches. Each such server needs a route back to the relay's address on the relayed network; a default route via the cores counts.
+- Changing the range rewrites the relays' file and restarts only their relay service, never the relay container, so a core's routing stays up.
+- A container is a DHCP server or a relay, never both. `cixctl dhcp relay rm cr-1` drops it from every range; a range left with no way to reach a server is disabled.
+- A client renews by unicast to the server that leased it, through its default route, so the range's `--router=` must route to the servers' network.
 
 ```sh
 cixctl dhcp disable --network=access   # stop serving, keep the range

@@ -81,7 +81,7 @@ A menu covering a branch that has children of its own holds **submenus that open
 | | DNS | New Record, Register Server |
 | | LDAP | Register Server |
 | | NTP | Register Server |
-| | DHCP | Register Server, New Range, Reserve an Address |
+| | DHCP | Register Server, Register Relay, New Range, Reserve an Address |
 | | Syslog | Register Target |
 | Host | Identity | New User, New Group, Grant Permissions |
 | | Daemon | Add Route, Set Sysctl |
@@ -119,7 +119,7 @@ Services         (a group: no page of its own)
   DNS            (tabs: Records / Servers / Forwarders)
   LDAP           (tabs: Servers / Directory)
   NTP            (tabs: Config / Servers / Time & Sync)
-  DHCP           (tabs: Servers / Ranges / Reservations / Leases)
+  DHCP           (tabs: Servers / Relays / Ranges / Reservations / Leases)
   Syslog
   Server Health  (the health of every registered service)
 Host             (a group: no page of its own)

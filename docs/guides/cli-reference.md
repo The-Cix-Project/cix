@@ -405,7 +405,8 @@ Attach one at creation with `container run --volume=NAME:/path[:ro]`, or later w
 | `dhcp show` | DHCP-configured networks and static reservations ([ADR-0197](../adr/0197-dhcp-served-by-the-dns-server.md)) |
 | `dhcp leases` | Current leases, read from the serving container's lease file |
 | `dhcp server ls` / `dhcp server add CONTAINER` / `dhcp server rm CONTAINER` | Registered DHCP servers. `rm` also drops the server from every range naming it, and disables a range left with none |
-| `dhcp enable --network=NAME --range=START-END --server=CONTAINER [--server=CONTAINER ...] [--lease-seconds=N] [--router=IP]` | Serve DHCP on a network. A range with several servers is split into disjoint slices. **A range change restarts the servers serving it** |
+| `dhcp relay ls` / `dhcp relay add CONTAINER [--service=NAME]` / `dhcp relay rm CONTAINER` | Registered DHCP relays ([ADR-0383](../adr/0383-a-dhcp-range-may-be-relayed.md)): a container on a network that carries its requests to servers not on it. `rm` also drops it from every range naming it |
+| `dhcp enable --network=NAME --range=START-END --server=CONTAINER [--server=CONTAINER ...] [--relay=CONTAINER ...] [--lease-seconds=N] [--router=IP]` | Serve DHCP on a network. A range with several servers is split into disjoint slices; `--relay=` reaches servers not on the network. **A range change restarts the servers serving it**, and only the relay service of a relay |
 | `dhcp disable --network=NAME` | Stop serving, keeping the configuration |
 | `dhcp remove --network=NAME` | Delete the network's DHCP configuration |
 | `dhcp static add --mac=M --ip=IP [--hostname=NAME]` / `dhcp static rm MAC` | Add / remove a reservation, live |

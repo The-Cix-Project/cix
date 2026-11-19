@@ -6,6 +6,19 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A DHCP range may be relayed to its servers (ADR-0383)
+
+- **Before:** a DHCP server served only networks it had an interface on, so serving another network meant giving dns-1 and dns-2 an interface there.
+- **Now:**
+  - **Relays are registered like servers:** `GET`/`POST /v1/dhcp/relays`, `DELETE /v1/dhcp/relays/{container}`, each with the service that runs it (default `dhcp-relay`). A range names them in `relays`.
+  - **cixd renders the relay's `/etc/dnsmasq-relay.conf`:** dnsmasq in relay-only mode (`port=0`), one `dhcp-relay` line per relayed network and server not on it, and `interface=` for the relayed networks only. A change restarts the relay service through cix-init, never the container, so the cores' routing stays up.
+  - **A server's range for a network it is not on carries the netmask**, as dnsmasq's manual asks for a relayed subnet. Attached ranges render as before.
+  - **Refused at the point of asking:** a relay not on the range's network, a server a relay cannot reach or that has no route back, relays on a range whose servers are all attached, and a container registered as both server and relay.
+  - **Surfaces:** `cixctl dhcp relay ls|add|rm` and `dhcp enable --relay=`; the dashboard's Relays tab and Relays column; a `dhcp_relays` section in config export and apply.
+  - **Announcements:** the registry now announces `getDhcpServers` and `getDhcpRelays`, whose `running` field a container starting or stopping moves.
+- **Measured first:** dnsmasq 2.90's relay and its relayed-subnet server side, from its own source (`probe-dnsrelay@1-1`, `@3-1`, `@4-1`); dhcp-helper 1.2, the owner's first choice, has no configuration file (`probe-dhcphelper@2-1`).
+- **Gates:** `test_dhcprelay` (new, in SELFTESTS) and `test_dhcp`'s relay scenario.
+
 ### A device gets its firmware by itself, release 3's acquisition (ADR-0381, #685)
 
 - **Before:** a device record said which firmware its driver lacked, and an operator had to find and install the package.
