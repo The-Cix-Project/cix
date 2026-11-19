@@ -678,7 +678,7 @@ int main(void)
 	/* #500: an install into an image that does not exist is refused, so
 	 * every image this test installs into is created first. */
 	{
-		static const char *const imgs[] = { "imgA", "imgB", "imgC", "imgD", "imgE" };
+		static const char *const imgs[] = { "imgA", "imgB", "imgC", "imgD", "imgE", "imgF" };
 		size_t k;
 
 		for (k = 0; k < sizeof(imgs) / sizeof(imgs[0]); k++) {
@@ -893,6 +893,33 @@ int main(void)
 	      "GET /v1/pkg/cache (after clear)");
 	if (r.json != NULL)
 		CHECK(cache_json_long(r.json, "entry_count") == 0, "cache is empty after clear");
+	cix_response_free(&r);
+
+	/* --- scenario 6b (ADR-0382): the source cache. The artifact cache is
+	 * empty, and the source tarball was deleted in scenario 3, so a fresh
+	 * build of cachetest can only get its source from the source cache,
+	 * which kept it when scenario 2's real build verified it. --- */
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "POST", "/v1/pkg/install",
+	                         "{\"name\":\"cachetest\",\"image\":\"imgF\"}", &r) == 0 &&
+	              r.status == 202,
+	      "POST /v1/pkg/install cachetest@imgF (no artifact, no source tarball)");
+	cix_response_free(&r);
+	CHECK(wait_for_pkg_state(&client, "cachetest", "imgF", "installed", 300) == 0,
+	      "ADR-0382: cachetest@imgF builds from the source cache, its tarball long gone");
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "GET",
+	                         "/v1/system/logs?source=cixd&regex=came%20from%20the%20source%20cache",
+	                         NULL, &r) == 0 &&
+	              r.status == 200 && r.body != NULL && strstr(r.body, "cachetest") != NULL,
+	      "ADR-0382: the build says its source came from the source cache");
+	cix_response_free(&r);
+	wait_cache_field(&client, "source_entry_count", CACHE_GT, 0);
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 200 &&
+	              r.json != NULL && cache_json_long(r.json, "source_entry_count") >= 1 &&
+	              cache_json_long(r.json, "source_total_bytes") > 0,
+	      "ADR-0382: GET /v1/pkg/cache reports the source cache");
 	cix_response_free(&r);
 
 	/* --- scenario 7: network artifact-fetch tier -- a recipe with an

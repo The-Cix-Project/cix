@@ -1727,6 +1727,8 @@ int pkg_push_in_flight(void);
  * "bounded, not silently unbounded" posture logstore's own max_bytes
  * cap already established for this project. */
 #define PKG_CACHE_DEFAULT_MAX_BYTES (2LL * 1024 * 1024 * 1024)
+/* ADR-0382: the source cache's own budget, source_max_bytes. */
+#define PKG_SOURCE_CACHE_DEFAULT_MAX_BYTES (8LL * 1024 * 1024 * 1024)
 
 /* Loads any persisted cache config (default: PKG_CACHE_DEFAULT_MAX_BYTES,
  * same "missing file = first-ever startup, not an error" tolerance
@@ -1741,6 +1743,11 @@ long long pkg_cache_get_max_bytes(void);
 
 /* max_bytes must be > 0 -- there is no "unlimited" mode. */
 enum pkg_error pkg_cache_set_max_bytes(long long max_bytes);
+
+/* ADR-0382: the source cache's budget, source_max_bytes, saved beside
+ * max_bytes; > 0, and a lower one evicts at the next walk. */
+long long pkg_source_cache_get_max_bytes(void);
+enum pkg_error pkg_source_cache_set_max_bytes(long long max_bytes);
 
 /* {"max_bytes":N,"current_bytes":N,"entry_count":N}. */
 void pkg_cache_write_json_status(struct json_writer *w);
@@ -1770,6 +1777,10 @@ struct pkg_cache_walk {
 	int count;
 	int evicted;
 	char names[PKG_CACHE_WALK_MAX][PKG_CACHE_WALK_NAME_MAX];
+	/* ADR-0382: the source cache, walked and evicted in the same pass. */
+	long long source_total_bytes;
+	int source_count;
+	int source_evicted;
 };
 
 /* In the helper child, or before the loop serves: walk, evict, report. */

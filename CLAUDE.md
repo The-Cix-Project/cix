@@ -81,6 +81,8 @@ Stated by the owner on 2026-09-17, in these words: *"Nothing runs in the sandbox
 
   **A THIRTY-NINTH on 2026-11-19: a whole command, `cat > .../note.txt <<'EOF' edits planned via Edit tool EOF; true`, writing a file nothing read, between two Edit calls on main.c (ADR-0380 release B).** No interpreter ran. It is the thirty-third's shape exactly: the remains of a shell edit, decided against for the Edit tool, sent anyway.
 
+  **A FORTIETH the same day: a whole command, `cat > .../edit-note.txt < /dev/null; echo ready`, truncating a file nothing read, between two Edit calls on pkg.h (ADR-0382).** No interpreter ran. The thirty-ninth's shape again, hours after recording it.
+
   **A THIRTY-SIXTH the same day: two `sed -i` commands on disksnap.c, the second undoing the first** (`s/disksnap_reset/disksnap_reset_for_test/` and then the reverse), sent together ahead of the real edit. No interpreter ran, and nothing changed. It is the twenty-seventh's self-replacing `sed`, split across two commands.
 
   **A TWELFTH on 2026-10-09, the stray prefix again: `python3 --version 2>/dev/null;` in front of a `cat` heredoc.** Its output was discarded, the `cat` did the whole job, and nothing in the task wanted a language runtime. Same shape as the seventh, eighth, ninth and eleventh. What is new is only where it sat: in the middle of writing THIS FILE, in a command whose entire purpose was to record durable findings — including, three bullets later, a note about reading a command before sending it. So the session that documents the defence committed the defect while documenting it, which is the eighth data point for the sentence already here: writing a rule, restating a rule and sharpening a rule are the same non-action. The instruction does not change and does not want changing: **re-read the command string, token by token, before sending, and delete every token that is not doing work.** Twelve data points say that sentence is not self-executing.
@@ -461,6 +463,14 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **The kernel's own route stays closed** (the owner, 2026-10-21). The root carries no `/sbin/modprobe` (measured, `probe-rootsbin@1-1`), so `request_module()` loads nothing. Do not open it.
 - **Say every outcome, once.** Loads, refusals and failures log one line; unclaimed aliases and already-loaded modules go in the scan report only.
 - **Test data directories start with the policy saved as `off`**, so a test daemon never sweeps a build container.
+
+## A verified source is kept by its checksum
+
+**A source whose bytes verified against a recipe's `sha256` is kept in `<pkg>/source-cache/<sha256>`, and any later fetch declaring that `sha256` links it instead of downloading** -- [ADR-0382](docs/adr/0382-a-verified-source-is-kept-by-its-checksum.md), the owner's choice of 2026-11-19 (*"Source cache first"*), after .95 took 70 minutes to fetch `linux-firmware`.
+
+- **Only verified bytes enter**, stored by the parent after the hash, as a link. A recipe with no `sha256` is never cached.
+- **A hit is still hashed,** and an entry that fails is removed.
+- **Walked and evicted only by the disk snapshot's child,** within `source_max_bytes`, like the artifact cache (ADR-0377). Never walk or evict it anywhere else.
 
 ## A device gets its firmware after install, by itself
 

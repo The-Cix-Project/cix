@@ -12054,7 +12054,7 @@ paths:
         occupancy does not evict anything immediately; eviction only happens
         lazily, the next time a new entry needs room.
       operationId: putPkgCacheConfig
-      x-cix-invalidates: [getPkgCacheConfig, getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg]
+      x-cix-invalidates: [getPkgCacheConfig, getPkgCache, getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg]
       x-cix-permission: packages:write
       x-cix-mcp: tool
       x-cix-expose: [cli, web]
@@ -12064,13 +12064,22 @@ paths:
           application/json:
             schema:
               type: object
-              required: [max_bytes]
+              description: At least one of the two; an absent one is left as it is.
               properties:
                 max_bytes:
                   title: Cache size cap
                   x-cix-ui: bytes
                   type: integer
                   description: Must be > 0.
+                source_max_bytes:
+                  title: Source cache size cap
+                  x-cix-ui: bytes
+                  type: integer
+                  description: >
+                    The source cache's budget (ADR-0382): verified sources
+                    kept by their sha256 so a later build does not download
+                    them again. Must be > 0. A lower budget evicts the least
+                    recently used sources at the disk snapshot's next walk.
       responses:
         "200":
           description: Updated cache config (same shape as GET)
@@ -12079,7 +12088,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/PkgCacheConfig"
         "400":
-          description: max_bytes missing, not a number, or <= 0
+          description: neither max_bytes nor source_max_bytes given, or one is not a number or <= 0
           content:
             application/json:
               schema:
@@ -24494,11 +24503,16 @@ components:
 
     PkgCacheConfig:
       type: object
-      required: [max_bytes]
+      required: [max_bytes, source_max_bytes]
       properties:
         max_bytes:
           type: integer
           description: The cache's own real, always-enforced size cap; default 2 GiB. No "unlimited" mode.
+        source_max_bytes:
+          type: integer
+          description: >
+            The source cache's size cap (ADR-0382); default 8 GiB. No
+            "unlimited" mode.
 
     PkgDrift:
       type: object
@@ -24542,7 +24556,7 @@ components:
 
     PkgCacheStatus:
       type: object
-      required: [max_bytes, current_bytes, entry_count]
+      required: [max_bytes, current_bytes, entry_count, source_max_bytes, source_total_bytes, source_entry_count]
       properties:
         max_bytes:
           type: integer
@@ -24552,6 +24566,19 @@ components:
         entry_count:
           type: integer
           description: Number of distinct (name,version) artifacts currently cached.
+        source_max_bytes:
+          type: integer
+          description: The source cache's size cap (ADR-0382).
+        source_total_bytes:
+          type: integer
+          description: >
+            Bytes the source cache holds: verified sources kept by their
+            sha256, so a later build of any recipe declaring that sha256
+            takes the file instead of downloading it (ADR-0382). From the
+            disk snapshot's last walk.
+        source_entry_count:
+          type: integer
+          description: How many sources the source cache holds.
 
     PkgRepository:
       type: object

@@ -338,9 +338,9 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/pkg/sync` | The most recent (or currently running) sync's status |
 | GET | `/pkg/drift` | Every installed package whose recipe on disk is newer than what is installed — the aggregate `available_version` has always reported one at a time |
 | GET | `/pkg/verify` | Every installed package whose own recorded files are **not present** in its image's current rootfs (#281), or whose installed headers make includes that do not resolve (#289) |
-| GET | `/pkg/cache-config` | The configured local build-artifact cache size cap |
-| PUT | `/pkg/cache-config` | Set the cache's size cap (always a real cap — no "unlimited" mode) |
-| GET | `/pkg/cache` | Current local build-artifact cache occupancy |
+| GET | `/pkg/cache-config` | The configured local build-artifact cache size cap, and the source cache's (`source_max_bytes`, ADR-0382) |
+| PUT | `/pkg/cache-config` | Set the cache's size cap, the source cache's, or both (always a real cap — no "unlimited" mode) |
+| GET | `/pkg/cache` | Current local build-artifact cache occupancy, and the source cache's (`source_total_bytes`, `source_entry_count`, ADR-0382) |
 | DELETE | `/pkg/cache` | Clear every cached artifact — an explicit operator reset |
 | GET | `/pkg/repositories` | The package repositories this host pulls built packages from, in order -- mirrors, every copy verified (ADR-0324) |
 | POST | `/pkg/repositories` | Add a repository; `push` publishes fresh builds there (#129) |

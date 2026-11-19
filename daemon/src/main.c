@@ -24461,6 +24461,8 @@ static void handle_pkg_cache_config_get(int fd)
 	jw_obj_open(&w);
 	jw_key(&w, "max_bytes");
 	jw_int(&w, pkg_cache_get_max_bytes());
+	jw_key(&w, "source_max_bytes"); /* ADR-0382 */
+	jw_int(&w, pkg_source_cache_get_max_bytes());
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -24469,11 +24471,11 @@ static void handle_pkg_cache_config_get(int fd)
 static void handle_pkg_cache_config_put(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
-	const struct json_value *mb;
-	enum pkg_error perr;
+	const struct json_value *mb, *smb;
+	enum pkg_error perr = PKG_OK;
 
 	if (body_len == 0) {
-		respond_error(fd, 400, "Bad Request", "max_bytes is required");
+		respond_error(fd, 400, "Bad Request", "max_bytes or source_max_bytes is required");
 		return;
 	}
 	root = json_parse(body, body_len);
@@ -24482,12 +24484,16 @@ static void handle_pkg_cache_config_put(int fd, const char *body, size_t body_le
 		return;
 	}
 	mb = json_object_get(root, "max_bytes");
-	if (mb == NULL) {
+	smb = json_object_get(root, "source_max_bytes");
+	if (mb == NULL && smb == NULL) {
 		json_free(root);
-		respond_error(fd, 400, "Bad Request", "max_bytes is required");
+		respond_error(fd, 400, "Bad Request", "max_bytes or source_max_bytes is required");
 		return;
 	}
-	perr = pkg_cache_set_max_bytes((long long)json_as_number(mb));
+	if (mb != NULL)
+		perr = pkg_cache_set_max_bytes((long long)json_as_number(mb));
+	if (perr == PKG_OK && smb != NULL)
+		perr = pkg_source_cache_set_max_bytes((long long)json_as_number(smb));
 	json_free(root);
 	if (perr != PKG_OK) {
 		respond_pkg_error(fd, perr);

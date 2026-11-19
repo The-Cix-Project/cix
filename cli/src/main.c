@@ -15634,8 +15634,18 @@ static void fmt_pkg_cache_status(const struct json_value *v)
 	long current_bytes = (long)json_as_number(json_object_get(v, "current_bytes"));
 	long entry_count = (long)json_as_number(json_object_get(v, "entry_count"));
 
+	const struct json_value *smb = json_object_get(v, "source_max_bytes");
+	const struct json_value *stb = json_object_get(v, "source_total_bytes");
+	const struct json_value *sec = json_object_get(v, "source_entry_count");
+
 	printf("max_bytes=%ld current_bytes=%ld entry_count=%ld\n", max_bytes, current_bytes,
 	       entry_count);
+	/* ADR-0382: the source cache; cache-config carries only its cap. */
+	if (smb != NULL && stb != NULL && sec != NULL)
+		printf("source_max_bytes=%ld source_total_bytes=%ld source_entry_count=%ld\n",
+		       (long)json_as_number(smb), (long)json_as_number(stb), (long)json_as_number(sec));
+	else if (smb != NULL)
+		printf("source_max_bytes=%ld\n", (long)json_as_number(smb));
 }
 
 /*
@@ -15762,7 +15772,7 @@ static int cmd_pkg_cache_config_show(const struct cix_client *c, int json_mode)
 
 static int cmd_pkg_cache_config_set(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
-	long max_bytes = -1;
+	long max_bytes = -1, source_max_bytes = -1;
 	int i;
 	char body[128];
 	struct cix_response r;
@@ -15770,17 +15780,26 @@ static int cmd_pkg_cache_config_set(const struct cix_client *c, int json_mode, i
 	for (i = 0; i < argc; i++) {
 		if (strncmp(argv[i], "--max-bytes=", 12) == 0)
 			max_bytes = strtol(argv[i] + 12, NULL, 10);
+		else if (strncmp(argv[i], "--source-max-bytes=", 19) == 0)
+			source_max_bytes = strtol(argv[i] + 19, NULL, 10); /* ADR-0382 */
 		else {
 			fprintf(stderr, "cixctl: unknown pkg cache-config set option '%s'\n", argv[i]);
 			return 2;
 		}
 	}
-	if (max_bytes <= 0) {
-		fprintf(stderr, "usage: cixctl pkg cache-config set --max-bytes=N\n");
+	if ((max_bytes <= 0 && source_max_bytes <= 0) || max_bytes == 0 || source_max_bytes == 0) {
+		fprintf(stderr,
+		        "usage: cixctl pkg cache-config set [--max-bytes=N] [--source-max-bytes=N]\n");
 		return 2;
 	}
 
-	snprintf(body, sizeof(body), "{\"max_bytes\":%ld}", max_bytes);
+	if (max_bytes > 0 && source_max_bytes > 0)
+		snprintf(body, sizeof(body), "{\"max_bytes\":%ld,\"source_max_bytes\":%ld}", max_bytes,
+		         source_max_bytes);
+	else if (max_bytes > 0)
+		snprintf(body, sizeof(body), "{\"max_bytes\":%ld}", max_bytes);
+	else
+		snprintf(body, sizeof(body), "{\"source_max_bytes\":%ld}", source_max_bytes);
 	if (cix_client_request(c, CIX_API_putPkgCacheConfig_METHOD, CIX_API_putPkgCacheConfig, body, &r) != 0) {
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
@@ -15794,7 +15813,7 @@ static int cmd_pkg_cache_config(const struct cix_client *c, int json_mode, int a
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: cixctl pkg cache-config show\n"
-		                "       cixctl pkg cache-config set --max-bytes=N\n");
+		                "       cixctl pkg cache-config set [--max-bytes=N] [--source-max-bytes=N]\n");
 		return 2;
 	}
 	sub = argv[0];
@@ -18714,7 +18733,7 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		                "       cixctl pkg sync [--wait]\n"
 		                "       cixctl pkg sync-status\n"
 		                "       cixctl pkg cache-config show\n"
-		                "       cixctl pkg cache-config set --max-bytes=N\n"
+		                "       cixctl pkg cache-config set [--max-bytes=N] [--source-max-bytes=N]\n"
 		                "       cixctl pkg cache-status\n"
 		                "       cixctl pkg cache-clear\n"
 		                "       cixctl pkg repository ls | add NAME --url=URL | set NAME | rm NAME\n"

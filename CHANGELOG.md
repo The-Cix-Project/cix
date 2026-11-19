@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A verified source is kept by its checksum (ADR-0382)
+
+- **Before:** each build fetched its sources again, whoever had built them before, since a slot's sources are removed by its next fetch. Measured on 192.168.15.95, 2026-11-19: kernel.org's `linux-firmware-20261019.tar.xz` (672,694,092 bytes) took about 70 minutes, and the package job held every roll meanwhile.
+- **Now:**
+  - **Stored:** a source that verified against its recipe's `sha256` is kept as a hard link in `<pkg>/source-cache/<sha256>`.
+  - **Served:** any later fetch declaring that `sha256`, from any recipe, version or mirror, links it instead of downloading. The build logs `source N (... bytes) came from the source cache, not the network`.
+  - **Still verified:** a hit is hashed like any fetch, and an entry that no longer verifies is removed, so the next attempt downloads.
+  - **Bounded:** by `source_max_bytes` (`/v1/pkg/cache-config`, default 8 GiB). The disk snapshot's helper child evicts the least recently used sources past it, in the same pass as the artifact cache.
+  - **Shown:** `GET /v1/pkg/cache` reports `source_total_bytes` and `source_entry_count`; `cixctl pkg cache` prints them, and `cixctl pkg cache-config set --source-max-bytes=N` sets the budget.
+- **Gate:** `test_pkg_cache` scenario 6b. With the artifact cache cleared and the source tarball deleted, a fresh build of `cachetest` succeeds from the source cache, says so in the log, and `GET /v1/pkg/cache` counts the entry.
+
 ### A device record says which firmware its driver lacks, release 1b (ADR-0381, #685)
 
 - **Before:** nothing said which firmware a driver needed, or whether the host had it. A driver that failed for a missing file left only a kernel log line.

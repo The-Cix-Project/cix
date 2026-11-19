@@ -2032,6 +2032,62 @@ static void source_download_path(int chain_idx, const char *name, const char *ve
 	         index);
 }
 
+/*
+ * ADR-0382: the source cache, <pkg>/source-cache/<sha256>. Only bytes
+ * that verified against a recipe's sha256 enter it, as a hard link to the
+ * slot's file, and a later fetch declaring that sha256 is served from it.
+ * Both directories are under <pkg>, so a link never crosses filesystems.
+ */
+static char g_source_cache_dir[PATH_MAX];
+static long long g_source_cache_max_bytes = PKG_SOURCE_CACHE_DEFAULT_MAX_BYTES;
+
+/* The cache path for a recipe's sha256, lowercase; 0, or -1 when the
+ * value is not 64 hex digits and so names nothing to cache by. */
+static int source_cache_path(const char *sha256, char *out, size_t out_size)
+{
+	char key[65];
+	int k;
+
+	if (sha256 == NULL || strlen(sha256) != 64 || g_source_cache_dir[0] == '\0')
+		return -1;
+	for (k = 0; k < 64; k++) {
+		if (!isxdigit((unsigned char)sha256[k]))
+			return -1;
+		key[k] = (char)tolower((unsigned char)sha256[k]);
+	}
+	key[64] = '\0';
+	return snprintf(out, out_size, "%s/%s", g_source_cache_dir, key) < (int)out_size ? 0 : -1;
+}
+
+/* Was the slot's file served from the cache entry? The same inode. */
+static int source_served_from_cache(const char *src_path, const char *cache_path)
+{
+	struct stat a, b;
+
+	return stat(src_path, &a) == 0 && stat(cache_path, &b) == 0 && a.st_dev == b.st_dev &&
+	       a.st_ino == b.st_ino;
+}
+
+/* After a source verified: keep it, unless an entry is there already. A
+ * link, so one metadata operation on the loop. Failure is not fatal: the
+ * build has its source, and only a later fetch is not saved. */
+static void source_cache_store(const char *src_path, const char *cache_path)
+{
+	char tmp[PATH_MAX];
+	struct stat st;
+
+	if (stat(cache_path, &st) == 0)
+		return;
+	if (persist_mkdir_p(g_source_cache_dir) != 0 ||
+	    snprintf(tmp, sizeof(tmp), "%s.new", cache_path) >= (int)sizeof(tmp))
+		return;
+	unlink(tmp);
+	if (link(src_path, tmp) != 0)
+		return;
+	if (rename(tmp, cache_path) != 0)
+		unlink(tmp);
+}
+
 /* "c<digits>-", the slot marker every name above starts with (after the
  * sidecar or artifact prefix, where there is one). */
 static int slot_marked(const char *s, int *out_slot)
@@ -7426,6 +7482,7 @@ void pkg_repoint(const char *pkg_dir, const char *installed_state_path, const ch
 	snprintf(g_pkg_dir, sizeof(g_pkg_dir), "%s", pkg_dir);
 	snprintf(g_recipes_dir, sizeof(g_recipes_dir), "%s/recipes", pkg_dir);
 	snprintf(g_sources_dir, sizeof(g_sources_dir), "%s/sources", pkg_dir);
+	snprintf(g_source_cache_dir, sizeof(g_source_cache_dir), "%s/source-cache", pkg_dir);
 	snprintf(g_installed_state_path, sizeof(g_installed_state_path), "%s", installed_state_path);
 	snprintf(g_images_dir, sizeof(g_images_dir), "%s", images_dir);
 	snprintf(g_artifacts_dir, sizeof(g_artifacts_dir), "%s", artifacts_dir);
@@ -7833,6 +7890,9 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 		return -1;
 	if (snprintf(g_sources_dir, sizeof(g_sources_dir), "%s/sources", pkg_dir) >=
 	    (int)sizeof(g_sources_dir))
+		return -1;
+	if (snprintf(g_source_cache_dir, sizeof(g_source_cache_dir), "%s/source-cache", pkg_dir) >=
+	    (int)sizeof(g_source_cache_dir))
 		return -1;
 	if (snprintf(g_installed_state_path, sizeof(g_installed_state_path), "%s",
 	             installed_state_path) >= (int)sizeof(g_installed_state_path))
@@ -11976,6 +12036,25 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			 * mirror list did nothing at all -- freetype@2.13.3-7
 			 * declared three and failed naming the first.
 			 */
+			/*
+			 * ADR-0382: a source whose sha256 is in the source cache is
+			 * taken from there, as a link, and the network is not
+			 * touched. The parent hashes it like any fetch, and removes
+			 * an entry that no longer verifies. The mtime is set, so
+			 * eviction keeps what is used.
+			 */
+			{
+				char cached[PATH_MAX];
+
+				if (source_cache_path(recipe.sha256[j], cached, sizeof(cached)) == 0 &&
+				    access(cached, R_OK) == 0) {
+					unlink(src_tarball_path);
+					if (link(cached, src_tarball_path) == 0) {
+						(void)utimensat(AT_FDCWD, cached, NULL, 0);
+						continue;
+					}
+				}
+			}
 			attempt = 0;
 			fetched = 0;
 			fetch_err[0] = '\0';
@@ -13882,6 +13961,30 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 				why = "could not be hashed";
 			else if (strcasecmp(sha_out, recipe.sha256[i]) != 0)
 				why = "hashes to the wrong value";
+			/* ADR-0382: a source served from the cache is said once; a
+			 * fetched one that verified is kept; a cached one that no
+			 * longer verifies is dropped, so the next try downloads. */
+			{
+				char cached[PATH_MAX];
+
+				if (source_cache_path(recipe.sha256[i], cached, sizeof(cached)) == 0) {
+					int served = source_served_from_cache(src_path, cached);
+
+					if (why == NULL && served)
+						logstore_write("cixd", "info",
+						               "pkg %s@%s: source %d (%lld bytes) came from the "
+						               "source cache, not the network (ADR-0382)",
+						               e->name, recipe.version, i, (long long)sst.st_size);
+					else if (why == NULL)
+						source_cache_store(src_path, cached);
+					else if (served && unlink(cached) == 0)
+						logstore_write("cixd", "warn",
+						               "pkg %s@%s: source %d's source-cache entry %s, so it "
+						               "was removed and the next attempt downloads it "
+						               "(ADR-0382)",
+						               e->name, recipe.version, i, why);
+				}
+			}
 			if (why != NULL) {
 				/* #461: recipe.source[i] carries the token parse_recipe()
 				 * substituted for {{REPO_TOKEN}}, so logging it verbatim
@@ -21583,6 +21686,8 @@ static int save_cache_config(void)
 	jw_obj_open(&w);
 	jw_key(&w, "max_bytes");
 	jw_int(&w, g_cache_max_bytes);
+	jw_key(&w, "source_max_bytes"); /* ADR-0382 */
+	jw_int(&w, g_source_cache_max_bytes);
 	jw_obj_close(&w);
 	w.buf[w.len] = '\0';
 
@@ -21653,6 +21758,7 @@ int pkg_cache_init(const char *cache_dir, const char *config_path)
 	    (int)sizeof(g_cache_config_path))
 		return -1;
 	g_cache_max_bytes = PKG_CACHE_DEFAULT_MAX_BYTES;
+	g_source_cache_max_bytes = PKG_SOURCE_CACHE_DEFAULT_MAX_BYTES;
 	retire_targz_artifacts(); /* cix#569 */
 
 	if (persist_read_file(config_path, &buf, &len) != 0 || buf == NULL)
@@ -21670,6 +21776,13 @@ int pkg_cache_init(const char *cache_dir, const char *config_path)
 		if (v > 0)
 			g_cache_max_bytes = (long long)v;
 	}
+	mb = json_object_get(root, "source_max_bytes"); /* ADR-0382; absent before it */
+	if (mb != NULL) {
+		double v = json_as_number(mb);
+
+		if (v > 0)
+			g_source_cache_max_bytes = (long long)v;
+	}
 	json_free(root);
 	return 0;
 }
@@ -21677,6 +21790,22 @@ int pkg_cache_init(const char *cache_dir, const char *config_path)
 long long pkg_cache_get_max_bytes(void)
 {
 	return g_cache_max_bytes;
+}
+
+long long pkg_source_cache_get_max_bytes(void)
+{
+	return g_source_cache_max_bytes;
+}
+
+enum pkg_error pkg_source_cache_set_max_bytes(long long max_bytes)
+{
+	if (max_bytes <= 0)
+		return PKG_ERR_INVALID_NAME;
+	g_source_cache_max_bytes = max_bytes;
+	if (save_cache_config() != 0)
+		return PKG_ERR_PERSIST_FAILED;
+	disksnap_want(); /* a lower budget evicts at the next walk */
+	return PKG_OK;
 }
 
 enum pkg_error pkg_cache_set_max_bytes(long long max_bytes)
@@ -21783,10 +21912,82 @@ static int walk_name_cmp(const void *a, const void *b)
 	return strcmp((const char *)a, (const char *)b);
 }
 
+/*
+ * ADR-0382: walk the source cache, evicting the least recently used
+ * sources past source_max_bytes (a hit sets the mtime). Leftover ".new"
+ * files of an interrupted store are removed. In the disk snapshot's
+ * child, or before the loop serves, like the artifact walk.
+ */
+#define SOURCE_CACHE_SCAN_MAX 4096
+struct source_cache_entry {
+	char name[72];
+	long long size;
+	time_t mtime;
+};
+
+static void source_cache_walk_evict(struct pkg_cache_walk *out)
+{
+	static struct source_cache_entry scan[SOURCE_CACHE_SCAN_MAX];
+	DIR *d = opendir(g_source_cache_dir);
+	struct dirent *de;
+	long long total = 0;
+	int n = 0, i, j;
+
+	out->source_total_bytes = 0;
+	out->source_count = 0;
+	out->source_evicted = 0;
+	if (d == NULL)
+		return;
+	while ((de = readdir(d)) != NULL) {
+		char path[PATH_MAX];
+		struct stat st;
+		size_t len = strlen(de->d_name);
+
+		if (de->d_name[0] == '.' ||
+		    snprintf(path, sizeof(path), "%s/%s", g_source_cache_dir, de->d_name) >=
+		        (int)sizeof(path) ||
+		    lstat(path, &st) != 0 || !S_ISREG(st.st_mode))
+			continue;
+		if (len > 4 && strcmp(de->d_name + len - 4, ".new") == 0) {
+			unlink(path);
+			continue;
+		}
+		if (len != 64 || n >= SOURCE_CACHE_SCAN_MAX)
+			continue;
+		snprintf(scan[n].name, sizeof(scan[n].name), "%s", de->d_name);
+		scan[n].size = (long long)st.st_size;
+		scan[n].mtime = st.st_mtime;
+		total += scan[n].size;
+		n++;
+	}
+	closedir(d);
+	/* Oldest first: a hit and a store both set the mtime. */
+	for (i = 1; i < n; i++)
+		for (j = i; j > 0 && scan[j - 1].mtime > scan[j].mtime; j--) {
+			struct source_cache_entry t = scan[j];
+
+			scan[j] = scan[j - 1];
+			scan[j - 1] = t;
+		}
+	for (i = 0; i < n && total > g_source_cache_max_bytes; i++) {
+		char path[PATH_MAX];
+
+		snprintf(path, sizeof(path), "%s/%s", g_source_cache_dir, scan[i].name);
+		if (unlink(path) == 0) {
+			total -= scan[i].size;
+			out->source_evicted++;
+		}
+	}
+	out->source_total_bytes = total;
+	out->source_count = n - out->source_evicted;
+}
+
 void pkg_cache_walk_evict(struct pkg_cache_walk *out)
 {
 	long long total = cache_scan();
 	int i, n = 0;
+
+	source_cache_walk_evict(out); /* ADR-0382 */
 
 	out->ok = 1;
 	out->evicted = 0;
@@ -21819,17 +22020,26 @@ void pkg_cache_walk_install(const struct pkg_cache_walk *w)
 		return;
 	changed = !g_cache_view.ok || g_cache_view.total_bytes != w->total_bytes ||
 	          g_cache_view.count != w->count ||
+	          g_cache_view.source_total_bytes != w->source_total_bytes ||
+	          g_cache_view.source_count != w->source_count ||
 	          memcmp(g_cache_view.names, w->names, (size_t)w->count * sizeof(w->names[0])) != 0;
 	if (w->evicted > 0)
 		logstore_write("cixd", "info",
 		               "artifact cache: evicted %d least recently used artifact(s) to fit "
 		               "max_bytes %lld (ADR-0377)",
 		               w->evicted, g_cache_max_bytes);
+	if (w->source_evicted > 0)
+		logstore_write("cixd", "info",
+		               "source cache: evicted %d least recently used source(s) to fit "
+		               "source_max_bytes %lld (ADR-0382)",
+		               w->source_evicted, g_source_cache_max_bytes);
 	if (!changed)
 		return;
 	g_cache_view.ok = 1;
 	g_cache_view.total_bytes = w->total_bytes;
 	g_cache_view.count = w->count;
+	g_cache_view.source_total_bytes = w->source_total_bytes;
+	g_cache_view.source_count = w->source_count;
 	memcpy(g_cache_view.names, w->names, (size_t)w->count * sizeof(w->names[0]));
 	events_announce(EV_getPkgCache);
 	events_announce(EV_listPkg);
@@ -21987,6 +22197,13 @@ void pkg_cache_write_json_status(struct json_writer *w)
 	jw_int(w, g_cache_view.total_bytes);
 	jw_key(w, "entry_count");
 	jw_int(w, g_cache_view.count);
+	/* ADR-0382: the source cache, from the same walk. */
+	jw_key(w, "source_max_bytes");
+	jw_int(w, g_source_cache_max_bytes);
+	jw_key(w, "source_total_bytes");
+	jw_int(w, g_cache_view.source_total_bytes);
+	jw_key(w, "source_entry_count");
+	jw_int(w, g_cache_view.source_count);
 	jw_obj_close(w);
 }
 

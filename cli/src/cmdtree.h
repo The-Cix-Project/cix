@@ -1384,6 +1384,7 @@ static const struct cli_node n_pkg_buildenv_subs[] = {
 
 static const char *const n_pkg_cache_config_set_flags[] = {
 	"--max-bytes=",
+	"--source-max-bytes=",
 	NULL
 };
 
