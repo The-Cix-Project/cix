@@ -123,7 +123,7 @@ cixctl dhcp enable --network=remote-access --range=192.168.152.100-192.168.152.2
     --server=dns-1 --server=dns-2 --relay=cr-1 --relay=cr-2 --router=192.168.152.254
 ```
 
-- Each relay must be attached to the range's network and share a network with each server it reaches. Each such server needs a route back to the relay's address on the relayed network; a default route via the cores counts.
+- Each relay must be attached to the range's network and share a network with each server it reaches. Each such server needs a route back to the relay's address on the relayed network; a default route counts, including the one a container gets automatically via its first network's address.
 - Changing the range rewrites the relays' file and restarts only their relay service, never the relay container, so a core's routing stays up.
 - A container is a DHCP server or a relay, never both. `cixctl dhcp relay rm cr-1` drops it from every range; a range left with no way to reach a server is disabled.
 - A client renews by unicast to the server that leased it, through its default route, so the range's `--router=` must route to the servers' network.

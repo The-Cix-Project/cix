@@ -46,7 +46,7 @@ dns-1 and dns-2 route everything not directly connected via `192.168.150.254`, t
 4. **Refused at the point of asking** (ADR-0197's rule):
    - a relay that is not registered, or not attached to the range's network;
    - an unattached server with a relay it shares no network with;
-   - an unattached server with no route covering the relayed subnet, since its reply goes to `giaddr` there. A connected network or one of its static `routes` must cover it; a default route counts;
+   - an unattached server with no route covering the relayed subnet, since its reply goes to `giaddr` there. A connected network, one of its static `routes`, or the default route the runtime gives it via its first network's address (when that network has one, `container_net_child_configure()`) must cover it. Probe 781 refused the ordinary case until that last was counted;
    - `relays` on a range whose servers are all attached, because the relay would only duplicate what they hear.
 5. **What is rendered.**
    - **A server's file, `/etc/dnsmasq-dhcp.conf`:** a range for a network the server is not attached to carries its netmask. Attached ranges are rendered exactly as today, so this release does not roll dns-1 or dns-2.
