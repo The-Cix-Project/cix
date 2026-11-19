@@ -18634,6 +18634,16 @@ components:
           enum: [SIGTERM, SIGINT, SIGHUP, SIGQUIT, SIGUSR1, SIGUSR2, SIGKILL]
           default: SIGTERM
           description: Sent first at shutdown or an operator stop; SIGKILL follows after stop_timeout_seconds.
+        reload_signal:
+          title: Reload signal
+          type: string
+          enum: [SIGHUP, SIGUSR1, SIGUSR2, SIGINT, SIGQUIT, SIGTERM]
+          description: >
+            How this program re-reads its files (ADR-0384): sent to it,
+            once it is ready, when the daemon has rewritten files it
+            serves, such as a DNS server's records or a DHCP server's
+            reservations. No default: a service that declares none is
+            never signalled, and picks the files up at its next start.
         stop_timeout_seconds:
           title: Stop timeout (seconds)
           type: integer
@@ -18849,6 +18859,10 @@ components:
           type: integer
         stop_signal:
           type: string
+        reload_signal:
+          type: string
+          nullable: true
+          description: The declared reload signal (ADR-0384), or null when the service declares none.
         stop_timeout_seconds:
           type: integer
         uid:

@@ -3,6 +3,7 @@
 #include "linux_compat.h"
 #include "persist.h"
 #include "registry.h"
+#include "containerreload.h"
 
 #include <arpa/inet.h>
 #include <limits.h>
@@ -531,7 +532,7 @@ void dns_forwarders_sync_all(void)
 		                          DNS_SERVERS_FILE_PATH, full_path, sizeof(full_path));
 		if (dns_write_servers_file(full_path) <= 0) /* unchanged: nothing to reload (#697) */
 			continue;
-		sys_pidfd_send_signal(entry->handle.pidfd, SIGHUP);
+		container_reload(g_bindings[i].container_name); /* ADR-0384 */
 	}
 }
 
@@ -605,7 +606,7 @@ static int hosts_path_is_valid(const char *path)
 	return path != NULL && path[0] == '/' && strstr(path, "..") == NULL;
 }
 
-enum dns_server_error dns_server_register(const char *container_name, pid_t pid, int pidfd,
+enum dns_server_error dns_server_register(const char *container_name,
                                            const char *hosts_path)
 {
 	char full_path[DNS_SERVER_PATH_MAX + 32];
@@ -658,7 +659,7 @@ enum dns_server_error dns_server_register(const char *container_name, pid_t pid,
 	if (dns_write_servers_file(servers_full_path) < 0)
 		return DNS_SERVER_ERR_WRITE_FAILED;
 
-	sys_pidfd_send_signal(pidfd, SIGHUP);
+	container_reload(container_name); /* ADR-0384 */
 
 	memset(&g_bindings[slot], 0, sizeof(g_bindings[slot]));
 	strncpy(g_bindings[slot].container_name, container_name,
@@ -742,7 +743,7 @@ void dns_server_sync_all(void)
 		                          g_bindings[i].hosts_path, full_path, sizeof(full_path));
 		if (dns_write_hosts_file(full_path) <= 0) /* unchanged: nothing to reload (#697) */
 			continue;
-		sys_pidfd_send_signal(entry->handle.pidfd, SIGHUP);
+		container_reload(g_bindings[i].container_name); /* ADR-0384 */
 	}
 }
 

@@ -482,6 +482,15 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Refuse at the point of asking:** a relay not attached to the network, a server sharing no network with a relay or with no route back to it, a container that is both server and relay, relays on a range whose servers are all attached.
 - **Relays re-render when a registered server or relay is created, re-addressed or deleted,** since the relay file names other containers' addresses.
 
+## A file cixd rewrites in a container is put in force through cix-init
+
+**Never signal a container's pidfd to make a service reload: that pid is cix-init, which discards a signal it has no handler for. Call `container_reload()`** -- [ADR-0384](docs/adr/0384-a-service-declares-how-it-reloads.md), for #697. Measured on .95, 2026-11-19: a new DNS record sat in dns-1's hosts file while both servers answered NXDOMAIN for it, and after a range change restarted them both answered REFUSED to everything.
+
+- **A service declares `reload_signal`** (dnsmasq: `SIGHUP`); `CIXINIT_OP_RELOAD` has cix-init send it to each READY service declaring one. Never signal one that is still starting: it may not have its handler yet.
+- **A file a server reads at start is staged at create** (the DNS records and forwarders, the DHCP files, the relay file), so a restart never depends on a reload arriving.
+- **Every sync compares before it writes,** and reloads only on a real difference: the resync after every container start must not reload or restart anything unchanged.
+- **cixd records each container's cix-init version** from `EV_UP` and carries it across a handover (`init_version`, optional). An older or unknown cix-init gets those services restarted instead.
+
 ## A device gets its firmware after install, by itself
 
 **Firmware is not root content and never on the ISO. A host keeps it in its own `firmware` image, which cixd points the kernel's firmware path at. cixd installs, by itself, the `linux-firmware` output that provides a file a loaded driver declares and the host lacks, then probes the device again.** That is [ADR-0381](docs/adr/0381-a-device-gets-its-firmware-after-install.md), the owner's decisions of 2026-11-18 for #685 (*"can it not be downloaded after the initial install?"*, *"Automatic only"*).

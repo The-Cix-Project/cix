@@ -470,6 +470,7 @@ struct registry_entry {
 	int init_control_fd; /* cixd -> cix-init commands; -1 once closed */
 	int init_report_fd;  /* cix-init -> cixd reports; -1 once closed */
 	int init_up;         /* cix-init has read its table (CIXINIT_EV_UP seen) */
+	int init_version;    /* what that EV_UP reported, 0 unknown (ADR-0384) */
 	/*
 	 * Derived, never declared: every service with a probe has passed
 	 * it and every oneshot has exited 0 (ADR-0260). What depends_on

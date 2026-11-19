@@ -239,7 +239,7 @@ void handle_dns_server_create(int fd, const char *body, size_t body_len)
 		return;
 	}
 
-	serr = dns_server_register(container_name, entry->handle.pid, entry->handle.pidfd,
+	serr = dns_server_register(container_name,
 	                            hosts_path);
 
 	if (serr != DNS_SERVER_OK) {

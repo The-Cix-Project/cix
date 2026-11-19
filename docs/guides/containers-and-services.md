@@ -130,7 +130,7 @@ is a real JSON array.
 
 Some things have no `container run` flag and exist only in the create
 body: a network attachment's `ifname` and `container_bridge`, a staged
-file's inline `content`, per-service `stop_signal`, `uid`/`gid`,
+file's inline `content`, per-service `stop_signal`, `reload_signal`, `uid`/`gid`,
 `restart_delay_seconds`, and the server-role fields (`dns_server`,
 `ntp_server`, `syslog_target`, `ldap_server`). Use a deployment for
 those.

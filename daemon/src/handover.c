@@ -92,6 +92,12 @@ static void put_container(struct json_writer *w, const struct handover_container
 	jw_int(w, c->procfuse_expected);
 	jw_key(w, "init_up");
 	jw_bool(w, c->init_up);
+	/* ADR-0384, optional (format 1): what the container's cix-init
+	 * reported, so an in-place switch still knows it can reload. */
+	if (c->init_version > 0) {
+		jw_key(w, "init_version");
+		jw_int(w, c->init_version);
+	}
 	jw_key(w, "ready");
 	jw_bool(w, c->ready);
 
@@ -378,6 +384,14 @@ static void get_container(const struct json_value *o, struct handover_container 
 	c->capture_requested = (int)get_int(o, "capture_requested", missing);
 	c->procfuse_expected = (int)get_int(o, "procfuse_expected", missing);
 	c->init_up = (int)get_int(o, "init_up", missing);
+	{
+		/* Optional (ADR-0384): absent from a predecessor that did not
+		 * record it, which reads as unknown and gets the restart
+		 * fallback. */
+		const struct json_value *iv = json_object_get(o, "init_version");
+
+		c->init_version = iv != NULL && iv->type == JSON_NUMBER ? (int)json_as_number(iv) : 0;
+	}
 	c->ready = (int)get_int(o, "ready", missing);
 
 	a = get_arr(o, "nets", CONTAINER_MAX_NETWORKS, missing);

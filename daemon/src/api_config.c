@@ -1054,7 +1054,7 @@ static int cfg_dns_servers_create(const struct json_value *el, int dry_run, char
 	}
 	if (dry_run)
 		return 0;
-	if (dns_server_register(name, entry->handle.pid, entry->handle.pidfd, hosts_path) !=
+	if (dns_server_register(name, hosts_path) !=
 	    DNS_SERVER_OK) {
 		snprintf(err, errsz, "could not register %s as a DNS server", name);
 		return -1;

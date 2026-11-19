@@ -127,9 +127,10 @@ enum dns_server_error {
  * NOT work: the kernel does not guarantee an already-mounted overlay
  * notices changes made to the upper layer from outside it; verified
  * empirically before this was built, see docs/roadmap/ROADMAP.md Phase 8),
- * then sends SIGHUP via pidfd (dnsmasq's documented "reload
- * --addn-hosts files" signal) so an already-running dnsmasq picks up
- * this initial write immediately. hosts_path is rejected
+ * then asks the container to reload (container_reload(), ADR-0384) so
+ * an already-running dnsmasq picks up this write. That used to be a
+ * SIGHUP to the container's pidfd, which since ADR-0260 reaches cix-init
+ * and is discarded (#697). hosts_path is rejected
  * (DNS_SERVER_ERR_INVALID_PATH) unless it's an absolute path (starts
  * with '/') containing no "..". DNS_SERVER_ERR_DUPLICATE if
  * container_name is already registered -- unregister first to change
@@ -138,8 +139,8 @@ enum dns_server_error {
 /*
  * Issue #134: upstream forwarders, owned here rather than frozen into
  * a container's command line. Applied to every registered DNS server
- * through the same write-into-the-container + SIGHUP path records
- * already use (dnsmasq re-reads --servers-file= on SIGHUP), so a
+ * through the same write-into-the-container + reload path records
+ * already use (dnsmasq re-reads --servers-file= on its reload_signal, ADR-0384), so a
  * change reaches every replica live and identically.
  */
 #define DNS_FORWARDERS_MAX 8
@@ -174,12 +175,12 @@ enum dns_server_error dns_forwarders_set(const char list[][DNS_FORWARDER_LEN], i
  * called after autostart, exactly like dns_server_sync_all(). */
 void dns_forwarders_sync_all(void);
 
-enum dns_server_error dns_server_register(const char *container_name, pid_t pid, int pidfd,
+enum dns_server_error dns_server_register(const char *container_name,
                                            const char *hosts_path);
 enum dns_server_error dns_server_unregister(const char *container_name);
 
 /* Called after every record create/delete: rewrites the hosts file
- * and re-sends SIGHUP for every currently-registered binding. Also
+ * and, where it changed, asks every registered binding to reload (ADR-0384). Also
  * the right call to make once, after boot-time container autostart
  * completes, so freshly-live containers (fresh pid, per ADR-0091)
  * actually receive the bindings dns_init() just loaded from disk --

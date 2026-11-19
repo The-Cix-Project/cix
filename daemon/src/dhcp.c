@@ -4,6 +4,7 @@
 #include "dns.h"
 #include "persist.h"
 #include "registry.h"
+#include "containerreload.h"
 #include "network.h"
 #include "dhcprelay.h"
 #include "linux_compat.h"
@@ -1180,7 +1181,7 @@ void dhcp_sync_all(char changed[][DHCP_SERVER_NAME_MAX], int max_changed, int *o
 		}
 		/* Puts the hosts file into force immediately. The conf file is
 		 * untouched by this signal -- see the header. */
-		sys_pidfd_send_signal(entry->handle.pidfd, SIGHUP);
+		container_reload(names[i]); /* ADR-0384 */
 	}
 }
 

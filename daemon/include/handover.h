@@ -122,6 +122,7 @@ struct handover_container {
 	int capture_requested;
 	int procfuse_expected;
 	int init_up;
+	int init_version; /* ADR-0384: optional in the record; 0 when absent */
 	int ready;
 	struct registry_network_attachment nets[CONTAINER_MAX_NETWORKS];
 	int net_count;

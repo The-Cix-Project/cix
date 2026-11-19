@@ -53,7 +53,7 @@
  * Two rendered files, because dnsmasq treats them differently and
  * pretending otherwise would mean silently-inert settings:
  *   - the hosts file (static MAC->IP reservations) is re-read on
- *     SIGHUP, so it updates live;
+ *     its reload signal, which cix-init delivers (ADR-0384), so it updates live;
  *   - the conf file (ranges, lease time, options) is read only at
  *     startup, so changing a range restarts the serving container.
  */
@@ -210,7 +210,7 @@ int dhcp_render_hosts(char *out, size_t out_size);
 
 /*
  * Writes both files into every currently-running DNS server container
- * and SIGHUPs it, which puts a static-entry change into force
+ * and, when the reservations changed, asks it to reload (ADR-0384), which puts a static-entry change into force
  * immediately. Ranges are NOT live: `changed` is filled with the names
  * of the servers whose conf now differs from what they were started
  * against -- only those need restarting, so a change on one network

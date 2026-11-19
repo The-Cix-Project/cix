@@ -73,6 +73,7 @@
 #include "mcp.h"
 #include "dhcp.h"
 #include "dhcprelay.h"
+#include "containerreload.h"
 #include "procfuse.h"
 #include "proctitle.h"
 #include "stallwatch.h"
@@ -9620,6 +9621,44 @@ static int container_init_command(struct registry_entry *entry, int op, int serv
 	return send(entry->init_control_fd, &c, sizeof(c), MSG_DONTWAIT | MSG_NOSIGNAL) == (ssize_t)sizeof(c)
 	           ? 0
 	           : -1;
+}
+
+/* ADR-0384: see containerreload.h. */
+void container_reload(const char *name)
+{
+	struct registry_entry *e = registry_find(name);
+	int i, declared = 0;
+
+	if (e == NULL || !e->running || e->teardown_kind != REGISTRY_TEARDOWN_NONE ||
+	    e->init_control_fd < 0)
+		return; /* it reads the files when it next starts */
+	for (i = 0; i < e->service_count; i++)
+		if (e->services[i].def.reload_signal > 0)
+			declared++;
+	if (declared == 0) {
+		logstore_write_container(name, "warning",
+		                         "files changed, and no service declares a reload_signal, so the "
+		                         "change takes effect at its next start (ADR-0384)");
+		return;
+	}
+	if (e->init_version >= CIXINIT_VERSION_RELOAD) {
+		if (container_init_command(e, CIXINIT_OP_RELOAD, -1) != 0)
+			logstore_write_container(name, "error",
+			                         "files changed, and cix-init could not be asked to reload");
+		return;
+	}
+	/* An older cix-init ignores the op: restart what would have been
+	 * signalled. Heavier, and correct; it ends at the next recreate. */
+	for (i = 0; i < e->service_count; i++) {
+		if (e->services[i].def.reload_signal <= 0)
+			continue;
+		if (container_init_command(e, CIXINIT_OP_RESTART, i) == 0)
+			logstore_write_container(name, "info",
+			                         "files changed: restarted service %s, since this "
+			                         "container's cix-init (version %d) predates reload "
+			                         "(ADR-0384)",
+			                         e->services[i].def.name, e->init_version);
+	}
 }
 
 /*
@@ -19770,7 +19809,7 @@ static int register_declared_server_roles(const char *body, size_t body_len,
 		if (hosts_path == NULL || hosts_path[0] != '/') {
 			snprintf(err, err_size, "dns_server.hosts_path must be an absolute path");
 			rc = -1;
-		} else if (dns_server_register(entry->name, entry->handle.pid, entry->handle.pidfd,
+		} else if (dns_server_register(entry->name,
 		                                hosts_path) != DNS_SERVER_OK) {
 			snprintf(err, err_size, "container created, but registering it as a DNS server failed");
 			rc = -1;
@@ -26290,7 +26329,7 @@ static void handle_dns_provision(int fd, const char *body, size_t body_len)
 		 */
 		if (entry != NULL && entry->running) {
 			enum dns_server_error derr =
-			    dns_server_register(replicas[i], entry->handle.pid, entry->handle.pidfd,
+			    dns_server_register(replicas[i],
 			                         DNS_DEFAULT_HOSTS_PATH);
 
 			if (derr == DNS_SERVER_OK || derr == DNS_SERVER_ERR_DUPLICATE)
@@ -40849,6 +40888,7 @@ static int handover_build_record(struct handover_record *rec)
 		c->capture_requested = e->capture_requested;
 		c->procfuse_expected = e->procfuse_expected;
 		c->init_up = e->init_up;
+		c->init_version = e->init_version;
 		c->ready = e->ready;
 		c->net_count = e->net_count;
 		for (k = 0; k < e->net_count; k++)

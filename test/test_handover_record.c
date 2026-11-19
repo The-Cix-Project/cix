@@ -85,6 +85,7 @@ static void fill(struct handover_record *rec, pid_t pid, int ctl, int rep, int s
 	a->capture_requested = 1;
 	a->procfuse_expected = 10;
 	a->init_up = 1;
+	a->init_version = 4; /* ADR-0384, optional */
 	a->ready = 1;
 	a->net_count = 1;
 	snprintf(a->nets[0].name, sizeof(a->nets[0].name), "statsnet");
@@ -171,6 +172,9 @@ static void round_trip(const char *dir)
 	CHECK(a->userns_enabled && a->disk_quota_bytes == 1048576 && a->capture_requested &&
 	          a->procfuse_expected == 10 && a->init_up && a->ready,
 	      "alive's flags");
+	CHECK(a->init_version == 4, "init_version %d (ADR-0384)", a->init_version);
+	CHECK(g->init_version == 0, "a container that never reported one reads 0, got %d",
+	      g->init_version);
 	CHECK(a->net_count == 1 && strcmp(a->nets[0].name, "statsnet") == 0 &&
 	          a->nets[0].ip_be == htonl(0xac280005) && strcmp(a->nets[0].ifname, "eth0") == 0,
 	      "alive's network attachment");

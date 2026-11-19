@@ -85,8 +85,15 @@
  *
  * 3: the hello carries the interfaces the container was given, and no
  * service starts before they report IFF_UP (#344/ADR-0335).
+ *
+ * 4: a service may declare reload_signal, and CIXINIT_OP_RELOAD sends
+ * it to every ready service that does (ADR-0384). EV_UP reports this
+ * number, and cixd keeps it: an older cix-init ignores the op, so cixd
+ * restarts those services instead.
  */
-#define CIXINIT_VERSION 3
+#define CIXINIT_VERSION 4
+/* The first version that understands CIXINIT_OP_RELOAD. */
+#define CIXINIT_VERSION_RELOAD 4
 
 #define CIXINIT_MAX_SERVICES 16
 /*
@@ -208,7 +215,8 @@ struct cixinit_service {
 	int stop_timeout_seconds;
 	int uid; /* -1: inherit cix-init's own (the container's root) */
 	int gid;
-	int reserved[4];
+	int reload_signal; /* 0: none. Sent by CIXINIT_OP_RELOAD (ADR-0384) */
+	int reserved[3];
 };
 
 /* cixinit_command.op */
@@ -216,6 +224,11 @@ struct cixinit_service {
 #define CIXINIT_OP_STOP 2     /* stop it and hold it stopped: an operator override (ADR-0260) */
 #define CIXINIT_OP_RESTART 3  /* stop then start */
 #define CIXINIT_OP_SHUTDOWN 4 /* the orderly shutdown SIGTERM also triggers */
+/* ADR-0384: send each READY service that declares a reload_signal that
+ * signal. service is ignored. A service still starting gets nothing: it
+ * reads its files when it starts, and a program that has not installed
+ * its handler yet dies of the signal. */
+#define CIXINIT_OP_RELOAD 5
 
 struct cixinit_command {
 	int magic;   /* CIXINIT_MAGIC */

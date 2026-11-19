@@ -742,6 +742,8 @@ static void validate_service(int idx, const struct cixinit_service *d)
 		die("service record with an unknown on_exit");
 	if (d->stop_signal < 1 || d->stop_signal > 64)
 		die("service record with an invalid stop signal");
+	if (d->reload_signal < 0 || d->reload_signal > 64)
+		die("service record with an invalid reload signal");
 }
 
 static void read_table(void)
@@ -1372,6 +1374,17 @@ static void handle_command(const struct cixinit_command *c, long now)
 	}
 	if (c->op == CIXINIT_OP_SHUTDOWN) {
 		begin_shutdown(0);
+		return;
+	}
+	if (c->op == CIXINIT_OP_RELOAD) {
+		int i;
+
+		/* ADR-0384: ready services only. One still starting reads
+		 * its files when it starts, and could die of the signal. */
+		for (i = 0; i < g_count; i++)
+			if (g_svc[i].def.reload_signal > 0 && g_svc[i].pid > 0 &&
+			    g_svc[i].state == ST_READY)
+				sc2(SYS_kill, g_svc[i].pid, g_svc[i].def.reload_signal);
 		return;
 	}
 	if (c->service < 0 || c->service >= g_count) {

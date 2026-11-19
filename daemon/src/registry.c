@@ -221,6 +221,7 @@ void registry_restore_runtime(struct registry_entry *e, const struct handover_co
 		s->fail_detail = c->services[i].fail_detail;
 	}
 	e->init_up = c->init_up;
+	e->init_version = c->init_version;
 	e->ready = c->ready;
 	e->paused = c->paused;
 	e->procfuse_expected = c->procfuse_expected; /* the binds are in its mounts already */
@@ -349,6 +350,7 @@ static void registry_fill(struct registry_entry *e, const char *name, const char
 	e->init_control_fd = -1;
 	e->init_report_fd = -1;
 	e->init_up = 0;
+	e->init_version = 0;
 	e->ready = 0;
 	memset(e->env, 0, sizeof(e->env));
 	for (i = 0; i < CONTAINER_MAX_ENV && spec->envp[i] != NULL; i++) {
@@ -1472,6 +1474,7 @@ void registry_set_services(struct registry_entry *e, const struct cixinit_table 
 	e->init_control_fd = control_fd;
 	e->init_report_fd = report_fd;
 	e->init_up = 0;
+	e->init_version = 0;
 	e->ready = 0;
 }
 
@@ -1512,8 +1515,10 @@ int registry_apply_init_report(struct registry_entry *e, const struct cixinit_re
 	int was_ready = e->ready;
 
 	if (r->service == -1) {
-		if (r->event == CIXINIT_EV_UP)
+		if (r->event == CIXINIT_EV_UP) {
 			e->init_up = 1;
+			e->init_version = r->a; /* ADR-0384: which ops it understands */
+		}
 		e->ready = derive_ready(e);
 		return e->ready != was_ready;
 	}
@@ -1618,6 +1623,11 @@ static void registry_write_json_service(const struct registry_entry *entry, int 
 	jw_int(w, s->def.restart_delay_seconds);
 	jw_key(w, "stop_signal");
 	jw_str(w, cixinit_signal_name(s->def.stop_signal));
+	jw_key(w, "reload_signal"); /* ADR-0384 */
+	if (s->def.reload_signal > 0)
+		jw_str(w, cixinit_signal_name(s->def.reload_signal));
+	else
+		jw_null(w);
 	jw_key(w, "stop_timeout_seconds");
 	jw_int(w, s->def.stop_timeout_seconds);
 	jw_key(w, "uid");

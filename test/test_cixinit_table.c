@@ -80,7 +80,7 @@ static void test_example(void)
 	const char *json =
 	    "{\"services\":["
 	    "{\"name\":\"hostkeys\",\"type\":\"oneshot\",\"cmd\":[\"/usr/bin/ssh-keygen\",\"-A\"]},"
-	    "{\"name\":\"nslcd\",\"cmd\":[\"/usr/sbin/nslcd\",\"-d\"],\"ready\":{\"socket\":\"/run/nslcd/socket\"}},"
+	    "{\"name\":\"nslcd\",\"cmd\":[\"/usr/sbin/nslcd\",\"-d\"],\"ready\":{\"socket\":\"/run/nslcd/socket\"},\"reload_signal\":\"SIGHUP\"},"
 	    "{\"name\":\"sshd\",\"cmd\":[\"/usr/sbin/sshd\",\"-D\",\"-e\"],\"after\":[\"hostkeys\",\"nslcd\"],"
 	    " \"ready\":{\"tcp_port\":22,\"timeout_seconds\":45},\"stop_signal\":\"SIGINT\","
 	    " \"restart_delay_seconds\":5,\"uid\":0}"
@@ -106,6 +106,9 @@ static void test_example(void)
 	          t.svc[2].ready_timeout_seconds == 45 &&
 	          t.svc[2].stop_signal == SIGINT && t.svc[2].restart_delay_seconds == 5 && t.svc[2].uid == 0,
 	      "sshd's explicit fields (after_mask=%u)", t.svc[2].after_mask);
+	CHECK(t.svc[1].reload_signal == SIGHUP && t.svc[0].reload_signal == 0 &&
+	          t.svc[2].reload_signal == 0,
+	      "reload_signal: declared on nslcd, none by default (ADR-0384)");
 	/*
 	 * #477: the addresses a TCP probe tries live on the hello, once
 	 * per container, not on each service. A per-service field is what
@@ -190,6 +193,12 @@ static void test_field_errors(void)
 	               "exactly one");
 	expect_refused("bad signal",
 	               "{\"services\":[{\"name\":\"a\",\"cmd\":[\"/a\"],\"stop_signal\":\"SIGFOO\"}]}", "stop_signal");
+	expect_refused("bad reload signal",
+	               "{\"services\":[{\"name\":\"a\",\"cmd\":[\"/a\"],\"reload_signal\":\"SIGFOO\"}]}",
+	               "reload_signal");
+	expect_refused("SIGKILL is no reload",
+	               "{\"services\":[{\"name\":\"a\",\"cmd\":[\"/a\"],\"reload_signal\":\"SIGKILL\"}]}",
+	               "reload_signal");
 	expect_refused("cmd not strings", "{\"services\":[{\"name\":\"a\",\"cmd\":[1,2]}]}", "strings");
 	expect_refused("no cmd", "{\"services\":[{\"name\":\"a\"}]}", "cmd");
 	expect_refused("delay out of range",

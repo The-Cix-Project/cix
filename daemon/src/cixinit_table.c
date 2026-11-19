@@ -311,6 +311,24 @@ static int parse_one(const struct json_value *item,
 		return -1;
 	s->stop_timeout_seconds = v;
 
+	/* ADR-0384: how this program reloads its files, if it does. No
+	 * default -- a service that declares none is never signalled. */
+	{
+		const char *reload = json_as_string(json_object_get(item, "reload_signal"));
+
+		s->reload_signal = 0;
+		if (reload != NULL) {
+			s->reload_signal = cixinit_signal_from_name(reload);
+			if (s->reload_signal <= 0 || s->reload_signal == SIGKILL) {
+				snprintf(err, err_size,
+				         "service '%s': reload_signal must be one of SIGHUP, SIGUSR1, SIGUSR2, "
+				         "SIGINT, SIGQUIT, SIGTERM",
+				         name);
+				return -1;
+			}
+		}
+	}
+
 	if (int_field(item, "uid", 0, 2147483647, -1, &v, name, err, err_size) != 0)
 		return -1;
 	s->uid = v;
