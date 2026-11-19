@@ -119,4 +119,12 @@ int device_grants_gone(const struct discovered_device *recs, int n, const char *
 void device_write_json_states(struct json_writer *w, const struct discovered_device *recs, int n,
                               const struct device_claim *claims, int claim_count);
 
+/*
+ * ADR-0381: keys another module adds to every record, after "reason":
+ * fn writes them for the record with this id. The daemon sets
+ * fwscan_write_device(); with none set, a record has no such keys, which
+ * keeps this module free of what produces them.
+ */
+void device_set_record_extra(void (*fn)(struct json_writer *w, const char *id));
+
 #endif /* DEVICESTATE_H */

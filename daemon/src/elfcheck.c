@@ -41,6 +41,10 @@
  * project produces; refusing is safer than trusting a bogus count from
  * a file that may not be a real ELF at all. */
 #define ELFCHECK_MAX_SECTIONS 4096
+/* A section elfcheck_section_strings() reads whole: a kernel module's
+ * .modinfo holds every alias and firmware name it declares. Its size for
+ * a large GPU driver is not measured; this bounds a corrupt header. */
+#define ELFCHECK_SECTION_STRINGS_MAX (16ULL * 1024 * 1024)
 /* Nothing legitimate needs a bigger string table than this to hold the
  * symbol names of one library. */
 #define ELFCHECK_MAX_STRTAB (16u * 1024u * 1024u)
@@ -225,6 +229,83 @@ int elfcheck_built_by_gcc(const char *path, char *out_version, size_t version_si
 	}
 	close(fd);
 	return found;
+}
+
+int elfcheck_section_strings(const char *path, const char *section,
+                             void (*fn)(const char *s, void *ctx), void *ctx)
+{
+	int fd, n = -1;
+	unsigned char ehdr[64];
+	unsigned long long e_shoff, shstr_off, shstr_size;
+	unsigned int e_shentsize, e_shnum, e_shstrndx, i;
+	struct stat st;
+
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || read_at(fd, ehdr, sizeof(ehdr), 0) != 0 ||
+	    memcmp(ehdr, "\177ELF", 4) != 0 || ehdr[4] != ELFCLASS64_LOCAL) {
+		close(fd);
+		return -1;
+	}
+	e_shoff = rd(ehdr + 0x28, 8);
+	e_shentsize = (unsigned int)rd(ehdr + 0x3a, 2);
+	e_shnum = (unsigned int)rd(ehdr + 0x3c, 2);
+	e_shstrndx = (unsigned int)rd(ehdr + 0x3e, 2);
+	if (e_shoff == 0 || e_shentsize < 64 || e_shnum == 0 || e_shnum > ELFCHECK_MAX_SECTIONS ||
+	    e_shstrndx >= e_shnum) {
+		close(fd);
+		return -1;
+	}
+	{
+		unsigned char sh[64];
+
+		if (read_at(fd, sh, sizeof(sh),
+		            (off_t)(e_shoff + (unsigned long long)e_shstrndx * e_shentsize)) != 0) {
+			close(fd);
+			return -1;
+		}
+		shstr_off = rd(sh + 0x18, 8);
+		shstr_size = rd(sh + 0x20, 8);
+	}
+	for (i = 0; i < e_shnum; i++) {
+		unsigned char sh[64];
+		unsigned long long off, size, j;
+		char *body;
+
+		if (read_at(fd, sh, sizeof(sh), (off_t)(e_shoff + (unsigned long long)i * e_shentsize)) != 0)
+			break;
+		if (!section_name_matches(fd, shstr_off, shstr_size, (unsigned int)rd(sh + 0x00, 4),
+		                          section))
+			continue;
+		off = rd(sh + 0x18, 8);
+		size = rd(sh + 0x20, 8);
+		if (size > ELFCHECK_SECTION_STRINGS_MAX)
+			break;
+		body = malloc((size_t)size + 1);
+		if (body == NULL)
+			break;
+		if (size > 0 && read_at(fd, body, (size_t)size, (off_t)off) != 0) {
+			free(body);
+			break;
+		}
+		body[size] = '\0';
+		n = 0;
+		/* NUL-separated strings, with NUL padding between some. */
+		for (j = 0; j < size;) {
+			if (body[j] == '\0') {
+				j++;
+				continue;
+			}
+			fn(body + j, ctx);
+			n++;
+			j += strlen(body + j) + 1;
+		}
+		free(body);
+		break;
+	}
+	close(fd);
+	return n;
 }
 
 /*

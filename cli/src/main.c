@@ -1363,6 +1363,25 @@ static void fmt_device_line(const struct json_value *v, int depth)
 	printf("%*s%-*s %-30s %-28s %s\n", depth * 2, "", width < 8 ? 8 : width,
 	       id != NULL ? id : "?", state_col, who[0] != '\0' ? who : "-",
 	       description != NULL ? description : "");
+
+	/* ADR-0381: the firmware its driver declares that the host lacks. A
+	 * working device can list some: a module declares every chip's. */
+	{
+		const struct json_value *fw = json_object_get(v, "firmware");
+		const struct json_value *missing = fw != NULL ? json_object_get(fw, "missing") : NULL;
+		const struct json_value *declared = fw != NULL ? json_object_get(fw, "declared") : NULL;
+
+		if (missing != NULL && missing->type == JSON_ARRAY && missing->u.array.count > 0) {
+			const char *first = json_as_string(missing->u.array.items[0]);
+
+			printf("%*s  firmware: %zu of %d declared missing (%s%s)\n", depth * 2, "",
+			       missing->u.array.count,
+			       declared != NULL && declared->type == JSON_NUMBER
+			           ? (int)json_as_number(declared)
+			           : 0,
+			       first != NULL ? first : "?", missing->u.array.count > 1 ? ", ..." : "");
+		}
+	}
 }
 
 /* Prints parent's children, depth-first, in the daemon's order. */

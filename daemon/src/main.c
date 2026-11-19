@@ -12,6 +12,7 @@
 #include "diskformat.h"
 #include "diskpart.h"
 #include "disksnap.h"
+#include "fwscan.h"
 #include "diskrole.h"
 #include "bootmodules.h"
 #include "kmod.h"
@@ -1015,6 +1016,7 @@ static void ensure_default_image(void)
  */
 static int g_firmware_on;
 static char g_firmware_said[512]; /* the last problem said, so it is said once */
+static void fwscan_want(void); /* release 1b's scan, defined beside the disk snapshot */
 
 static void firmware_say(const char *level, const char *msg)
 {
@@ -1036,6 +1038,7 @@ static void firmware_path_start(void)
 	char link[PATH_MAX], err[512];
 
 	g_firmware_on = 1;
+	device_set_record_extra(fwscan_write_device); /* release 1b: records carry "firmware" */
 	firmware_link_path(link, sizeof(link));
 	if (firmware_path_apply(FIRMWARE_PARAM_PATH, link, err, sizeof(err)) != 0)
 		firmware_say("error", err);
@@ -1046,12 +1049,13 @@ static void firmware_path_start(void)
 static void firmware_link_sync(void)
 {
 	char link[PATH_MAX], empty[PATH_MAX], version[IMAGE_VERSION_MAX], rootfs[PATH_MAX];
-	char target[PATH_MAX + 16], err[512];
+	char target[PATH_MAX + 16], err[512], before[PATH_MAX + 16], after[PATH_MAX + 16];
 	struct stat st;
 
 	if (!g_firmware_on)
 		return;
 	firmware_link_path(link, sizeof(link));
+	firmware_link_target(link, before, sizeof(before));
 	snprintf(empty, sizeof(empty), "%s.none", link);
 	target[0] = '\0';
 	if (image_current_version(FIRMWARE_IMAGE, version, sizeof(version)) == IMAGE_OK) {
@@ -1065,6 +1069,10 @@ static void firmware_link_sync(void)
 		return;
 	}
 	firmware_say("info", "");
+	/* What is present changed with the link: scan again. */
+	firmware_link_target(link, after, sizeof(after));
+	if (strcmp(before, after) != 0)
+		fwscan_want();
 }
 
 /* After image_init(): the image exists on every real host, then the link. */
@@ -1084,6 +1092,7 @@ static void firmware_image_start(void)
 		return;
 	}
 	firmware_link_sync();
+	fwscan_want(); /* release 1b: the first scan of this start */
 }
 
 static void migrate_one_flat_entry(const char *basename, const char *new_dir)
@@ -6362,6 +6371,7 @@ static void handle_uevent_event(struct conn *cc)
 		events_announce(EV_listDevices);
 		events_announce(EV_listDeviceMaps); /* a mapping's state is the devices' (ADR-0345) */
 		events_announce(EV_listStorage);
+		fwscan_want(); /* ADR-0381: which firmware the devices lack */
 	}
 
 	/*
@@ -35553,6 +35563,7 @@ static void kmod_job_done(int exit_status, void *ctx)
 		               exit_status);
 	if (ok && kmodscan_report_changed_modules(r))
 		events_announce(EV_listKmod);
+	fwscan_want(); /* ADR-0381: a module job can bind a driver */
 
 	switch (p->job.kind) {
 	case KMODSCAN_JOB_SWEEP:
@@ -37256,6 +37267,80 @@ static void disksnap_tick(void)
 	if (wanted || (g_hostroll.step != HOSTROLL_SWITCH &&
 	               monotonic_ms() - g_disksnap_last_ms >= DISKSNAP_PERIOD_SECONDS * 1000LL))
 		disksnap_start();
+}
+
+/* ---------- ADR-0381 release 1b: which firmware each device lacks ----------
+ *
+ * One helper child reads every device's driver modules and their
+ * declared firmware (fwscan_scan()), and device records show the result.
+ * A scan is asked for at start, after every module job, on a hardware
+ * uevent, and when the firmware link moves; requests coalesce, never
+ * drop, like the disk snapshot's. Init mode only, as the link is: a test
+ * daemon's records carry no firmware key.
+ */
+static int g_fwscan_wanted;
+static int g_fwscan_running;
+static int g_fwscan_memfd = -1;
+
+static void fwscan_want(void)
+{
+	if (g_firmware_on)
+		g_fwscan_wanted = 1;
+}
+
+static int fwscan_work(void *arg)
+{
+	static struct fwscan_result r;
+	char link[PATH_MAX];
+
+	(void)arg;
+	persist_set_readonly();
+	firmware_link_path(link, sizeof(link));
+	fwscan_scan(&r, link, "/lib/firmware", CONTAINERS_DIR);
+	return cix_write_all(g_fwscan_memfd, &r, sizeof(r)) == 0 ? 0 : 1;
+}
+
+static void fwscan_done(int exit_status, void *ctx)
+{
+	static struct fwscan_result r;
+
+	(void)ctx;
+	g_fwscan_running = 0;
+	if (exit_status == 0 && g_fwscan_memfd >= 0 &&
+	    pread(g_fwscan_memfd, &r, sizeof(r), 0) == (ssize_t)sizeof(r) && r.device_count >= 0 &&
+	    r.device_count <= FWSCAN_DEVICES_MAX && r.module_count >= 0 &&
+	    r.module_count <= FWSCAN_MODULES_MAX && r.name_count >= 0 &&
+	    r.name_count <= FWSCAN_NAMES_MAX) {
+		if (fwscan_install(&r))
+			events_announce(EV_listDevices);
+	} else {
+		logstore_write("cixd", "warn",
+		               "firmware: the device scan ended without a result (helper exit %d) -- "
+		               "the next one tries again (ADR-0381)",
+		               exit_status);
+	}
+	if (g_fwscan_memfd >= 0) {
+		close(g_fwscan_memfd);
+		g_fwscan_memfd = -1;
+	}
+}
+
+/* Every loop pass. Not while a host roll waits to switch, because a
+ * running helper holds the switch back (ADR-0375); it runs after. */
+static void fwscan_tick(void)
+{
+	if (!g_fwscan_wanted || g_fwscan_running || g_hostroll.step == HOSTROLL_SWITCH)
+		return;
+	g_fwscan_memfd = memfd_create("cix-fwscan", MFD_CLOEXEC);
+	if (g_fwscan_memfd < 0)
+		return;
+	if (helper_run(fwscan_work, NULL, fwscan_done, NULL, "the firmware scan") == 0) {
+		g_fwscan_wanted = 0;
+		g_fwscan_running = 1;
+		return;
+	}
+	close(g_fwscan_memfd);
+	g_fwscan_memfd = -1;
 }
 
 /*
@@ -42395,6 +42480,7 @@ static int cixd_main(int argc, char **argv)
 		hostroll_switch_tick();
 		handover_old_slot_tick();
 		disksnap_tick(); /* ADR-0377 */
+		fwscan_tick();   /* ADR-0381 */
 		quota_tick(); /* #689 */
 
 		drain_pending_free();

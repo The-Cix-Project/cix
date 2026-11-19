@@ -85,6 +85,19 @@ void kmod_write_json_loaded(struct json_writer *w, int (*blacklisted)(const char
  */
 int kmod_dependencies(const char *name, char out[][KMOD_NAME_MAX], int max);
 
+/* ADR-0381: the module's file, /lib/modules/<release>/<path from
+ * modules.dep>. 0, or -1 when it is not in modules.dep. */
+int kmod_module_file(const char *name, char *out, size_t out_size);
+
+/*
+ * ADR-0381: the firmware files the module declares (MODULE_FIRMWARE, its
+ * .modinfo's "firmware=" entries), each passed to fn, relative to a
+ * firmware directory ("rtw88/rtw8822b_fw.bin"). Read from the module's
+ * own file, so nothing is forked. The count, or -1 when the module's
+ * file cannot be found or read.
+ */
+int kmod_declared_firmware(const char *name, void (*fn)(const char *name, void *ctx), void *ctx);
+
 /* Whether name is built into this kernel: listed in modules.builtin, or
  * recorded in modules.builtin.modinfo, which also covers built-in code
  * that could never have been a module (the vt keyboard handler). A

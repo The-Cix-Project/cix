@@ -6,6 +6,19 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A device record says which firmware its driver lacks, release 1b (ADR-0381, #685)
+
+- **Before:** nothing said which firmware a driver needed, or whether the host had it. A driver that failed for a missing file left only a kernel log line.
+- **Now:** every device record in `GET /v1/devices` carries `firmware`: `{"modules", "declared", "missing", "complete"}`, or null.
+  - **Which modules:** the driver bound to the record and to its direct children (a USB device's interfaces), with each module's `modules.dep` closure. The declaration often sits in a module the bound one depends on, as rtw88's does in `rtw88_8822b`.
+  - **Which names:** each module's own `.modinfo` `firmware=` entries (`kmod_declared_firmware()`, through `elfcheck_section_strings()`). Nothing is forked, and `modinfo`'s output cap does not apply.
+  - **Missing:** a name is missing when neither the firmware image's link nor `/lib/firmware` holds it.
+  - **When:** one helper child reads it all (`fwscan_scan()`), at start, after every module job, on a hardware uevent, and when the firmware link moves. Requests coalesce, and none starts while a roll waits to switch.
+  - **Where it shows:** `cixctl device ls` prints a `firmware:` line under a device with missing names, and the dashboard's device tables gain a Firmware column.
+  - Init mode only, like the link. A device with no driver module, or a host before its first scan, reads null.
+- **Not yet:** cixd installs nothing. The index of which output provides a file has its matcher (`cbs_selector_matches()`) and is used in release 3.
+- **Gates:** `test_elfcheck` reads this binary's `.shstrtab` strings; `test_cbsrecipe` covers the output selectors and the matcher.
+
 ### A host keeps its firmware in its own image, release 1a (ADR-0381, #685)
 
 - **Before:** the kernel found firmware only in the root's `/lib/firmware`, which is `cix-root`'s tree, so firmware could reach a host only through the root and the installer.

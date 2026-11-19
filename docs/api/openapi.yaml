@@ -21986,6 +21986,45 @@ components:
             that does. "no-driver" and "no-node" mean nothing on this
             record itself can be granted (a PCI function's nodes belong
             to its children).
+        firmware:
+          type: [object, "null"]
+          description: >
+            The firmware this device's driver declares and which of it
+            the host lacks (ADR-0381). Read by a helper child, at start,
+            after every module job, on a hardware uevent and when the
+            firmware image moves, from the driver bound to the record
+            and to its direct children (a USB device's interfaces), with
+            each module's modules.dep closure, since the declaration
+            often sits in a module the bound one depends on. A name is
+            present when the firmware image's current version or the
+            root's /lib/firmware holds it. Null until the first scan,
+            for a device with no driver module, and on a host not
+            running in init mode. Missing names are normal for working
+            hardware: a module declares the files of every chip it
+            supports.
+          required: [modules, declared, missing, complete]
+          properties:
+            modules:
+              type: array
+              items:
+                type: string
+              description: The modules read, the bound ones and their dependencies.
+            declared:
+              type: integer
+              description: How many firmware files those modules declare (MODULE_FIRMWARE).
+            missing:
+              type: array
+              items:
+                type: string
+              description: >
+                The declared names neither the firmware image nor
+                /lib/firmware holds, relative to a firmware directory
+                (`amdgpu/navi10_sos.bin`).
+            complete:
+              type: boolean
+              description: >
+                False when a module's file could not be read or a table
+                filled up: what is listed is right, and incomplete.
         held_by:
           type: array
           description: >

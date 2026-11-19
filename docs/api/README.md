@@ -172,7 +172,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/deployments/{name}` | One deployment's full detail, including its raw, unsubstituted text |
 | DELETE | `/deployments/{name}` | Remove a deployment |
 | POST | `/deployments/{name}/apply` | Render `{name}`'s own stored recipe (substituting any `{{SECRET:KEY}}` tokens from the request's own `secrets` object, and `{{LDAP:URI}}`/`{{LDAP:BASE_DN}}`/`{{LDAP:BIND_DN}}`/`{{LDAP:BIND_PASSWORD}}` tokens from the daemon's own LDAP client config, issue #66 — no per-apply secret, no copied values. `{{LDAP:URI}}` resolves to the same **effective** list the daemon's own `nslcd.conf` rendering uses — the registered servers' live addresses unless an explicit `client_uri` overrides them, health-filtered either way — rather than to the raw stored field, so a deployment that never typed a copy of its own server list still renders a usable URI (#327)) and create the container from it (201). **If the image it names exists but has not been built yet, this returns `202` and waits for it rather than failing** — ADR-0270, see below |
-| GET | `/devices` | List host devices, each with the state every grant is decided by (ADR-0344) |
+| GET | `/devices` | List host devices, each with the state every grant is decided by (ADR-0344), and the firmware its driver declares that the host lacks (`firmware`, ADR-0381) |
 | GET | `/devicemaps` | List persistent, operator-named device mappings |
 | POST | `/devicemaps` | Create a persistent device mapping (name -> selector) |
 | DELETE | `/devicemaps/{name}` | Remove a device mapping |

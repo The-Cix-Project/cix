@@ -154,6 +154,17 @@ int elfcheck_undefined_builtin(const char *path, char *out_sym, size_t sym_size)
 int elfcheck_built_by_gcc(const char *path, char *out_version, size_t version_size);
 
 /*
+ * ADR-0381: every NUL-separated string in the 64-bit ELF file's section
+ * named `section` (a kernel module's ".modinfo": "firmware=...",
+ * "depends=...", "alias=..."), passed to fn in order; NUL padding
+ * between strings is skipped. The count passed, 0 for an empty
+ * section, -1 when the file is unreadable, not ELF64, has no such
+ * section, or the section is over 16 MiB.
+ */
+int elfcheck_section_strings(const char *path, const char *section,
+                             void (*fn)(const char *s, void *ctx), void *ctx);
+
+/*
  * Issue #653: a shared library whose thread-local data is addressed as
  * if it were an executable's.
  *

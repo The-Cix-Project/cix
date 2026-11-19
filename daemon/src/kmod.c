@@ -1,5 +1,7 @@
 #include "kmod.h"
 
+#include "elfcheck.h"
+
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
@@ -352,6 +354,67 @@ int kmod_dependencies(const char *name, char out[][KMOD_NAME_MAX], int max)
 	free(line);
 	fclose(f);
 	return count;
+}
+
+int kmod_module_file(const char *name, char *out, size_t out_size)
+{
+	char path[PATH_MAX], dir[PATH_MAX];
+	char mod[KMOD_NAME_MAX];
+	char *line = NULL;
+	size_t cap = 0;
+	ssize_t len;
+	FILE *f;
+	int rc = -1;
+
+	if (!kmod_name_is_valid(name) || modules_file_path("modules.dep", path, sizeof(path)) != 0 ||
+	    modules_file_path("", dir, sizeof(dir)) != 0)
+		return -1;
+	f = fopen(path, "r");
+	if (f == NULL)
+		return -1;
+	/* "kernel/drivers/.../name.ko: deps", relative to /lib/modules/<release>/. */
+	while ((len = getline(&line, &cap, f)) > 0) {
+		char *colon = strchr(line, ':');
+
+		if (colon == NULL ||
+		    module_name_of_path(line, (size_t)(colon - line), mod, sizeof(mod)) != 0 ||
+		    !kmod_name_eq(mod, name))
+			continue;
+		*colon = '\0';
+		rc = snprintf(out, out_size, "%s%s", dir, line) < (int)out_size ? 0 : -1;
+		break;
+	}
+	free(line);
+	fclose(f);
+	return rc;
+}
+
+struct declared_firmware {
+	void (*fn)(const char *name, void *ctx);
+	void *ctx;
+	int n;
+};
+
+static void declared_firmware_one(const char *s, void *arg)
+{
+	struct declared_firmware *d = arg;
+
+	if (strncmp(s, "firmware=", 9) == 0 && s[9] != '\0') {
+		d->fn(s + 9, d->ctx);
+		d->n++;
+	}
+}
+
+int kmod_declared_firmware(const char *name, void (*fn)(const char *name, void *ctx), void *ctx)
+{
+	char path[PATH_MAX];
+	struct declared_firmware d = { fn, ctx, 0 };
+
+	if (kmod_module_file(name, path, sizeof(path)) != 0)
+		return -1;
+	if (elfcheck_section_strings(path, ".modinfo", declared_firmware_one, &d) < 0)
+		return -1;
+	return d.n;
 }
 
 /*

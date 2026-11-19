@@ -6965,6 +6965,23 @@ function deviceStateView(d) {
 }
 
 /*
+ * ADR-0381: the firmware the device's driver declares that the host
+ * lacks, from the daemon's own record. A working device can list some,
+ * since a module declares the files of every chip it supports, so this
+ * counts and names rather than alarms.
+ */
+function deviceFirmwareText(d) {
+	const fw = d.firmware;
+
+	if (!fw)
+		return FIELD_ABSENT;
+	if (fw.missing.length === 0)
+		return fw.declared > 0 ? "all " + fw.declared + " present" : FIELD_ABSENT;
+	return fw.missing.length + " of " + fw.declared + " missing: " + fw.missing.slice(0, 3).join(", ") +
+		(fw.missing.length > 3 ? ", ..." : "") + (fw.complete ? "" : " (incomplete)");
+}
+
+/*
  * A table's rows in tree order -- each record directly after the one it
  * hangs off -- with its depth among the rows of this table, so a
  * partition sits under its disk and an interface under its PHY.
@@ -7049,6 +7066,7 @@ function renderDeviceBus(bus, mappedNames) {
 		 * cell, because exactly one of those is ever the answer. */
 		{ label: "Held by / why", text: (d) => deviceStateView(d).who || FIELD_ABSENT },
 		{ label: "Name", text: (d) => mappedNames[d.id] || FIELD_ABSENT },
+		{ label: "Firmware", text: deviceFirmwareText },
 		{ label: "", actions: (d) => {
 			/* A name is for something a grant can take, now or once its
 			 * state changes. A PCI function whose nodes are its

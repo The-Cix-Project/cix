@@ -29,6 +29,21 @@ static void check(int cond, const char *what)
 	}
 }
 
+struct strings_seen {
+	int text;
+	int empty;
+};
+
+static void saw_string(const char *s, void *ctx)
+{
+	struct strings_seen *seen = ctx;
+
+	if (strcmp(s, ".text") == 0)
+		seen->text = 1;
+	if (s[0] == '\0')
+		seen->empty = 1;
+}
+
 int main(void)
 {
 	char sym[128];
@@ -36,6 +51,22 @@ int main(void)
 	char src[256], so[256], cmd[768];
 	FILE *f;
 	int r;
+
+	/* ADR-0381: a section's NUL-separated strings, read from this very
+	 * binary: every ELF file names its sections in .shstrtab, which is
+	 * such a section, and this one has a .text. NUL padding is never
+	 * passed as a string, and a section that is not there is -1. */
+	{
+		struct strings_seen seen = { 0, 0 };
+
+		r = elfcheck_section_strings("/proc/self/exe", ".shstrtab", saw_string, &seen);
+		check(r > 0, "ADR-0381: .shstrtab's strings are read from this binary");
+		check(seen.text, "ADR-0381: .shstrtab names .text");
+		check(!seen.empty, "ADR-0381: NUL padding is never passed as a string");
+		check(elfcheck_section_strings("/proc/self/exe", ".no-such-section", saw_string,
+		                               &seen) == -1,
+		      "ADR-0381: a section that is not there is -1");
+	}
 
 	/* A non-ELF file is "clean", not an error: this runs over every
 	 * file of every install, so "not my concern" and "unreadable" must
