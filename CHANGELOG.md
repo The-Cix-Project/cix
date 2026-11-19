@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A host keeps its firmware in its own image, release 1a (ADR-0381, #685)
+
+- **Before:** the kernel found firmware only in the root's `/lib/firmware`, which is `cix-root`'s tree, so firmware could reach a host only through the root and the installer.
+- **Now:**
+  - cixd creates a `firmware` image at start;
+  - it keeps `REBUILDABLE_DIR/firmware`, a symlink, naming that image's current version's `lib/firmware`, or `firmware.none`, an empty directory, while the image has none. The link is replaced atomically at start and after every package job;
+  - it writes that link's path to `/sys/module/firmware_class/parameters/path` at every start, before the boot's module sweep. The loader searches that directory before `/lib/firmware`.
+  - Init mode only: a test daemon never touches the kernel's path.
+  - Nothing is installed into the image yet; that is releases 1b and 3.
+- **Gate:** `test_firmware` covers the link (empty, a version, an atomic move, a repeat that writes nothing, a directory that is not ours) and the parameter (no newline written, a matching value left alone, a path over 255 bytes refused rather than truncated).
+
 ### A cix release is a publish, release B: nothing hostbuilds cix (ADR-0380, 0.2.57-694)
 
 - **Before:** the host roll hostbuilt cix when a release was published, the bridge installed that hostbuild's `cixd` and `cixctl` into `cix-root`, a cix hostbuild asked for an assembly when it finished, and `cixctl pkg hostbuild cix --deploy` was a hand route to the same root.

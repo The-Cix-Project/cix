@@ -75,9 +75,9 @@ Also from cixd's code: the data disks are mounted (`diskformat_remount_present_r
 
 ## Releases
 
-1. **The index and the record.**
-   - cixd reads output selectors, reads a loaded module's declared firmware, puts `firmware` on device records, creates the `firmware` image, and applies the path.
-   - It installs nothing yet; the record shows what would be fetched.
+1. **The index and the record**, in two halves.
+   - **1a:** cixd creates the `firmware` image, keeps the stable link following its current version (`firmware_link_set()`, at start and after every package job), and applies the kernel path before the boot's sweep (`firmware_path_apply()`). It installs nothing, so the link names an empty directory until the image holds a package.
+   - **1b:** cixd reads output selectors and a loaded module's declared firmware, and puts `firmware` on device records. It installs nothing yet; the record shows what would be fetched.
 2. **The recipe.**
    - `linux-firmware` with `amdgpu-firmware` and `rtw88-firmware` outputs (git first), and the old `rtw88-firmware` recipe retired.
    - Upstream declares symlinked names in `WHENCE` (`Link:` lines), which its own install script creates. The recipe creates those under each family it ships, or a raw copy of the tree misses names a driver asks for.

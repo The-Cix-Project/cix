@@ -76,6 +76,7 @@
 #include "startup_steps.h"
 #include "hostroll_verdict.h"
 #include "rootslot.h"
+#include "firmware.h"
 #include "rootslot_verdict.h"
 #include "handover.h"
 #include "rootswitch.h"
@@ -997,6 +998,92 @@ static void ensure_default_image(void)
 		printf("default image: could not create \"%s\" (%d)\n", PKG_DEFAULT_IMAGE, (int)ierr);
 		fflush(stdout);
 	}
+}
+
+/* ---------- ADR-0381: the host's firmware ----------
+ *
+ * The firmware image's current version's lib/firmware is reached through
+ * one stable link, REBUILDABLE_DIR/firmware, and the kernel's firmware
+ * path names that link. Init mode only: the path is kernel-global, and a
+ * test daemon must never repoint the host's loader (g_firmware_on).
+ *
+ * The path is written at every start, before the boot's sweep probes a
+ * device; the link from the previous start is still on disk then, since
+ * the image store is mounted before the sweep. The link follows the
+ * image after image_init() and after every package job
+ * (firmware_link_sync()).
+ */
+static int g_firmware_on;
+static char g_firmware_said[512]; /* the last problem said, so it is said once */
+
+static void firmware_say(const char *level, const char *msg)
+{
+	if (strcmp(g_firmware_said, msg) == 0)
+		return;
+	snprintf(g_firmware_said, sizeof(g_firmware_said), "%s", msg);
+	if (msg[0] != '\0')
+		logstore_write("cixd", level, "firmware: %s (ADR-0381)", msg);
+}
+
+static void firmware_link_path(char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/firmware", REBUILDABLE_DIR);
+}
+
+/* Before the boot's sweep: point the kernel's firmware path at the link. */
+static void firmware_path_start(void)
+{
+	char link[PATH_MAX], err[512];
+
+	g_firmware_on = 1;
+	firmware_link_path(link, sizeof(link));
+	if (firmware_path_apply(FIRMWARE_PARAM_PATH, link, err, sizeof(err)) != 0)
+		firmware_say("error", err);
+}
+
+/* The link follows the firmware image's current version: its lib/firmware
+ * when it has one, an empty directory when it does not. */
+static void firmware_link_sync(void)
+{
+	char link[PATH_MAX], empty[PATH_MAX], version[IMAGE_VERSION_MAX], rootfs[PATH_MAX];
+	char target[PATH_MAX + 16], err[512];
+	struct stat st;
+
+	if (!g_firmware_on)
+		return;
+	firmware_link_path(link, sizeof(link));
+	snprintf(empty, sizeof(empty), "%s.none", link);
+	target[0] = '\0';
+	if (image_current_version(FIRMWARE_IMAGE, version, sizeof(version)) == IMAGE_OK) {
+		image_version_rootfs_path(FIRMWARE_IMAGE, version, rootfs, sizeof(rootfs));
+		snprintf(target, sizeof(target), "%s/lib/firmware", rootfs);
+		if (stat(target, &st) != 0 || !S_ISDIR(st.st_mode))
+			target[0] = '\0';
+	}
+	if (firmware_link_set(link, target, empty, err, sizeof(err)) != 0) {
+		firmware_say("error", err);
+		return;
+	}
+	firmware_say("info", "");
+}
+
+/* After image_init(): the image exists on every real host, then the link. */
+static void firmware_image_start(void)
+{
+	enum image_error ierr;
+
+	if (!g_firmware_on)
+		return;
+	ierr = image_create(FIRMWARE_IMAGE);
+	if (ierr != IMAGE_OK && ierr != IMAGE_ERR_DUPLICATE) {
+		char msg[128];
+
+		snprintf(msg, sizeof(msg), "could not create the %s image (%d)", FIRMWARE_IMAGE,
+		         (int)ierr);
+		firmware_say("error", msg);
+		return;
+	}
+	firmware_link_sync();
 }
 
 static void migrate_one_flat_entry(const char *basename, const char *new_dir)
@@ -10760,6 +10847,8 @@ static void pkg_completion_followup(int next, pid_t pkg_pid, int pkg_pidfd, int 
 	 * and nothing hostbuilds cix now.
 	 */
 	bootroot_drive();
+	/* ADR-0381: a job may have given the firmware image a new version. */
+	firmware_link_sync();
 
 	/* ADR-0327: a host roll waiting for this hostbuild moves on, after
 	 * the assembly asked for above so it can see that one is under way. */
@@ -41302,6 +41391,12 @@ static int cixd_main(int argc, char **argv)
 	 * device that appears behind a driver the sweep loads is queued
 	 * there and handled once the loop runs (open_uevent_socket()).
 	 */
+	/* ADR-0381: the kernel's firmware path names the firmware image's
+	 * link before the sweep probes anything. At every start, a handover
+	 * included: the write is idempotent, and storage placement can move
+	 * the link. */
+	if (init_mode)
+		firmware_path_start();
 	/* The uevent socket is this process's; the boot's module loads are
 	 * the kernel's, and ran at its first start (ADR-0375). */
 	if (init_mode)
@@ -41420,6 +41515,7 @@ static int cixd_main(int argc, char **argv)
 	 * delete unqueued; the next start's sweep deletes it. */
 	image_set_discard(image_discard_tree);
 	ensure_default_image();
+	firmware_image_start(); /* ADR-0381: init mode only (g_firmware_on) */
 	if (boot_subsystem_init(init_mode, "containerdef", containerdef_init(CONTAINER_DEFS_STATE_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "containerdef_rolling_config", containerdef_rolling_config_init(ROLLING_CONFIG_PATH)) != 0)
