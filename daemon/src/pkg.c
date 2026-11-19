@@ -379,6 +379,13 @@ static void pkg_announce_jobs(void)
  * and every package entry's available_version reads the store, as does
  * the source catalogue; getPkgDrift is declared a view of these.
  */
+static void (*g_recipes_changed_hook)(void);
+
+void pkg_set_recipes_changed_hook(void (*fn)(void))
+{
+	g_recipes_changed_hook = fn;
+}
+
 static void pkg_announce_recipes(void)
 {
 	events_announce(EV_listPkgRecipes);
@@ -386,6 +393,10 @@ static void pkg_announce_recipes(void)
 	events_announce(EV_listPkg);
 	events_announce(EV_getPkg);
 	events_announce(EV_getSourceCatalogue);
+	/* ADR-0381: which output provides a firmware file is read from the
+	 * store, so a change to it is a reason to scan again. */
+	if (g_recipes_changed_hook != NULL)
+		g_recipes_changed_hook();
 }
 
 static void pkg_job_set_state(struct pkg_entry *e, enum pkg_state s)

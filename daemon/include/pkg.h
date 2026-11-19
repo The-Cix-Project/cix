@@ -492,6 +492,12 @@ int pkg_run_capture_sha256(const char *path, char *out, size_t out_size);
  * it. How many outputs were read, or -1 when the store cannot be opened.
  * Walks the whole store, so only in a helper child.
  */
+/* Called whenever the recipe store changes (a publish, a git refresh, an
+ * approval written in, a removal), after its announcements. The daemon
+ * sets ADR-0381's firmware scan here: the provider index is read from the
+ * store. NULL for none. */
+void pkg_set_recipes_changed_hook(void (*fn)(void));
+
 int pkg_firmware_providers_walk(void (*fn)(const char *output, const char *recipe,
                                            const char *version, const char *pattern, int glob,
                                            void *ctx),

@@ -1040,6 +1040,9 @@ static void firmware_path_start(void)
 	char link[PATH_MAX], err[512];
 
 	g_firmware_on = 1;
+	/* Release 3: a firmware output published or synced is acquired at the
+	 * scan this asks for, not at some unrelated later event. */
+	pkg_set_recipes_changed_hook(fwscan_want);
 	firmware_link_path(link, sizeof(link));
 	if (firmware_path_apply(FIRMWARE_PARAM_PATH, link, err, sizeof(err)) != 0)
 		firmware_say("error", err);
