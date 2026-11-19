@@ -2462,6 +2462,32 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 - **#689 live:** 687 ran its first drain at 11:02:26 (`image gc: set aside 3 version(s)`). At 11:10 `cixctl process ls` showed no cixd child but procfuse and the watchdog. A look logs nothing when it finds the drops settled or still pending, so that absence alone cannot tell a working check from one that never ran. Nor does the gap between staging and switching prove it: 9 s at 687 → 688, but 5 s at 686 → 687, on the old code, so a short gap shows only that no check was pending then. What holds the change is `test_blocking_waits` and the code. A `deleted subvolumes were still being freed after 7200 s` line would show the looks ran for two hours without holding anything, and that drops are not settling on .95.
 - **#690 shown live at the next switch.** It acts in the process that *writes* the handover, and 686 wrote this one, so the kernel log again took 2,180 lines at 11:02:26. At the 687 → 688 switch (12:22:12, 687 writing), the kernel log has no line at all from two seconds before to five seconds after.
 
+## Part 374: a cix release is a publish, done (ADR-0380 release B, 0.2.57-696, cix-root 1.2.0)
+
+**What shipped.**
+- **Nothing hostbuilds cix.** `POST /v1/pkg/hostbuild` refuses it.
+- **The bridge keeps only `kernel-modules`,** and the roll decides on the kernel and the root.
+- **The assembly records the release a root carries** (`cixd-root.squashfs.cixd`), and the installer ISO compares its tools with that record.
+- **`cix-root@1.2.0` rolls `cixd` and `cixctl`,** so publishing `cix@N` is the release.
+
+**How it was verified, on 192.168.15.95, 2026-11-19.**
+- **Compile probes:** `probe-cix-compile@0.2.57-771` failed on a test of mine (`cix` and `artifacttest` share a fixture tree, and #553 refused them in one image); `@0.2.57-772` passed.
+- **Two failed releases:**
+  - 694 failed at install in all three consumers' builds: its recipe gated `${dest}/cix-boot.efi`, a path B had removed.
+  - 695 failed the hostbuild: its main package staged nothing, which cixd refuses (#486).
+  - Neither reached the root, and the host stayed on 693 with every container running. The compile probe cannot see either (#695).
+- **696 switched in place** at 04:23:26 UTC, on slot b, with all 14 containers running. It carries the same code as 694, with the gate fixed and the licence in the main package.
+- **The hostbuild refusal:** `POST /v1/pkg/hostbuild {"name":"cix"}` answered 400 naming ADR-0380.
+- **Every cix package at 0.2.57-696:** `cixd` and `cixctl` in cix-root, `cixctl` in agent, `cix-installer-tools` in iso-builder.
+- **The ISO comparator:**
+  - an ISO build was refused with 409 while the root, assembled by 693's code, carried no `.cixd` record;
+  - after `assembly start` under 696, an ISO built: 59342848 bytes, `built_version` `0.2.57-696`.
+- **`cix-root@1.2.0`:** derived from `image recipe export cix-root` (so `gcc-libs` is named), committed as cix-recipes 08351538 and applied. `image show cix-root` then read `cixd: rolling 0.2.57-696` and `cixctl: rolling 0.2.57-696`.
+- **Not seen live yet:**
+  - a release deployed by publishing alone (the next release is that check);
+  - the rejection rule;
+  - the cixd/cixctl guard.
+
 ## Part 373: a cix release is a publish, release A (ADR-0380, 0.2.57-693)
 
 **What shipped.**

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted by the owner on 2026-11-18 (*"Accept"*). It builds the other half of [ADR-0371](0371-the-control-plane-root-is-one-image.md)'s decision B, which the owner chose on 2026-11-03: *cix is followed like any entry*. [ADR-0379](0379-the-host-roll-deploys-the-root-when-cix-root-has-moved.md) built the first half, the root following its image.
+Accepted by the owner on 2026-11-18 (*"Accept"*). **Done on 2026-11-19:** release A as 0.2.57-693, release B as 0.2.57-696 (694 and 695 failed in their recipes, #695), and `cix-root@1.2.0` rolling `cixd` and `cixctl`. It builds the other half of [ADR-0371](0371-the-control-plane-root-is-one-image.md)'s decision B, which the owner chose on 2026-11-03: *cix is followed like any entry*. [ADR-0379](0379-the-host-roll-deploys-the-root-when-cix-root-has-moved.md) built the first half, the root following its image.
 
 ## Context
 
