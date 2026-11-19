@@ -405,13 +405,54 @@ static void declared_firmware_one(const char *s, void *arg)
 	}
 }
 
+/*
+ * A built-in driver's declarations: modules.builtin.modinfo's
+ * "<name>.firmware=<file>" records. -1 when the file cannot be read.
+ * Measured on 192.168.15.95 at 0.2.57-697: ahci, xhci_pci, virtio_pci
+ * and others are bound with a sysfs module link and no modules.dep entry,
+ * because they are built in, and reading them as modules marked every
+ * such record incomplete.
+ */
+static int builtin_declared_firmware(const char *name, struct declared_firmware *d)
+{
+	char path[PATH_MAX];
+	char mod[KMOD_NAME_MAX];
+	char *rec = NULL;
+	size_t cap = 0;
+	ssize_t len;
+	FILE *f;
+
+	if (modules_file_path("modules.builtin.modinfo", path, sizeof(path)) != 0)
+		return -1;
+	f = fopen(path, "r");
+	if (f == NULL)
+		return -1;
+	while ((len = getdelim(&rec, &cap, '\0', f)) > 0) {
+		const char *dot = memchr(rec, '.', (size_t)len);
+		size_t n;
+
+		if (dot == NULL)
+			continue;
+		n = (size_t)(dot - rec);
+		if (n == 0 || n >= sizeof(mod))
+			continue;
+		memcpy(mod, rec, n);
+		mod[n] = '\0';
+		if (kmod_name_eq(mod, name))
+			declared_firmware_one(dot + 1, d);
+	}
+	free(rec);
+	fclose(f);
+	return d->n;
+}
+
 int kmod_declared_firmware(const char *name, void (*fn)(const char *name, void *ctx), void *ctx)
 {
 	char path[PATH_MAX];
 	struct declared_firmware d = { fn, ctx, 0 };
 
 	if (kmod_module_file(name, path, sizeof(path)) != 0)
-		return -1;
+		return kmod_is_builtin(name) ? builtin_declared_firmware(name, &d) : -1;
 	if (elfcheck_section_strings(path, ".modinfo", declared_firmware_one, &d) < 0)
 		return -1;
 	return d.n;

@@ -16,6 +16,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - **When:** one helper child reads it all (`fwscan_scan()`), at start, after every module job, on a hardware uevent, and when the firmware link moves. Requests coalesce, and none starts while a roll waits to switch.
   - **Where it shows:** `cixctl device ls` prints a `firmware:` line under a device with missing names, and the dashboard's device tables gain a Firmware column.
   - Init mode only, like the link. A device with no driver module, or a host before its first scan, reads null.
+- **Built-in drivers:** a driver built into the kernel has a sysfs module link and no `modules.dep` entry. Its declarations are read from `modules.builtin.modinfo`'s `<name>.firmware=` records. Measured live at 0.2.57-697, where `ahci`, `xhci_pci`, `virtio_pci` and others read `complete: false` until 0.2.57-698.
 - **Not yet:** cixd installs nothing. The index of which output provides a file has its matcher (`cbs_selector_matches()`) and is used in release 3.
 - **Gates:** `test_elfcheck` reads this binary's `.shstrtab` strings; `test_cbsrecipe` covers the output selectors and the matcher.
 
