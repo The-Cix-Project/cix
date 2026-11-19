@@ -25761,32 +25761,67 @@ char *container_recipe_render(const char *name, const struct json_value *secrets
 		return NULL;
 	}
 	/*
-	 * Issue #153's sibling case. An unmatched {{SECRET:KEY}} is left
-	 * untouched deliberately (see substitute_secrets above) -- a
-	 * preview must show the real token, not a guess. The reasoning
-	 * there assumes the leftover surfaces as an error downstream, and
-	 * for most fields it does.
-	 *
-	 * It does NOT for a files[] entry: a config file containing a
-	 * literal "{{SECRET:X}}" is perfectly valid JSON and creates a
-	 * perfectly valid container, which then misbehaves at runtime for
-	 * reasons nothing connects back to a missing secret. That is the
-	 * same shape as the dnsmasq pidfile and the non-executable
-	 * artifact -- valid by every check the platform makes, wrong in
-	 * the one way that matters.
-	 *
-	 * Warned rather than refused, because the deliberate leave-alone
-	 * behaviour is still correct and a caller may genuinely intend a
-	 * literal. The point is that it stops being silent.
+	 * An unmatched {{SECRET:KEY}} is left untouched here deliberately
+	 * (see substitute_secrets above): a preview must show the real
+	 * token, not a guess. Creating a container from it is another
+	 * matter, and container_recipe_unfilled_secrets() is what every
+	 * caller that creates one asks first (#696).
 	 */
-	if (strstr(rendered, "{{SECRET:") != NULL)
-		logstore_write("cixd", "warn",
-		                "container recipe %s: rendered with an unsubstituted {{SECRET:...}} "
-		                "token -- the container will be created with the placeholder as "
-		                "literal text, which is valid but almost certainly not intended",
-		                name);
+	(void)name;
 	*out_err = PKG_OK;
 	return rendered;
+}
+
+/*
+ * #696: the {{SECRET:KEY}} tokens a rendered recipe still carries,
+ * listed into keys as "KEY, KEY". A container created from it holds the
+ * placeholder as literal text: valid JSON, a valid container, and wrong
+ * in the one way that matters. Measured on 192.168.15.95, 2026-11-19:
+ * cr-1 and cr-2 were applied with no RIP_PASSWORD, bird.conf got the
+ * literal token, the site gateway rejected their RIP, and the routes
+ * back to services, access and remote-access expired. So a caller
+ * refuses to create from a render with any left, naming them.
+ */
+int container_recipe_unfilled_secrets(const char *rendered, char *keys, size_t keys_size)
+{
+	char seen[16][128];
+	const char *p = rendered;
+	size_t off = 0;
+	int count = 0, i;
+
+	if (keys_size > 0)
+		keys[0] = '\0';
+	while ((p = strstr(p, "{{SECRET:")) != NULL) {
+		const char *k = p + 9;
+		const char *end = strstr(k, "}}");
+		size_t len;
+		int dup = 0;
+
+		if (end == NULL)
+			break;
+		len = (size_t)(end - k);
+		p = end + 2;
+		if (len == 0 || len >= sizeof(seen[0]))
+			continue;
+		for (i = 0; i < count && i < 16; i++)
+			if (strlen(seen[i]) == len && memcmp(seen[i], k, len) == 0)
+				dup = 1;
+		if (dup)
+			continue; /* each key once, however often it appears */
+		if (count < 16) {
+			memcpy(seen[count], k, len);
+			seen[count][len] = '\0';
+		}
+		if (off + 1 < keys_size) {
+			int n = snprintf(keys + off, keys_size - off, "%s%.*s", count > 0 ? ", " : "",
+			                 (int)len, k);
+
+			if (n > 0)
+				off += (size_t)n < keys_size - off ? (size_t)n : keys_size - off - 1;
+		}
+		count++;
+	}
+	return count;
 }
 
 struct image_recipe_ref {

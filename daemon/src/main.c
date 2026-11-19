@@ -23732,6 +23732,21 @@ static void handle_container_recipe_apply(int fd, const char *name, const char *
 		respond_container_recipe_error(fd, perr);
 		return;
 	}
+	/* #696: never create a container holding a literal placeholder. */
+	{
+		char keys[256], msg[512];
+
+		if (container_recipe_unfilled_secrets(rendered, keys, sizeof(keys)) > 0) {
+			free(rendered);
+			snprintf(msg, sizeof(msg),
+			         "deployment %s needs secrets it was not given: %s -- pass each in the "
+			         "request's \"secrets\" (cixctl deployment apply %s --secret=KEY=VALUE); "
+			         "nothing was created",
+			         name, keys, name);
+			respond_error(fd, 400, "Bad Request", msg);
+			return;
+		}
+	}
 
 	/*
 	 * ADR-0270: a deployment whose image is not built yet waits for it.
@@ -26304,6 +26319,27 @@ static void handle_dns_provision(int fd, const char *body, size_t body_len)
 				jw_str(&w, "no container recipe published for this replica");
 				jw_obj_close(&w);
 				continue;
+			}
+			/* #696: a replica's recipe is applied with no secrets, so
+			 * one that needs any is refused, never created holding the
+			 * placeholder. */
+			{
+				char keys[256], msg[384];
+
+				if (container_recipe_unfilled_secrets(rendered, keys, sizeof(keys)) > 0) {
+					free(rendered);
+					snprintf(msg, sizeof(msg),
+					         "its recipe needs secrets (%s); apply it with cixctl deployment "
+					         "apply and --secret=KEY=VALUE",
+					         keys);
+					problems++;
+					jw_key(&w, "created");
+					jw_str(&w, "needs-secrets");
+					jw_key(&w, "error");
+					jw_str(&w, msg);
+					jw_obj_close(&w);
+					continue;
+				}
 			}
 			if (create_container_persisted(rendered, strlen(rendered), &entry, err_msg,
 			                                sizeof(err_msg)) != 0) {

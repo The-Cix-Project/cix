@@ -335,22 +335,22 @@ int main(void)
 	CHECK(wait_container_gone(&client, "crtest") == 0,
 	      "the deleted crtest finishes tearing down, freeing its name");
 
-	/* --- scenario 6: apply with NO secret supplied leaves the token
-	 * untouched (never silently swallowed) --- */
+	/* --- scenario 6 (#696): apply with NO secret supplied is refused,
+	 * naming the missing key, and creates nothing. It used to create the
+	 * container with the literal placeholder in its file -- which is how
+	 * two cores on 192.168.15.95 ran with "{{SECRET:RIP_PASSWORD}}" as
+	 * their RIP password and lost every route back to their networks. --- */
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/deployments/crtest/apply", "{}", &r) ==
 	              0 &&
-	          r.status == 201,
-	      "apply-recipe with no secrets still creates the container (201)");
+	          r.status == 400 && r.body != NULL && strstr(r.body, "PW") != NULL,
+	      "apply-recipe with a secret missing is refused, naming it (400)");
 	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "GET", "/v1/containers/crtest/files?path=/etc/secret.conf",
-	                         NULL, &r) == 0 &&
-	          r.status == 200,
-	      "GET the staged file back out (unsubstituted case)");
-	CHECK(r.body != NULL && strstr(r.body, "{{SECRET:PW}}") != NULL,
-	      "an unmatched token is left exactly as-is, not swallowed or blanked");
+	CHECK(cix_client_request(&client, "GET", "/v1/containers/crtest", NULL, &r) == 0 &&
+	          r.status == 404,
+	      "and no container was created");
 	cix_response_free(&r);
 
 	/* --- scenario 6.5 (issue #66): {{LDAP:FIELD}} tokens resolve from

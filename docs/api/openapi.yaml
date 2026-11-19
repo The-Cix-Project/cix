@@ -9642,9 +9642,9 @@ paths:
         container from the result, via the identical code path a real
         POST /containers would use. 201 with the new container, or
         whatever error a real container create would give (a name
-        collision, invalid cmd, ...). An unmatched {{SECRET:KEY}} token
-        (no such key in secrets) is left completely untouched -- never
-        silently swallowed or blanked.
+        collision, invalid cmd, ...). A {{SECRET:KEY}} token with no such key
+        in secrets is a 400 naming every missing key, and nothing is
+        created (#696): the placeholder is never written into a container.
 
 
         ADR-0270: if the image this deployment names exists but has not
@@ -25463,9 +25463,12 @@ components:
           type: string
         created:
           type: string
-          enum: [created, exists, no-recipe, failed]
+          enum: [created, exists, no-recipe, needs-secrets, failed]
           description: >
             "exists" is success -- this call is re-runnable by design.
+            "needs-secrets": the replica's recipe carries {{SECRET:KEY}}
+            tokens, which provisioning cannot fill, so it is not created
+            (#696); apply it with its secrets instead.
         registered:
           type: boolean
           description: >

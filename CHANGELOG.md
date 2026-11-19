@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A deployment missing a secret is refused, never created with the placeholder (#696)
+
+- **Before:** `POST /v1/deployments/{name}/apply` left an unmatched `{{SECRET:KEY}}` token in place and created the container, logging only a warning. Measured on 192.168.15.95, 2026-11-19: cr-1 and cr-2, applied without `RIP_PASSWORD`, ran with the literal token as their RIP password; the site gateway rejected their RIP and the routes back to services, access and remote-access expired.
+- **Now:** the apply answers 400 naming every missing key, and creates nothing. DNS replica provisioning, which applies recipes with no secrets, reports such a replica as `needs-secrets` instead of creating it. One check, `container_recipe_unfilled_secrets()`, serves both. `GET /v1/deployments/{name}` still shows the raw tokens.
+- **Gate:** `test_container_recipe` scenario 6 now requires the refusal and that nothing was created.
+
 ### A file cixd rewrites in a container is put in force through cix-init (ADR-0384, #697)
 
 - **Before:** cixd put a DNS server's records and forwarders, and a DHCP server's reservations, in force with a SIGHUP to the container's pidfd. Since ADR-0260 that is cix-init, pid 1, which discards it. Measured on 192.168.15.95, 2026-11-19: a new record sat in the hosts file while both servers answered NXDOMAIN for it; and when a DHCP range change restarted dns-1 and dns-2, dnsmasq started on the empty forwarders placeholder and both answered REFUSED to every query until their service was restarted by hand.

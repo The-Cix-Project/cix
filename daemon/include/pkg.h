@@ -2152,6 +2152,14 @@ int pkg_installed_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
  * apply handler does exactly: container_recipe_render() -> pass the
  * result straight to handle_create()'s own body-handling path.
  */
+/*
+ * #696: how many {{SECRET:KEY}} tokens a rendered recipe still carries,
+ * each key named once in keys ("A, B"). Every caller that creates a
+ * container from a render refuses when this is not 0: the placeholder
+ * would otherwise be written into the container as literal text.
+ */
+int container_recipe_unfilled_secrets(const char *rendered, char *keys, size_t keys_size);
+
 char *container_recipe_render(const char *name, const struct json_value *secrets,
                                enum pkg_error *out_err);
 
