@@ -38,7 +38,7 @@ One image decides what the assembled root contains: `cix-root`. It is an ordinar
 
 #### `cix-root` (REQUIRED since ADR-0371 phase 3a)
 
-Every program, library and file the root carries comes from this image's packages: `cixd` and `cixctl` (outputs of the `cix` recipe), `kernel-modules` (an output of the `kernel` recipe), the host tools `include/controlplane_programs.h` lists (`squashfs-tools`, `cbs`, `util-linux`, `e2fsprogs`, `btrfs-progs`, `dosfstools`, `kmod`), the firmware a driver asks for during probe (`rtw88-firmware`, `wireless-regdb`), `ca-certificates`, and their libraries. `mkbootroot` adds only what ADR-0333 says is not image content -- the mount points, an empty `/etc/resolv.conf` and `/etc/os-release` -- then checks the tree and seals it. Firmware belongs here because the kernel answers `request_firmware()` out of the root it booted, before any container exists.
+Every program, library and file the root carries comes from this image's packages: `cixd` and `cixctl` (outputs of the `cix` recipe), `kernel-modules` (an output of the `kernel` recipe), the host tools `include/controlplane_programs.h` lists (`squashfs-tools`, `cbs`, `util-linux`, `e2fsprogs`, `btrfs-progs`, `dosfstools`, `kmod`), `wireless-regdb`, `ca-certificates`, and their libraries. `mkbootroot` adds only what ADR-0333 says is not image content -- the mount points, an empty `/etc/resolv.conf` and `/etc/os-release` -- then checks the tree and seals it. Firmware belongs here because the kernel answers `request_firmware()` out of the root it booted, before any container exists.
 
 ```
 cixctl image materialize cix-root

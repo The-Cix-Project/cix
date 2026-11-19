@@ -92,14 +92,15 @@ Also from cixd's code: the data disks are mounted (`diskformat_remount_present_r
      1. `cix-root`'s recipe drops `rtw88-firmware`, and the root-only roll switches;
      2. ar-1 is stopped and the radio re-plugged or re-probed, so rtw88 reads its firmware again (it reads at probe, not at an access point start);
      3. ar-1 is started and its access point checked.
-   - The rollback is putting `rtw88-firmware` back in `cix-root` at the old version, and reloading the module.
+   - The rollback is restoring `rtw88-firmware@3.cbs` to cix-recipes from before `a5857299`, installing it into `cix-root`, and reloading the module with ar-1 stopped. There is no one-step one, because the recipe is retired.
    - This is also the first real proof that the path follows an in-place switch, which is an inference from two source reads until then.
    - **Done on 2026-11-19, on the owner's "Go ahead now", with the root's copy removed first,** which left no gap that mattered, since rtw88 reads its firmware only at probe and nothing probed the radio until the reload:
      - `rtw88-firmware` left `cix-root` first (root-only roll to `40aa432f88a4`, switched in place at 16:39:38 UTC), while the radio kept running the firmware it had loaded;
      - the `rtw88-firmware` recipe was retired (cix-recipes `a5857299`) and `linux-firmware@20261019-2` published with the output;
      - the publish asked for a scan (0.2.57-702), which declared the output by itself: *"usb:2357:012e@0000:07:1b.0-usb2-1's rtw88_8822b declares rtw88/rtw8822b_fw.bin, which the firmware image lacks -- declared rtw88-firmware (rolling, from linux-firmware@20261019-2) for the drain to install"*, and the drain installed it from the source cache;
-     - ar-1 stopped at 16:45:51; `kmod unload` and `kmod load rtw88_8822bu`; the kernel logged `Firmware version 30.20.0, H2C version 14`, where every earlier probe logged `27.2.0, H2C version 13`. With the root's copy gone, that blob can only have come through the stable link, two in-place switches after the path was set: the inference above is now a measurement;
-     - ar-1 started; `hostapd: radio-ap: AP-ENABLED` at 16:46:32 UTC.
+     - ar-1 was stopped (the kernel logged its interface leaving at 16:45:43 UTC); `kmod unload` and `kmod load rtw88_8822bu`; the kernel logged `Firmware version 30.20.0, H2C version 14` at 16:45:55, where every earlier probe logged `27.2.0, H2C version 13`. The root carried no rtw88 blob after the 16:39:38 switch, so that one came through the stable link, which answers the inference above for an in-place switch;
+     - ar-1 started; `hostapd: radio-ap: AP-ENABLED` at 16:46:32 UTC. No station had associated by 16:50, so a client on the new firmware is not yet observed.
+   - **Not yet exercised: a cold boot with the root's copy gone.** By reading `main()` the order is right: rebuildable storage is resolved, then `firmware_path_start()` writes the path, then the boot sweep probes, and the link persists on disk from the last start (`firmware_link_sync()` re-points it after the sweep). The next reboot is the check: ar-1's access point must come up with it.
    - `cix-root@1.3.0` records the live manifest (cix-recipes `da7461c4`).
 
 ## Live checks
