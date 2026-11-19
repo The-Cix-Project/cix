@@ -22012,7 +22012,7 @@ components:
             running in init mode. Missing names are normal for working
             hardware: a module declares the files of every chip it
             supports.
-          required: [modules, declared, missing, complete]
+          required: [modules, declared, missing, provided_by, unprovided, complete]
           properties:
             modules:
               type: array
@@ -22030,6 +22030,26 @@ components:
                 The declared names neither the firmware image nor
                 /lib/firmware holds, relative to a firmware directory
                 (`amdgpu/navi10_sos.bin`).
+            provided_by:
+              type: array
+              items:
+                type: string
+              description: >
+                The outputs whose files selectors claim a declared name
+                the firmware image lacks (ADR-0381 release 3), each
+                once. cixd declares each into the firmware image, for the
+                drain to install, when its recipe's source has
+                trust_keys and the kmod policy would load the driver
+                automatically; the log says why when it does not. A name
+                two outputs claim is in neither list: it is refused, never
+                picked.
+            unprovided:
+              type: array
+              items:
+                type: string
+              description: >
+                The missing names no output claims: nothing cixd can
+                fetch for them.
             complete:
               type: boolean
               description: >

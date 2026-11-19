@@ -6975,10 +6975,12 @@ function deviceFirmwareText(d) {
 
 	if (!fw)
 		return FIELD_ABSENT;
+	const fetching = fw.provided_by.length > 0 ? " (from " + fw.provided_by.join(", ") + ")" : "";
+
 	if (fw.missing.length === 0)
-		return fw.declared > 0 ? "all " + fw.declared + " present" : FIELD_ABSENT;
+		return fw.declared > 0 ? "all " + fw.declared + " present" + fetching : FIELD_ABSENT;
 	return fw.missing.length + " of " + fw.declared + " missing: " + fw.missing.slice(0, 3).join(", ") +
-		(fw.missing.length > 3 ? ", ..." : "") + (fw.complete ? "" : " (incomplete)");
+		(fw.missing.length > 3 ? ", ..." : "") + fetching + (fw.complete ? "" : " (incomplete)");
 }
 
 /*

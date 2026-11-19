@@ -82,8 +82,12 @@ Also from cixd's code: the data disks are mounted (`diskformat_remount_present_r
    - `linux-firmware` with the `amdgpu-firmware` output (git first). The `rtw88-firmware` output joins in release 3, with the old `rtw88-firmware` recipe retired in the same change. That name is one recipe's today (ADR-0324), and `cix-root` rolls it, so an earlier output would have moved ar-1's radio to new firmware at once (161,240 bytes in 20261019 against `rtw88-firmware@3`'s 150,984).
    - Upstream declares symlinked names in `WHENCE` (`Link:` lines), which its own install script creates. The recipe creates those under each family it ships, or a raw copy of the tree misses names a driver asks for.
    - Built once on .95, a fetch and a copy. Priced before it runs, since the source is 642 MB. If `linux-firmware` rolls, each upstream release is another 642 MB fetch and build; it is pinned unless the owner chooses otherwise.
-3. **Acquisition and re-probe.**
-   - cixd acquires `rtw88-firmware` into `firmware` for ar-1's radio, while the root still holds a copy.
+3. **Acquisition** (code in 0.2.57-700), then re-probe, then the rtw88 switchover.
+   - **Acquisition asks the firmware image, never the root.** A name the root still holds is acquired too, so dropping it from the root later leaves no gap. The decision is one pure function, `fwacquire_verdict()`, with a unit test, since no selftest daemon runs in init mode.
+   - **Acquisition declares; the drain installs.** The output is declared into the `firmware` image's manifest, rolling, and the image queued. So the drain's own rules apply (one build per recipe, #681; held while a hostbuild runs, #693; the ABI hold), and nothing new starts installs. A declared entry is never declared again; a failed install is the drain's state, not retried from here.
+   - **Trusted sources only** (the owner, 2026-11-19: *"Trusted sources only"*): an output whose recipe's source has no `trust_keys` is reported and installed only by an operator.
+   - **Re-probe ships separately,** once a probe has read what `drivers_probe` does in 7.3.5's `drivers/base` for a device whose probe failed. .95 has no such device to exercise it.
+   - cixd acquires `rtw88-firmware` into `firmware` for ar-1's radio, while the root still holds a copy. **The owner's approval gates publishing the `rtw88-firmware` output**, because the image's copy is searched first and the radio takes it at its next probe.
    - **Then a watched switchover, asked of the owner first,** because ar-1's access point is what it risks:
      1. `cix-root`'s recipe drops `rtw88-firmware`, and the root-only roll switches;
      2. ar-1 is stopped and the radio re-plugged or re-probed, so rtw88 reads its firmware again (it reads at probe, not at an access point start);

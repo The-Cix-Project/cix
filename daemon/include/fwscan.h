@@ -30,9 +30,16 @@
 #define FWSCAN_NAMES_MAX 8192
 #define FWSCAN_NAME_MAX 160
 
+#define FWSCAN_PKG_MAX 64 /* a package name or version, PKG_NAME_MAX / PKG_VERSION_MAX */
+
 struct fwscan_name {
 	char name[FWSCAN_NAME_MAX];
-	unsigned char present;
+	unsigned char present;   /* the firmware image or the root holds it */
+	unsigned char in_image;  /* the firmware image holds it: what acquisition asks (release 3) */
+	unsigned char ambiguous; /* two outputs claim it */
+	char provider[FWSCAN_PKG_MAX]; /* the output claiming it, "" for none */
+	char recipe[FWSCAN_PKG_MAX];   /* that output's recipe */
+	char version[FWSCAN_PKG_MAX];  /* the recipe's current version */
 };
 
 struct fwscan_module {
@@ -63,8 +70,28 @@ struct fwscan_result {
 void fwscan_scan(struct fwscan_result *r, const char *firmware_dir, const char *root_firmware_dir,
                  const char *os_containers_dir);
 
+/*
+ * ADR-0381 release 3: fills each name the firmware image lacks with the
+ * output whose files selectors claim lib/firmware/<name>, from walk
+ * (pkg_firmware_providers_walk()). Two outputs claiming one name make it
+ * ambiguous. Walks nothing when the image lacks nothing. Helper child.
+ */
+typedef int (*fwscan_provider_walk)(void (*fn)(const char *output, const char *recipe,
+                                               const char *version, const char *pattern,
+                                               int glob, void *ctx),
+                                    void *ctx);
+void fwscan_match_providers(struct fwscan_result *r, fwscan_provider_walk walk);
+
 /* Installs a scan's result. 1 when what a device record shows changed. */
 int fwscan_install(const struct fwscan_result *r);
+
+/*
+ * ADR-0381 release 3: each (device, module, name) the installed scan
+ * found absent from the firmware image, for the daemon's acquisition.
+ */
+void fwscan_for_each_absent(void (*fn)(const char *device, const char *module,
+                                       const struct fwscan_name *n, void *ctx),
+                            void *ctx);
 
 /*
  * Writes the record's "firmware" key for device id: null when no scan

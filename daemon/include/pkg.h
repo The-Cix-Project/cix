@@ -485,6 +485,19 @@ void pkg_repoint(const char *pkg_dir, const char *installed_state_path, const ch
 int pkg_run_capture_sha256(const char *path, char *out, size_t out_size);
 
 /*
+ * ADR-0381 release 3: each lib/firmware files selector of each non-main
+ * output of every recipe's current version, from the explain.json beside
+ * it, passed to fn with the output, its recipe and that version. Skips a
+ * recipe whose explain.json never mentions lib/firmware without parsing
+ * it. How many outputs were read, or -1 when the store cannot be opened.
+ * Walks the whole store, so only in a helper child.
+ */
+int pkg_firmware_providers_walk(void (*fn)(const char *output, const char *recipe,
+                                           const char *version, const char *pattern, int glob,
+                                           void *ctx),
+                                void *ctx);
+
+/*
  * Issue #40: folds a pre-existing flat <images_dir>/pkgbuild/rootfs
  * into the build-sandbox image, once, and sets the old directory aside
  * rather than deleting it. Must be called AFTER image_init(), since it

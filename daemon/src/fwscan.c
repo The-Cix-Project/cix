@@ -4,6 +4,8 @@
  */
 #include "fwscan.h"
 
+#include "cbsrecipe.h"
+
 #include <dirent.h>
 #include <limits.h>
 #include <stdio.h>
@@ -60,7 +62,8 @@ static void add_name(const char *name, void *arg)
 	}
 	n = &c->r->names[c->r->name_count++];
 	snprintf(n->name, sizeof(n->name), "%s", name);
-	n->present = file_present(c->firmware_dir, name) || file_present(c->root_firmware_dir, name);
+	n->in_image = file_present(c->firmware_dir, name);
+	n->present = n->in_image || file_present(c->root_firmware_dir, name);
 }
 
 /* The module's index in r, reading its declarations the first time. */
@@ -203,6 +206,68 @@ void fwscan_scan(struct fwscan_result *r, const char *firmware_dir, const char *
 	}
 }
 
+struct provider_match {
+	struct fwscan_result *r;
+};
+
+/* One selector of one output against every name the image lacks. */
+static void match_selector(const char *output, const char *recipe, const char *version,
+                           const char *pattern, int glob, void *arg)
+{
+	struct provider_match *m = arg;
+	char path[FWSCAN_NAME_MAX + 16];
+	int i;
+
+	for (i = 0; i < m->r->name_count; i++) {
+		struct fwscan_name *n = &m->r->names[i];
+
+		if (n->in_image)
+			continue;
+		snprintf(path, sizeof(path), "lib/firmware/%s", n->name);
+		if (!cbs_selector_matches(pattern, glob, path))
+			continue;
+		if (n->provider[0] == '\0') {
+			snprintf(n->provider, sizeof(n->provider), "%s", output);
+			snprintf(n->recipe, sizeof(n->recipe), "%s", recipe);
+			snprintf(n->version, sizeof(n->version), "%s", version);
+		} else if (strcmp(n->provider, output) != 0) {
+			n->ambiguous = 1;
+		}
+	}
+}
+
+void fwscan_match_providers(struct fwscan_result *r, fwscan_provider_walk walk)
+{
+	struct provider_match m = { r };
+	int i, absent = 0;
+
+	for (i = 0; i < r->name_count; i++)
+		if (!r->names[i].in_image)
+			absent = 1;
+	if (absent && walk != NULL && walk(match_selector, &m) < 0)
+		r->truncated = 1;
+}
+
+void fwscan_for_each_absent(void (*fn)(const char *device, const char *module,
+                                       const struct fwscan_name *n, void *ctx),
+                            void *ctx)
+{
+	const struct fwscan_result *r = &g_installed;
+	int i, k, j;
+
+	for (i = 0; g_have && i < r->device_count; i++) {
+		const struct fwscan_device *d = &r->devices[i];
+
+		for (k = 0; k < d->module_count; k++) {
+			const struct fwscan_module *m = &r->modules[d->modules[k]];
+
+			for (j = m->first; j < m->first + m->count; j++)
+				if (!r->names[j].in_image)
+					fn(d->id, m->name, &r->names[j], ctx);
+		}
+	}
+}
+
 int fwscan_install(const struct fwscan_result *r)
 {
 	int changed = !g_have || memcmp(&g_installed, r, sizeof(*r)) != 0;
@@ -249,6 +314,43 @@ void fwscan_write_device(struct json_writer *w, const char *id)
 
 		for (j = m->first; j < m->first + m->count; j++)
 			if (!r->names[j].present)
+				jw_str(w, r->names[j].name);
+	}
+	jw_arr_close(w);
+	/* Release 3: the outputs claiming a name the firmware image lacks,
+	 * each once, and the missing names no output claims. */
+	jw_key(w, "provided_by");
+	jw_arr_open(w);
+	for (k = 0; k < d->module_count; k++) {
+		const struct fwscan_module *m = &r->modules[d->modules[k]];
+
+		for (j = m->first; j < m->first + m->count; j++) {
+			const struct fwscan_name *n = &r->names[j];
+			int seen = 0, k2, j2;
+
+			if (n->in_image || n->provider[0] == '\0' || n->ambiguous)
+				continue;
+			/* Said once: an earlier name of this device with this output. */
+			for (k2 = 0; k2 <= k && !seen; k2++) {
+				const struct fwscan_module *m2 = &r->modules[d->modules[k2]];
+				int end = k2 < k ? m2->first + m2->count : j;
+
+				for (j2 = m2->first; j2 < end && !seen; j2++)
+					seen = !r->names[j2].in_image && !r->names[j2].ambiguous &&
+					       strcmp(r->names[j2].provider, n->provider) == 0;
+			}
+			if (!seen)
+				jw_str(w, n->provider);
+		}
+	}
+	jw_arr_close(w);
+	jw_key(w, "unprovided");
+	jw_arr_open(w);
+	for (k = 0; k < d->module_count; k++) {
+		const struct fwscan_module *m = &r->modules[d->modules[k]];
+
+		for (j = m->first; j < m->first + m->count; j++)
+			if (!r->names[j].present && r->names[j].provider[0] == '\0')
 				jw_str(w, r->names[j].name);
 	}
 	jw_arr_close(w);

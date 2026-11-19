@@ -3698,6 +3698,83 @@ int pkg_recipe_file_in(const char *version_dir, char *out_path, size_t out_path_
 static int find_recipe_path(const char *name, const char *version, char *out_path,
                              size_t out_path_size);
 
+struct firmware_walk {
+	void (*fn)(const char *output, const char *recipe, const char *version, const char *pattern,
+	           int glob, void *ctx);
+	void *ctx;
+	const char *output, *recipe, *version;
+};
+
+static void firmware_walk_selector(const char *pattern, int glob, void *arg)
+{
+	struct firmware_walk *w = arg;
+
+	/* Only what lands under lib/firmware is a firmware provider. */
+	if (strncmp(pattern, "lib/firmware", 12) == 0)
+		w->fn(w->output, w->recipe, w->version, pattern, glob, w->ctx);
+}
+
+/*
+ * ADR-0381 release 3: every output of every recipe's current version
+ * whose files selectors reach under lib/firmware, from the explain.json
+ * beside each, the same store output_owner() reads. A recipe whose
+ * explain.json does not mention lib/firmware is skipped unparsed, so a
+ * walk of the whole store parses only the firmware recipes. Runs in the
+ * firmware scan's helper child, never on the loop.
+ */
+int pkg_firmware_providers_walk(void (*fn)(const char *output, const char *recipe,
+                                           const char *version, const char *pattern, int glob,
+                                           void *ctx),
+                                void *ctx)
+{
+	DIR *d = opendir(g_recipes_dir);
+	struct dirent *de;
+	int n = 0;
+
+	if (d == NULL)
+		return -1;
+	while ((de = readdir(d)) != NULL) {
+		char path[PATH_MAX], explain_path[PATH_MAX], err[128], version[PKG_VERSION_MAX];
+		char *buf = NULL, *slash;
+		size_t len = 0;
+		struct cbs_explain *ex;
+		int i;
+
+		if (de->d_name[0] == '.' || find_recipe_path(de->d_name, NULL, path, sizeof(path)) != 0)
+			continue;
+		cbs_explain_path(path, explain_path, sizeof(explain_path));
+		if (persist_read_file(explain_path, &buf, &len) != 0 || buf == NULL)
+			continue;
+		if (memmem(buf, len, "lib/firmware", 12) == NULL) {
+			free(buf);
+			continue;
+		}
+		ex = cbs_explain_parse(buf, len, err, sizeof(err));
+		free(buf);
+		if (ex == NULL)
+			continue;
+		/* The version is the recipe's directory: <recipes>/<name>/<version>/... */
+		snprintf(version, sizeof(version), "%s", path + strlen(g_recipes_dir) + 1 +
+		                                             strlen(de->d_name) + 1);
+		slash = strchr(version, '/');
+		if (slash != NULL)
+			*slash = '\0';
+		for (i = 0; i < cbs_explain_output_count(ex); i++) {
+			int is_main = 0;
+			const char *o = cbs_explain_output_name(ex, i, &is_main);
+			struct firmware_walk w = { fn, ctx, o, de->d_name, version };
+
+			if (o == NULL || is_main)
+				continue;
+			cbs_explain_output_files(ex, i, firmware_walk_selector, &w);
+			n++;
+		}
+		cbs_explain_free(ex);
+	}
+	closedir(d);
+	return n;
+}
+
 /*
  * ADR-0367 decision 2: the recipe whose current version declares an
  * output named name. 1 with recipe filled, 0 when none does.

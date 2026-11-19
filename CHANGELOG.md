@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A device gets its firmware by itself, release 3's acquisition (ADR-0381, #685)
+
+- **Before:** a device record said which firmware its driver lacked, and an operator had to find and install the package.
+- **Now:**
+  - **The index:** the firmware scan's helper child matches each name the `firmware` image lacks against every recipe's outputs' `lib/firmware` files selectors (`pkg_firmware_providers_walk()`, read from each recipe's `explain.json`, `cbs_selector_matches()`).
+  - **The record:** gains `provided_by` (the outputs that provide those names) and `unprovided` (missing names nothing provides). The dashboard's Firmware column names the outputs.
+  - **The decision:** `fwacquire_verdict()`, one pure function. A provided name whose driver the kmod policy would load automatically, from a source with `trust_keys`, is declared: its output goes into the `firmware` image's manifest, rolling, and the image is queued for the drain. A name two outputs claim, a refused driver, an untrusted source and an installed output that does not carry the name are each said once in the log.
+  - **Asked of the image, never the root,** so a name the root still holds is acquired too, and a later drop from the root leaves no gap.
+- **Not yet:** re-probing an unbound device after its firmware arrives (to be measured first), and the rtw88 output, whose publishing the owner approves.
+- **Gate:** `test_fwacquire_verdict`.
+
 ### A verified source is kept by its checksum (ADR-0382)
 
 - **Before:** each build fetched its sources again, whoever had built them before, since a slot's sources are removed by its next fetch. Measured on 192.168.15.95, 2026-11-19: kernel.org's `linux-firmware-20261019.tar.xz` (672,694,092 bytes) took about 70 minutes, and the package job held every roll meanwhile.

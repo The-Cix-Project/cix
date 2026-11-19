@@ -13,6 +13,7 @@
 #include "diskpart.h"
 #include "disksnap.h"
 #include "fwscan.h"
+#include "fwacquire_verdict.h"
 #include "diskrole.h"
 #include "bootmodules.h"
 #include "kmod.h"
@@ -37324,7 +37325,161 @@ static int fwscan_work(void *arg)
 	persist_set_readonly();
 	firmware_link_path(link, sizeof(link));
 	fwscan_scan(&r, link, "/lib/firmware", CONTAINERS_DIR);
+	fwscan_match_providers(&r, pkg_firmware_providers_walk); /* release 3 */
 	return cix_write_all(g_fwscan_memfd, &r, sizeof(r)) == 0 ? 0 : 1;
+}
+
+/* ---------- ADR-0381 release 3: a device gets its firmware, by itself ----------
+ *
+ * After a scan is installed: for each firmware file a loaded driver
+ * declares and the firmware image lacks, fwacquire_verdict() decides.
+ * DECLARE adds the providing output to the image's manifest, rolling,
+ * and queues the image, so the ordinary drain builds or fetches it under
+ * its own rules (one build per recipe, held while a hostbuild runs, the
+ * ABI hold). Nothing here starts an install itself. Every other answer
+ * is said once per output, or per name for one nothing provides.
+ */
+#define FWACQUIRE_SAID_MAX 128
+static char g_fwacquire_said[FWACQUIRE_SAID_MAX][FWSCAN_NAME_MAX + 32];
+static int g_fwacquire_said_n;
+
+static void fwacquire_say(const char *key, const char *level, const char *fmt, ...)
+{
+	char msg[512];
+	va_list ap;
+	int i;
+
+	for (i = 0; i < g_fwacquire_said_n; i++)
+		if (strcmp(g_fwacquire_said[i], key) == 0)
+			return;
+	if (g_fwacquire_said_n < FWACQUIRE_SAID_MAX)
+		snprintf(g_fwacquire_said[g_fwacquire_said_n++], sizeof(g_fwacquire_said[0]), "%s", key);
+	va_start(ap, fmt);
+	vsnprintf(msg, sizeof(msg), fmt, ap);
+	va_end(ap);
+	logstore_write("cixd", level, "firmware: %s (ADR-0381)", msg);
+}
+
+struct fwacquire_pass {
+	struct image_manifest_entry manifest[IMAGE_MANIFEST_MAX_PACKAGES];
+	int manifest_count;
+	int declared; /* this pass added an entry */
+};
+
+static int fwacquire_declared(const struct fwacquire_pass *p, const char *output)
+{
+	int i;
+
+	for (i = 0; i < p->manifest_count; i++)
+		if (strcmp(p->manifest[i].package, output) == 0)
+			return 1;
+	return 0;
+}
+
+/* Does the recipe's source have trust_keys (the owner's "Trusted sources
+ * only", 2026-11-19)? */
+static int fwacquire_source_trusted(const char *recipe, char *source, size_t source_size)
+{
+	char item[PKG_NAME_MAX + 16];
+	const struct pkg_source *s;
+
+	source[0] = '\0';
+	snprintf(item, sizeof(item), "package:%s", recipe);
+	if (pkgsource_owner_of(item, source, source_size) != PKGSOURCE_OWNER_ONE)
+		return 0;
+	s = pkgsource_find(source);
+	return s != NULL && s->trust_keys;
+}
+
+static void fwacquire_one(const char *device, const char *module, const struct fwscan_name *n,
+                          void *arg)
+{
+	struct fwacquire_pass *p = arg;
+	struct fwacquire_facts f;
+	char why[160], version[PKG_VERSION_MAX], source[PKG_SOURCE_NAME_MAX + 64], key[FWSCAN_NAME_MAX + 32];
+
+	memset(&f, 0, sizeof(f));
+	f.provided = n->provider[0] != '\0';
+	f.ambiguous = n->ambiguous;
+	f.policy_allows = kmod_policy_verdict(kmodpolicy_current(), module, NULL, 0,
+	                                      KMOD_ORIGIN_HOTPLUG, why, sizeof(why)) == KMOD_ALLOW;
+	f.installed = f.provided &&
+	              pkg_installed_version(n->provider, FIRMWARE_IMAGE, version, sizeof(version)) == 0;
+	f.declared = f.provided && fwacquire_declared(p, n->provider);
+	f.source_trusted = f.provided && fwacquire_source_trusted(n->recipe, source, sizeof(source));
+	switch (fwacquire_verdict(&f)) {
+	case FWACQUIRE_DECLARE:
+		if (image_manifest_set(FIRMWARE_IMAGE, n->provider, IMAGE_PKG_ROLLING, n->version) !=
+		    IMAGE_OK) {
+			snprintf(key, sizeof(key), "declare-failed:%s", n->provider);
+			fwacquire_say(key, "error", "could not declare %s in the %s image, which %s's %s "
+			                            "needs for %s",
+			              n->provider, FIRMWARE_IMAGE, device, module, n->name);
+			return;
+		}
+		if (p->manifest_count < IMAGE_MANIFEST_MAX_PACKAGES) {
+			snprintf(p->manifest[p->manifest_count].package,
+			         sizeof(p->manifest[0].package), "%s", n->provider);
+			p->manifest_count++;
+		}
+		p->declared = 1;
+		logstore_write("cixd", "info",
+		               "firmware: %s's %s declares %s, which the %s image lacks -- declared %s "
+		               "(rolling, from %s@%s) for the drain to install (ADR-0381)",
+		               device, module, n->name, FIRMWARE_IMAGE, n->provider, n->recipe,
+		               n->version);
+		return;
+	case FWACQUIRE_AMBIGUOUS:
+		snprintf(key, sizeof(key), "ambiguous:%s", n->name);
+		fwacquire_say(key, "warn", "%s is claimed by more than one output, so none is "
+		                           "installed for %s's %s; name the one with an explicit install",
+		              n->name, device, module);
+		return;
+	case FWACQUIRE_REFUSED:
+		snprintf(key, sizeof(key), "refused:%s", module);
+		fwacquire_say(key, "info", "%s's %s would not be loaded automatically (%s), so its "
+		                           "firmware is not fetched",
+		              device, module, why[0] != '\0' ? why : "kmod policy");
+		return;
+	case FWACQUIRE_UNTRUSTED:
+		snprintf(key, sizeof(key), "untrusted:%s", n->provider);
+		fwacquire_say(key, "info", "%s provides %s for %s's %s, but its source %s has no "
+		                           "trust_keys, so only an operator installs it",
+		              n->provider, n->name, device, module,
+		              source[0] != '\0' ? source : "(none)");
+		return;
+	case FWACQUIRE_NOT_CARRIED:
+		snprintf(key, sizeof(key), "not-carried:%s", n->name);
+		fwacquire_say(key, "warn", "%s is installed and does not carry %s, which %s's %s "
+		                           "declares; its files selector claims more than it ships",
+		              n->provider, n->name, device, module);
+		return;
+	case FWACQUIRE_PENDING:
+	case FWACQUIRE_NOTHING:
+		return;
+	}
+}
+
+static void firmware_acquire(void)
+{
+	static struct fwacquire_pass p;
+
+	if (!g_firmware_on)
+		return;
+	memset(&p, 0, sizeof(p));
+	if (image_manifest_read(FIRMWARE_IMAGE, p.manifest, &p.manifest_count,
+	                        IMAGE_MANIFEST_MAX_PACKAGES) != IMAGE_OK)
+		return;
+	fwscan_for_each_absent(fwacquire_one, &p);
+	if (!p.declared)
+		return;
+	pkg_rebuild_queue_add(FIRMWARE_IMAGE);
+	/* A change the daemon made itself (ADR-0339): the reads a manifest
+	 * write invalidates. */
+	events_announce(EV_listImages);
+	events_announce(EV_getImage);
+	events_announce(EV_getImageVersionManifest);
+	events_announce(EV_listPkg);
 }
 
 static void fwscan_done(int exit_status, void *ctx)
@@ -37340,6 +37495,7 @@ static void fwscan_done(int exit_status, void *ctx)
 	    r.name_count <= FWSCAN_NAMES_MAX) {
 		if (fwscan_install(&r))
 			events_announce(EV_listDevices);
+		firmware_acquire(); /* release 3 */
 	} else {
 		logstore_write("cixd", "warn",
 		               "firmware: the device scan ended without a result (helper exit %d) -- "
