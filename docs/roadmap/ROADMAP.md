@@ -2462,6 +2462,25 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 - **#689 live:** 687 ran its first drain at 11:02:26 (`image gc: set aside 3 version(s)`). At 11:10 `cixctl process ls` showed no cixd child but procfuse and the watchdog. A look logs nothing when it finds the drops settled or still pending, so that absence alone cannot tell a working check from one that never ran. Nor does the gap between staging and switching prove it: 9 s at 687 → 688, but 5 s at 686 → 687, on the old code, so a short gap shows only that no check was pending then. What holds the change is `test_blocking_waits` and the code. A `deleted subvolumes were still being freed after 7200 s` line would show the looks ran for two hours without holding anything, and that drops are not settling on .95.
 - **#690 shown live at the next switch.** It acts in the process that *writes* the handover, and 686 wrote this one, so the kernel log again took 2,180 lines at 11:02:26. At the 687 → 688 switch (12:22:12, 687 writing), the kernel log has no line at all from two seconds before to five seconds after.
 
+## Part 375: the first release by publishing alone; a host's firmware image (ADR-0381 1a, 1b, 0.2.57-697)
+
+**What shipped.**
+- **1a:** cixd creates a per-host `firmware` image, keeps `REBUILDABLE_DIR/firmware` naming its current version's `lib/firmware`, and points the kernel's firmware path at that link before the boot's sweep.
+- **1b:** device records carry `firmware`: the driver's modules and their dependencies, the firmware they declare, and what the host lacks. `cixctl device ls` and the dashboard's device tables show it.
+
+**How it was verified, on 192.168.15.95, 2026-11-19.**
+- **Compile probes:** `probe-cix-compile@0.2.57-773` failed `test_startup_steps`, because the new init-mode step was unclassified; `@0.2.57-774` passed.
+- **The release, by publishing alone (ADR-0380's live check):**
+  - `cix@0.2.57-697` was published at 05:24:46 UTC, and no roll was run by hand;
+  - the drain built it once, for `cixctl@agent` (a 54325-byte log). `cixd` and `cixctl` in cix-root and `cix-installer-tools` in iso-builder took that build from the cache (0-byte logs);
+  - at 05:52:57 the roll read `root: cix-root ff65ae925b1e -> 611fae0f1a79 -- a root-only roll`, and it switched in place to 0.2.57-697 on slot a at 05:53:28;
+  - all 14 containers kept running.
+- **The kernel's firmware path:** read through a scratch container's console (`cat /sys/module/firmware_class/parameters/path`, module parameters not being namespaced) as `/mnt/cix/sda/rebuildable/firmware`. The container was removed.
+- **The radio's record:**
+  - `usb:2357:012e@0000:07:1b.0-usb2-1` reads modules `rtw88_8822bu`, `rtw88_8822b`, `rtw88_usb`, `rtw88_core`, `declared: 1`, `missing: []`, `complete: true`, so the closure found the declaration in `rtw88_8822b`;
+  - the dashboard's USB table reads "all 1 present".
+- **A defect found live:** built-in drivers (`ahci`, `xhci_pci`, `virtio_pci` and others) read `complete: false`, because they have a module link and no `modules.dep` entry. 0dcccb6e reads their declarations from `modules.builtin.modinfo`.
+
 ## Part 374: a cix release is a publish, done (ADR-0380 release B, 0.2.57-696, cix-root 1.2.0)
 
 **What shipped.**
