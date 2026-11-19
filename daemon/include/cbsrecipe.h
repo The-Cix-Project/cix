@@ -155,6 +155,22 @@ int cbs_explain_requires(const struct cbs_explain *ex, const char *role, const c
  * output's own `requires`.
  */
 int cbs_explain_output_find(const struct cbs_explain *ex, const char *name);
+
+/*
+ * ADR-0381: output `index`'s `files` selectors, as explain reports them
+ * ({"pattern": ..., "glob": ...}), each passed to fn. The count passed,
+ * 0 for none, -1 for no such output.
+ */
+int cbs_explain_output_files(const struct cbs_explain *ex, int index,
+                             void (*fn)(const char *pattern, int glob, void *ctx), void *ctx);
+
+/*
+ * Does a selector claim path (staging-relative, no leading '/')? CBS's
+ * rule (its user manual): in a glob, '*' matches within one path
+ * component and a "**" component matches any number of components; an
+ * exact selector names that path and the tree beneath it. 1 or 0.
+ */
+int cbs_selector_matches(const char *pattern, int glob, const char *path);
 int cbs_explain_output_count(const struct cbs_explain *ex);
 const char *cbs_explain_output_name(const struct cbs_explain *ex, int index, int *is_main);
 int cbs_explain_output_requires(const struct cbs_explain *ex, int index, const char *role,

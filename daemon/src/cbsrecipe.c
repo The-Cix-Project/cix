@@ -295,6 +295,102 @@ int cbs_explain_output_find(const struct cbs_explain *ex, const char *name)
 	return -1;
 }
 
+int cbs_explain_output_files(const struct cbs_explain *ex, int index,
+                             void (*fn)(const char *pattern, int glob, void *ctx), void *ctx)
+{
+	const struct json_value *outs = outputs_of(ex);
+	const struct json_value *files;
+	size_t i;
+	int n = 0;
+
+	if (outs == NULL || index < 0 || (size_t)index >= outs->u.array.count)
+		return -1;
+	files = json_object_get(outs->u.array.items[index], "files");
+	if (files == NULL || files->type != JSON_ARRAY)
+		return 0;
+	for (i = 0; i < files->u.array.count; i++) {
+		const struct json_value *f = files->u.array.items[i];
+		const char *pattern = json_as_string(json_object_get(f, "pattern"));
+		const struct json_value *glob = json_object_get(f, "glob");
+
+		if (pattern == NULL || pattern[0] == '\0')
+			continue;
+		fn(pattern, glob != NULL && glob->type == JSON_BOOL && glob->u.boolean, ctx);
+		n++;
+	}
+	return n;
+}
+
+/* One path component of a glob against one of a path: '*' matches any run
+ * within the component, every other byte matches itself. */
+static int component_match(const char *p, size_t plen, const char *s, size_t slen)
+{
+	size_t i;
+
+	if (plen == 0)
+		return slen == 0;
+	if (p[0] == '*') {
+		for (i = 0; i <= slen; i++)
+			if (component_match(p + 1, plen - 1, s + i, slen - i))
+				return 1;
+		return 0;
+	}
+	return slen > 0 && p[0] == s[0] && component_match(p + 1, plen - 1, s + 1, slen - 1);
+}
+
+/* A glob of '/'-separated components against a path: a "**" component
+ * matches any number of path components, zero included. */
+static int glob_match(const char *p, const char *s)
+{
+	const char *pe, *se;
+	size_t plen, slen;
+
+	if (*p == '\0')
+		return *s == '\0';
+	pe = strchr(p, '/');
+	plen = pe != NULL ? (size_t)(pe - p) : strlen(p);
+	if (plen == 2 && p[0] == '*' && p[1] == '*') {
+		const char *rest = pe != NULL ? pe + 1 : p + plen;
+
+		for (;;) {
+			if (glob_match(rest, s))
+				return 1;
+			if (*rest == '\0' && *s != '\0')
+				return 1; /* a trailing "**" takes the rest */
+			se = strchr(s, '/');
+			if (se == NULL)
+				return 0;
+			s = se + 1;
+		}
+	}
+	if (*s == '\0')
+		return 0;
+	se = strchr(s, '/');
+	slen = se != NULL ? (size_t)(se - s) : strlen(s);
+	if (!component_match(p, plen, s, slen))
+		return 0;
+	if (pe == NULL)
+		return se == NULL;
+	return se != NULL && glob_match(pe + 1, se + 1);
+}
+
+int cbs_selector_matches(const char *pattern, int glob, const char *path)
+{
+	size_t n;
+
+	if (pattern == NULL || path == NULL)
+		return 0;
+	if (glob)
+		return glob_match(pattern, path);
+	/* An exact selector names that path, and a directory it names
+	 * carries the tree beneath it (cixd's own output "web" holds
+	 * web/app.js, measured on 192.168.15.95). */
+	n = strlen(pattern);
+	while (n > 0 && pattern[n - 1] == '/')
+		n--;
+	return strncmp(pattern, path, n) == 0 && (path[n] == '\0' || path[n] == '/');
+}
+
 int cbs_explain_output_count(const struct cbs_explain *ex)
 {
 	const struct json_value *outs = outputs_of(ex);

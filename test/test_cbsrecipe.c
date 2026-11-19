@@ -725,10 +725,71 @@ static void test_abi(void)
 	cbs_explain_free(ex);
 }
 
+static void count_selector(const char *pattern, int glob, void *ctx)
+{
+	int *n = ctx;
+
+	if ((*n == 0 && strcmp(pattern, "lib/firmware/amdgpu/**") == 0 && glob) ||
+	    (*n == 1 && strcmp(pattern, "usr/share/licenses/amdgpu") == 0 && !glob))
+		(*n)++;
+	else
+		*n = -100;
+}
+
+/* ADR-0381: an output's files selectors, and CBS's matching rule. */
+static void test_output_files(void)
+{
+	static const char *const FW =
+	    "{\"name\":\"linux-firmware\",\"version\":\"20261019\",\"release\":1,"
+	    "\"format\":\"cixpkg\",\"outputs\":["
+	    "{\"name\":\"linux-firmware\",\"main\":true,\"files\":[]},"
+	    "{\"name\":\"amdgpu-firmware\",\"main\":false,\"files\":["
+	    "{\"pattern\":\"lib/firmware/amdgpu/**\",\"glob\":true},"
+	    "{\"pattern\":\"usr/share/licenses/amdgpu\",\"glob\":false}]}],"
+	    "\"sources\":[{\"name\":\"f\",\"urls\":[\"https://e/f.tar.xz\"],\"sha256\":\"aa\"}]}";
+	char err[256];
+	struct cbs_explain *ex = cbs_explain_parse(FW, strlen(FW), err, sizeof(err));
+	int n = 0, k;
+
+	if (ex == NULL) {
+		fail("ADR-0381: parse a recipe with a firmware output");
+		return;
+	}
+	k = cbs_explain_output_find(ex, "amdgpu-firmware");
+	if (k < 0 || cbs_explain_output_files(ex, k, count_selector, &n) != 2 || n != 2)
+		fail("ADR-0381: an output's two selectors are reported, in order, with their glob flag");
+	n = 0;
+	if (cbs_explain_output_files(ex, 0, count_selector, &n) != 0 || n != 0)
+		fail("ADR-0381: the main package with no selectors reports none");
+	if (cbs_explain_output_files(ex, 9, count_selector, &n) != -1)
+		fail("ADR-0381: a missing output is -1");
+	cbs_explain_free(ex);
+
+	if (!cbs_selector_matches("lib/firmware/amdgpu/**", 1, "lib/firmware/amdgpu/navi10_sos.bin"))
+		fail("ADR-0381: ** matches one component");
+	if (!cbs_selector_matches("lib/firmware/amdgpu/**", 1, "lib/firmware/amdgpu/a/b.bin"))
+		fail("ADR-0381: ** matches several components");
+	if (cbs_selector_matches("lib/firmware/amdgpu/**", 1, "lib/firmware/radeon/x.bin"))
+		fail("ADR-0381: ** does not leave its prefix");
+	if (!cbs_selector_matches("lib/firmware/rtw88/*.bin", 1, "lib/firmware/rtw88/rtw8822b_fw.bin"))
+		fail("ADR-0381: * matches within a component");
+	if (cbs_selector_matches("lib/firmware/rtw88/*.bin", 1, "lib/firmware/rtw88/sub/x.bin"))
+		fail("ADR-0381: * does not cross a component");
+	if (!cbs_selector_matches("lib/firmware/**/*.bin", 1, "lib/firmware/a/b/c.bin") ||
+	    !cbs_selector_matches("lib/firmware/**/*.bin", 1, "lib/firmware/c.bin"))
+		fail("ADR-0381: ** in the middle matches zero or more components");
+	if (!cbs_selector_matches("usr/share/licenses/amdgpu", 0, "usr/share/licenses/amdgpu/LICENSE") ||
+	    !cbs_selector_matches("usr/share/licenses/amdgpu", 0, "usr/share/licenses/amdgpu"))
+		fail("ADR-0381: an exact selector claims its path and the tree beneath it");
+	if (cbs_selector_matches("usr/share/licenses/amdgpu", 0, "usr/share/licenses/amdgpu2/x"))
+		fail("ADR-0381: an exact selector does not claim a sibling sharing its prefix");
+}
+
 int main(void)
 {
 	printf("=== CBS recipe identity (ADR-0305) ===\n");
 	test_outputs();
+	test_output_files();
 	test_abi();
 	test_happy_path();
 	test_release_and_runtime();
