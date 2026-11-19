@@ -112,6 +112,57 @@ static void device_add_module(struct fwscan_result *r, struct fwscan_device *d, 
 	}
 }
 
+/* Is path some record's own sysfs directory? A child that is a record of
+ * its own (a PCI bridge's functions) answers for itself, never for its
+ * parent. */
+static int is_record(const struct discovered_device *recs, int n, const char *path)
+{
+	int k;
+
+	for (k = 0; k < n; k++)
+		if (recs[k].sysfs[0] != '\0' && strcmp(recs[k].sysfs, path) == 0)
+			return 1;
+	return 0;
+}
+
+/*
+ * The modules for one directory: its bound driver's when it has one. When
+ * it has none, the modules its modalias resolves to, since a driver whose
+ * probe failed for a missing file leaves no driver link, and that is the
+ * device this exists for (ADR-0381 decision 3). Returns how many it added.
+ */
+static int dir_add_modules(struct fwscan_result *r, struct fwscan_device *d, const char *dir,
+                           struct name_ctx *c)
+{
+	char mod[KMOD_NAME_MAX], path[PATH_MAX], alias[512];
+	char mods[8][KMOD_NAME_MAX];
+	int more = 0, k, count;
+	FILE *f;
+
+	driver_module(dir, mod, sizeof(mod));
+	if (mod[0] != '\0') {
+		device_add_module(r, d, mod, c);
+		return 1;
+	}
+	if (snprintf(path, sizeof(path), "%s/modalias", dir) >= (int)sizeof(path))
+		return 0;
+	f = fopen(path, "r");
+	if (f == NULL)
+		return 0;
+	if (fgets(alias, sizeof(alias), f) == NULL)
+		alias[0] = '\0';
+	fclose(f);
+	alias[strcspn(alias, "\n")] = '\0';
+	if (alias[0] == '\0')
+		return 0;
+	count = kmod_resolve_alias(alias, mods, 8, &more);
+	for (k = 0; k < count; k++)
+		device_add_module(r, d, mods[k], c);
+	if (more)
+		r->truncated = 1;
+	return count > 0 ? count : 0;
+}
+
 void fwscan_scan(struct fwscan_result *r, const char *firmware_dir, const char *root_firmware_dir,
                  const char *os_containers_dir)
 {
@@ -123,7 +174,6 @@ void fwscan_scan(struct fwscan_result *r, const char *firmware_dir, const char *
 	n = device_enumerate(recs, DEVICE_ENUM_MAX, os_containers_dir);
 	for (i = 0; i < n && r->device_count < FWSCAN_DEVICES_MAX; i++) {
 		struct fwscan_device *d = &r->devices[r->device_count];
-		char mod[KMOD_NAME_MAX];
 		DIR *dir;
 		struct dirent *de;
 
@@ -131,9 +181,7 @@ void fwscan_scan(struct fwscan_result *r, const char *firmware_dir, const char *
 			continue;
 		memset(d, 0, sizeof(*d));
 		snprintf(d->id, sizeof(d->id), "%s", recs[i].id);
-		driver_module(recs[i].sysfs, mod, sizeof(mod));
-		if (mod[0] != '\0')
-			device_add_module(r, d, mod, &c);
+		dir_add_modules(r, d, recs[i].sysfs, &c);
 		/* A USB device's driver binds to its interfaces, its direct
 		 * children; the device itself carries the generic usb driver. */
 		dir = opendir(recs[i].sysfs);
@@ -144,11 +192,9 @@ void fwscan_scan(struct fwscan_result *r, const char *firmware_dir, const char *
 			if (de->d_name[0] == '.' ||
 			    snprintf(child, sizeof(child), "%s/%s", recs[i].sysfs, de->d_name) >=
 			        (int)sizeof(child) ||
-			    lstat(child, &st) != 0 || !S_ISDIR(st.st_mode))
+			    lstat(child, &st) != 0 || !S_ISDIR(st.st_mode) || is_record(recs, n, child))
 				continue;
-			driver_module(child, mod, sizeof(mod));
-			if (mod[0] != '\0')
-				device_add_module(r, d, mod, &c);
+			dir_add_modules(r, d, child, &c);
 		}
 		if (dir != NULL)
 			closedir(dir);

@@ -783,6 +783,20 @@ static void test_output_files(void)
 		fail("ADR-0381: an exact selector claims its path and the tree beneath it");
 	if (cbs_selector_matches("usr/share/licenses/amdgpu", 0, "usr/share/licenses/amdgpu2/x"))
 		fail("ADR-0381: an exact selector does not claim a sibling sharing its prefix");
+	/* The rest of CBS's syntax, so a port that dropped it would show. */
+	if (!cbs_selector_matches("lib/firmware/navi1?_sos.bin", 1, "lib/firmware/navi10_sos.bin") ||
+	    cbs_selector_matches("lib/firmware/a?b", 1, "lib/firmware/a/b"))
+		fail("ADR-0381: ? matches one byte, never a /");
+	if (!cbs_selector_matches("lib/firmware/navi1[0-4]_*.bin", 1, "lib/firmware/navi12_me.bin") ||
+	    cbs_selector_matches("lib/firmware/navi1[!0-4]_*.bin", 1, "lib/firmware/navi12_me.bin"))
+		fail("ADR-0381: a bracket class, and its negation");
+	if (!cbs_selector_matches("lib/firmware/a\\*b", 1, "lib/firmware/a*b") ||
+	    cbs_selector_matches("lib/firmware/a\\*b", 1, "lib/firmware/axb"))
+		fail("ADR-0381: a backslash escapes a metacharacter");
+	if (!cbs_selector_matches("**", 1, "a/b/c") || !cbs_selector_matches("lib/**", 1, "lib/x") ||
+	    cbs_selector_matches("lib/**", 1, "lib"))
+		fail("ADR-0381: a trailing ** claims everything beneath, and not the directory named "
+		     "before its /");
 }
 
 int main(void)

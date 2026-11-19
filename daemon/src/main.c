@@ -1038,7 +1038,6 @@ static void firmware_path_start(void)
 	char link[PATH_MAX], err[512];
 
 	g_firmware_on = 1;
-	device_set_record_extra(fwscan_write_device); /* release 1b: records carry "firmware" */
 	firmware_link_path(link, sizeof(link));
 	if (firmware_path_apply(FIRMWARE_PARAM_PATH, link, err, sizeof(err)) != 0)
 		firmware_say("error", err);
@@ -11086,6 +11085,28 @@ static void spawn_cix_bootroot_assembly(void)
 	 * libraries, never the tree's, since the running loader with the
 	 * tree's libc.so.6 would mix two glibc builds.
 	 */
+	/*
+	 * ADR-0380 decision 3: cixd and cixctl are two rolling installs of
+	 * one release, so a root holding different releases of them is a
+	 * half-converged image, and is not sealed. The image is not settled
+	 * while either is queued (ADR-0374), so this guards, never waits.
+	 */
+	{
+		char cixd_v[PKG_VERSION_MAX], cixctl_v[PKG_VERSION_MAX];
+
+		if (pkg_installed_version("cixd", ROOT_IMAGE, cixd_v, sizeof(cixd_v)) == 0 &&
+		    pkg_installed_version("cixctl", ROOT_IMAGE, cixctl_v, sizeof(cixctl_v)) == 0 &&
+		    strcmp(cixd_v, cixctl_v) != 0) {
+			snprintf(g_bootroot_assembly_refused, sizeof(g_bootroot_assembly_refused),
+			         "%s holds cixd %s and cixctl %s, two different releases: it is not "
+			         "sealed until both are one (ADR-0380)",
+			         ROOT_IMAGE, cixd_v, cixctl_v);
+			logstore_write("cixd", "error", "cix bootroot assembly: not started -- %s",
+			               g_bootroot_assembly_refused);
+			events_announce(EV_getSystemAssembly); /* ADR-0339 */
+			return;
+		}
+	}
 	snprintf(mkbootroot_bin, sizeof(mkbootroot_bin), "%s/%s", root_tree, ROOT_MKBOOTROOT_PATH);
 	if (stat(mkbootroot_bin, &st) != 0 || !S_ISREG(st.st_mode)) {
 		snprintf(g_bootroot_assembly_refused, sizeof(g_bootroot_assembly_refused),
@@ -41601,6 +41622,9 @@ static int cixd_main(int argc, char **argv)
 	image_set_discard(image_discard_tree);
 	ensure_default_image();
 	firmware_image_start(); /* ADR-0381: init mode only (g_firmware_on) */
+	/* ADR-0381: every record carries "firmware", null on a daemon that never
+	 * scans (not init mode) or before its first scan. */
+	device_set_record_extra(fwscan_write_device);
 	if (boot_subsystem_init(init_mode, "containerdef", containerdef_init(CONTAINER_DEFS_STATE_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "containerdef_rolling_config", containerdef_rolling_config_init(ROLLING_CONFIG_PATH)) != 0)

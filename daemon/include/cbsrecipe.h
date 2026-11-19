@@ -166,9 +166,10 @@ int cbs_explain_output_files(const struct cbs_explain *ex, int index,
 
 /*
  * Does a selector claim path (staging-relative, no leading '/')? CBS's
- * rule (its user manual): in a glob, '*' matches within one path
- * component and a "**" component matches any number of components; an
- * exact selector names that path and the tree beneath it. 1 or 0.
+ * own rule, ported from its src/fs.c and src/manifest.c at v0.1.133: in
+ * a glob '*' matches within one component, a whole "**" component any
+ * number of them, '?' one byte, and [...] a class; an exact selector
+ * names that path and the subtree of a directory it names. 1 or 0.
  */
 int cbs_selector_matches(const char *pattern, int glob, const char *path);
 int cbs_explain_output_count(const struct cbs_explain *ex);

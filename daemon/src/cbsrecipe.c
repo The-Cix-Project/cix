@@ -321,74 +321,105 @@ int cbs_explain_output_files(const struct cbs_explain *ex, int index,
 	return n;
 }
 
-/* One path component of a glob against one of a path: '*' matches any run
- * within the component, every other byte matches itself. */
-static int component_match(const char *p, size_t plen, const char *s, size_t slen)
+/*
+ * CBS's own matcher, ported: cbs_glob_match() and class_match() in
+ * cix-build-system's src/fs.c, read at v0.1.133, which partitions a
+ * staged tree into outputs (its ADR-0038). It is a copy because cixd
+ * links no CBS library (the cbs package ships only the binary); the
+ * answer must be CBS's, so this follows it byte for byte, '?', bracket
+ * classes and backslash escapes included, and test_cbsrecipe holds it to
+ * the same cases. A change to CBS's rule is a change here.
+ */
+static int class_match(const char **pattern, unsigned char byte)
 {
-	size_t i;
+	const char *cursor = *pattern + 1;
+	int negate = *cursor == '!';
+	int matched = 0;
 
-	if (plen == 0)
-		return slen == 0;
-	if (p[0] == '*') {
-		for (i = 0; i <= slen; i++)
-			if (component_match(p + 1, plen - 1, s + i, slen - i))
-				return 1;
-		return 0;
-	}
-	return slen > 0 && p[0] == s[0] && component_match(p + 1, plen - 1, s + 1, slen - 1);
-}
+	if (negate)
+		++cursor;
+	while (*cursor != '\0' && *cursor != ']') {
+		unsigned char first = (unsigned char)*cursor++;
 
-/* A glob of '/'-separated components against a path: a "**" component
- * matches any number of path components, zero included. */
-static int glob_match(const char *p, const char *s)
-{
-	const char *pe, *se;
-	size_t plen, slen;
+		if (first == '\\' && *cursor != '\0')
+			first = (unsigned char)*cursor++;
+		if (*cursor == '-' && cursor[1] != '\0' && cursor[1] != ']') {
+			unsigned char last;
 
-	if (*p == '\0')
-		return *s == '\0';
-	pe = strchr(p, '/');
-	plen = pe != NULL ? (size_t)(pe - p) : strlen(p);
-	if (plen == 2 && p[0] == '*' && p[1] == '*') {
-		const char *rest = pe != NULL ? pe + 1 : p + plen;
-
-		for (;;) {
-			if (glob_match(rest, s))
-				return 1;
-			if (*rest == '\0' && *s != '\0')
-				return 1; /* a trailing "**" takes the rest */
-			se = strchr(s, '/');
-			if (se == NULL)
-				return 0;
-			s = se + 1;
+			++cursor;
+			last = (unsigned char)*cursor++;
+			if (last == '\\' && *cursor != '\0')
+				last = (unsigned char)*cursor++;
+			if (byte >= first && byte <= last)
+				matched = 1;
+		} else if (byte == first) {
+			matched = 1;
 		}
 	}
-	if (*s == '\0')
+	if (*cursor == ']')
+		++cursor;
+	*pattern = cursor;
+	return negate ? !matched : matched;
+}
+
+static int glob_match(const char *pattern, const char *text)
+{
+	if (*pattern == '\0')
+		return *text == '\0';
+	if (pattern[0] == '*' && pattern[1] == '*' && (pattern[2] == '/' || pattern[2] == '\0')) {
+		const char *rest = pattern + 2;
+		const char *cursor = text;
+
+		if (*rest == '\0')
+			return 1;
+		if (*rest == '/')
+			++rest;
+		if (glob_match(rest, text))
+			return 1;
+		while (*cursor != '\0') {
+			if (*cursor++ == '/' && glob_match(rest, cursor))
+				return 1;
+		}
 		return 0;
-	se = strchr(s, '/');
-	slen = se != NULL ? (size_t)(se - s) : strlen(s);
-	if (!component_match(p, plen, s, slen))
+	}
+	if (*pattern == '*') {
+		const char *cursor = text;
+
+		do {
+			if (glob_match(pattern + 1, cursor))
+				return 1;
+		} while (*cursor != '\0' && *cursor++ != '/');
 		return 0;
-	if (pe == NULL)
-		return se == NULL;
-	return se != NULL && glob_match(pe + 1, se + 1);
+	}
+	if (*text == '\0')
+		return 0;
+	if (*pattern == '?')
+		return *text != '/' && glob_match(pattern + 1, text + 1);
+	if (*pattern == '[') {
+		const char *next = pattern;
+
+		return *text != '/' && class_match(&next, (unsigned char)*text) &&
+		       glob_match(next, text + 1);
+	}
+	if (*pattern == '\\' && pattern[1] != '\0')
+		++pattern;
+	return *pattern == *text && glob_match(pattern + 1, text + 1);
 }
 
 int cbs_selector_matches(const char *pattern, int glob, const char *path)
 {
-	size_t n;
+	size_t length;
 
 	if (pattern == NULL || path == NULL)
 		return 0;
+	/* CBS's selector_claims() (src/manifest.c): a glob, or an exact path
+	 * that also claims the subtree of a directory it names. */
 	if (glob)
 		return glob_match(pattern, path);
-	/* An exact selector names that path, and a directory it names
-	 * carries the tree beneath it (cixd's own output "web" holds
-	 * web/app.js, measured on 192.168.15.95). */
-	n = strlen(pattern);
-	while (n > 0 && pattern[n - 1] == '/')
-		n--;
-	return strncmp(pattern, path, n) == 0 && (path[n] == '\0' || path[n] == '/');
+	if (strcmp(pattern, path) == 0)
+		return 1;
+	length = strlen(pattern);
+	return strncmp(pattern, path, length) == 0 && path[length] == '/';
 }
 
 int cbs_explain_output_count(const struct cbs_explain *ex)

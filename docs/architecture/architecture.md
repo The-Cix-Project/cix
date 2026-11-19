@@ -160,6 +160,8 @@ flowchart LR
 
 **What a block device holds is read in one place, off the loop** ([ADR-0377](../adr/0377-a-block-device-is-read-only-in-a-helper-child.md)). The **disk snapshot** (`disksnap.c`) keeps each device's filesystem type, UUID and partition label, and each mounted filesystem's capacity. A helper child fills it, refreshing when a device is touched (a format, a partition write, a kernel block event) and every 30 s. Every storage, volume, quota and device read takes those values from the snapshot, and reads only topology and mounts live, so no API call waits on a busy disk.
 
+**Firmware is a host's own image, read in place** ([ADR-0381](../adr/0381-a-device-gets-its-firmware-after-install.md)). The root and the installer carry none. `firmware.c` keeps `REBUILDABLE_DIR/firmware` naming the `firmware` image's current version's `lib/firmware`, and points the kernel's firmware path (`/sys/module/firmware_class/parameters/path`) at that link before the boot's module sweep. The loader searches it before `/lib/firmware`, resolved in cixd's own root. `fwscan.c` runs in a helper child: it reads each device's driver modules and their `.modinfo` firmware declarations, and device records say which names the host lacks.
+
 ## Containers
 
 Each has its own namespaces and cgroup and is driven by cixd, never by a client. `cix-init` is PID 1 inside every one: freestanding, no libc, its own `_start` and syscall trampoline ([ADR-0260](../adr/0260-a-container-declares-services-not-a-command.md)) — a container declares *services*, not a command. A container stops by a message over the control socket cixd already holds, because a signal sent to a namespace's PID 1 before it installs a handler is discarded.
