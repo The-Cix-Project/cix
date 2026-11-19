@@ -472,6 +472,16 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **A hit is still hashed,** and an entry that fails is removed.
 - **Walked and evicted only by the disk snapshot's child,** within `source_max_bytes`, like the artifact cache (ADR-0377). Never walk or evict it anywhere else.
 
+## A DHCP range may be relayed to its servers
+
+**A range may name relays: registered containers attached to its network, running dnsmasq in relay-only mode from `/etc/dnsmasq-relay.conf`, which cixd renders from DHCP's own state. A server not attached to the network is reached through them.** That is [ADR-0383](docs/adr/0383-a-dhcp-range-may-be-relayed.md), the owner's decisions of 2026-11-19 (*"cix networks for now"*, *"dnsmasq relay mode"*, first network `remote-access`).
+
+- **dnsmasq, never `dhcp-helper`.** The owner chose dhcp-helper first; measured, it has flags only and no configuration file, so cixd could not own its configuration without recreating the cores.
+- **A change restarts the relay service, never the relay container.** The cores also run bird and keepalived, so restarting their container is a routing outage. The relay service is `on_exit: restart`, never `fail-container`.
+- **A relayed range's `dhcp-range` carries the netmask** (dnsmasq's manual); an attached range renders as before.
+- **Refuse at the point of asking:** a relay not attached to the network, a server sharing no network with a relay or with no route back to it, a container that is both server and relay, relays on a range whose servers are all attached.
+- **Relays re-render when a registered server or relay is created, re-addressed or deleted,** since the relay file names other containers' addresses.
+
 ## A device gets its firmware after install, by itself
 
 **Firmware is not root content and never on the ISO. A host keeps it in its own `firmware` image, which cixd points the kernel's firmware path at. cixd installs, by itself, the `linux-firmware` output that provides a file a loaded driver declares and the host lacks, then probes the device again.** That is [ADR-0381](docs/adr/0381-a-device-gets-its-firmware-after-install.md), the owner's decisions of 2026-11-18 for #685 (*"can it not be downloaded after the initial install?"*, *"Automatic only"*).

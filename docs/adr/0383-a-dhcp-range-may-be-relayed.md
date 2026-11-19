@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. The owner asked for it on 2026-11-19 (*"I think we need a dhcp helper to add to the cores? that will allow us to redirect dhcp to the dnsmasq hosts that we have without having to have an interface on that subnet"*), and chose Cix networks only for now (*"cix networks for now"*). Amends [ADR-0197](0197-dhcp-served-by-the-dns-server.md)'s rule that only servers attached to a network serve its range.
+Accepted by the owner on 2026-11-19. They asked for it (*"I think we need a dhcp helper to add to the cores? that will allow us to redirect dhcp to the dnsmasq hosts that we have without having to have an interface on that subnet"*), chose Cix networks only for now (*"cix networks for now"*), and named `remote-access` as the first relayed network. They first chose a `dhcp-helper` package. Measured, it takes flags only and has no configuration file (below), so they then chose dnsmasq's relay mode (*"dnsmasq relay mode"*). Amends [ADR-0197](0197-dhcp-served-by-the-dns-server.md)'s rule that only servers attached to a network serve its range.
 
 ## Context
 
@@ -33,7 +33,7 @@ dns-1 and dns-2 route everything not directly connected via `192.168.150.254`, t
 
 **A range may name relays. A relay is a registered container attached to that network, running dnsmasq in relay-only mode, whose configuration cixd renders from DHCP's own state, as it already does for servers.**
 
-1. **dnsmasq, not a second tool.** The packaged dnsmasq relays, so the cores run it as one more service. A `dhcp-helper` or ISC `dhcrelay` package would be a second implementation of something we already build. *To be accepted by the owner with this ADR*, since their words were "dhcp helper".
+1. **dnsmasq, not a second tool.** The packaged dnsmasq relays, so the cores run it as one more service. It reads a configuration file, which is what lets cixd own the relay's configuration and restart only the relay (point 6).
 2. **Relays are registered, like servers.**
    - `POST /v1/dhcp/relays {container}`, `DELETE /v1/dhcp/relays/{container}`, `GET /v1/dhcp/relays`.
    - A range gains `relays`, an ordered list of registered relays.
@@ -68,12 +68,17 @@ dns-1 and dns-2 route everything not directly connected via `192.168.150.254`, t
    - The `router` image gains `dnsmasq`: a recipe version, applied by hand, since it is `manual`/`declare`.
    - cr-1 and cr-2 gain the relay service, its flags taken from dns-1's dnsmasq: `-k -u root --pid-file= --conf-file=/etc/dnsmasq-relay.conf`.
    - Each core is recreated in turn, telling the owner first, and the run ends with the vpn-1 check.
-10. **Nothing is enabled unasked.** Which network gets a relayed range is the owner's choice. vpn-1 shares `remote-access` with the cores.
+10. **The first relayed network is `remote-access`** (the owner's choice). vpn-1 shares it with the cores, so before a range is enabled there, check that nothing on it already hands out addresses.
 
 ## Alternatives
 
 - **Give dns-1 and dns-2 an interface on every network.** That is the situation the owner asked to leave. It also adds a DNS server on each wire, which is wider exposure than DHCP needs.
-- **A `dhcp-helper` package.** Rejected above, unless the owner prefers it: a second relay implementation, and one more upstream to package.
+- **A `dhcp-helper` package**, the owner's first choice. Measured from dhcp-helper 1.2's own source and manual (`probe-dhcphelper@2-1`, Debian's orig tarball, sha256 `ae9e589e…`):
+  - its options are flags only (`getopt(argc, argv, "b:e:i:s:u:r:dvpn")`, `dhcp-helper.c:102`), with no configuration file;
+  - it relays every request it hears on its listen interfaces to every `-s` server;
+  - it sets `giaddr` from the receiving interface's address (`:465-469`).
+
+  So cixd could not hand it a rendered file. Changing its servers would mean changing the core containers' service command lines, either by hand in their recipes (a second copy of the server list) or by cixd, and either way recreating cr-1 and cr-2, which restarts routing. The owner then chose dnsmasq's relay mode.
 - **Relay by broadcast to the servers' network** (dnsmasq's form with no server address). That makes the relay depend on the servers sharing one broadcast domain with it. Naming each server keeps the split explicit and survives a server on another network.
 - **Subnets that are not Cix networks**, such as VLANs on a physical switch behind the cores. The owner chose Cix networks for now. Those would need a range keyed by subnet rather than by network name, which is a later decision.
 
