@@ -1330,13 +1330,15 @@ void dhcp_leases_write_json(struct json_writer *w)
 		 * READ, but it must look where the writes go (#269)" -- and
 		 * that reasoning is right for the two files above, which this
 		 * daemon writes into the container's writable layer. It is
-		 * wrong here, because dnsmasq writes this one and DHCP_LEASE_PATH
-		 * is under /run, which src/mountns.c mounts as a fresh tmpfs at
+		 * wrong here, because dnsmasq writes this one, and DHCP_LEASE_PATH
+		 * was then under /run, which src/mountns.c mounts as a fresh tmpfs at
 		 * every container start. The writable layer underneath is
 		 * masked by that mount, so the file has no on-disk existence to
 		 * open: fopen() failed on every server, every call, and the
 		 * endpoint answered 200 with an empty array while a real client
-		 * held a real lease.
+		 * held a real lease. It is now on a volume (#698), which a
+		 * host path into the rootfs would not see either: a mount is
+		 * visible only through the namespace that has it.
 		 *
 		 * create_container_from_body() already refuses a files[] entry
 		 * under /run for exactly this reason and says so at length. The

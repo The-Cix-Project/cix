@@ -3465,10 +3465,10 @@ The rendered files live at three well-known paths, so the dnsmasq container is s
 ```
 --conf-file=/etc/dnsmasq-dhcp.conf
 --dhcp-hostsfile=/etc/dnsmasq-dhcp-hosts
---dhcp-leasefile=/run/dnsmasq.leases
+--dhcp-leasefile=/var/lib/dnsmasq/dnsmasq.leases
 ```
 
-Create the container with `files[]` entries for the first two (empty is fine — dnsmasq refuses to start on a `--conf-file` that does not exist), then `POST /v1/dhcp/servers`. From then on Cix stages the **rendered** files into the container at creation, before its process starts, so the file dnsmasq opens is always the current one. Register the same container with `POST /v1/dns/servers` as well and its leases resolve.
+Create the container with `files[]` entries for the first two (empty is fine — dnsmasq refuses to start on a `--conf-file` that does not exist), then `POST /v1/dhcp/servers`. From then on Cix stages the **rendered** files into the container at creation, before its process starts, so the file dnsmasq opens is always the current one. Register the same container with `POST /v1/dns/servers` as well and its leases resolve. Mount a volume at `/var/lib/dnsmasq` (`"volumes": [{"name": "dns-1-dhcp", "path": "/var/lib/dnsmasq"}]`) so the leases survive a restart and a recreate (#698); `/run`, where they used to be, is a fresh tmpfs at every start.
 
 > **Enabling DHCP on a network that reaches a real LAN will answer requests from machines that are not this platform's.** A home or office LAN almost certainly already has a DHCP server, and a second one is not a redundant pair — it is two servers with separate lease databases handing out overlapping addresses. Nothing here prevents it, because nothing here can tell a lab bridge from an uplinked one. Use an isolated network unless you own the LAN's addressing.
 

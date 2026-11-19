@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### DHCP leases live on a volume, so a restart keeps them (#698)
+
+- **Before:** a DHCP server wrote its leases to `/run/dnsmasq.leases`, a fresh tmpfs at every container start. On 192.168.15.95, 2026-11-19, a range change restarted both servers and `cixctl dhcp leases` came back empty while clients still held their addresses; dnsmasq's ping-before-offer was the only guard against handing one out twice.
+- **Now:** `DHCP_LEASE_PATH` is `/var/lib/dnsmasq/dnsmasq.leases`, on a volume the serving container mounts at `/var/lib/dnsmasq`; cixd reads it through the container's namespace, which sees the mount. dns-1 and dns-2 move to it in their 1.10.0 deployments. ADR-0197's sentence naming the old path is corrected in place.
+
 ### A deployment missing a secret is refused, never created with the placeholder (#696)
 
 - **Before:** `POST /v1/deployments/{name}/apply` left an unmatched `{{SECRET:KEY}}` token in place and created the container, logging only a warning. Measured on 192.168.15.95, 2026-11-19: cr-1 and cr-2, applied without `RIP_PASSWORD`, ran with the literal token as their RIP password; the site gateway rejected their RIP and the routes back to services, access and remote-access expired.

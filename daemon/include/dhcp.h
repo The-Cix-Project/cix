@@ -77,7 +77,16 @@
  * docs/api/README.md for the exact command. */
 #define DHCP_CONF_PATH "/etc/dnsmasq-dhcp.conf"
 #define DHCP_HOSTS_PATH "/etc/dnsmasq-dhcp-hosts"
-#define DHCP_LEASE_PATH "/run/dnsmasq.leases"
+/*
+ * #698: on a volume the serving container mounts at /var/lib/dnsmasq,
+ * so a restart or a recreate keeps the leases. It was /run, a fresh
+ * tmpfs at every container start: on 192.168.15.95, 2026-11-19, a range
+ * change restarted both servers and every lease was forgotten, leaving
+ * dnsmasq's ping-before-offer as the only guard against handing out an
+ * address a client still held.
+ */
+#define DHCP_LEASE_DIR "/var/lib/dnsmasq"
+#define DHCP_LEASE_PATH DHCP_LEASE_DIR "/dnsmasq.leases"
 
 /*
  * ADR-0383: a relay's one file, rendered by cixd like a server's, and
