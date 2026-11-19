@@ -954,6 +954,44 @@ static const struct cfg_elem_ops cfg_ops_syslog_targets = { cfg_syslog_targets_c
 static const struct cfg_elem_ops cfg_ops_dhcp_servers = { cfg_dhcp_servers_create, NULL,
                                                           cfg_dhcp_servers_remove };
 
+/* ADR-0383: a DHCP relay carries the service that runs it, a settable
+ * member, so a changed one is re-registered (no in-place update). */
+static int cfg_dhcp_relays_create(const struct json_value *el, int dry_run, char *err,
+                                  size_t errsz)
+{
+	const char *name, *service;
+
+	if (need_string(el, "container", &name, err, errsz) != 0)
+		return -1;
+	service = json_as_string(json_object_get(el, "service"));
+	if (dry_run)
+		return 0;
+	if (dhcp_relay_register(name, service) != DHCP_OK) {
+		snprintf(err, errsz, "could not register %s as a DHCP relay", name);
+		return -1;
+	}
+	return 0;
+}
+
+static int cfg_dhcp_relays_remove(const struct json_value *el, int dry_run, char *err,
+                                  size_t errsz)
+{
+	const char *name;
+
+	if (need_string(el, "container", &name, err, errsz) != 0)
+		return -1;
+	if (dry_run)
+		return 0;
+	if (dhcp_relay_unregister(name) != DHCP_OK) {
+		snprintf(err, errsz, "could not unregister %s as a DHCP relay", name);
+		return -1;
+	}
+	return 0;
+}
+
+static const struct cfg_elem_ops cfg_ops_dhcp_relays = { cfg_dhcp_relays_create, NULL,
+                                                         cfg_dhcp_relays_remove };
+
 /* An LDAP server carries the path to the config it serves, so it has a
  * settable member and a difference is real. No in-place update exists,
  * so a changed one is re-registered. */

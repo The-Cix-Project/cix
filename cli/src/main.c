@@ -4292,6 +4292,16 @@ static void fmt_dhcp(const struct json_value *v)
 					       json_str_field(sl, "range_start"), json_str_field(sl, "range_end"));
 				}
 			}
+			/* ADR-0383: the relays carrying it to servers not on it. */
+			{
+				const struct json_value *rl = json_object_get(n, "relays");
+				size_t k;
+
+				for (k = 0; rl != NULL && rl->type == JSON_ARRAY && k < rl->u.array.count; k++)
+					printf("    relayed by %s\n", json_as_string(rl->u.array.items[k]) != NULL
+					                                  ? json_as_string(rl->u.array.items[k])
+					                                  : "-");
+			}
 		}
 	}
 	if (!any)
@@ -4334,6 +4344,26 @@ static void fmt_dhcp_servers(const struct json_value *v)
 	}
 }
 
+static void fmt_dhcp_relays(const struct json_value *v)
+{
+	const struct json_value *relays = json_object_get(v, "relays");
+	size_t i;
+
+	if (relays == NULL || relays->type != JSON_ARRAY || relays->u.array.count == 0) {
+		printf("no DHCP relay registered\n");
+		return;
+	}
+	printf("%-24s %-12s %s\n", "CONTAINER", "STATE", "SERVICE");
+	for (i = 0; i < relays->u.array.count; i++) {
+		const struct json_value *e = relays->u.array.items[i];
+		const struct json_value *run = json_object_get(e, "running");
+
+		printf("%-24s %-12s %s\n", json_str_field(e, "container"),
+		       run != NULL && run->type == JSON_BOOL && run->u.boolean ? "running" : "stopped",
+		       json_str_field(e, "service"));
+	}
+}
+
 static void fmt_dhcp_leases(const struct json_value *v)
 {
 	const struct json_value *leases = json_object_get(v, "leases");
@@ -4362,6 +4392,9 @@ static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **
 	const char *network = NULL, *range = NULL, *router = NULL;
 	const char *servers[DHCP_CLI_MAX_SERVERS];
 	int server_count = 0;
+	const char *relays[DHCP_CLI_MAX_SERVERS];
+	int relay_count = 0;
+	const char *service = NULL;
 	const char *mac = NULL, *ip = NULL, *hostname = NULL;
 	long lease_seconds = -1;
 	char path[256];
@@ -4397,6 +4430,16 @@ static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **
 			}
 			servers[server_count++] = argv[i] + 9;
 		}
+		else if (strncmp(argv[i], "--relay=", 8) == 0) {
+			if (relay_count >= DHCP_CLI_MAX_SERVERS) {
+				fprintf(stderr, "cixctl: too many --relay= flags (max %d)\n",
+				        DHCP_CLI_MAX_SERVERS);
+				return 2;
+			}
+			relays[relay_count++] = argv[i] + 8;
+		}
+		else if (strncmp(argv[i], "--service=", 10) == 0)
+			service = argv[i] + 10;
 		else if (strncmp(argv[i], "--lease-seconds=", 16) == 0)
 			lease_seconds = atol(argv[i] + 16);
 		else if (strncmp(argv[i], "--mac=", 6) == 0)
@@ -4440,13 +4483,16 @@ static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **
 			fprintf(stderr,
 			        "usage: cixctl dhcp enable --network=NAME --range=START-END\n"
 			        "                            --server=CONTAINER [--server=CONTAINER ...]\n"
+			        "                            [--relay=CONTAINER ...]\n"
 			        "                            [--lease-seconds=N] [--router=IP]\n"
 			        "       cixctl dhcp disable --network=NAME\n"
 			        "       cixctl dhcp remove --network=NAME   -- delete the config entirely\n"
 			        "  --server= is repeatable. dnsmasq has no failover protocol, so a range\n"
 			        "  named to more than one server is split into disjoint slices: all of\n"
 			        "  them answer, and no two hold the same address. Register servers first\n"
-			        "  with `cixctl dhcp server add`.\n");
+			        "  with `cixctl dhcp server add`.\n"
+			        "  --relay= names relays on this network that carry its requests to\n"
+			        "  servers not on it (ADR-0383); register them with `cixctl dhcp relay add`.\n");
 			return 2;
 		}
 		jw_init(&w);
@@ -4488,6 +4534,13 @@ static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **
 			jw_arr_open(&w);
 			for (i = 0; i < server_count; i++)
 				jw_str(&w, servers[i]);
+			jw_arr_close(&w);
+		}
+		if (relay_count > 0) {
+			jw_key(&w, "relays");
+			jw_arr_open(&w);
+			for (i = 0; i < relay_count; i++)
+				jw_str(&w, relays[i]);
 			jw_arr_close(&w);
 		}
 		if (lease_seconds >= 0) {
@@ -4540,6 +4593,50 @@ static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **
 			return emit(&r, json_mode, fmt_dhcp_servers);
 		}
 		fprintf(stderr, "usage: cixctl dhcp server ls | add CONTAINER | rm CONTAINER\n");
+		return 2;
+	}
+	/* ADR-0383: relays, registered like servers. */
+	if (strcmp(sub, "relay") == 0) {
+		const char *op = argc > 1 ? argv[1] : "";
+
+		if (strcmp(op, "add") == 0 && argc > 2) {
+			jw_init(&w);
+			jw_obj_open(&w);
+			jw_key(&w, "container");
+			jw_str(&w, argv[2]);
+			if (service != NULL) {
+				jw_key(&w, "service");
+				jw_str(&w, service);
+			}
+			jw_obj_close(&w);
+			w.buf[w.len] = '\0';
+			if (cix_client_request(c, CIX_API_registerDhcpRelay_METHOD, CIX_API_registerDhcpRelay, w.buf, &r) != 0) {
+				jw_free(&w);
+				fprintf(stderr, "cixctl: could not reach daemon\n");
+				return 1;
+			}
+			jw_free(&w);
+			return emit(&r, json_mode, fmt_dhcp_relays);
+		}
+		if (strcmp(op, "rm") == 0 && argc > 2) {
+			snprintf(path, sizeof(path), CIX_API_unregisterDhcpRelay, argv[2]);
+			if (cix_client_request(c, CIX_API_unregisterDhcpRelay_METHOD, path, NULL, &r) != 0) {
+				fprintf(stderr, "cixctl: could not reach daemon\n");
+				return 1;
+			}
+			return emit(&r, json_mode, NULL);
+		}
+		if (strcmp(op, "ls") == 0 || op[0] == '\0') {
+			if (cix_client_request(c, CIX_API_getDhcpRelays_METHOD, CIX_API_getDhcpRelays, NULL, &r) != 0) {
+				fprintf(stderr, "cixctl: could not reach daemon\n");
+				return 1;
+			}
+			return emit(&r, json_mode, fmt_dhcp_relays);
+		}
+		fprintf(stderr, "usage: cixctl dhcp relay ls | add CONTAINER [--service=NAME] | rm CONTAINER\n"
+		                "  A relay carries a network's DHCP requests to servers not on it\n"
+		                "  (ADR-0383). Its container declares the relay service (default name\n"
+		                "  dhcp-relay) running dnsmasq --conf-file=/etc/dnsmasq-relay.conf.\n");
 		return 2;
 	}
 	if (strcmp(sub, "static") == 0) {

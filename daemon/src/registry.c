@@ -102,6 +102,11 @@ static void registry_announce(void)
 	 * than left for the drift check to find. */
 	events_announce(EV_listDevices);
 	events_announce(EV_listDeviceMaps); /* a mapping's state is the devices' (ADR-0345) */
+	/* The DHCP servers' and relays' reads each report whether their
+	 * container is running, which a registry change moves with no DHCP
+	 * call in front of it (ADR-0383). */
+	events_announce(EV_getDhcpServers);
+	events_announce(EV_getDhcpRelays);
 }
 
 static void registry_fill(struct registry_entry *e, const char *name, const char *image,

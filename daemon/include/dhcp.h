@@ -79,6 +79,17 @@
 #define DHCP_HOSTS_PATH "/etc/dnsmasq-dhcp-hosts"
 #define DHCP_LEASE_PATH "/run/dnsmasq.leases"
 
+/*
+ * ADR-0383: a relay's one file, rendered by cixd like a server's, and
+ * the service in the relay container that reads it. A change restarts
+ * that service, never the container: the cores that relay also route.
+ */
+#define DHCP_RELAY_CONF_PATH "/etc/dnsmasq-relay.conf"
+#define DHCP_MAX_RELAYS 16
+#define DHCP_MAX_RANGE_RELAYS 8
+#define DHCP_SERVICE_NAME_MAX 64
+#define DHCP_RELAY_SERVICE_DEFAULT "dhcp-relay"
+
 struct dhcp_network {
 	char network[DHCP_NETWORK_NAME_MAX];
 	int enabled;
@@ -104,6 +115,13 @@ struct dhcp_network {
 	 */
 	char servers[DHCP_MAX_RANGE_SERVERS][DHCP_SERVER_NAME_MAX];
 	int server_count;
+	/*
+	 * ADR-0383: the registered relays on this network that carry its
+	 * requests to the servers above that are not on it. Empty for a
+	 * range every server is attached to, which is the ADR-0197 case.
+	 */
+	char relays[DHCP_MAX_RANGE_RELAYS][DHCP_SERVER_NAME_MAX];
+	int relay_count;
 };
 
 struct dhcp_static {
@@ -118,7 +136,10 @@ enum dhcp_error {
 	DHCP_ERR_NOT_FOUND,
 	DHCP_ERR_DUPLICATE,
 	DHCP_ERR_FULL,
-	DHCP_ERR_PERSIST_FAILED
+	DHCP_ERR_PERSIST_FAILED,
+	/* ADR-0383: a container is a server or a relay, never both -- on a
+	 * shared interface dnsmasq's relay function wins (its manual). */
+	DHCP_ERR_CONFLICT
 };
 
 int dhcp_init(const char *path);
@@ -137,12 +158,17 @@ enum dhcp_error dhcp_static_delete(const char *mac);
  * wrong. Returns bytes written (excluding NUL), or -1 if it did not
  * fit. */
 /*
- * Renders only what THIS server should serve: its own slice of the
- * ranges on the networks it is actually attached to. A server on a
- * different bridge gets none of them -- it has no interface in that
- * subnet, so the pool would be one it could not serve on.
+ * Renders only what THIS server should serve: its own slice of each
+ * range that names it. A range on a network it is not attached to is
+ * one it reaches through relays (ADR-0383), and carries its netmask.
+ *
+ * self/self_count are the container's own attachments. NULL reads them
+ * from the registry; the create path passes its planned attachments,
+ * because staging runs before the container is in the registry.
  */
-int dhcp_render_conf(const char *server_name, char *out, size_t out_size);
+struct registry_network_attachment;
+int dhcp_render_conf(const char *server_name, const struct registry_network_attachment *self,
+                     int self_count, char *out, size_t out_size);
 
 /* ---- Servers: DHCP registers its own, like every other service ---- */
 
@@ -152,6 +178,29 @@ int dhcp_server_is_registered(const char *container);
 int dhcp_server_list(char out[][DHCP_SERVER_NAME_MAX], int max);
 void dhcp_server_forget(const char *container);
 void dhcp_servers_write_json(struct json_writer *w);
+
+/* ---- Relays (ADR-0383): registered like servers ---- */
+
+enum dhcp_error dhcp_relay_register(const char *container, const char *service);
+enum dhcp_error dhcp_relay_unregister(const char *container);
+int dhcp_relay_is_registered(const char *container);
+/* The service in that container that runs the relay, or NULL. */
+const char *dhcp_relay_service(const char *container);
+int dhcp_relay_list(char out[][DHCP_SERVER_NAME_MAX], int max);
+void dhcp_relay_forget(const char *container);
+void dhcp_relays_write_json(struct json_writer *w);
+/* One relay's /etc/dnsmasq-relay.conf, from the current state and the
+ * registry's attachments (self as for dhcp_render_conf()). Bytes
+ * written, or -1 when it did not fit. */
+int dhcp_render_relay_conf(const char *relay_name, const struct registry_network_attachment *self,
+                           int self_count, char *out, size_t out_size);
+/*
+ * Writes every running relay's file, and fills `changed` with the relays
+ * whose file now differs from the one their service started with: only
+ * those need their service restarted (the caller does it).
+ */
+void dhcp_relays_sync(char changed[][DHCP_SERVER_NAME_MAX], int max_changed,
+                      int *out_changed_count);
 
 /* The slice server_index of server_count would be given, for reporting
  * it back. Returns -1 if the range cannot be divided that many ways. */

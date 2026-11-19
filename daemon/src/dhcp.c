@@ -4,8 +4,11 @@
 #include "dns.h"
 #include "persist.h"
 #include "registry.h"
+#include "network.h"
+#include "dhcprelay.h"
 #include "linux_compat.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +18,9 @@
 static struct dhcp_network g_networks[DHCP_MAX_NETWORKS];
 static struct dhcp_static g_statics[DHCP_MAX_STATIC];
 static char g_servers[DHCP_MAX_SERVERS][DHCP_SERVER_NAME_MAX];
+/* ADR-0383: registered relays, and the service each runs the relay as. */
+static char g_relays[DHCP_MAX_RELAYS][DHCP_SERVER_NAME_MAX];
+static char g_relay_services[DHCP_MAX_RELAYS][DHCP_SERVICE_NAME_MAX];
 static char g_state_path[512];
 /*
  * The conf text the running servers were last started against. A range
@@ -138,6 +144,21 @@ static int save_state(void)
 		if (g_servers[i][0] != '\0')
 			jw_str(&w, g_servers[i]);
 	jw_arr_close(&w);
+	/* ADR-0383. Optional on read, so an older cixd after boot-next
+	 * ignores it (and drops it at its next save). */
+	jw_key(&w, "relays");
+	jw_arr_open(&w);
+	for (i = 0; i < DHCP_MAX_RELAYS; i++) {
+		if (g_relays[i][0] == '\0')
+			continue;
+		jw_obj_open(&w);
+		jw_key(&w, "container");
+		jw_str(&w, g_relays[i]);
+		jw_key(&w, "service");
+		jw_str(&w, g_relay_services[i]);
+		jw_obj_close(&w);
+	}
+	jw_arr_close(&w);
 	jw_key(&w, "networks");
 	jw_arr_open(&w);
 	for (i = 0; i < DHCP_MAX_NETWORKS; i++)
@@ -206,6 +227,8 @@ enum dhcp_error dhcp_server_register(const char *container)
 		return DHCP_ERR_INVALID;
 	if (dhcp_server_is_registered(container))
 		return DHCP_ERR_DUPLICATE;
+	if (dhcp_relay_is_registered(container))
+		return DHCP_ERR_CONFLICT;
 	for (i = 0; i < DHCP_MAX_SERVERS; i++)
 		if (g_servers[i][0] == '\0') {
 			slot = i;
@@ -293,6 +316,311 @@ void dhcp_servers_write_json(struct json_writer *w)
 	jw_arr_close(w);
 }
 
+/* ---- Relays (ADR-0383) ---- */
+
+int dhcp_relay_is_registered(const char *container)
+{
+	return dhcp_relay_service(container) != NULL;
+}
+
+const char *dhcp_relay_service(const char *container)
+{
+	int i;
+
+	if (container == NULL || container[0] == '\0')
+		return NULL;
+	for (i = 0; i < DHCP_MAX_RELAYS; i++)
+		if (g_relays[i][0] != '\0' && strcmp(g_relays[i], container) == 0)
+			return g_relay_services[i];
+	return NULL;
+}
+
+int dhcp_relay_list(char out[][DHCP_SERVER_NAME_MAX], int max)
+{
+	int i, n = 0;
+
+	for (i = 0; i < DHCP_MAX_RELAYS && n < max; i++)
+		if (g_relays[i][0] != '\0')
+			snprintf(out[n++], DHCP_SERVER_NAME_MAX, "%s", g_relays[i]);
+	return n;
+}
+
+static int service_name_is_valid(const char *s)
+{
+	size_t i, n = strlen(s);
+
+	if (n == 0 || n >= DHCP_SERVICE_NAME_MAX)
+		return 0;
+	for (i = 0; i < n; i++)
+		if (!((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= 'A' && s[i] <= 'Z') ||
+		      (s[i] >= '0' && s[i] <= '9') || s[i] == '-' || s[i] == '_' || s[i] == '.'))
+			return 0;
+	return 1;
+}
+
+enum dhcp_error dhcp_relay_register(const char *container, const char *service)
+{
+	int i, slot = -1;
+
+	if (container == NULL || container[0] == '\0')
+		return DHCP_ERR_INVALID;
+	if (service == NULL || service[0] == '\0')
+		service = DHCP_RELAY_SERVICE_DEFAULT;
+	if (!service_name_is_valid(service))
+		return DHCP_ERR_INVALID;
+	if (dhcp_relay_is_registered(container))
+		return DHCP_ERR_DUPLICATE;
+	if (dhcp_server_is_registered(container))
+		return DHCP_ERR_CONFLICT;
+	for (i = 0; i < DHCP_MAX_RELAYS; i++)
+		if (g_relays[i][0] == '\0') {
+			slot = i;
+			break;
+		}
+	if (slot < 0)
+		return DHCP_ERR_FULL;
+	snprintf(g_relays[slot], DHCP_SERVER_NAME_MAX, "%s", container);
+	snprintf(g_relay_services[slot], DHCP_SERVICE_NAME_MAX, "%s", service);
+	return save_state() == 0 ? DHCP_OK : DHCP_ERR_PERSIST_FAILED;
+}
+
+/* A container's attachments: self when the caller has them (the create
+ * path, before the registry holds the container), else the registry's.
+ * 0 attachments when there is neither. */
+static int attachments_of(const char *container, const struct registry_network_attachment *self,
+                          int self_count, const struct registry_network_attachment **out)
+{
+	struct registry_entry *e;
+
+	if (self != NULL) {
+		*out = self;
+		return self_count;
+	}
+	e = registry_find(container);
+	if (e == NULL || !e->in_use) {
+		*out = NULL;
+		return 0;
+	}
+	*out = e->nets;
+	return e->net_count;
+}
+
+static int attached_to(const char *container, const struct registry_network_attachment *self,
+                       int self_count, const char *network)
+{
+	const struct registry_network_attachment *atts;
+	int n = attachments_of(container, self, self_count, &atts);
+	int j;
+
+	for (j = 0; j < n; j++)
+		if (strcmp(atts[j].name, network) == 0)
+			return 1;
+	return 0;
+}
+
+static int container_on_network(const char *container, const char *network)
+{
+	return attached_to(container, NULL, 0, network);
+}
+
+/*
+ * Unregistering drops the relay from every range that named it. A range
+ * left with no relay while it names a server not on its network has a
+ * server that can hear nothing there: it is turned off, said plainly, as
+ * an unregistered server's last range is (ADR-0197).
+ */
+enum dhcp_error dhcp_relay_unregister(const char *container)
+{
+	int i, j, k, s;
+	int found = 0;
+
+	for (i = 0; i < DHCP_MAX_RELAYS; i++) {
+		if (g_relays[i][0] == '\0' || strcmp(g_relays[i], container) != 0)
+			continue;
+		g_relays[i][0] = '\0';
+		g_relay_services[i][0] = '\0';
+		found = 1;
+	}
+	if (!found)
+		return DHCP_ERR_NOT_FOUND;
+	for (i = 0; i < DHCP_MAX_NETWORKS; i++) {
+		struct dhcp_network *n = &g_networks[i];
+		int dropped = 0;
+
+		if (n->network[0] == '\0')
+			continue;
+		for (j = 0; j < n->relay_count; j++) {
+			if (strcmp(n->relays[j], container) != 0)
+				continue;
+			for (k = j; k + 1 < n->relay_count; k++)
+				snprintf(n->relays[k], DHCP_SERVER_NAME_MAX, "%s", n->relays[k + 1]);
+			n->relay_count--;
+			n->relays[n->relay_count][0] = '\0';
+			dropped = 1;
+			break;
+		}
+		if (dropped && n->relay_count == 0)
+			for (s = 0; s < n->server_count; s++)
+				if (!container_on_network(n->servers[s], n->network))
+					n->enabled = 0;
+	}
+	return save_state() == 0 ? DHCP_OK : DHCP_ERR_PERSIST_FAILED;
+}
+
+void dhcp_relay_forget(const char *container)
+{
+	if (dhcp_relay_is_registered(container))
+		(void)dhcp_relay_unregister(container);
+}
+
+void dhcp_relays_write_json(struct json_writer *w)
+{
+	int i;
+
+	jw_arr_open(w);
+	for (i = 0; i < DHCP_MAX_RELAYS; i++) {
+		struct registry_entry *e;
+
+		if (g_relays[i][0] == '\0')
+			continue;
+		e = registry_find(g_relays[i]);
+		jw_obj_open(w);
+		jw_key(w, "container");
+		jw_str(w, g_relays[i]);
+		jw_key(w, "service");
+		jw_str(w, g_relay_services[i]);
+		jw_key(w, "running");
+		jw_bool(w, e != NULL && e->running);
+		jw_obj_close(w);
+	}
+	jw_arr_close(w);
+}
+
+/* A container's attachments, as dhcprelay.h's facts. -1 when it has
+ * none to give. Routes are not filled: only the check reads them, and
+ * main.c gives it those from the definition. */
+static int host_facts(const char *name, const struct registry_network_attachment *self,
+                      int self_count, struct dhcprelay_host *h)
+{
+	const struct registry_network_attachment *atts;
+	int n = attachments_of(name, self, self_count, &atts);
+	int j;
+
+	memset(h, 0, sizeof(*h));
+	snprintf(h->name, sizeof(h->name), "%s", name);
+	if (n == 0)
+		return -1;
+	for (j = 0; j < n && h->att_count < DHCPRELAY_MAX_ATT; j++) {
+		const struct network_def *nd = network_find(atts[j].name);
+		struct dhcprelay_att *a = &h->att[h->att_count++];
+
+		snprintf(a->network, sizeof(a->network), "%s", atts[j].name);
+		a->ip_be = atts[j].ip_be;
+		a->prefix_len = nd != NULL ? nd->prefix_len : 32;
+		snprintf(a->ifname, sizeof(a->ifname), "%s", atts[j].ifname);
+	}
+	return 0;
+}
+
+struct relay_hosts {
+	struct dhcprelay_host hosts[DHCP_MAX_SERVERS];
+	int known[DHCP_MAX_SERVERS];
+	int count;
+};
+
+static const struct dhcprelay_host *relay_find_host(const char *name, void *ctx)
+{
+	struct relay_hosts *rh = ctx;
+	int i;
+
+	for (i = 0; i < rh->count; i++)
+		if (strcmp(rh->hosts[i].name, name) == 0)
+			return rh->known[i] ? &rh->hosts[i] : NULL;
+	if (rh->count >= DHCP_MAX_SERVERS)
+		return NULL;
+	i = rh->count++;
+	rh->known[i] = host_facts(name, NULL, 0, &rh->hosts[i]) == 0;
+	return rh->known[i] ? &rh->hosts[i] : NULL;
+}
+
+int dhcp_render_relay_conf(const char *relay_name, const struct registry_network_attachment *self,
+                           int self_count, char *out, size_t out_size)
+{
+	static struct dhcprelay_range ranges[DHCP_MAX_NETWORKS];
+	static struct relay_hosts rh;
+	struct dhcprelay_host relay;
+	int i, k, count = 0;
+
+	memset(&rh, 0, sizeof(rh));
+	(void)host_facts(relay_name, self, self_count, &relay);
+	for (i = 0; i < DHCP_MAX_NETWORKS; i++) {
+		const struct dhcp_network *n = &g_networks[i];
+		struct dhcprelay_range *r;
+
+		if (n->network[0] == '\0')
+			continue;
+		r = &ranges[count++];
+		memset(r, 0, sizeof(*r));
+		snprintf(r->network, sizeof(r->network), "%s", n->network);
+		r->enabled = n->enabled;
+		for (k = 0; k < n->server_count && k < DHCPRELAY_MAX_LIST; k++)
+			snprintf(r->servers[r->server_count++], DHCPRELAY_NAME_MAX, "%s", n->servers[k]);
+		for (k = 0; k < n->relay_count && k < DHCPRELAY_MAX_LIST; k++)
+			snprintf(r->relays[r->relay_count++], DHCPRELAY_NAME_MAX, "%s", n->relays[k]);
+	}
+	return dhcprelay_render(&relay, ranges, count, relay_find_host, &rh, out, out_size);
+}
+
+/*
+ * The relay's file inside the container is the record of what its
+ * service started with: it is staged at create and rewritten only here,
+ * and every rewrite is followed by a restart of that service. So a sync
+ * compares against the file, and a daemon restart or handover restarts
+ * nothing that has not changed.
+ */
+void dhcp_relays_sync(char changed[][DHCP_SERVER_NAME_MAX], int max_changed,
+                      int *out_changed_count)
+{
+	char names[DHCP_MAX_RELAYS][DHCP_SERVER_NAME_MAX];
+	char conf[4096];
+	int count, i;
+
+	if (out_changed_count != NULL)
+		*out_changed_count = 0;
+	count = dhcp_relay_list(names, DHCP_MAX_RELAYS);
+	for (i = 0; i < count; i++) {
+		struct registry_entry *entry = registry_find(names[i]);
+		char path[PATH_MAX];
+		char *cur = NULL;
+		size_t cur_len = 0;
+		int same;
+
+		if (entry == NULL || !entry->running)
+			continue;
+		if (dhcp_render_relay_conf(names[i], NULL, 0, conf, sizeof(conf)) < 0) {
+			logstore_write("cixd", "error",
+			               "dhcp: relay %s's configuration does not fit; left as it was",
+			               names[i]);
+			continue;
+		}
+		container_file_host_path(names[i], DHCP_RELAY_CONF_PATH, path, sizeof(path));
+		same = persist_read_file(path, &cur, &cur_len) == 0 && cur != NULL &&
+		       cur_len == strlen(conf) && memcmp(cur, conf, cur_len) == 0;
+		free(cur);
+		if (same)
+			continue;
+		if (persist_atomic_write(path, conf, strlen(conf)) != 0) {
+			logstore_write("cixd", "error", "dhcp: could not write relay %s's config to %s",
+			               names[i], path);
+			continue;
+		}
+		if (changed != NULL && out_changed_count != NULL && *out_changed_count < max_changed) {
+			snprintf(changed[*out_changed_count], DHCP_SERVER_NAME_MAX, "%s", names[i]);
+			(*out_changed_count)++;
+		}
+	}
+}
+
 static uint32_t parse_ip(const char *s)
 {
 	struct in_addr a;
@@ -314,6 +642,8 @@ int dhcp_init(const char *path)
 	memset(g_networks, 0, sizeof(g_networks));
 	memset(g_statics, 0, sizeof(g_statics));
 	memset(g_servers, 0, sizeof(g_servers));
+	memset(g_relays, 0, sizeof(g_relays));
+	memset(g_relay_services, 0, sizeof(g_relay_services));
 	if (persist_read_file(path, &buf, &len) != 0)
 		return -1;
 	if (buf == NULL)
@@ -333,6 +663,23 @@ int dhcp_init(const char *path)
 			if (nm == NULL || nm[0] == '\0')
 				continue;
 			snprintf(g_servers[slot], DHCP_SERVER_NAME_MAX, "%s", nm);
+			slot++;
+		}
+	}
+	arr = json_object_get(root, "relays");
+	if (arr != NULL && arr->type == JSON_ARRAY) {
+		int slot = 0;
+
+		for (i = 0; i < arr->u.array.count && slot < DHCP_MAX_RELAYS; i++) {
+			const struct json_value *e = arr->u.array.items[i];
+			const char *nm = json_as_string(json_object_get(e, "container"));
+			const char *svc = json_as_string(json_object_get(e, "service"));
+
+			if (nm == NULL || nm[0] == '\0')
+				continue;
+			snprintf(g_relays[slot], DHCP_SERVER_NAME_MAX, "%s", nm);
+			snprintf(g_relay_services[slot], DHCP_SERVICE_NAME_MAX, "%s",
+			         svc != NULL && svc[0] != '\0' ? svc : DHCP_RELAY_SERVICE_DEFAULT);
 			slot++;
 		}
 	}
@@ -371,6 +718,23 @@ int dhcp_init(const char *path)
 						snprintf(g_networks[slot].servers[g_networks[slot].server_count],
 						         DHCP_SERVER_NAME_MAX, "%s", nm);
 						g_networks[slot].server_count++;
+					}
+				}
+			}
+			{
+				const struct json_value *rl = json_object_get(e, "relays");
+				size_t k;
+
+				if (rl != NULL && rl->type == JSON_ARRAY) {
+					for (k = 0; k < rl->u.array.count &&
+					            g_networks[slot].relay_count < DHCP_MAX_RANGE_RELAYS; k++) {
+						const char *nm = json_as_string(rl->u.array.items[k]);
+
+						if (nm == NULL || nm[0] == '\0')
+							continue;
+						snprintf(g_networks[slot].relays[g_networks[slot].relay_count],
+						         DHCP_SERVER_NAME_MAX, "%s", nm);
+						g_networks[slot].relay_count++;
 					}
 				}
 			}
@@ -571,7 +935,8 @@ int dhcp_slice_for(const struct dhcp_network *cfg, int server_index, int server_
 	return 0;
 }
 
-int dhcp_render_conf(const char *server_name, char *out, size_t out_size)
+int dhcp_render_conf(const char *server_name, const struct registry_network_attachment *self,
+                     int self_count, char *out, size_t out_size)
 {
 	size_t off = 0;
 	int i;
@@ -633,8 +998,28 @@ int dhcp_render_conf(const char *server_name, char *out, size_t out_size)
 		 * on; it is only the options that needed saying which network
 		 * they belong to.
 		 */
-		n = snprintf(out + off, out_size - off, "dhcp-range=set:%s,%s,%s,%ds\n",
-		             g_networks[i].network, start, end, g_networks[i].lease_seconds);
+		if (attached_to(server_name, self, self_count, g_networks[i].network)) {
+			n = snprintf(out + off, out_size - off, "dhcp-range=set:%s,%s,%s,%ds\n",
+			             g_networks[i].network, start, end, g_networks[i].lease_seconds);
+		} else {
+			/*
+			 * ADR-0383: a range this server reaches only through a
+			 * relay. dnsmasq's manual: "For networks which receive
+			 * DHCP service via a relay agent, dnsmasq cannot determine
+			 * the netmask itself, so it should be specified". An
+			 * attached range renders exactly as before, so adding
+			 * relays never rolls a server whose ranges did not change.
+			 */
+			const struct network_def *nd = network_find(g_networks[i].network);
+			char mask[16];
+
+			if (nd == NULL || nd->prefix_len <= 0 || nd->prefix_len > 32)
+				continue;
+			ip_str(htonl(0xffffffffu << (32 - nd->prefix_len)), mask, sizeof(mask));
+			n = snprintf(out + off, out_size - off, "dhcp-range=set:%s,%s,%s,%s,%ds\n",
+			             g_networks[i].network, start, end, mask,
+			             g_networks[i].lease_seconds);
+		}
 		if (n < 0 || (size_t)n >= out_size - off)
 			return -1;
 		off += (size_t)n;
@@ -750,7 +1135,7 @@ void dhcp_sync_all(char changed[][DHCP_SERVER_NAME_MAX], int max_changed, int *o
 		char *in_force;
 		char path[128];
 
-		if (dhcp_render_conf(names[i], conf, sizeof(conf)) < 0)
+		if (dhcp_render_conf(names[i], NULL, 0, conf, sizeof(conf)) < 0)
 			continue;
 		in_force = conf_in_force_slot(names[i]);
 		if (in_force != NULL && strcmp(in_force, conf) != 0) {
@@ -815,6 +1200,15 @@ void dhcp_network_write_json(const struct dhcp_network *cfg, int include_slices,
 
 		for (si = 0; si < cfg->server_count; si++)
 			jw_str(w, cfg->servers[si]);
+	}
+	jw_arr_close(w);
+	jw_key(w, "relays");
+	jw_arr_open(w);
+	{
+		int ri;
+
+		for (ri = 0; ri < cfg->relay_count; ri++)
+			jw_str(w, cfg->relays[ri]);
 	}
 	jw_arr_close(w);
 	jw_key(w, "router");

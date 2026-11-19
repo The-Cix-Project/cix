@@ -186,6 +186,7 @@
 					<button type="button" class="menu-submenu-toggle" aria-haspopup="true" aria-expanded="false">DHCP</button>
 					<ul class="menu-submenu-menu" hidden>
 						<li><button type="button" data-modal="generated-form" data-op="registerDhcpServer" data-title="Register DHCP server" data-submit="Register">Register Server</button></li>
+						<li><button type="button" data-modal="generated-form" data-op="registerDhcpRelay" data-title="Register DHCP relay" data-submit="Register">Register Relay</button></li>
 						<li><button type="button" data-modal="generated-form" data-op="setDhcpNetwork" data-title="New DHCP range" data-submit="Save range">New Range</button></li>
 						<li><button type="button" data-modal="generated-form" data-op="addDhcpReservation" data-title="Reserve an address" data-submit="Reserve">Reserve an Address</button></li>
 					</ul>
@@ -1730,6 +1731,7 @@
 		<section class="view" id="view-dhcp" hidden>
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="dhcp-servers">Servers</button>
+				<button type="button" class="tab-button" data-tab="dhcp-relays">Relays</button>
 				<button type="button" class="tab-button" data-tab="dhcp-ranges">Ranges</button>
 				<button type="button" class="tab-button" data-tab="dhcp-static">Reservations</button>
 				<button type="button" class="tab-button" data-tab="dhcp-leases">Leases</button>
@@ -1747,6 +1749,19 @@
 					<tbody></tbody>
 				</table>
 			</div>
+<div class="tab-panel" data-tab="dhcp-relays" hidden>
+				<p class="hint">
+					Containers that carry a network's DHCP requests to servers that are not on it,
+					such as the cores relaying a network the DNS servers have no interface on
+					(ADR-0383). Each runs dnsmasq as a relay only, from a file cixd writes; a change
+					restarts that relay <strong>service</strong>, never its container, so a core's
+					routing stays up. A container is a server or a relay, never both. Register one
+					from the Services menu, then name it on a range.
+				</p>
+				<table id="dhcp-relays-table">
+					<tbody></tbody>
+				</table>
+			</div>
 <div class="tab-panel" data-tab="dhcp-ranges" hidden>
 				<p class="hint">
 					One range per network, and the servers that serve it. dnsmasq implements no
@@ -1754,7 +1769,8 @@
 					<strong>disjoint slices</strong> &mdash; all of them answer, a client takes
 					whichever offer arrives first, and no two servers hold the same address. Any one
 					of them alone keeps serving from its own slice. Changing a range restarts the
-					servers that serve it: dnsmasq reads ranges only at startup.
+					servers that serve it: dnsmasq reads ranges only at startup. A server need not be
+					on the range's network when the range names <strong>relays</strong> there.
 				</p>
 				<table id="dhcp-ranges-table">
 					<tbody></tbody>

@@ -501,8 +501,10 @@ static const char *const n_dhcp_flags[] = {
 	"--mac=",
 	"--network=",
 	"--range=",
+	"--relay=",
 	"--router=",
 	"--server=",
+	"--service=",
 	NULL
 };
 
@@ -510,6 +512,7 @@ static const struct cli_node n_dhcp_subs[] = {
 	{ "disable", NULL, NULL },
 	{ "enable", NULL, NULL },
 	{ "leases", NULL, NULL },
+	{ "relay", NULL, NULL },
 	{ "remove", NULL, NULL },
 	{ "server", NULL, NULL },
 	{ "show", NULL, NULL },

@@ -167,6 +167,7 @@ static void cfg_routes(struct json_writer *w)
 static void cfg_networks(struct json_writer *w) { network_write_json_list(w); }
 static void cfg_dhcp(struct json_writer *w) { dhcp_write_json(w); }
 static void cfg_dhcp_servers(struct json_writer *w) { dhcp_servers_write_json(w); }
+static void cfg_dhcp_relays(struct json_writer *w) { dhcp_relays_write_json(w); }
 
 static void cfg_dns_forwarders(struct json_writer *w)
 {

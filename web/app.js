@@ -5761,7 +5761,7 @@ async function removeNetwork(name) {
  * page shows leases on that network and nothing else -- one place to
  * configure a range, not two that can disagree.
  */
-let dhcpCache = { servers: [], networks: [], static: [] };
+let dhcpCache = { servers: [], relays: [], networks: [], static: [] };
 
 /*
  * The four DHCP tables, generated (#592).
@@ -5791,6 +5791,29 @@ function renderDhcpServers(servers) {
 		op: "getDhcpServers",
 		what: "DHCP servers",
 		empty: "No DHCP server registered — register one from the Services menu",
+	});
+}
+
+/* ADR-0383: the relays, registered like servers. */
+function renderDhcpRelays(relays) {
+	renderTable(document.getElementById("dhcp-relays-table"), "DhcpRelay", relays, [
+		"container",
+		"service",
+		{ field: "running", label: "Running", badge: (v) => (v ? "ok" : "unknown") },
+		{ label: "", actions: (rl) => [dhcpActionButton("Unregister",
+		    "unregisterDhcpRelay",
+		    "Unregister DHCP relay " + rl.container + "? It is dropped from every range that "
+		    + "named it, and a range left with no relay to a server not on its network stops "
+		    + "serving.", async () => {
+			await apiRequest("DELETE", CIX_API.unregisterDhcpRelay(rl.container));
+			showStatus("Unregistered -- any range that named it no longer relays through it.",
+			    false);
+			refreshDhcp();
+		})] },
+	], {
+		op: "getDhcpRelays",
+		what: "DHCP relays",
+		empty: "No DHCP relay registered — register one from the Services menu",
 	});
 }
 
@@ -5838,6 +5861,8 @@ function renderDhcpRanges(networks) {
 		    ? FIELD_ABSENT
 		    : (n.slices || []).map((s) => s.server + " " + s.range_start +
 		        "–" + s.range_end).join(", ")) },
+		{ label: "Relays", text: (n) => ((n.relays || []).length === 0
+		    ? FIELD_ABSENT : n.relays.join(", ")) },
 		{ label: "", actions: (n) => [
 			dhcpActionButton("Edit", "setDhcpNetwork", null,
 			    async () => editDhcpRange(n.network)),
@@ -5908,18 +5933,21 @@ function renderLeaseRows(tbody, leases, key) {
 
 async function refreshDhcp() {
 	try {
-		const [all, servers, leases] = await Promise.all([
+		const [all, servers, relays, leases] = await Promise.all([
 			apiRequest("GET", CIX_API.getDhcp()),
 			apiRequest("GET", CIX_API.getDhcpServers()),
+			apiRequest("GET", CIX_API.getDhcpRelays()),
 			apiRequest("GET", CIX_API.getDhcpLeases()),
 		]);
 
 		dhcpCache = {
 			servers: servers.servers || [],
+			relays: relays.relays || [],
 			networks: all.networks || [],
 			static: all.static || [],
 		};
 		renderDhcpServers(dhcpCache.servers);
+		renderDhcpRelays(dhcpCache.relays);
 		renderDhcpRanges(dhcpCache.networks);
 		renderDhcpStatic(dhcpCache.static);
 		renderLeaseRows(document.querySelector("#dhcp-leases-table tbody"),
@@ -5965,10 +5993,11 @@ async function refreshNetworkDhcp(name) {
  * its own row, where the form opens holding what it has.
  */
 async function dhcpRangeChoices(newOnly) {
-	const [nets, all, servers] = await Promise.all([
+	const [nets, all, servers, relays] = await Promise.all([
 		apiRequest("GET", CIX_API.listNetworks()),
 		apiRequest("GET", CIX_API.getDhcp()),
 		apiRequest("GET", CIX_API.getDhcpServers()),
+		apiRequest("GET", CIX_API.getDhcpRelays()),
 	]);
 	const configured = (all.networks || []).map((n) => n.network);
 
@@ -5980,6 +6009,9 @@ async function dhcpRangeChoices(newOnly) {
 			value: s.container,
 			label: s.container + (s.resolves_leases ? "" : " (leases will not resolve)"),
 		})),
+		/* ADR-0383: only registered relays can relay; the daemon says
+		 * which of them is on the range's network when it is saved. */
+		relays: (relays.relays || []).map((r) => ({ value: r.container })),
 	};
 }
 
@@ -6007,7 +6039,7 @@ async function editDhcpRange(network) {
 		submit: "Save",
 		args: [network],
 		values: cfg || {},
-		choices: { servers: choices.servers },
+		choices: { servers: choices.servers, relays: choices.relays },
 		after: afterDhcpRangeSave,
 		failed: "Failed to save the range for " + network,
 	});

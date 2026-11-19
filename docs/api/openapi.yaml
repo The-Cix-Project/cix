@@ -4258,6 +4258,98 @@ paths:
           description: Unregistered
         "404":
           description: Not a DHCP server
+  /dhcp/relays:
+    get:
+      summary: Registered DHCP relays (ADR-0383)
+      description: >
+        A relay is a container attached to a network that carries that
+        network's DHCP requests to servers that are not on it. It runs
+        dnsmasq in relay-only mode from /etc/dnsmasq-relay.conf, which
+        cixd renders from DHCP's own state, and `service` is the service
+        in that container that runs it. A change rewrites the file and
+        restarts that service, never the container.
+      operationId: getDhcpRelays
+      x-cix-read: state
+      x-cix-permission: services:read
+      x-cix-mcp: tool
+      x-cix-expose: [cli, web]
+      responses:
+        "200":
+          description: Every registered DHCP relay
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  relays:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DhcpRelay"
+    post:
+      summary: Register a container as a DHCP relay (ADR-0383)
+      description: >
+        A container is a server or a relay, never both: on a shared
+        interface dnsmasq's relay function takes precedence (its manual).
+      operationId: registerDhcpRelay
+      x-cix-invalidates: [getDhcpRelays]
+      x-cix-permission: services:write
+      x-cix-mcp: tool
+      x-cix-expose: [cli, web]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [container]
+              properties:
+                container:
+                  type: string
+                  title: Container
+                  pattern: '^[A-Za-z0-9_\-]+$'
+                  description: >
+                    A container declaring a dnsmasq relay service started
+                    with --conf-file=/etc/dnsmasq-relay.conf.
+                service:
+                  type: string
+                  title: Service
+                  pattern: '^[A-Za-z0-9_.\-]{1,63}$'
+                  default: dhcp-relay
+                  description: >
+                    The service in that container that runs the relay,
+                    restarted when its configuration changes.
+      responses:
+        "201":
+          description: Registered
+        "400":
+          description: An invalid service name
+        "404":
+          description: No such container
+        "409":
+          description: Already a relay, or a DHCP server
+  /dhcp/relays/{container}:
+    delete:
+      summary: Unregister a DHCP relay (ADR-0383)
+      description: >
+        Also drops it from every range that named it. A range left with
+        no relay while it names a server not on its network is disabled,
+        since that server can hear nothing there.
+      operationId: unregisterDhcpRelay
+      x-cix-invalidates: [getDhcp, getDhcpNetwork, getDhcpRelays]
+      x-cix-permission: services:write
+      x-cix-mcp: tool
+      x-cix-expose: [cli, web]
+      parameters:
+        - name: container
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Unregistered
+        "404":
+          description: Not a DHCP relay
   /dhcp/networks/{network}:
     get:
       summary: A network's DHCP range (ADR-0197)
@@ -4390,6 +4482,24 @@ paths:
                     and every option is rendered tagged with the network
                     name so a shared server cannot leak one segment's
                     settings onto another.
+
+
+                    A server not attached to this network serves it
+                    through the relays below (ADR-0383).
+                relays:
+                  type: array
+                  items:
+                    type: string
+                  title: Relays
+                  description: >
+                    Registered DHCP relays attached to this network that
+                    carry its requests to the servers above that are not
+                    on it (ADR-0383). Refused unless every relay is on
+                    this network, shares a network with each such server,
+                    and each such server has a route back to the relay
+                    (a default route counts); refused too when every
+                    server is attached, since a relay would only repeat
+                    what they hear.
       responses:
         "200":
           description: Saved and rendered
@@ -17192,6 +17302,15 @@ components:
           x-cix-config-key: "container"
           x-cix-config-apply: reconcile
           x-cix-config-state: "running,resolves_leases"
+        dhcp_relays:
+          description: >
+            Containers registered as DHCP relays, each with the service
+            that runs its relay (ADR-0383). A changed service is
+            re-registered.
+          x-cix-config-kind: array
+          x-cix-config-key: "container"
+          x-cix-config-apply: reconcile
+          x-cix-config-state: "running"
         dns_forwarders:
           description: Upstream resolvers the DNS servers forward to.
           x-cix-config-kind: array
@@ -20168,6 +20287,14 @@ components:
           description: The registered DHCP servers this range names, in slice order.
           items:
             type: string
+        relays:
+          type: array
+          description: >
+            The registered DHCP relays that carry this network's requests
+            to its servers that are not on it (ADR-0383). Empty when every
+            server is attached.
+          items:
+            type: string
         slices:
           type: array
           description: >
@@ -20225,6 +20352,16 @@ components:
             Whether this same container is also a registered DNS server,
             which is what makes a lease resolve the moment it is issued.
             Reported, not required.
+    DhcpRelay:
+      type: object
+      properties:
+        container:
+          type: string
+        service:
+          type: string
+          description: The service in that container that runs the relay.
+        running:
+          type: boolean
     DhcpLease:
       type: object
       properties:

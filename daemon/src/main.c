@@ -72,6 +72,7 @@
 #include "quotamode.h"
 #include "mcp.h"
 #include "dhcp.h"
+#include "dhcprelay.h"
 #include "procfuse.h"
 #include "proctitle.h"
 #include "stallwatch.h"
@@ -18573,7 +18574,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		char conf[4096];
 		char hosts[8192];
 
-		if (dhcp_render_conf(name, conf, sizeof(conf)) >= 0 &&
+		if (dhcp_render_conf(name, net_attachments, net_count, conf, sizeof(conf)) >= 0 &&
 		    dhcp_render_hosts(hosts, sizeof(hosts)) >= 0) {
 			if (stage_container_file(stage_dir, DHCP_CONF_PATH, conf, 0644, (uid_t)-1,
 			                          (gid_t)-1, stage_id_offset) == 0 &&
@@ -18589,6 +18590,24 @@ static int create_container_from_body(const char *body, size_t body_len,
 				         DHCP_HOSTS_PATH);
 				file_count++;
 			}
+		}
+	}
+	/*
+	 * ADR-0383: a registered relay gets its rendered file the same way,
+	 * from the attachments this create planned (the registry does not
+	 * hold it yet), so its relay service starts with the one in force
+	 * and a later sync finds nothing to restart.
+	 */
+	if (dhcp_relay_is_registered(name)) {
+		char conf[4096];
+
+		if (dhcp_render_relay_conf(name, net_attachments, net_count, conf, sizeof(conf)) >= 0 &&
+		    stage_container_file(stage_dir, DHCP_RELAY_CONF_PATH, conf, 0644, (uid_t)-1,
+		                         (gid_t)-1, stage_id_offset) == 0 &&
+		    file_count < CONTAINER_MAX_FILES) {
+			snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s",
+			         DHCP_RELAY_CONF_PATH);
+			file_count++;
 		}
 	}
 	if (dns_server_count > 0) {
@@ -19518,12 +19537,17 @@ static int create_container_from_body(const char *body, size_t body_len,
  * with no daemon-written config inside the container, so they have no
  * equivalent gap. Checked rather than assumed.
  */
+static void dhcp_relays_apply(void); /* ADR-0383, beside the DHCP handlers */
+
 static void resync_managed_services(void)
 {
 	dns_server_sync_all();
 	dns_forwarders_sync_all();
 	ldap_record_sync_all();
 	dhcp_sync_all(NULL, 0, NULL);
+	/* A container that came back may be a server with a new address,
+	 * which a relay's file names. */
+	dhcp_relays_apply();
 }
 
 static int create_container_persisted(const char *body, size_t body_len,
@@ -19842,6 +19866,8 @@ static void handle_delete(int fd, const char *name)
 	if (e != NULL && e->running && e->teardown_kind == REGISTRY_TEARDOWN_NONE) {
 		dns_server_forget(name);
 		dhcp_server_forget(name);
+		dhcp_relay_forget(name);
+		dhcp_relays_apply(); /* ADR-0383: a relay may name this server */
 		dns_record_forget_owner(name);
 		ldap_server_forget(name);
 		ldap_user_forget_owner(name);
@@ -19984,6 +20010,8 @@ static void handle_delete(int fd, const char *name)
 	 */
 	dns_server_forget(name);
 	dhcp_server_forget(name);
+	dhcp_relay_forget(name);
+	dhcp_relays_apply(); /* ADR-0383 */
 	dns_record_forget_owner(name);
 	ldap_server_forget(name);
 	ldap_user_forget_owner(name);
@@ -25466,11 +25494,55 @@ static void handle_network_delete(int fd, const char *name)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+/*
+ * ADR-0383: rewrites every running relay's file that changed, and
+ * restarts that relay's SERVICE through its cix-init -- never the
+ * container, because the cores that relay also run bird and keepalived.
+ * Called after every DHCP change and after any container comes or goes,
+ * since a relay's file names its servers' addresses.
+ */
+static void dhcp_relays_apply(void)
+{
+	char names[DHCP_MAX_RELAYS][DHCP_SERVER_NAME_MAX];
+	int count = 0;
+	int i;
+
+	dhcp_relays_sync(names, DHCP_MAX_RELAYS, &count);
+	for (i = 0; i < count; i++) {
+		struct registry_entry *e = registry_find(names[i]);
+		const char *svc = dhcp_relay_service(names[i]);
+		int idx;
+
+		if (e == NULL || svc == NULL || !e->running ||
+		    e->teardown_kind != REGISTRY_TEARDOWN_NONE || e->init_control_fd < 0)
+			continue;
+		idx = registry_service_index(e, svc);
+		if (idx < 0) {
+			logstore_write_container(names[i], "warning",
+			                         "dhcp relay: this container declares no service \"%s\", so "
+			                         "its new relay configuration is not in force (ADR-0383)",
+			                         svc);
+			continue;
+		}
+		if (container_init_command(e, CIXINIT_OP_RESTART, idx) != 0)
+			logstore_write_container(names[i], "error",
+			                         "dhcp relay: could not ask cix-init to restart service %s",
+			                         svc);
+		else
+			logstore_write_container(names[i], "info",
+			                         "dhcp relay: configuration changed -- restarted service %s "
+			                         "(ADR-0383)",
+			                         svc);
+	}
+}
+
 static void dhcp_apply_and_maybe_restart(void)
 {
 	char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
 	int count = 0;
 	int i;
+
+	dhcp_relays_apply();
 
 	/* Only the servers whose OWN conf changed. A range on one network
 	 * is nothing to a server on another, and restarting it anyway
@@ -25543,6 +25615,12 @@ static void handle_dhcp_server_register(int fd, const char *body, size_t body_le
 	json_free(root);
 	if (err == DHCP_ERR_DUPLICATE) {
 		respond_error(fd, 409, "Conflict", "that container is already a DHCP server");
+		return;
+	}
+	if (err == DHCP_ERR_CONFLICT) {
+		respond_error(fd, 409, "Conflict",
+		               "that container is a DHCP relay -- a container is a server or a relay, "
+		               "never both, since on a shared interface dnsmasq's relay wins (ADR-0383)");
 		return;
 	}
 	if (err == DHCP_ERR_FULL) {
@@ -26354,6 +26432,104 @@ static void handle_dhcp_server_unregister(int fd, const char *container)
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
 
+/* ---- ADR-0383: relays, registered like servers ---- */
+
+static void handle_dhcp_relays_get(int fd)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "relays");
+	dhcp_relays_write_json(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+static void handle_dhcp_relay_register(int fd, const char *body, size_t body_len)
+{
+	struct json_value *root = json_parse(body, body_len);
+	const char *container, *service;
+	char cname[DHCP_SERVER_NAME_MAX], sname[DHCP_SERVICE_NAME_MAX];
+	enum dhcp_error err;
+	struct json_writer w;
+
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	container = json_as_string(json_object_get(root, "container"));
+	service = json_as_string(json_object_get(root, "service"));
+	if (container == NULL || container[0] == '\0') {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "container is required");
+		return;
+	}
+	snprintf(cname, sizeof(cname), "%s", container);
+	snprintf(sname, sizeof(sname), "%s",
+	         service != NULL && service[0] != '\0' ? service : DHCP_RELAY_SERVICE_DEFAULT);
+	json_free(root);
+	if (registry_find(cname) == NULL) {
+		respond_error(fd, 404, "Not Found", "no such container");
+		return;
+	}
+	err = dhcp_relay_register(cname, sname);
+	if (err == DHCP_ERR_DUPLICATE) {
+		respond_error(fd, 409, "Conflict", "that container is already a DHCP relay");
+		return;
+	}
+	if (err == DHCP_ERR_CONFLICT) {
+		respond_error(fd, 409, "Conflict",
+		               "that container is a DHCP server -- a container is a server or a relay, "
+		               "never both, since on a shared interface dnsmasq's relay wins (ADR-0383)");
+		return;
+	}
+	if (err == DHCP_ERR_INVALID) {
+		respond_error(fd, 400, "Bad Request",
+		               "service must be 1-63 characters of letters, digits, '-', '_' or '.'");
+		return;
+	}
+	if (err == DHCP_ERR_FULL) {
+		respond_error(fd, 507, "Insufficient Storage", "too many DHCP relays");
+		return;
+	}
+	if (err != DHCP_OK) {
+		respond_error(fd, 500, "Internal Server Error", "failed to persist the registration");
+		return;
+	}
+	/* No range names it yet, so its file is just port=0; writing it now
+	 * means the relay service starts from the file cixd owns. */
+	dhcp_relays_apply();
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "relays");
+	dhcp_relays_write_json(&w);
+	jw_obj_close(&w);
+	respond_json(fd, 201, "Created", &w);
+	jw_free(&w);
+}
+
+static void handle_dhcp_relay_unregister(int fd, const char *container)
+{
+	enum dhcp_error err = dhcp_relay_unregister(container);
+
+	if (err == DHCP_ERR_NOT_FOUND) {
+		respond_error(fd, 404, "Not Found", "that container is not a DHCP relay");
+		return;
+	}
+	if (err != DHCP_OK) {
+		respond_error(fd, 500, "Internal Server Error", "failed to persist the removal");
+		return;
+	}
+	/* Its ranges lost a relay, and one may have been turned off, which
+	 * changes the servers' files too. The unregistered relay's own file
+	 * is left as it was: cixd no longer manages it. */
+	dhcp_apply_and_maybe_restart();
+	http_set_blocking(fd);
+	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
 static void handle_dhcp_get(int fd)
 {
 	struct json_writer w;
@@ -26483,6 +26659,102 @@ static void handle_network_dhcp_get(int fd, const char *network)
 	jw_free(&w);
 }
 
+/*
+ * ADR-0383: a container's facts for dhcprelay_check() -- its attachments
+ * (from the registry, each with its network's prefix) and its static
+ * routes (from its definition's "routes", which is where they live).
+ */
+static void dhcp_host_facts(const char *name, struct dhcprelay_host *h)
+{
+	struct registry_entry *e = registry_find(name);
+	const struct container_def *def = containerdef_find(name);
+	int j;
+
+	memset(h, 0, sizeof(*h));
+	snprintf(h->name, sizeof(h->name), "%s", name);
+	for (j = 0; e != NULL && j < e->net_count && h->att_count < DHCPRELAY_MAX_ATT; j++) {
+		const struct network_def *nd = network_find(e->nets[j].name);
+		struct dhcprelay_att *a = &h->att[h->att_count++];
+
+		snprintf(a->network, sizeof(a->network), "%s", e->nets[j].name);
+		a->ip_be = e->nets[j].ip_be;
+		a->prefix_len = nd != NULL ? nd->prefix_len : 32;
+		snprintf(a->ifname, sizeof(a->ifname), "%s", e->nets[j].ifname);
+	}
+	if (def != NULL && def->body != NULL) {
+		struct json_value *root = json_parse(def->body, def->body_len);
+		const struct json_value *jr = root != NULL ? json_object_get(root, "routes") : NULL;
+		size_t k;
+
+		for (k = 0; jr != NULL && jr->type == JSON_ARRAY && k < jr->u.array.count &&
+		            h->route_count < DHCPRELAY_MAX_ROUTES;
+		     k++) {
+			const struct json_value *item = jr->u.array.items[k];
+			const char *dest = json_as_string(json_object_get(item, "dest"));
+			const struct json_value *jp = json_object_get(item, "prefix_len");
+			struct in_addr a;
+
+			if (dest == NULL || jp == NULL || inet_pton(AF_INET, dest, &a) != 1)
+				continue;
+			h->routes[h->route_count].dest_be = a.s_addr;
+			h->routes[h->route_count].prefix_len = (int)json_as_number(jp);
+			h->route_count++;
+		}
+		json_free(root);
+	}
+}
+
+/* 1, with the reason in err, when a range's servers and relays cannot
+ * serve it (ADR-0383, dhcprelay_check()). */
+static int dhcp_range_refused(const char *network, const struct dhcp_network *cfg, char *err,
+                              size_t err_size)
+{
+	static struct dhcprelay_host servers[DHCP_MAX_RANGE_SERVERS], relays[DHCP_MAX_RANGE_RELAYS];
+	const char *who = "";
+	int i;
+
+	for (i = 0; i < cfg->server_count; i++)
+		dhcp_host_facts(cfg->servers[i], &servers[i]);
+	for (i = 0; i < cfg->relay_count; i++)
+		dhcp_host_facts(cfg->relays[i], &relays[i]);
+	switch (dhcprelay_check(network, servers, cfg->server_count, relays, cfg->relay_count,
+	                        &who)) {
+	case DHCPRELAY_OK:
+		return 0;
+	case DHCPRELAY_RELAY_NOT_ON_NETWORK:
+		snprintf(err, err_size,
+		         "relay \"%s\" is not attached to network \"%s\", so it hears no request there",
+		         who, network);
+		return 1;
+	case DHCPRELAY_UNREACHED:
+		snprintf(err, err_size,
+		         "\"%s\" is not attached to network \"%s\" -- it has no interface in this "
+		         "subnet, so it could not answer here; attach it, or name relays on this "
+		         "network (ADR-0383)",
+		         who, network);
+		return 1;
+	case DHCPRELAY_UNNEEDED:
+		snprintf(err, err_size,
+		         "every server is attached to network \"%s\", so a relay would only repeat "
+		         "what they already hear -- name no relays here",
+		         network);
+		return 1;
+	case DHCPRELAY_NO_SHARED_NETWORK:
+		snprintf(err, err_size,
+		         "\"%s\" shares no network with a relay this range names, so the relay cannot "
+		         "reach it",
+		         who);
+		return 1;
+	case DHCPRELAY_NO_ROUTE_BACK:
+		snprintf(err, err_size,
+		         "\"%s\" has no route to network \"%s\" -- its replies go to the relay's "
+		         "address there; give it a route (a default route counts)",
+		         who, network);
+		return 1;
+	}
+	return 1;
+}
+
 static void handle_network_dhcp_put(int fd, const char *network, const char *body, size_t body_len)
 {
 	struct json_value *root;
@@ -26551,10 +26823,30 @@ static void handle_network_dhcp_put(int fd, const char *network, const char *bod
 			}
 		}
 	}
+	{
+		/* ADR-0383: the relays that carry this network's requests to
+		 * its servers that are not on it. */
+		const struct json_value *jrl = json_object_get(root, "relays");
+
+		if (jrl != NULL && jrl->type == JSON_ARRAY) {
+			size_t k;
+
+			cfg.relay_count = 0;
+			memset(cfg.relays, 0, sizeof(cfg.relays));
+			for (k = 0; k < jrl->u.array.count && cfg.relay_count < DHCP_MAX_RANGE_RELAYS; k++) {
+				const char *nm = json_as_string(jrl->u.array.items[k]);
+
+				if (nm == NULL || nm[0] == '\0')
+					continue;
+				snprintf(cfg.relays[cfg.relay_count], DHCP_SERVER_NAME_MAX, "%s", nm);
+				cfg.relay_count++;
+			}
+		}
+	}
 	json_free(root);
 
 	if (cfg.enabled) {
-		char errbuf[256];
+		char errbuf[384];
 
 		if (!dhcp_ip_in_subnet(net, cfg.range_start_be) ||
 		    !dhcp_ip_in_subnet(net, cfg.range_end_be)) {
@@ -26592,33 +26884,34 @@ static void handle_network_dhcp_put(int fd, const char *network, const char *bod
 				               "with POST /v1/dhcp/servers first");
 				return;
 			}
-			/* Every named server must be registered and on this
-			 * network: one that is neither would be a slice of
-			 * addresses handed to something that cannot answer for
-			 * them, which looks like coverage and is not. */
-			for (si = 0; si < servers; si++) {
-				struct registry_entry *se;
-				int on_net = 0;
-				int j;
-
+			/* Every named server must be registered, and every named
+			 * relay too. */
+			for (si = 0; si < servers; si++)
 				if (!dhcp_server_is_registered(cfg.servers[si])) {
 					snprintf(errbuf, sizeof(errbuf),
 					         "\"%s\" is not a registered DHCP server", cfg.servers[si]);
 					respond_error(fd, 400, "Bad Request", errbuf);
 					return;
 				}
-				se = registry_find(cfg.servers[si]);
-				for (j = 0; se != NULL && j < se->net_count; j++)
-					if (strcmp(se->nets[j].name, network) == 0)
-						on_net = 1;
-				if (!on_net) {
+			for (si = 0; si < cfg.relay_count; si++)
+				if (!dhcp_relay_is_registered(cfg.relays[si])) {
 					snprintf(errbuf, sizeof(errbuf),
-					         "\"%s\" is not attached to network \"%s\" -- it has no interface "
-					         "in this subnet, so it could not answer here",
-					         cfg.servers[si], network);
+					         "\"%s\" is not a registered DHCP relay -- register it with "
+					         "POST /v1/dhcp/relays first",
+					         cfg.relays[si]);
 					respond_error(fd, 400, "Bad Request", errbuf);
 					return;
 				}
+			/*
+			 * And every named server must be able to answer here: on
+			 * this network, or reached through the range's relays with a
+			 * route back to them (ADR-0383). One that cannot would be a
+			 * slice of addresses handed to something that cannot answer
+			 * for them, which looks like coverage and is not.
+			 */
+			if (dhcp_range_refused(network, &cfg, errbuf, sizeof(errbuf))) {
+				respond_error(fd, 400, "Bad Request", errbuf);
+				return;
 			}
 			/*
 			 * The range is split into one disjoint slice per server
@@ -29296,6 +29589,18 @@ static void op_registerDhcpServer(const struct api_ctx *ctx)
 	handle_dhcp_server_register(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
+/* GET /v1/dhcp/relays (ADR-0383) */
+static void op_getDhcpRelays(const struct api_ctx *ctx)
+{
+	handle_dhcp_relays_get(ctx->fd);
+}
+
+/* POST /v1/dhcp/relays (ADR-0383) */
+static void op_registerDhcpRelay(const struct api_ctx *ctx)
+{
+	handle_dhcp_relay_register(ctx->fd, ctx->req->body, ctx->req->body_len);
+}
+
 /* GET /v1/dhcp/leases */
 static void op_getDhcpLeases(const struct api_ctx *ctx)
 {
@@ -31518,6 +31823,11 @@ static void op_getSystemLogs(const struct api_ctx *ctx)
 static void op_unregisterDhcpServer(const struct api_ctx *ctx)
 {
 	handle_dhcp_server_unregister(ctx->fd, ctx->p[0]);
+}
+
+static void op_unregisterDhcpRelay(const struct api_ctx *ctx)
+{
+	handle_dhcp_relay_unregister(ctx->fd, ctx->p[0]);
 }
 
 static void op_getDhcpNetwork(const struct api_ctx *ctx)
