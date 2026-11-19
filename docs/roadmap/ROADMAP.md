@@ -2475,7 +2475,8 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 - **The root's copy left first:** `pkg rm rtw88-firmware@cix-root`, then a root-only roll to `40aa432f88a4`, switched in place at 16:39:38.
 - **Acquisition, live for the first time:** after `linux-firmware@20261019-2` was published, cixd logged, at 16:40:15 UTC, *"usb:2357:012e@0000:07:1b.0-usb2-1's rtw88_8822b declares rtw88/rtw8822b_fw.bin, which the firmware image lacks -- declared rtw88-firmware (rolling, from linux-firmware@20261019-2) for the drain to install"*. The image version was produced at 16:44:52 and `pkg ls` showed `rtw88-firmware firmware 20261019-2 installed`; the artifact was published to the LAN cache.
 - **The watched switchover:** ar-1 was stopped (its interface left at 16:45:43 UTC); `kmod unload` and `kmod load rtw88_8822bu`; the kernel logged `rtw88_8822bu 1-1:1.0: Firmware version 30.20.0, H2C version 14` at 16:45:55, against `27.2.0, H2C version 13` at every earlier probe (11-11 to 11-17). The root carried no rtw88 blob after the 16:39:38 switch, so it came through the stable link. ar-1 started and logged `radio-ap: AP-ENABLED` at 16:46:32. Afterwards the radio's record read `"held"`, `"complete":true`, and `cix-root` stayed at `40aa432f88a4`.
-- **Not yet observed:** a station associating on the new firmware (none had by 16:50), and a cold boot with the root's copy gone. By reading `main()` the boot order is right; the next reboot is the check.
+- **A cold boot:** the owner asked for a reboot rather than waiting for a kernel roll. The kernel started at 17:23:04 UTC, the radio loaded `Firmware version 30.20.0` in the same second, ar-1 logged `AP-ENABLED` at 17:23:05, vpn-1 reached its dial tone at 17:23:11, and all 14 containers were running.
+- **Not yet observed:** a station associating on the new firmware (none had by 16:50).
 
 ## Part 378: a device gets its firmware by itself, acquisition (ADR-0381 release 3, 0.2.57-700)
 
