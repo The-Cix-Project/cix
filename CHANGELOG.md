@@ -12,7 +12,8 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **Now:**
   - **Stored:** a source that verified against its recipe's `sha256` is kept as a hard link in `<pkg>/source-cache/<sha256>`.
   - **Served:** any later fetch declaring that `sha256`, from any recipe, version or mirror, links it instead of downloading. The build logs `source N (... bytes) came from the source cache, not the network`.
-  - **Still verified:** a hit is hashed like any fetch, and an entry that no longer verifies is removed, so the next attempt downloads.
+  - **Still verified, off the loop:** the fetch child hashes every source it put in place, fetched or linked, into `<file>.sha256`, and the parent compares strings. The parent used to hash on the loop; `GET /v1/system/stalls` recorded `event pkg-fetch (3150 ms)` for `linux-firmware`. An entry that no longer verifies is removed, so the next attempt downloads.
+  - **Reset:** `DELETE /v1/pkg/cache` clears the source cache with the artifact cache.
   - **Bounded:** by `source_max_bytes` (`/v1/pkg/cache-config`, default 8 GiB). The disk snapshot's helper child evicts the least recently used sources past it, in the same pass as the artifact cache.
   - **Shown:** `GET /v1/pkg/cache` reports `source_total_bytes` and `source_entry_count`; `cixctl pkg cache` prints them, and `cixctl pkg cache-config set --source-max-bytes=N` sets the budget.
 - **Gate:** `test_pkg_cache` scenario 6b. With the artifact cache cleared and the source tarball deleted, a fresh build of `cachetest` succeeds from the source cache, says so in the log, and `GET /v1/pkg/cache` counts the entry.

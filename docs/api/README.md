@@ -341,7 +341,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/pkg/cache-config` | The configured local build-artifact cache size cap, and the source cache's (`source_max_bytes`, ADR-0382) |
 | PUT | `/pkg/cache-config` | Set the cache's size cap, the source cache's, or both (always a real cap — no "unlimited" mode) |
 | GET | `/pkg/cache` | Current local build-artifact cache occupancy, and the source cache's (`source_total_bytes`, `source_entry_count`, ADR-0382) |
-| DELETE | `/pkg/cache` | Clear every cached artifact — an explicit operator reset |
+| DELETE | `/pkg/cache` | Clear every cached artifact and every cached source (ADR-0382) — an explicit operator reset |
 | GET | `/pkg/repositories` | The package repositories this host pulls built packages from, in order -- mirrors, every copy verified (ADR-0324) |
 | POST | `/pkg/repositories` | Add a repository; `push` publishes fresh builds there (#129) |
 | PUT | `/pkg/repositories/{name}` | Partially update one repository (url, token, push) |

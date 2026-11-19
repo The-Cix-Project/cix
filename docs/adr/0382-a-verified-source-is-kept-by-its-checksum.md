@@ -18,14 +18,16 @@ Measured on 192.168.15.95, 2026-11-19, by `probe-linuxfw@1-1`: kernel.org's `lin
    - The parent stores a source after `pkg_fetch_completed()` has hashed it equal to the recipe's `sha256`, as a hard link to the slot's file. That is one metadata operation on the loop; both directories are under `<pkg>`, on one filesystem.
    - A recipe with no `sha256` has nothing to key by, and is never cached.
 2. **The key is the content.** Any recipe, version or mirror declaring that `sha256` is served the same file, since a `sha256` names one byte sequence (ADR-0307 clause 5). The url is not part of the key.
-3. **A hit is still verified.**
-   - The fetch child links the cached file to the slot's path and skips the network; the parent hashes it as it hashes any fetch.
+3. **A hit is still verified, and nothing is hashed on the loop.**
+   - The fetch child links the cached file to the slot's path and skips the network.
+   - The fetch child hashes every source it put in place, fetched or linked, and leaves the result beside it (`<file>.sha256`). The parent compares that string with the recipe's. Before this the parent hashed on the loop: measured on 192.168.15.95 (`GET /v1/system/stalls`, ts 1795075672), `event pkg-fetch (3150 ms)` for `linux-firmware`'s 672 MB, a stall every cache hit would have repeated.
    - A cached file that no longer verifies is removed and the source fails like a bad fetch, so the next attempt downloads it.
    - A hit sets the file's mtime, for eviction.
 4. **Bounded, and evicted off the loop.**
    - `source_max_bytes` in `/pkg/cache-config`, beside the artifact cache's `max_bytes`, default 8 GiB.
    - The disk snapshot's helper child evicts the least recently used sources past it, in the same pass that walks the artifact cache (ADR-0377), and reports the total and count. `GET /v1/pkg/cache` carries them as `source_total_bytes` and `source_entry_count`.
    - Never walk or evict it anywhere else.
+   - **An operator empties it with the artifact cache:** `DELETE /v1/pkg/cache` clears both, the one reset an operator has.
 5. **Said in the build's log:** a source served from the cache is logged as such, once per source, so a build that downloaded nothing says so.
 
 ## Consequences

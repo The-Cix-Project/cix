@@ -2059,6 +2059,57 @@ static int source_cache_path(const char *sha256, char *out, size_t out_size)
 	return snprintf(out, out_size, "%s/%s", g_source_cache_dir, key) < (int)out_size ? 0 : -1;
 }
 
+/*
+ * The fetch child hashes each source it put in place and leaves the
+ * result beside it, as <file>.sha256, so the parent compares a string
+ * instead of hashing on the loop. Measured on 192.168.15.95, 2026-11-19
+ * (GET /v1/system/stalls, ts 1795075672): "event pkg-fetch (3150 ms)",
+ * the parent hashing linux-firmware's 672,694,092 bytes, and a source
+ * served from the cache would have cost that at every hit. The sidecar is
+ * slot-prefixed like the file, so sources_clear_slot() removes both.
+ */
+static void source_hash_record(const char *src_path)
+{
+	char side[PATH_MAX], sha[128];
+	int fd;
+
+	if (snprintf(side, sizeof(side), "%s.sha256", src_path) >= (int)sizeof(side))
+		return;
+	unlink(side);
+	if (pkg_run_capture_sha256(src_path, sha, sizeof(sha)) != 0)
+		return;
+	fd = open(side, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+	if (fd < 0)
+		return;
+	(void)!write(fd, sha, strlen(sha));
+	close(fd);
+}
+
+/* What the child recorded; 0, or -1 when there is no record, which the
+ * caller reports as a source that could not be hashed. */
+static int source_hash_read(const char *src_path, char *out, size_t out_size)
+{
+	char side[PATH_MAX];
+	ssize_t n;
+	int fd;
+
+	out[0] = '\0';
+	if (snprintf(side, sizeof(side), "%s.sha256", src_path) >= (int)sizeof(side))
+		return -1;
+	fd = open(side, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	n = read(fd, out, out_size - 1);
+	close(fd);
+	if (n <= 0) {
+		out[0] = '\0';
+		return -1;
+	}
+	out[n] = '\0';
+	out[strcspn(out, "\n")] = '\0';
+	return out[0] != '\0' ? 0 : -1;
+}
+
 /* Was the slot's file served from the cache entry? The same inode. */
 static int source_served_from_cache(const char *src_path, const char *cache_path)
 {
@@ -2078,14 +2129,18 @@ static void source_cache_store(const char *src_path, const char *cache_path)
 
 	if (stat(cache_path, &st) == 0)
 		return;
+	stallwatch_step("source cache: keep a verified source (ADR-0382)");
 	if (persist_mkdir_p(g_source_cache_dir) != 0 ||
 	    snprintf(tmp, sizeof(tmp), "%s.new", cache_path) >= (int)sizeof(tmp))
 		return;
 	unlink(tmp);
 	if (link(src_path, tmp) != 0)
 		return;
-	if (rename(tmp, cache_path) != 0)
+	if (rename(tmp, cache_path) != 0) {
 		unlink(tmp);
+		return;
+	}
+	disksnap_want(); /* GET /v1/pkg/cache counts it at the next walk */
 }
 
 /* "c<digits>-", the slot marker every name above starts with (after the
@@ -12051,6 +12106,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 					unlink(src_tarball_path);
 					if (link(cached, src_tarball_path) == 0) {
 						(void)utimensat(AT_FDCWD, cached, NULL, 0);
+						source_hash_record(src_tarball_path);
 						continue;
 					}
 				}
@@ -12162,6 +12218,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 					close(sfd);
 				}
 			}
+			source_hash_record(src_tarball_path); /* hashed here, off the loop */
 		}
 		_exit(0);
 	}
@@ -13957,7 +14014,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			 * and a stale value from the previous source would be
 			 * reported as this one's computed hash. */
 			sha_out[0] = '\0';
-			if (pkg_run_capture_sha256(src_path, sha_out, sizeof(sha_out)) != 0)
+			if (source_hash_read(src_path, sha_out, sizeof(sha_out)) != 0)
 				why = "could not be hashed";
 			else if (strcasecmp(sha_out, recipe.sha256[i]) != 0)
 				why = "hashes to the wrong value";
@@ -22223,6 +22280,18 @@ void pkg_cache_clear(void)
 		unlink(path);
 	}
 	closedir(d);
+	/* ADR-0382: the operator's one reset covers the source cache too. */
+	d = opendir(g_source_cache_dir);
+	while (d != NULL && (de = readdir(d)) != NULL) {
+		char path[PATH_MAX];
+
+		if (de->d_name[0] == '.')
+			continue;
+		snprintf(path, sizeof(path), "%s/%s", g_source_cache_dir, de->d_name);
+		unlink(path);
+	}
+	if (d != NULL)
+		closedir(d);
 	pkg_announce_cache();
 }
 

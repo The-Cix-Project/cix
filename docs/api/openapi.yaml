@@ -12249,8 +12249,9 @@ paths:
                 $ref: "#/components/schemas/PkgCacheStatus"
     delete:
       summary: >
-        Removes every cached artifact -- an explicit operator reset. Nothing
-        in the install pipeline calls this itself; a cleared cache just means
+        Removes every cached artifact, and every source the source cache
+        holds (ADR-0382) -- an explicit operator reset of both. Nothing in
+        the install pipeline calls this itself; a cleared cache just means
         the next install of anything falls back to a real fetch/build (or the
         artifact tier, if configured) exactly as if nothing had ever been
         cached.

@@ -882,23 +882,12 @@ int main(void)
 	      "PUT /v1/pkg/cache-config (restore 100 MiB before artifact scenarios)");
 	cix_response_free(&r);
 
-	/* --- scenario 6: cache-clear --- */
-	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "DELETE", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 204,
-	      "DELETE /v1/pkg/cache");
-	cix_response_free(&r);
-	wait_cache_field(&client, "entry_count", CACHE_EQ, 0);
-	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 200,
-	      "GET /v1/pkg/cache (after clear)");
-	if (r.json != NULL)
-		CHECK(cache_json_long(r.json, "entry_count") == 0, "cache is empty after clear");
-	cix_response_free(&r);
-
-	/* --- scenario 6b (ADR-0382): the source cache. The artifact cache is
-	 * empty, and the source tarball was deleted in scenario 3, so a fresh
-	 * build of cachetest can only get its source from the source cache,
-	 * which kept it when scenario 2's real build verified it. --- */
+	/* --- scenario 6b (ADR-0382): the source cache. Scenario 5 evicted
+	 * cachetest-1.0's artifact and scenario 3 deleted its source tarball,
+	 * so a fresh build of cachetest can only get its source from the
+	 * source cache, which kept it when scenario 2's real build verified
+	 * it. Scenario 6 below then clears both caches, so what this stores
+	 * is gone before scenario 7 counts the artifact cache. --- */
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/pkg/install",
 	                         "{\"name\":\"cachetest\",\"image\":\"imgF\"}", &r) == 0 &&
@@ -920,6 +909,23 @@ int main(void)
 	              r.json != NULL && cache_json_long(r.json, "source_entry_count") >= 1 &&
 	              cache_json_long(r.json, "source_total_bytes") > 0,
 	      "ADR-0382: GET /v1/pkg/cache reports the source cache");
+	cix_response_free(&r);
+
+	/* --- scenario 6: cache-clear, both caches (ADR-0382) --- */
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "DELETE", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 204,
+	      "DELETE /v1/pkg/cache");
+	cix_response_free(&r);
+	wait_cache_field(&client, "entry_count", CACHE_EQ, 0);
+	wait_cache_field(&client, "source_entry_count", CACHE_EQ, 0);
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "GET", "/v1/pkg/cache", NULL, &r) == 0 && r.status == 200,
+	      "GET /v1/pkg/cache (after clear)");
+	if (r.json != NULL) {
+		CHECK(cache_json_long(r.json, "entry_count") == 0, "cache is empty after clear");
+		CHECK(cache_json_long(r.json, "source_entry_count") == 0,
+		      "ADR-0382: the source cache is empty after the clear too");
+	}
 	cix_response_free(&r);
 
 	/* --- scenario 7: network artifact-fetch tier -- a recipe with an
