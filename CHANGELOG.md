@@ -14,7 +14,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
   - **The record:** gains `provided_by` (the outputs that provide those names) and `unprovided` (missing names nothing provides). The dashboard's Firmware column names the outputs.
   - **The decision:** `fwacquire_verdict()`, one pure function. A provided name whose driver the kmod policy would load automatically, from a source with `trust_keys`, is declared: its output goes into the `firmware` image's manifest, rolling, and the image is queued for the drain. A name two outputs claim, a refused driver, an untrusted source and an installed output that does not carry the name are each said once in the log.
   - **Asked of the image, never the root,** so a name the root still holds is acquired too, and a later drop from the root leaves no gap.
-- **Not yet:** re-probing an unbound device after its firmware arrives (to be measured first), and the rtw88 output, whose publishing the owner approves.
+- **Re-probe (0.2.57-701):**
+  - when the firmware link moves, a helper child writes each unbound target's name to its bus's `drivers_probe` and logs how many bound;
+  - a target is a directory the last scan found with no driver while a module claimed its modalias, for a device whose modules declare firmware;
+  - measured first in 7.3.5's own source (`probe-reprobe@1-1`): that write calls `device_attach()` only for a device with no driver, tries every registered driver, and nothing but a dead device stops a retry;
+  - a bound device is never touched, and a device bound to a driver with no module link no longer contributes a modalias guess.
+- **Not yet:** the rtw88 output, whose publishing the owner approves.
 - **Gate:** `test_fwacquire_verdict`.
 
 ### A verified source is kept by its checksum (ADR-0382)

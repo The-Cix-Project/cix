@@ -48,10 +48,18 @@ struct fwscan_module {
 	int unreadable;   /* its file could not be read */
 };
 
+#define FWSCAN_PROBE_MAX 4
+#define FWSCAN_PATH_MAX 256
+
 struct fwscan_device {
 	char id[DEVICE_ID_MAX];
 	int modules[FWSCAN_DEVICE_MODULES_MAX]; /* into modules */
 	int module_count;
+	/* Release 3's re-probe: the sysfs directories of this record (it or
+	 * its direct children) that had no driver bound while a module
+	 * claimed their modalias. Never a bound one. */
+	char probe[FWSCAN_PROBE_MAX][FWSCAN_PATH_MAX];
+	int probe_count;
 };
 
 struct fwscan_result {
@@ -81,6 +89,18 @@ typedef int (*fwscan_provider_walk)(void (*fn)(const char *output, const char *r
                                                int glob, void *ctx),
                                     void *ctx);
 void fwscan_match_providers(struct fwscan_result *r, fwscan_provider_walk walk);
+
+/*
+ * Release 3's re-probe: each unbound directory the installed scan
+ * recorded, for a device whose modules declare firmware. Measured in
+ * kernel 7.3.5's own source by probe-reprobe@1-1: writing a device's
+ * name to /sys/bus/<bus>/drivers_probe (drivers_probe_store(), bus.c:309)
+ * calls device_attach() only when it has no driver (bus.c:865), and that
+ * tries every registered driver (dd.c:1131); nothing but dev->p->dead
+ * remembers a failed probe. So a device whose probe failed for missing
+ * firmware is tried again, and a bound one is never touched.
+ */
+void fwscan_for_each_probe_target(void (*fn)(const char *dir, void *ctx), void *ctx);
 
 /* Installs a scan's result. 1 when what a device record shows changed. */
 int fwscan_install(const struct fwscan_result *r);

@@ -1018,6 +1018,7 @@ static void ensure_default_image(void)
 static int g_firmware_on;
 static char g_firmware_said[512]; /* the last problem said, so it is said once */
 static void fwscan_want(void); /* release 1b's scan, defined beside the disk snapshot */
+static void reprobe_want(void); /* release 3's re-probe, defined beside it */
 
 static void firmware_say(const char *level, const char *msg)
 {
@@ -1069,10 +1070,13 @@ static void firmware_link_sync(void)
 		return;
 	}
 	firmware_say("info", "");
-	/* What is present changed with the link: scan again. */
+	/* What is present changed with the link: probe the unbound devices
+	 * the last scan found waiting (release 3), and scan again. */
 	firmware_link_target(link, after, sizeof(after));
-	if (strcmp(before, after) != 0)
+	if (strcmp(before, after) != 0) {
+		reprobe_want();
 		fwscan_want();
+	}
 }
 
 /* After image_init(): the image exists on every real host, then the link. */
@@ -37508,6 +37512,113 @@ static void fwscan_done(int exit_status, void *ctx)
 	}
 }
 
+/*
+ * Release 3's re-probe: when the firmware link moves, a helper child
+ * writes each unbound target's name to its bus's drivers_probe
+ * (fwscan_for_each_probe_target(), measured in 7.3.5's source), and
+ * reports which bound. A bound device is never touched: the kernel skips
+ * it, and the child checks first. Then a scan, so the records follow.
+ */
+#define REPROBE_REPORT_MAX 8
+struct reprobe_result {
+	int tried, bound;
+	char names[REPROBE_REPORT_MAX][FWSCAN_PATH_MAX];
+};
+
+static int g_reprobe_wanted;
+static int g_reprobe_running;
+static int g_reprobe_memfd = -1;
+
+static void reprobe_want(void)
+{
+	if (g_firmware_on)
+		g_reprobe_wanted = 1;
+}
+
+static void reprobe_one(const char *dir, void *arg)
+{
+	struct reprobe_result *r = arg;
+	char path[PATH_MAX], target[PATH_MAX];
+	const char *name = strrchr(dir, '/');
+	int fd;
+
+	if (name == NULL)
+		return;
+	name++;
+	if (snprintf(path, sizeof(path), "%s/driver", dir) >= (int)sizeof(path) ||
+	    readlink(path, target, sizeof(target) - 1) > 0)
+		return; /* bound since the scan: not ours to touch */
+	if (snprintf(path, sizeof(path), "%s/subsystem/drivers_probe", dir) >= (int)sizeof(path))
+		return;
+	fd = open(path, O_WRONLY | O_CLOEXEC);
+	if (fd < 0)
+		return;
+	r->tried++;
+	(void)!write(fd, name, strlen(name));
+	close(fd);
+	if (snprintf(path, sizeof(path), "%s/driver", dir) < (int)sizeof(path) &&
+	    readlink(path, target, sizeof(target) - 1) > 0) {
+		if (r->bound < REPROBE_REPORT_MAX)
+			snprintf(r->names[r->bound], sizeof(r->names[0]), "%s", name);
+		r->bound++;
+	}
+}
+
+static int reprobe_work(void *arg)
+{
+	static struct reprobe_result r;
+
+	(void)arg;
+	persist_set_readonly();
+	memset(&r, 0, sizeof(r));
+	fwscan_for_each_probe_target(reprobe_one, &r);
+	return cix_write_all(g_reprobe_memfd, &r, sizeof(r)) == 0 ? 0 : 1;
+}
+
+static void reprobe_done(int exit_status, void *ctx)
+{
+	static struct reprobe_result r;
+
+	(void)ctx;
+	g_reprobe_running = 0;
+	if (exit_status == 0 && g_reprobe_memfd >= 0 &&
+	    pread(g_reprobe_memfd, &r, sizeof(r), 0) == (ssize_t)sizeof(r) && r.tried > 0) {
+		char names[REPROBE_REPORT_MAX * (FWSCAN_PATH_MAX + 2)];
+		size_t used = 0;
+		int i;
+
+		names[0] = '\0';
+		for (i = 0; i < r.bound && i < REPROBE_REPORT_MAX; i++)
+			used += (size_t)snprintf(names + used, sizeof(names) - used, "%s%s",
+			                         i > 0 ? ", " : "", r.names[i]);
+		logstore_write("cixd", "info",
+		               "firmware: the firmware image moved, so %d unbound device(s) were probed "
+		               "again; %d bound%s%s (ADR-0381)",
+		               r.tried, r.bound, r.bound > 0 ? ": " : "", names);
+	}
+	if (g_reprobe_memfd >= 0) {
+		close(g_reprobe_memfd);
+		g_reprobe_memfd = -1;
+	}
+	fwscan_want(); /* the records follow what bound */
+}
+
+static void reprobe_tick(void)
+{
+	if (!g_reprobe_wanted || g_reprobe_running || g_hostroll.step == HOSTROLL_SWITCH)
+		return;
+	g_reprobe_memfd = memfd_create("cix-reprobe", MFD_CLOEXEC);
+	if (g_reprobe_memfd < 0)
+		return;
+	if (helper_run(reprobe_work, NULL, reprobe_done, NULL, "the firmware re-probe") == 0) {
+		g_reprobe_wanted = 0;
+		g_reprobe_running = 1;
+		return;
+	}
+	close(g_reprobe_memfd);
+	g_reprobe_memfd = -1;
+}
+
 /* Every loop pass. Not while a host roll waits to switch, because a
  * running helper holds the switch back (ADR-0375); it runs after. */
 static void fwscan_tick(void)
@@ -42667,6 +42778,7 @@ static int cixd_main(int argc, char **argv)
 		handover_old_slot_tick();
 		disksnap_tick(); /* ADR-0377 */
 		fwscan_tick();   /* ADR-0381 */
+		reprobe_tick();  /* ADR-0381 release 3 */
 		quota_tick(); /* #689 */
 
 		drain_pending_free();

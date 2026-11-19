@@ -147,6 +147,17 @@ static int dir_add_modules(struct fwscan_result *r, struct fwscan_device *d, con
 		device_add_module(r, d, mod, c);
 		return 1;
 	}
+	/* Bound, to a driver with no module link: nothing to read, since a
+	 * driver's name is not always a module's (a USB device's own driver
+	 * is the generic "usb"), and a bound device is never a re-probe
+	 * target. Only an unbound one goes on to its modalias. */
+	{
+		char link[PATH_MAX], target[PATH_MAX];
+
+		if (snprintf(link, sizeof(link), "%s/driver", dir) < (int)sizeof(link) &&
+		    readlink(link, target, sizeof(target) - 1) > 0)
+			return 0;
+	}
 	if (snprintf(path, sizeof(path), "%s/modalias", dir) >= (int)sizeof(path))
 		return 0;
 	f = fopen(path, "r");
@@ -163,6 +174,9 @@ static int dir_add_modules(struct fwscan_result *r, struct fwscan_device *d, con
 		device_add_module(r, d, mods[k], c);
 	if (more)
 		r->truncated = 1;
+	/* Unbound, and a module claims it: a re-probe target. */
+	if (count > 0 && d->probe_count < FWSCAN_PROBE_MAX && strlen(dir) < FWSCAN_PATH_MAX)
+		snprintf(d->probe[d->probe_count++], FWSCAN_PATH_MAX, "%s", dir);
 	return count > 0 ? count : 0;
 }
 
@@ -265,6 +279,23 @@ void fwscan_for_each_absent(void (*fn)(const char *device, const char *module,
 				if (!r->names[j].in_image)
 					fn(d->id, m->name, &r->names[j], ctx);
 		}
+	}
+}
+
+void fwscan_for_each_probe_target(void (*fn)(const char *dir, void *ctx), void *ctx)
+{
+	const struct fwscan_result *r = &g_installed;
+	int i, k, declares;
+
+	for (i = 0; g_have && i < r->device_count; i++) {
+		const struct fwscan_device *d = &r->devices[i];
+
+		for (k = 0, declares = 0; k < d->module_count; k++)
+			declares += r->modules[d->modules[k]].count;
+		if (declares == 0)
+			continue; /* its modules need no firmware: nothing to wait for */
+		for (k = 0; k < d->probe_count; k++)
+			fn(d->probe[k], ctx);
 	}
 }
 
