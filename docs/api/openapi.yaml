@@ -18377,6 +18377,17 @@ components:
             Same "ignored, not an error" precedent as follow_rolling
             itself when restart is "no" or follow_rolling is false --
             meaningless without both.
+        roll_group:
+          title: Roll group
+          type: string
+          pattern: '^[A-Za-z0-9_\-]{1,63}$'
+          description: >
+            Containers sharing this value are never restarted together by
+            the daemon (ADR-0385): when a member's image roll or
+            DHCP-driven restart is due, it waits until every other member
+            is running and ready. A redundant pair, such as two routers
+            or two DNS servers, declares one group. Operator actions are
+            not held.
         depends_on:
           title: Depends on
           type: array

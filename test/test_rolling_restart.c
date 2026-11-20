@@ -534,6 +534,17 @@ int main(void)
 	CHECK(test_image_fixture_read_current_version(image_dir, old_version, sizeof(old_version)) == 0,
 	      "read rollctrimg's pre-rebuild current_version");
 
+	/* ADR-0385: a roll_group that is not a plain name is refused at create. */
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "POST", "/v1/containers",
+	                         "{\"name\":\"rollctr-badgroup\",\"image\":\"rollctrimg\","
+	                         "\"services\":[{\"name\":\"main\",\"cmd\":[\"/usr/bin/rollsvc\",\"300\",\"0\"]}],"
+	                         "\"restart\":\"always\",\"roll_group\":\"two words\"}",
+	                         &r) == 0 &&
+	          r.status == 400 && r.body != NULL && strstr(r.body, "roll_group") != NULL,
+	      "a roll_group with a space is refused (400)");
+	cix_response_free(&r);
+
 	/* --- two containers on the same rolling image: one opts in, one doesn't --- */
 	memset(&r, 0, sizeof(r));
 	CHECK(cix_client_request(&client, "POST", "/v1/containers",

@@ -15272,6 +15272,8 @@ static const char *container_body_unknown_key(const struct json_value *root)
 		"pki_days", "disk", "ldap_provision", "ldap_user", "ldap_group", "ldap_uid",
 		"ldap_secret_dir", "restart", "restart_delay_seconds", "follow_rolling",
 		"follow_rolling_jitter_seconds", "depends_on", "memory_max", "memory_swap_max",
+		/* ADR-0385: never restarted together with its group by the daemon. */
+		"roll_group",
 		"cpu_max", "pids_max", "cpuset_cpus", "disk_quota_bytes", "ldap_client",
 		"ldap_allow_groups",
 		"userns",
@@ -17225,6 +17227,25 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 		*out_has_follow_rolling_jitter = 1;
 		*out_follow_rolling_jitter_seconds = (int)follow_rolling_jitter;
+	}
+	/* ADR-0385: read again from the body by roll_group_of() when a
+	 * restart is due; checked here so a bad value is a 400 at create. */
+	{
+		const struct json_value *jrg = json_object_get(root, "roll_group");
+		const char *rg = json_as_string(jrg);
+		size_t k, n = rg != NULL ? strlen(rg) : 0;
+		int ok = jrg == NULL || (rg != NULL && n >= 1 && n <= 63);
+
+		for (k = 0; ok && rg != NULL && k < n; k++)
+			if (!((rg[k] >= 'a' && rg[k] <= 'z') || (rg[k] >= 'A' && rg[k] <= 'Z') ||
+			      (rg[k] >= '0' && rg[k] <= '9') || rg[k] == '_' || rg[k] == '-'))
+				ok = 0;
+		if (!ok) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size,
+			         "roll_group must be 1-63 characters of letters, digits, '_' or '-'");
+			return 400;
+		}
 	}
 
 	jdepends_on = json_object_get(root, "depends_on");
@@ -38774,6 +38795,92 @@ static void rolling_restart_replay(const char *name, struct container_def *def)
 	start_roll_watch(name);
 }
 
+/*
+ * ADR-0385: a roll group restarts one member at a time. The group is
+ * read from the definition's body when a restart is due, so it is the
+ * one copy there is.
+ */
+#define ROLL_GROUP_RECHECK_SECONDS 5
+#define ROLL_GROUP_MAX 64
+
+static int roll_group_of(const struct container_def *def, char *out, size_t out_size)
+{
+	struct json_value *root;
+	const char *rg;
+	int found = 0;
+
+	out[0] = '\0';
+	if (def == NULL || def->body == NULL)
+		return 0;
+	root = json_parse(def->body, def->body_len);
+	if (root == NULL)
+		return 0;
+	rg = json_as_string(json_object_get(root, "roll_group"));
+	if (rg != NULL && rg[0] != '\0') {
+		snprintf(out, out_size, "%s", rg);
+		found = 1;
+	}
+	json_free(root);
+	return found;
+}
+
+/*
+ * 1, naming the peer, when another member of def's group is not running
+ * and ready, or is stopping. A member an operator stopped, and one with
+ * restart "no" that is not running, will not come back by themselves
+ * and do not hold the group.
+ */
+static int roll_group_peer_busy(const struct container_def *def, char *peer, size_t peer_size)
+{
+	static char names[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
+	char group[ROLL_GROUP_MAX], other[ROLL_GROUP_MAX];
+	int n, i;
+
+	if (!roll_group_of(def, group, sizeof(group)))
+		return 0;
+	n = containerdef_list_names(names, CONTAINERDEF_MAX);
+	for (i = 0; i < n; i++) {
+		struct container_def *od;
+		struct registry_entry *e;
+
+		if (strcmp(names[i], def->name) == 0)
+			continue;
+		od = containerdef_find(names[i]);
+		if (od == NULL || od->stopped || !roll_group_of(od, other, sizeof(other)) ||
+		    strcmp(other, group) != 0)
+			continue;
+		e = registry_find(names[i]);
+		if (e != NULL && e->running && e->ready && e->teardown_kind == REGISTRY_TEARDOWN_NONE)
+			continue;
+		if ((e == NULL || !e->running) && strcmp(od->restart_policy, "no") == 0)
+			continue;
+		snprintf(peer, peer_size, "%s", names[i]);
+		return 1;
+	}
+	return 0;
+}
+
+/* Which members are waiting, so each wait is said once, not every
+ * recheck. */
+static char g_roll_group_waiting[CONTAINERDEF_MAX][REGISTRY_NAME_MAX];
+
+static int roll_group_waiting_slot(const char *name, int claim)
+{
+	int i, free_slot = -1;
+
+	for (i = 0; i < CONTAINERDEF_MAX; i++) {
+		if (strcmp(g_roll_group_waiting[i], name) == 0)
+			return i;
+		if (free_slot < 0 && g_roll_group_waiting[i][0] == '\0')
+			free_slot = i;
+	}
+	if (claim && free_slot >= 0) {
+		snprintf(g_roll_group_waiting[free_slot], REGISTRY_NAME_MAX, "%s", name);
+		return -2; /* newly waiting */
+	}
+	return -1;
+}
+
 static void handle_rolling_restart_timer_event(struct conn *cc)
 {
 	struct container_def *def;
@@ -38825,6 +38932,32 @@ static void handle_rolling_restart_timer_event(struct conn *cc)
 		 * container stopped and never replay it.
 		 */
 		if (live != NULL && live->running) {
+			char peer[REGISTRY_NAME_MAX];
+			int slot;
+
+			/*
+			 * ADR-0385: not while another member of its roll group
+			 * is down or going down. Asked again shortly, and said
+			 * once. Only here, where a running container would be
+			 * taken down: one already down is only being brought
+			 * back.
+			 */
+			if (roll_group_peer_busy(def, peer, sizeof(peer))) {
+				if (roll_group_waiting_slot(def->name, 1) == -2)
+					logstore_write_container(def->name, "info",
+					                         "restart waits: %s, in its roll group, is not "
+					                         "running and ready (ADR-0385)",
+					                         peer);
+				arm_rolling_restart_timer(def->name, ROLL_GROUP_RECHECK_SECONDS);
+				free(cc);
+				return;
+			}
+			slot = roll_group_waiting_slot(def->name, 0);
+			if (slot >= 0) {
+				g_roll_group_waiting[slot][0] = '\0';
+				logstore_write_container(def->name, "info",
+				                         "its roll group is ready: restarting (ADR-0385)");
+			}
 			begin_container_stop(live, REGISTRY_TEARDOWN_RESTART);
 			free(cc);
 			return;

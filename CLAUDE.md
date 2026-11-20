@@ -482,6 +482,14 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Refuse at the point of asking:** a relay not attached to the network, a server sharing no network with a relay or with no route back to it, a container that is both server and relay, relays on a range whose servers are all attached.
 - **Relays re-render when a registered server or relay is created, re-addressed or deleted,** since the relay file names other containers' addresses.
 
+## A roll group restarts one member at a time
+
+**Containers that declare the same `roll_group` are never restarted together by the daemon: a member's image roll or DHCP-driven restart waits until every other member is running and ready** -- [ADR-0385](docs/adr/0385-a-roll-group-restarts-one-member-at-a-time.md), the owner's choice of 2026-11-20 (*"Declared roll groups"*), over serialising every follower of an image.
+
+- **One gate, in `handle_rolling_restart_timer_event()`**, where every daemon-chosen restart passes. Never add a restart path that takes a running container down without going through it.
+- **A member that is down holds the group;** an operator-stopped member, or a `restart: "no"` one that is not running, does not. Operator actions are not held.
+- **On .95:** cr-1/cr-2 are `cores`, dns-1/dns-2 are `dns`. Adding the field recreates the container, so do one member at a time.
+
 ## A file cixd rewrites in a container is put in force through cix-init
 
 **Never signal a container's pidfd to make a service reload: that pid is cix-init, which discards a signal it has no handler for. Call `container_reload()`** -- [ADR-0384](docs/adr/0384-a-service-declares-how-it-reloads.md), for #697. Measured on .95, 2026-11-19: a new DNS record sat in dns-1's hosts file while both servers answered NXDOMAIN for it, and after a range change restarted them both answered REFUSED to everything.

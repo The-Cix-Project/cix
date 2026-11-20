@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A roll group restarts one member at a time (ADR-0385)
+
+- **Before:** the daemon restarted each container following a rolled image, and each DHCP server after a range change, after its own random delay. Nothing kept a redundant pair apart: on 192.168.15.95, 2026-11-19, cr-1 and cr-2 restarted ten seconds apart by luck, and dns-1 and dns-2 restarted together several times.
+- **Now:** a container may declare `roll_group`. When the rolling-restart timer is due to take a running member down while another member is not running and ready, or is stopping, it waits and asks again every 5 s, saying once which peer it waits for. A member that is down holds the group; an operator-stopped one, or a `restart: "no"` one not running, does not. Operator actions are not held.
+- **Gate:** `test_rolling_restart` refuses a malformed `roll_group` (400). The ordering is checked live on the cores.
+
 ### DHCP leases live on a volume, so a restart keeps them (#698)
 
 - **Before:** a DHCP server wrote its leases to `/run/dnsmasq.leases`, a fresh tmpfs at every container start. On 192.168.15.95, 2026-11-19, a range change restarted both servers and `cixctl dhcp leases` came back empty while clients still held their addresses; dnsmasq's ping-before-offer was the only guard against handing one out twice.
