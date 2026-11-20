@@ -2462,6 +2462,25 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 - **#689 live:** 687 ran its first drain at 11:02:26 (`image gc: set aside 3 version(s)`). At 11:10 `cixctl process ls` showed no cixd child but procfuse and the watchdog. A look logs nothing when it finds the drops settled or still pending, so that absence alone cannot tell a working check from one that never ran. Nor does the gap between staging and switching prove it: 9 s at 687 → 688, but 5 s at 686 → 687, on the old code, so a short gap shows only that no check was pending then. What holds the change is `test_blocking_waits` and the code. A `deleted subvolumes were still being freed after 7200 s` line would show the looks ran for two hours without holding anything, and that drops are not settling on .95.
 - **#690 shown live at the next switch.** It acts in the process that *writes* the handover, and 686 wrote this one, so the kernel log again took 2,180 lines at 11:02:26. At the 687 → 688 switch (12:22:12, 687 writing), the kernel log has no line at all from two seconds before to five seconds after.
 
+## Part 381: a missing secret refused, leases kept, roll groups (#696, #698, ADR-0385, 0.2.57-705, -706)
+
+**What shipped.**
+- **705:**
+  - #696: a deployment applied without one of its `{{SECRET:KEY}}` values is refused, naming the keys, and creates nothing;
+  - #698: DHCP leases live on a volume at `/var/lib/dnsmasq`.
+- **706, ADR-0385:** containers that declare the same `roll_group` are never restarted together by the daemon.
+- **On .95:** dns-1/dns-2 1.10.0 (lease volumes `dns-*-dhcp` on vda, `roll_group: dns`) and cr-1/cr-2 1.8.0 (`roll_group: cores`), each recreated one at a time.
+
+**How it was verified, on 192.168.15.95, 2026-11-20.**
+- **Compile probes:** `0.2.57-785` (#696), `786` (#698) and `787` (ADR-0385) passed.
+- **#696:** `cixctl deployment apply cr-1` with no secret answered `HTTP 400: deployment cr-1 needs secrets it was not given: RIP_PASSWORD ... nothing was created`, and cr-1 kept its pid.
+- **The cores, applied with the secret:**
+  - each core's `bird.conf` has no placeholder;
+  - cr-2's RIP neighbours were the site's routers 192.168.15.252 and .253 (9 routes each) and cr-1;
+  - from `services`, 192.168.15.200 and the host answered after each move, and so did both DNS servers.
+- **#698:** dns-2 stopped and started (pid 28421 to 8704), and both its leases were still listed afterwards: a real client's (`pixon`, 192.168.152.151, relayed from `remote-access`) and a test client's on `access`.
+- **ADR-0385, not yet seen holding a restart:** with both DNS servers in group `dns`, a range change restarted them one after the other (02:36:10, :13, :17 UTC), each back within a second. The random delays already spaced them, so no "restart waits" line appeared. The gate is checked by reading the code and by `test_rolling_restart`'s refusal of a malformed `roll_group`, until a roll makes two members due at once.
+
 ## Part 380: DHCP relays, and a reload that reaches the server (ADR-0383, ADR-0384, 0.2.57-703, -704)
 
 **What shipped.**
