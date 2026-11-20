@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The compile probe is the release recipe, renamed (#695)
+
+- **Before:** `probe-cix-compile` was a recipe of its own, copied forward from the previous probe. It built cix and ran the selftest, but not the release recipe's install and check phases. 0.2.57-694 and -695 both passed it, then failed in phases only the release had: 694 gated `cix-boot.efi` at a stale path, and 695's main package staged nothing.
+- **Now:** the probe is derived from the release draft. Only the package and output names, the release, the source and the changelog change, so every phase of the release runs before it is published. CLAUDE.md and `docs/guides/remote-development.md` describe the derivation. The first probe built this way is `probe-cix-compile@0.2.57-788`.
+
 ### A roll group restarts one member at a time (ADR-0385)
 
 - **Before:** the daemon restarted each container following a rolled image, and each DHCP server after a range change, after its own random delay. Nothing kept a redundant pair apart: on 192.168.15.95, 2026-11-19, cr-1 and cr-2 restarted ten seconds apart by luck, and dns-1 and dns-2 restarted together several times.

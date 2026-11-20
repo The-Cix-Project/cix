@@ -34,15 +34,24 @@ cixctl --host=<box> boot
 
 ### A deploy is not verified until the new daemon has built something
 
-`health` and `boot` prove the daemon you meant is running and answering. They do not prove it can still build. A release that changes the build path is itself built by the daemon it replaces, so the first real exercise of the new build code is always the build *after* the deploy. Finish every deploy by building a real package. The usual one is the next `probe-cix-compile` revision in cix-recipes, which compiles cix and runs its selftest, so it exercises the new build path and the next release in one build (`probe-selftest-one`, which this section used to name, was a shell recipe and was retired in cix-recipes `9b74665`):
+`health` and `boot` prove the daemon you meant is running and answering. They do not prove it can still build. A release that changes the build path is itself built by the daemon it replaces, so the first real exercise of the new build code is always the build *after* the deploy. Finish every deploy by building a real package. The usual one is the next `probe-cix-compile` revision, which is also how the next release is verified before it is published.
+
+**The compile probe is the release recipe, renamed** (#695). Draft the next `cix@<version>-<release>.cbs`, then derive the probe from that draft, changing only:
+
+- `package "cix"` → `package "probe-cix-compile"`;
+- the outputs `cixctl`, `cixd` and `cix-installer-tools` → `probe-cix-compile-cixctl`, `probe-cix-compile-cixd`, `probe-cix-compile-installer-tools`;
+- the `release` line, and the source `url` and `sha256`, which name the commit being probed;
+- the changelog text, with any `artifact_sha256` or `built_against` line removed.
+
+Nothing else is edited, so the release's own build, install and check phases run, every `${dest}` path and `require` with them. A separately maintained probe recipe let 0.2.57-694 and -695 pass the probe and then fail in phases only the release had. Draft in a scratch directory, not in the cix-recipes clone; the box commits the file to git itself:
 
 ```sh
 cixctl --host=<box> pkg recipe commit --name=probe-cix-compile --file=probe-cix-compile@<version>-<release>.cbs --wait
 cixctl --host=<box> pkg install --name=probe-cix-compile --version=<version>-<release> --upgrade
-cixctl --host=<box> pkg build-logs --last
+cixctl --host=<box> pkg build-logs
 ```
 
-(The `recipe add` answers `409` if that version is already published on the box, which is fine.) The build fails on purpose — the log is the product — and the line to read is `BUILD-PATH RESULT`. Reaching it means the daemon composed a build environment, created a build container and ran something in it.
+The green is the whole row: `state` installed, `version` the revision just installed, and no `error`. A failed build leaves the previous version installed with `error` set. To read a failure, open its log with `pkg build-logs --file=NAME` and `grep -n "FAIL:"`.
 
 If the box is already on a daemon that cannot build, the recovery is API-only and does not need console access: install a previous `cix` version whose artifact is already in the cache (a cache hit does not need a working build), let the assembly run, `update --image=` the assembled root and reboot — or, if the previous slot still holds a good root, arm it for one boot with `cixctl --host=<box> boot-next <slot>` (`a` or `b`). Delete any containers whose declaration the older daemon predates first: a daemon that cannot load its own persisted state is the one failure the API cannot recover from.
 
