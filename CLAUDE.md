@@ -472,6 +472,18 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **A hit is still hashed,** and an entry that fails is removed.
 - **Walked and evicted only by the disk snapshot's child,** within `source_max_bytes`, like the artifact cache (ADR-0377). Never walk or evict it anywhere else.
 
+## DHCP is served by an ISC dhcpd failover pair
+
+**Every DHCP range is served by registered ISC dhcpd containers: one server, or two forming a failover pair in load-balancing mode. dnsmasq serves DHCP nowhere; it keeps DNS and relaying** -- [ADR-0386](docs/adr/0386-dhcp-is-served-by-an-isc-dhcpd-failover-pair.md), the owner's decisions of 2026-11-20 (*"go ahead with dhcpd, load-balancing"*, *"auto ... don't get cixd involved"*), over Kea (*"too big ... I don't want bulky rubbish"*). dhcpd's maintenance ended in 2022 (4.4.3-P1); a security fix is a patch in the `isc-dhcp` recipe.
+
+- **No second backend, no split scope.** Never render a dnsmasq DHCP file again, and never add one beside dhcpd.
+- **A pair is two servers; a server is in at most one pair.** The name that sorts first is primary. Never configure roles.
+- **dhcpd takes over the pool by itself (`auto-partner-down 600`, `mclt 3600`). cixd never declares partner-down** and never speaks OMAPI.
+- **dhcpd has no reload.** A change that alters a server's `dhcpd.conf` restarts it through the rolling-restart timer, and the pair's `roll_group` keeps the two apart. A quick restart returns both to normal at once (measured).
+- **cixd creates `/var/lib/dhcp/dhcpd.leases` empty on the server's volume when it is absent, and never writes it otherwise.** dhcpd refuses to start without it.
+- **A reservation lies outside every pool.** Its name comes from cixd's state, never the lease file.
+- **Lease files are read in a helper child** (an append log, ADR-0342), and lease names go into `/etc/dnsmasq-leases`, never the records file; a record or container name wins, and a hostname that is not a DNS label is dropped.
+
 ## A DHCP range may be relayed to its servers
 
 **A range may name relays: registered containers attached to its network, running dnsmasq in relay-only mode from `/etc/dnsmasq-relay.conf`, which cixd renders from DHCP's own state. A server not attached to the network is reached through them.** That is [ADR-0383](docs/adr/0383-a-dhcp-range-may-be-relayed.md), the owner's decisions of 2026-11-19 (*"cix networks for now"*, *"dnsmasq relay mode"*, first network `remote-access`).
