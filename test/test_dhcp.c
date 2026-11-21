@@ -349,6 +349,30 @@ int main(void)
 	}
 	cix_response_free(&r);
 	expect(&client, "DELETE", "/v1/dhcp/servers/dhcpelsewhere", NULL, 204, "unregister it");
+	/*
+	 * A container that is defined but not running can be registered: a
+	 * dhcpd container cannot start until it is, so it is down between
+	 * restarts nearly all the time (ADR-0386; measured on .95).
+	 */
+	expect(&client, "POST", "/v1/containers/dhcpelsewhere/stop", NULL, 200, "stop it");
+	{
+		int i;
+
+		for (i = 0; i < 60; i++) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/containers/dhcpelsewhere", NULL, &r) ==
+			        0 &&
+			    r.status == 404) {
+				cix_response_free(&r);
+				break;
+			}
+			cix_response_free(&r);
+			usleep(200 * 1000);
+		}
+	}
+	expect(&client, "POST", "/v1/dhcp/servers", "{\"container\":\"dhcpelsewhere\"}", 201,
+	        "register a defined container that is not running");
+	expect(&client, "DELETE", "/v1/dhcp/servers/dhcpelsewhere", NULL, 204, "unregister it again");
 	expect(&client, "DELETE", "/v1/containers/dhcpelsewhere", NULL, 204, "remove it");
 
 	/* 5. The payoff: the rendered files are really inside the serving

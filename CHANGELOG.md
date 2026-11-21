@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A DHCP server or relay can be registered while it is down (ADR-0386)
+
+- **Before:** registering a DHCP server or relay required the container to be running. A dhcpd container cannot start until it is registered, so it sat in its restart backoff and registering dhcp-1 on 192.168.15.95 was a 404 for two minutes of retries (2026-11-21, 0.2.57-707).
+- **Now:** a defined container is accepted whether or not it is running, and its next start stages its configuration and lease file.
+- **Gate:** `test_dhcp` registers a stopped server.
+
 ### DHCP is served by an ISC dhcpd failover pair (ADR-0386, #107)
 
 - **Before:** dnsmasq served DHCP on the DNS servers, and two servers on one range split it into disjoint slices. A survivor kept only its own slice, so with one server down, half of every range could not be handed out.

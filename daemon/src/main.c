@@ -25807,8 +25807,16 @@ static void handle_dhcp_server_register(int fd, const char *body, size_t body_le
 		respond_error(fd, 400, "Bad Request", "container is required");
 		return;
 	}
+	/*
+	 * A defined container, running or not (ADR-0386). A dhcpd container
+	 * cannot start until it is registered -- it has no configuration and
+	 * no lease file -- so until then it is in its restart backoff and
+	 * out of the registry nearly all the time. Measured on 192.168.15.95,
+	 * 2026-11-21: requiring the registry made registering dhcp-1 a 404
+	 * for two minutes of retries. Its next start then stages both.
+	 */
 	e = registry_find(container);
-	if (e == NULL) {
+	if (e == NULL && containerdef_find(container) == NULL) {
 		json_free(root);
 		respond_error(fd, 404, "Not Found", "no such container");
 		return;
@@ -26693,7 +26701,9 @@ static void handle_dhcp_relay_register(int fd, const char *body, size_t body_len
 	snprintf(sname, sizeof(sname), "%s",
 	         service != NULL && service[0] != '\0' ? service : DHCP_RELAY_SERVICE_DEFAULT);
 	json_free(root);
-	if (registry_find(cname) == NULL) {
+	/* A defined container, running or not: one waiting out a restart
+	 * backoff is still the container being named (ADR-0386). */
+	if (registry_find(cname) == NULL && containerdef_find(cname) == NULL) {
 		respond_error(fd, 404, "Not Found", "no such container");
 		return;
 	}
