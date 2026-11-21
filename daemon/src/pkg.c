@@ -12675,6 +12675,42 @@ enum pkg_error pkg_install_start(const char *name, const char *image, const char
 		}
 	}
 
+	/*
+	 * #701: one package is installed into one image by one chain at a
+	 * time. pkg_job_in_flight_for() compares chains' TARGETS only, and a
+	 * chain installs its dependencies first, so two installs sharing a
+	 * dependency each queued it. Measured on 192.168.200.1, 2026-11-21:
+	 * installing an image's 27 packages back to back put zlib into two
+	 * build slots at once, and both chains were then reclaimed as gone.
+	 * So when another chain in this image still has one of this chain's
+	 * packages to install, this one is refused as busy -- the request
+	 * answers 409 and the rolling drain defers, as for its own target.
+	 */
+	{
+		int q, i, k;
+
+		for (q = 0; q < g_chains[chain_idx].dep_queue_count; q++) {
+			const char *qn = g_chains[chain_idx].dep_queue[q];
+
+			for (i = 0; i < PKG_MAX_CONCURRENT_JOBS; i++) {
+				if (i == chain_idx || g_chains[i].name[0] == '\0' ||
+				    strcmp(g_chains[i].image, g_chains[chain_idx].image) != 0)
+					continue;
+				for (k = g_chains[i].dep_queue_pos; k < g_chains[i].dep_queue_count; k++) {
+					if (strcmp(g_chains[i].dep_queue[k], qn) != 0)
+						continue;
+					logstore_write("cixd", "info",
+					               "pkg install %s@%s: deferred -- %s is already being "
+					               "installed into %s by the job for %s (#701)",
+					               name, g_chains[chain_idx].image, qn,
+					               g_chains[chain_idx].image, g_chains[i].name);
+					g_chains[chain_idx].dep_queue_count = 0;
+					return PKG_ERR_BUSY;
+				}
+			}
+		}
+	}
+
 	g_chains[chain_idx].dep_queue_pos = 0;
 	g_chains[chain_idx].dep_queue_is_upgrade = (e != NULL && e->state == PKG_STATE_INSTALLED);
 

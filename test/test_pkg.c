@@ -6966,6 +6966,76 @@ skip_hostbuild:
 		ok = 0;
 	}
 
+	/*
+	 * #701: two installs into one image that share a dependency. The
+	 * first chain installs slowhold (it sleeps) before its target; the
+	 * second, sent while it does, used to queue slowhold again and run it
+	 * in a second build slot beside the first. Now it is deferred with a
+	 * 409, and the log names the shared package. Ten slots are free
+	 * here, so a full slot table is not what refuses it.
+	 */
+	{
+		char st701[32];
+
+		if (create_image(&client, "img701") != 0 ||
+		    write_recipe(&client, "uses701a", "1.0", tarball_path, sha256, "slowhold") != 0 ||
+		    write_recipe(&client, "uses701b", "1.0", tarball_path, sha256, "slowhold") != 0) {
+			fprintf(stderr, "FAIL: #701 setup\n");
+			ok = 0;
+		} else {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install",
+			                       "{\"name\":\"uses701a\",\"image\":\"img701\"}", &r) != 0 ||
+			    r.status != 202) {
+				fprintf(stderr, "FAIL: #701 install uses701a status=%d\n", r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install",
+			                       "{\"name\":\"uses701b\",\"image\":\"img701\"}", &r) != 0 ||
+			    r.status != 409) {
+				fprintf(stderr,
+				        "FAIL: #701 a second install sharing slowhold answered %d, expected "
+				        "409 while the first installs it\n",
+				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/system/logs?source=cixd&tail=200", NULL,
+			                       &r) != 0 ||
+			    r.status != 200 || r.body == NULL ||
+			    strstr(r.body, "deferred -- slowhold is already being installed into img701") ==
+			        NULL) {
+				fprintf(stderr, "FAIL: #701 the deferral does not name slowhold in the log\n");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			/* The first finishes, and the second then installs. */
+			if (poll_pkg_state(&client, "uses701a@img701", st701, sizeof(st701), 300) !=
+			        0 ||
+			    strcmp(st701, "installed") != 0) {
+				fprintf(stderr, "FAIL: #701 uses701a ended '%s'\n", st701);
+				ok = 0;
+			}
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install",
+			                       "{\"name\":\"uses701b\",\"image\":\"img701\"}", &r) != 0 ||
+			    r.status != 202) {
+				fprintf(stderr, "FAIL: #701 uses701b after the first status=%d\n", r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			if (poll_pkg_state(&client, "uses701b@img701", st701, sizeof(st701), 300) !=
+			        0 ||
+			    strcmp(st701, "installed") != 0) {
+				fprintf(stderr, "FAIL: #701 uses701b ended '%s'\n", st701);
+				ok = 0;
+			}
+		}
+	}
+
 	/* 18. keep_on_failure (ADR-0175/issue #35): a real build-container
 	 * failure (not a fetch/checksum failure like badsum in step 7 --
 	 * this needs a genuine build container to actually spawn) with

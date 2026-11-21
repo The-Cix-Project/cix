@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Two installs into one image no longer install a shared dependency twice (#701)
+
+- **Before:** the duplicate-job check compared chains' targets only, and a chain installs its dependencies first. On the owner's bare-metal box (2026-11-21), requesting an image's packages back to back put `zlib` into two build slots at once; both chains were then reclaimed as "build container gone", and the image was left half-installed.
+- **Now:** an install whose chain would install a package another in-flight chain in the same image still has to install is deferred: the request answers 409 and the log names the package and the job holding it (`deferred -- zlib is already being installed into kernel-builder by the job for openssl`). The rolling drain already treats a refused start as "try later", so an image converging from its recipe is unaffected.
+- **Gate:** `test_pkg` installs two packages sharing a slow dependency into a fresh image back to back.
+
+### Deleting a network no longer pulls an interface out of another network's bridge (#700)
+
+- **Before:** `network_delete()` released every plain interface its record named with `rtnl_link_clear_master()`, which releases the interface from whatever bridge it is in now. On the owner's box, deleting a loopback install's stale `management` network took `eth0` out of `border`, the network the box's own address was on; the box dropped off the LAN mid-request. A boot that then failed to re-attach `border`'s recorded `eth0` said so only on stderr.
+- **Now:** deleting a bridge releases its own ports, and only those; the delete no longer releases plain interfaces itself. A failed re-attach at startup is logged to the log store, naming the network and the interface. Why that boot re-created the loopback network, which happens only when no management address is persisted, is not established and stays open on #700.
+
 ### The dashboard sees an installer build finish, so it can be published (ADR-0339)
 
 - **Before:** the ISO build's and publish's state were assigned directly in their completions, which have no request to announce them. On 192.168.15.95 (2026-11-21) an open dashboard stayed on "building" after the ISO was ready, with **Publish to cache** disabled, so the owner could not publish it from the page.

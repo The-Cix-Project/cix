@@ -1,6 +1,7 @@
 #include "device.h"
 #include "namecheck.h"
 #include "network.h"
+#include "logstore.h"
 #include "persist.h"
 #include "registry.h"
 #include "rtnetlink.h"
@@ -363,11 +364,20 @@ int network_init(const char *state_path)
 			if (rfd < 0)
 				continue;
 			if (network_apply_interface(rfd, &g_networks[i], &g_networks[i].interfaces[j], 1) !=
-			    0)
+			    0) {
 				fprintf(stderr,
 				        "%s: could not re-attach interface %s to network %s on startup "
 				        "(hardware not present on this boot?)\n",
 				        g_state_path, g_networks[i].interfaces[j].ifname, g_networks[i].name);
+				/* #700: and in the log store. On 192.168.200.1 a boot
+				 * left `border` recording eth0 with no port in its
+				 * bridge, and nothing anyone could read said why. */
+				logstore_write("cixd", "error",
+				               "network %s: could not re-attach interface %s at startup (%s) -- "
+				               "the network records it but its bridge does not have it",
+				               g_networks[i].name, g_networks[i].interfaces[j].ifname,
+				               strerror(errno));
+			}
 			rtnl_close(rfd);
 		}
 	}
@@ -567,13 +577,20 @@ enum network_error network_delete(const char *name)
 		return NETWORK_ERR_DELETE_FAILED;
 
 	/*
-	 * Deleting the bridge itself releases (un-enslaves) any still-
-	 * attached ports automatically -- but a VLAN sub-interface this
-	 * network created (network_apply_interface(), vlan_id != 0) has no
-	 * other owner and would otherwise leak as an orphaned, no-longer-
-	 * tracked netdev. Best-effort, not blocking: a genuinely gone/
-	 * already-broken physical interface shouldn't make an otherwise
-	 * unused network un-deletable.
+	 * Deleting the bridge itself releases (un-enslaves) its own ports,
+	 * and only those -- but a VLAN sub-interface this network created
+	 * (network_apply_interface(), vlan_id != 0) has no other owner and
+	 * would otherwise leak as an orphaned, no-longer-tracked netdev.
+	 * Best-effort, not blocking: a genuinely gone/already-broken
+	 * physical interface shouldn't make an otherwise unused network
+	 * un-deletable.
+	 *
+	 * A plain interface is NOT released here (#700). This used to call
+	 * rtnl_link_clear_master() on every interface the record named,
+	 * which releases the interface from whatever bridge it is in NOW:
+	 * on 192.168.200.1, 2026-11-21, deleting a stale loopback-install
+	 * network took eth0 out of `border`, the network the box's own
+	 * address was on, and the box dropped off the LAN mid-request.
 	 */
 	for (i = 0; i < e->interface_count; i++) {
 		if (e->interfaces[i].vlan_id != 0) {
@@ -584,9 +601,6 @@ enum network_error network_delete(const char *name)
 			    rtnl_link_delete(fd, derived) != 0)
 				fprintf(stderr, "%s: could not remove VLAN sub-interface %s while deleting network\n",
 				        name, derived);
-		} else if (rtnl_link_clear_master(fd, e->interfaces[i].ifname) != 0) {
-			fprintf(stderr, "%s: could not release interface %s while deleting network\n", name,
-			        e->interfaces[i].ifname);
 		}
 	}
 
