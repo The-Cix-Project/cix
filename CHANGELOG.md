@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The dashboard sees an installer build finish, so it can be published (ADR-0339)
+
+- **Before:** the ISO build's and publish's state were assigned directly in their completions, which have no request to announce them. On 192.168.15.95 (2026-11-21) an open dashboard stayed on "building" after the ISO was ready, with **Publish to cache** disabled, so the owner could not publish it from the page.
+- **Now:** `iso_build_set()` and `iso_publish_set()` are the only writers, and each announces `getSystemIso` (a finished publish also `getSystemIsoPublished`).
+
 ### A DHCP server keeps its registration, and a changed configuration always restarts it (ADR-0386)
 
 - **Before:**

@@ -12221,6 +12221,20 @@ static void roll_owed_tick(void)
 enum iso_build_state { ISO_BUILD_NONE, ISO_BUILD_BUILDING, ISO_BUILD_READY, ISO_BUILD_FAILED };
 static enum iso_build_state g_iso_build_state = ISO_BUILD_NONE;
 static char g_iso_build_error[256];
+
+/*
+ * The one place the build state changes, and it announces the read that
+ * reports it (ADR-0339). A build ends in a helper child's completion,
+ * with no request to announce it, and the state used to be assigned
+ * directly: measured on 192.168.15.95, 2026-11-21, an open dashboard
+ * stayed on "building" after the ISO was ready, with "Publish to cache"
+ * disabled, so the owner could not publish it.
+ */
+static void iso_build_set(enum iso_build_state s)
+{
+	g_iso_build_state = s;
+	events_announce(EV_getSystemIso);
+}
 /*
  * ADR-0220. Empty unless the finished ISO was actually signed, which
  * needs a release key installed -- an unsigned ISO is still a usable
@@ -13463,7 +13477,7 @@ static int iso_build_start(const char *disk, const char *ip, const char *prefix,
 		return -1;
 	}
 	register_iso_assemble_pidfd(pid, pidfd);
-	g_iso_build_state = ISO_BUILD_BUILDING;
+	iso_build_set(ISO_BUILD_BUILDING);
 	g_iso_build_error[0] = '\0';
 	/* ADR-0358: the toolchain's version, which the isotools artifact's
 	 * own version used to say. */
@@ -13557,7 +13571,7 @@ static void iso_recover_state(void)
 	if (stat(ISO_OUTPUT_PATH, &st) != 0 || !S_ISREG(st.st_mode))
 		return;
 
-	g_iso_build_state = ISO_BUILD_READY;
+	iso_build_set(ISO_BUILD_READY);
 	snprintf(sig_path, sizeof(sig_path), "%s.minisig", ISO_OUTPUT_PATH);
 	if (stat(sig_path, &st) == 0 && S_ISREG(st.st_mode)) {
 		snprintf(g_iso_signature_path, sizeof(g_iso_signature_path), "%s", sig_path);
@@ -13668,8 +13682,18 @@ static void sign_finished_iso(void)
  */
 enum iso_publish_step { ISO_PUBLISH_SIG, ISO_PUBLISH_IMAGE };
 
-static enum { ISO_PUB_NONE, ISO_PUB_RUNNING, ISO_PUB_DONE, ISO_PUB_FAILED } g_iso_publish_state =
-    ISO_PUB_NONE;
+enum iso_pub_state { ISO_PUB_NONE, ISO_PUB_RUNNING, ISO_PUB_DONE, ISO_PUB_FAILED };
+static enum iso_pub_state g_iso_publish_state = ISO_PUB_NONE;
+
+/* The publish state's one setter, announcing as iso_build_set() does; a
+ * finished publish also adds to what this host has published. */
+static void iso_publish_set(enum iso_pub_state s)
+{
+	g_iso_publish_state = s;
+	events_announce(EV_getSystemIso);
+	if (s == ISO_PUB_DONE)
+		events_announce(EV_getSystemIsoPublished);
+}
 static enum iso_publish_step g_iso_publish_step;
 static char g_iso_publish_name[256];   /* canonical .iso name in the cache */
 static char g_iso_publish_error[256];
@@ -14073,7 +14097,7 @@ static void handle_iso_publish_event(struct conn *cc)
 	}
 
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0 || http < 200 || http >= 300) {
-		g_iso_publish_state = ISO_PUB_FAILED;
+		iso_publish_set(ISO_PUB_FAILED);
 		/*
 		 * Name the HTTP status, not just "failed". A 409 here means
 		 * something specific and actionable -- the cache refused an
@@ -14096,7 +14120,7 @@ static void handle_iso_publish_event(struct conn *cc)
 		/* Signature is up; the ISO may now follow. */
 		free(cc);
 		if (start_iso_publish_upload(ISO_PUBLISH_IMAGE) != 0) {
-			g_iso_publish_state = ISO_PUB_FAILED;
+			iso_publish_set(ISO_PUB_FAILED);
 			logstore_write("cixd", "error", "iso publish: %s", g_iso_publish_error);
 		}
 		return;
@@ -14123,13 +14147,13 @@ static void handle_iso_publish_event(struct conn *cc)
 			g_iso_publish_repo = next;
 			free(cc);
 			if (start_iso_publish_upload(ISO_PUBLISH_SIG) != 0) {
-				g_iso_publish_state = ISO_PUB_FAILED;
+				iso_publish_set(ISO_PUB_FAILED);
 				logstore_write("cixd", "error", "iso publish: %s", g_iso_publish_error);
 			}
 			return;
 		}
 	}
-	g_iso_publish_state = ISO_PUB_DONE;
+	iso_publish_set(ISO_PUB_DONE);
 	g_iso_publish_error[0] = '\0';
 	free(cc);
 }
@@ -14167,7 +14191,7 @@ static void handle_iso_assemble_event(struct conn *cc)
 
 	if (waitpid(cc->pkg_fetch_pid, &status, 0) == cc->pkg_fetch_pid && WIFEXITED(status) &&
 	    WEXITSTATUS(status) == 0) {
-		g_iso_build_state = ISO_BUILD_READY;
+		iso_build_set(ISO_BUILD_READY);
 		fprintf(stderr, "iso assembly: succeeded (%s)\n", ISO_OUTPUT_PATH);
 		logstore_write("cixd", "info", "iso assembly: succeeded (%s)", ISO_OUTPUT_PATH);
 		sign_finished_iso();
@@ -14177,7 +14201,7 @@ static void handle_iso_assemble_event(struct conn *cc)
 		if (output_len > 0)
 			logstore_write("cixd", "info", "iso assembly: output: %s", output);
 	} else {
-		g_iso_build_state = ISO_BUILD_FAILED;
+		iso_build_set(ISO_BUILD_FAILED);
 		/*
 		 * The child's own last words go into the error GET /system/iso
 		 * reports, not just the log store: this is the field an
@@ -29668,13 +29692,13 @@ static void handle_system_iso_publish(int fd)
 		return;
 	}
 
-	g_iso_publish_state = ISO_PUB_RUNNING;
+	iso_publish_set(ISO_PUB_RUNNING);
 	g_iso_publish_error[0] = '\0';
 	g_iso_publish_name[0] = '\0';
 	g_iso_publish_repo = iso_publish_next_repo(0); /* ADR-0324: the first marked push */
 	/* Signature first -- see start_iso_publish_upload()'s own comment. */
 	if (start_iso_publish_upload(ISO_PUBLISH_SIG) != 0) {
-		g_iso_publish_state = ISO_PUB_FAILED;
+		iso_publish_set(ISO_PUB_FAILED);
 		respond_error(fd, 503, "Service Unavailable", g_iso_publish_error);
 		return;
 	}
