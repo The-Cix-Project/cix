@@ -2462,6 +2462,38 @@ Verified: full clean rebuild (`-Wall -Werror`, zero warnings across 66 build tar
 - **#689 live:** 687 ran its first drain at 11:02:26 (`image gc: set aside 3 version(s)`). At 11:10 `cixctl process ls` showed no cixd child but procfuse and the watchdog. A look logs nothing when it finds the drops settled or still pending, so that absence alone cannot tell a working check from one that never ran. Nor does the gap between staging and switching prove it: 9 s at 687 → 688, but 5 s at 686 → 687, on the old code, so a short gap shows only that no check was pending then. What holds the change is `test_blocking_waits` and the code. A `deleted subvolumes were still being freed after 7200 s` line would show the looks ran for two hours without holding anything, and that drops are not settling on .95.
 - **#690 shown live at the next switch.** It acts in the process that *writes* the handover, and 686 wrote this one, so the kernel log again took 2,180 lines at 11:02:26. At the 687 → 688 switch (12:22:12, 687 writing), the kernel log has no line at all from two seconds before to five seconds after.
 
+## Part 382: DHCP is served by an ISC dhcpd failover pair (#107, ADR-0386, 0.2.57-707 to -709)
+
+**What shipped.**
+- **The package:** `isc-dhcp@4.4.3-P1-3`, built with tcc. Its revisions measured two build needs: perl for the bundled BIND 9.11, and unpacking `bind/bind.tar.gz` with `tar -z`.
+- **707, ADR-0386:** every range is served by one registered dhcpd container, or by two forming a failover pair in load-balancing mode with `auto-partner-down 600` and `mclt 3600`.
+  - cixd renders `/etc/dhcpd.conf` and creates the lease file on the server's volume when there is none.
+  - A helper child scans the lease files into a snapshot. `GET /v1/dhcp/leases`, each server's failover state, and the DNS servers' new `/etc/dnsmasq-leases` all read that snapshot.
+  - A range takes `dns_servers`; a reservation lies outside every pool; split scope is gone.
+- **708:** a DHCP server or relay can be registered while its container is down.
+- **709:** both members of a pair carry `load balance max seconds`.
+- **On .95:**
+  - image `dhcp` 1.0.0, and dhcp-1/dhcp-2 1.0.0 on `services` (.111/.112, `roll_group: dhcp`, volumes `dhcp-*-state` on vda);
+  - `access` and `remote-access` served by the pair through the cores' relays;
+  - dns-1/dns-2 1.11.0 serve DNS only and read the lease names file.
+
+**How it was verified, on 192.168.15.95, 2026-11-20 and -21.**
+- **Before any code, a scratch pair** (`dhcpt-1`/`dhcpt-2`, `auto-partner-down 60`, `mclt 120`):
+  - it reached `Both servers normal` and balanced a 191-address pool 96/95;
+  - with one stopped, the other moved to `partner-down` exactly 60 s later;
+  - the returning peer waited 118 s in `recover-wait`;
+  - a dhcpd restart with its lease file kept was back in `normal` within a second;
+  - with no lease file, dhcpd refused to start;
+  - a dhcpcd client leased 10.99.0.105, and the peer's copy of that lease carried no `client-hostname`. The parser's test uses those bytes.
+- **Compile probes:** 789 failed one case, a lease file's octal escape (`\001`) read as text; it was fixed. 790 (707), 791 (708) and 792 (709) are the releases' own recipes renamed (#695).
+- **707 live:** registering dhcp-1 answered 404 for two minutes of retries, because the container was in its restart backoff. That is 708's fix.
+- **708 live:**
+  - dhcp-1 and dhcp-2 registered while stopped, started on their rendered conf and an empty lease file (`Wrote 0 leases to leases file`), and reached `normal`/`normal` on `cixctl dhcp server ls`;
+  - moving both ranges restarted the four servers alternately, dhcp-2 then dhcp-1, 7 s apart;
+  - cr-1's relay file names both servers on both networks;
+  - a dhcpcd client on `remote-access` leased 192.168.152.100 through the relay; `cixctl dhcp leases` listed it, and both DNS servers' `/etc/dnsmasq-leases` held `192.168.152.100 scratchclient`.
+- **709's cause, measured on 708:** the secondary logged `load balancing will be disabled for failover peer, cix, because its load balance max secs is 0`.
+
 ## Part 381: a missing secret refused, leases kept, roll groups (#696, #698, ADR-0385, 0.2.57-705, -706)
 
 **What shipped.**

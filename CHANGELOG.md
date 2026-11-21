@@ -6,6 +6,18 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A DHCP server keeps its registration, and a changed configuration always restarts it (ADR-0386)
+
+- **Before:**
+  - deleting a DHCP server's or relay's container unregistered it and dropped it from every range, so recreating a pair member from its deployment turned the pair into one server;
+  - the resync after a container start, and nothing at all after a daemon switch, wrote a changed `dhcpd.conf` without restarting the server, so 709's own render change would never have reached the running dhcp-2;
+  - a lease's name stayed in DNS after the lease ended, until its file moved.
+- **Now:**
+  - a delete keeps the registration and the ranges (the owner's choice); only `dhcp server rm` / `dhcp relay rm` end one, and while a member is gone its partner keeps the pair's configuration, taking the peer's address from its definition or the last one it saw;
+  - every sync that changes a server's file restarts it through the gated timer, and one runs at the first scan tick after a daemon start;
+  - lease names are filtered by expiry and pushed at every scan tick.
+- **Gate:** `test_dhcp` deletes a registered server's container and finds it still registered.
+
 ### Both members of a DHCP pair load-balance (ADR-0386)
 
 - **Before:** `load balance max seconds` was rendered on the primary only. On 192.168.15.95 (0.2.57-708, 2026-11-21) the secondary logged that load balancing was disabled because its own value was 0.

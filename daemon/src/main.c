@@ -19644,16 +19644,21 @@ static int create_container_from_body(const char *body, size_t body_len,
  * equivalent gap. Checked rather than assumed.
  */
 static void dhcp_relays_apply(void); /* ADR-0383, beside the DHCP handlers */
+static void dhcp_apply_and_maybe_restart(void); /* ADR-0386, beside them too */
 
 static void resync_managed_services(void)
 {
 	dns_server_sync_all();
 	dns_forwarders_sync_all();
 	ldap_record_sync_all();
-	dhcp_sync_all(NULL, 0, NULL);
-	/* A container that came back may be a server with a new address,
-	 * which a relay's file names. */
-	dhcp_relays_apply();
+	/*
+	 * ADR-0386: a server whose dhcpd.conf no longer matches what cixd
+	 * renders is restarted, through the gated timer -- dhcpd has no
+	 * reload. Writing the file without the restart left the server on
+	 * its old configuration, and later syncs found the file matching
+	 * and never restarted it. This also re-renders the relays.
+	 */
+	dhcp_apply_and_maybe_restart();
 }
 
 static int create_container_persisted(const char *body, size_t body_len,
@@ -19971,8 +19976,9 @@ static void handle_delete(int fd, const char *name)
 	 */
 	if (e != NULL && e->running && e->teardown_kind == REGISTRY_TEARDOWN_NONE) {
 		dns_server_forget(name);
-		dhcp_server_forget(name);
-		dhcp_relay_forget(name);
+		/* A DHCP server or relay keeps its registration and its ranges
+		 * (ADR-0386): only `dhcp server rm` or `dhcp relay rm` ends
+		 * them. The relays' files are re-rendered without it. */
 		dhcp_relays_apply(); /* ADR-0383: a relay may name this server */
 		dns_record_forget_owner(name);
 		ldap_server_forget(name);
@@ -20115,8 +20121,7 @@ static void handle_delete(int fd, const char *name)
 	 * mid-crash at the moment of the DELETE call.
 	 */
 	dns_server_forget(name);
-	dhcp_server_forget(name);
-	dhcp_relay_forget(name);
+	/* Not the DHCP registrations: they outlive the container (ADR-0386). */
 	dhcp_relays_apply(); /* ADR-0383 */
 	dns_record_forget_owner(name);
 	ldap_server_forget(name);
@@ -25666,7 +25671,7 @@ static void dhcp_dns_names_push(void)
 {
 	static struct dhcp_lease_name names[DNS_LEASE_NAMES_MAX];
 	static struct dns_lease_name out[DNS_LEASE_NAMES_MAX];
-	int n = dhcp_lease_names(names, DNS_LEASE_NAMES_MAX);
+	int n = dhcp_lease_names(names, DNS_LEASE_NAMES_MAX, (long long)time(NULL));
 	int i;
 
 	for (i = 0; i < n; i++) {
@@ -25688,6 +25693,7 @@ static void dhcp_dns_names_push(void)
 static long g_dhcp_scan_next;
 static int g_dhcp_scan_running;
 static int g_dhcp_scan_memfd = -1;
+static int g_dhcp_render_checked;
 
 static int dhcp_scan_work(void *arg)
 {
@@ -25722,6 +25728,19 @@ static void dhcp_scan_tick(void)
 	if (g_dhcp_scan_running || g_hostroll.step == HOSTROLL_SWITCH || now < g_dhcp_scan_next)
 		return;
 	g_dhcp_scan_next = now + DHCP_SCAN_SECONDS;
+	/*
+	 * Once per daemon process, at the first tick: a release that
+	 * changes the render reaches the running servers, which a switch in
+	 * place keeps running on their old files (ADR-0386). After that,
+	 * every change goes through dhcp_apply_and_maybe_restart() itself.
+	 */
+	if (!g_dhcp_render_checked) {
+		g_dhcp_render_checked = 1;
+		dhcp_apply_and_maybe_restart();
+	}
+	/* A lease's name leaves DNS when the lease ends, whether or not
+	 * its file moved; the DNS module writes only on a difference. */
+	dhcp_dns_names_push();
 	if (!dhcp_any_enabled() || !dhcp_lease_files_moved())
 		return;
 	g_dhcp_scan_memfd = memfd_create("cix-dhcpscan", MFD_CLOEXEC);
@@ -31291,12 +31310,12 @@ static void op_startContainer(const struct api_ctx *ctx)
 	/*
 	 * ADR-0197: a server that has just come back gets the current DHCP
 	 * files. Creation already stages them, so this covers the narrow
-	 * window where a reservation changed while the container was still
-	 * starting -- during which dhcp_sync_all() skips it for not being
-	 * running yet, and nothing would otherwise revisit it. No restart:
-	 * the conf it started with is this one.
+	 * window where the configuration changed while the container was
+	 * still starting -- during which a sync skips it for not being
+	 * running yet. A server whose file then differs is restarted, since
+	 * dhcpd reads it only at start (ADR-0386).
 	 */
-	dhcp_sync_all(NULL, 0, NULL);
+	dhcp_apply_and_maybe_restart();
 }
 
 static void op_stopContainer(const struct api_ctx *ctx)

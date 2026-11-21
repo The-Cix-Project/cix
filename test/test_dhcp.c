@@ -631,6 +631,7 @@ int main(void)
 	expect(&client, "DELETE", "/v1/dhcp/networks/st-relayed", NULL, 204,
 	        "remove the relayed range");
 	expect(&client, "DELETE", "/v1/containers/dhcprelay1", NULL, 204, "remove the relay");
+	expect(&client, "DELETE", "/v1/dhcp/servers/dhcpsrv3", NULL, 204, "unregister the third server");
 	expect(&client, "DELETE", "/v1/containers/dhcpsrv3", NULL, 204, "remove the third server");
 
 	/* 8. Deleting the network takes its DHCP config with it: a range
@@ -638,6 +639,21 @@ int main(void)
 	expect(&client, "DELETE", "/v1/dhcp/networks/selftest-dhcp", NULL, 204, "disable DHCP");
 	expect(&client, "DELETE", "/v1/containers/dhcpsrv", NULL, 204, "remove the first container");
 	expect(&client, "DELETE", "/v1/containers/dhcpsrv2", NULL, 204, "remove the second container");
+	/* A container delete keeps its DHCP registration: recreating a pair
+	 * member must not turn the pair into one server (ADR-0386, the
+	 * owner's choice of 2026-11-21). Only `dhcp server rm` ends it. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET", "/v1/dhcp/servers", NULL, &r) != 0 ||
+	    r.status != 200 || r.body == NULL ||
+	    strstr(r.body, "\"container\":\"dhcpsrv2\"") == NULL) {
+		fprintf(stderr, "FAIL: deleting a server's container unregistered it\n");
+		ok = 0;
+	}
+	cix_response_free(&r);
+	expect(&client, "DELETE", "/v1/dhcp/servers/dhcpsrv2", NULL, 204,
+	        "unregister the deleted server by hand");
+	expect(&client, "DELETE", "/v1/dhcp/servers/dhcpsrv", NULL, 204,
+	        "unregister the first server by hand");
 	/*
 	 * A bridge is real kernel state that outlives this daemon, so
 	 * leaving one behind makes the NEXT run fail at its first request

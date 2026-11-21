@@ -26,7 +26,7 @@ Measured on 192.168.15.95, 2026-11-20, with a scratch pair (`dhcpt-1`/`dhcpt-2`,
 
 From dhcpd's own manuals ([dhcpd.conf(5)](https://manpages.debian.org/bookworm/isc-dhcp-server/dhcpd.conf.5.en.html), [dhcpd(8)](https://manpages.debian.org/bookworm/isc-dhcp-server/dhcpd.8.en.html)):
 - dhcpd has no reload signal: *"Whenever changes are made to the dhcpd.conf file, dhcpd must be restarted"*.
-- An authoritative server answers a request for an address it knows nothing about with a NAK.
+- About an address it knows nothing about, a server *"will remain silent, unless the address is incorrect for the network segment ... and the server is authoritative for that network segment, in which case the server will send a DHCPNAK"*. *(Corrected 2026-11-21: this said such a request is NAKed. It is not, unless the address is wrong for the segment; a renewing client the server does not know gets no answer, and takes a new lease when its old one ends.)*
 
 ## Decision
 
@@ -48,12 +48,15 @@ From dhcpd's own manuals ([dhcpd.conf(5)](https://manpages.debian.org/bookworm/i
 
    **cixd never declares partner-down** (the owner, *"don't get cixd involved"*). dhcpd moves itself after ten minutes without its peer, and then serves the whole pool. A restart takes seconds, so it never reaches partner-down. Only a real outage does, and a peer returning from one waits one MCLT while the survivor serves everything.
 4. **Leases are the server's, on its volume, and cixd only seeds the file.** A server mounts a volume at `/var/lib/dhcp`. Its lease file is `/var/lib/dhcp/dhcpd.leases`. Before the server starts, cixd creates that file empty, host-side on the volume, when it does not exist, and never writes it otherwise. That is the one write cixd makes there, and it exists only because dhcpd will not start without the file.
+   - **A server can be registered while it is down** (added 2026-11-21, 0.2.57-708). A dhcpd container cannot start until it is registered, so before registration it is in its restart backoff and out of the registry; requiring the registry made registering dhcp-1 a 404 on .95. A defined container is accepted, and its next start stages its configuration and seeds its lease file.
+   - **A container delete keeps its registration and its ranges** (the owner, 2026-11-21, *"Keep registration"*). Deleting and recreating a pair member is how a deployment is applied, and unregistering it then dropped it from every range, which turned the pair into one server. Only `dhcp server rm` or `dhcp relay rm` ends a registration. While a member is gone, the survivor keeps the pair's configuration: the peer's address comes from the registry, then the peer's definition, then the last address the survivor saw.
 5. **A change restarts the pair one member at a time, through the timer every daemon-chosen restart already uses.** dhcpd has no reload.
    - A range, reservation, server or relay change that alters a server's rendered `dhcpd.conf` arms `arm_rolling_restart_timer()` for that server, exactly as a range change armed it for dnsmasq.
    - The pair declares `roll_group` (`dhcp` on .95), so ADR-0385's gate restarts the second only once the first is running and ready. A quick restart returns both to normal at once (measured above).
    - The DNS servers no longer restart for any DHCP change.
+   - **Every sync that finds a server's file changed restarts it**, the resync after any container start included, and once after every daemon start or switch. A sync that only wrote the file left the server on its old configuration, and later syncs found the file matching (found at 0.2.57-709, whose render change would otherwise never have reached dhcp-2).
 6. **A reservation is a host declaration outside every range.** A reservation's address must lie in a network a range is defined on, and outside every range's pool; one inside a pool is a 400. dhcpd gives a `fixed-address` host its address without a lease, so cixd's own reservations are the source of their names, not the lease file.
-7. **Leases are read from the lease files, off the loop.** dhcpd's lease file is an append log, rewritten only periodically, so its size is not bounded by what is asked for (ADR-0342). `GET /v1/dhcp/leases` and the DNS names below read it in a helper child, and the request waits for the result (a park kind).
+7. **Leases are read from the lease files, off the loop, into a snapshot.** dhcpd's lease file is an append log, rewritten only periodically, so its size is not bounded by what is asked for (ADR-0342). Every 15 seconds while a range is enabled, cixd stats each running server's lease file, and when one moved a helper child reads them all into a snapshot. `GET /v1/dhcp/leases` and `GET /v1/dhcp/servers` answer from it, leaving out a lease past its end, and installing a changed snapshot announces both reads. *(Corrected 2026-11-21: this said a request waits for its own read, a park kind. `getDhcpLeases` is a sample, and a sample runs in-process, where nothing can wait, so a request reads the snapshot instead.)*
    - Both peers hold every lease, so a lease is reported once: the newest record for each address, across both files.
    - Each server's failover state (its own and its peer's, from the file's last `failover peer ... state` block) is reported on `GET /v1/dhcp/servers`.
 8. **Lease names reach DNS through cixd, into a file of their own.** dnsmasq accepts no dynamic updates, so dhcpd sends none (`ddns-update-style none`).
@@ -61,18 +64,19 @@ From dhcpd's own manuals ([dhcpd.conf(5)](https://manpages.debian.org/bookworm/i
    - The records file is never touched, so a lease is still not a record (ADR-0197).
    - A name an operator record or a container already resolves always wins, and the lease name is left out.
    - A client-supplied hostname that is not a valid DNS label is left out. It is untrusted input.
-   - The file is refreshed after the lease read above, on a timer while any range is enabled, and from the same read a `GET /v1/dhcp/leases` makes.
+   - Its names are every named reservation and every snapshot lease still current. It is rendered at every scan tick and written only on a difference, so a name leaves DNS when its lease ends.
 9. **Relays forward to both peers.** ADR-0383's relay file already writes one `dhcp-relay` line per server of a relayed range, so a pair is two lines, and ADR-0383's refusals apply to each peer.
+10. **A range names the DNS servers it hands out** (`dns_servers`, up to four). dnsmasq sent its own address when none was configured; dhcpd sends nothing, and reading the DNS registry instead would break ADR-0197's containment.
 
 ## Consequences
 
 - **Survival.** A pair now survives the loss of either member with the whole pool, after ten minutes, where split scope left the survivor its own slice forever.
 - **Reservation changes.** A reservation change is no longer live. It costs the pair two quick restarts, one at a time.
 - **dhcpd is frozen.** A security fix found in it is carried as a patch in the `isc-dhcp` recipe, by this project. Its only clients are the relays on internal networks.
-- **Cut-over on .95.**
-  - dhcp-1 and dhcp-2 are created on `services` (roll group `dhcp`, leases on volumes on vda) and registered. `access` moves first, and `remote-access`, the owner's own way in, moves last, with the owner told first.
-  - Clients holding a dnsmasq lease are NAKed at their next renewal and take a new lease from the pair. Two leases were live when this was written (`cixctl dhcp leases`), so no lease is imported.
-  - dns-1 and dns-2 lose DHCP in a new deployment revision, after every range has moved.
+- **Cut-over on .95, as it happened (2026-11-21).**
+  - dhcp-1 and dhcp-2 were created on `services` (roll group `dhcp`, leases on volumes on vda), registered once 708 allowed it while they were down, and started.
+  - `access` and `remote-access` were moved one after the other, with the owner's go-ahead. Moving `access` restarted dns-1 and dns-2 too, since they were still registered, and dnsmasq stopped serving DHCP on both networks then, so `remote-access` followed straight away. dns-1 and dns-2 were then unregistered and recreated as 1.11.0, DNS only.
+  - Clients holding a dnsmasq lease get no answer to a renewal from the pair, and take a new lease when theirs ends. Two leases were live, so none was imported.
 
 ## Alternatives
 

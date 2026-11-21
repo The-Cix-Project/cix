@@ -479,7 +479,10 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **No second backend, no split scope.** Never render a dnsmasq DHCP file again, and never add one beside dhcpd.
 - **A pair is two servers; a server is in at most one pair.** The name that sorts first is primary. Never configure roles.
 - **dhcpd takes over the pool by itself (`auto-partner-down 600`, `mclt 3600`). cixd never declares partner-down** and never speaks OMAPI.
-- **dhcpd has no reload.** A change that alters a server's `dhcpd.conf` restarts it through the rolling-restart timer, and the pair's `roll_group` keeps the two apart. A quick restart returns both to normal at once (measured).
+- **dhcpd has no reload.** A change that alters a server's `dhcpd.conf` restarts it through the rolling-restart timer, and the pair's `roll_group` keeps the two apart. A quick restart returns both to normal at once (measured). **Every sync that finds a server's file changed restarts it**, and one runs after every daemon start or switch; never write the file without the restart, or the server stays on its old configuration.
+- **`load balance max seconds` goes on both peers; `mclt` and `split` on the primary only.** With it on the primary alone, the secondary disabled load balancing (measured, 0.2.57-708).
+- **A container delete keeps its DHCP server or relay registration and its ranges** (the owner, 2026-11-21, *"Keep registration"*); only `dhcp server rm` / `dhcp relay rm` end one. Registration accepts a defined container that is down, since a dhcpd container cannot start until it is registered. Never make a delete unregister again: recreating a pair member is how its deployment is applied.
+- **On .95:** dhcp-1/dhcp-2 (services .111/.112, `roll_group: dhcp`, volumes `dhcp-*-state`) serve `access` and `remote-access` through the cores; dns-1/dns-2 serve DNS only.
 - **cixd creates `/var/lib/dhcp/dhcpd.leases` empty on the server's volume when it is absent, and never writes it otherwise.** dhcpd refuses to start without it.
 - **A reservation lies outside every pool.** Its name comes from cixd's state, never the lease file.
 - **Lease files are read in a helper child** (an append log, ADR-0342), and lease names go into `/etc/dnsmasq-leases`, never the records file; a record or container name wins, and a hostname that is not a DNS label is dropped.

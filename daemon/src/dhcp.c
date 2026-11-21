@@ -4,6 +4,7 @@
 #include "dns.h"
 #include "persist.h"
 #include "registry.h"
+#include "containerdef.h"
 #include "network.h"
 #include "events.h"
 #include "dhcprelay.h"
@@ -296,12 +297,6 @@ enum dhcp_error dhcp_server_unregister(const char *container)
 	return save_state() == 0 ? DHCP_OK : DHCP_ERR_PERSIST_FAILED;
 }
 
-void dhcp_server_forget(const char *container)
-{
-	if (dhcp_server_is_registered(container))
-		(void)dhcp_server_unregister(container);
-}
-
 /* 1 when the file at path is absent or holds something other than
  * want. Every rendered file is compared before it is written, so a
  * resync after every container start rewrites, and reloads or restarts,
@@ -466,12 +461,6 @@ enum dhcp_error dhcp_relay_unregister(const char *container)
 					n->enabled = 0;
 	}
 	return save_state() == 0 ? DHCP_OK : DHCP_ERR_PERSIST_FAILED;
-}
-
-void dhcp_relay_forget(const char *container)
-{
-	if (dhcp_relay_is_registered(container))
-		(void)dhcp_relay_unregister(container);
 }
 
 void dhcp_relays_write_json(struct json_writer *w)
@@ -938,13 +927,105 @@ static const char *pair_partner(const char *server)
  * compute the same answer. me's attachments may be given (the create
  * path); the other's are the registry's. 0, or -1 when they share none.
  */
+/*
+ * A container's attachments from its definition, for one that is not in
+ * the registry: stopped, or waiting out a restart backoff. Only networks
+ * named with an "ip" are known; an auto-allocated address is not. 0 when
+ * it has no definition.
+ */
+static int def_attachments(const char *container, const struct registry_network_attachment **out)
+{
+	static struct registry_network_attachment atts[DHCPRELAY_MAX_ATT];
+	const struct container_def *def = containerdef_find(container);
+	struct json_value *root;
+	const struct json_value *nets;
+	int n = 0;
+	size_t i;
+
+	*out = atts;
+	if (def == NULL || def->body == NULL)
+		return 0;
+	root = json_parse(def->body, def->body_len);
+	nets = root != NULL ? json_object_get(root, "networks") : NULL;
+	for (i = 0; nets != NULL && nets->type == JSON_ARRAY && i < nets->u.array.count &&
+	            n < DHCPRELAY_MAX_ATT;
+	     i++) {
+		const struct json_value *it = nets->u.array.items[i];
+		const char *name = json_as_string(json_object_get(it, "name"));
+		uint32_t ip = parse_ip(json_as_string(json_object_get(it, "ip")));
+
+		if (name == NULL || ip == 0)
+			continue;
+		memset(&atts[n], 0, sizeof(atts[n]));
+		snprintf(atts[n].name, sizeof(atts[n].name), "%s", name);
+		atts[n].ip_be = ip;
+		n++;
+	}
+	json_free(root);
+	return n;
+}
+
+/*
+ * The last peer channel each server resolved, for when its partner is in
+ * neither the registry nor the definitions -- deleted and about to be
+ * recreated. Without it, the survivor's file would lose the pair's pool
+ * exactly while failover is what it is for.
+ */
+static struct {
+	char me[DHCP_SERVER_NAME_MAX];
+	char peer[DHCP_SERVER_NAME_MAX];
+	uint32_t my_be, peer_be;
+} g_peer_seen[DHCP_MAX_SERVERS];
+
+static int pair_addresses_resolve(const char *me, const char *peer,
+                                  const struct registry_network_attachment *self,
+                                  int self_count, uint32_t *my_be, uint32_t *peer_be);
+
 static int pair_addresses(const char *me, const char *peer,
                           const struct registry_network_attachment *self, int self_count,
                           uint32_t *my_be, uint32_t *peer_be)
 {
+	int i, free_slot = -1;
+
+	if (pair_addresses_resolve(me, peer, self, self_count, my_be, peer_be) == 0) {
+		for (i = 0; i < DHCP_MAX_SERVERS; i++) {
+			if (g_peer_seen[i].me[0] == '\0') {
+				if (free_slot < 0)
+					free_slot = i;
+				continue;
+			}
+			if (strcmp(g_peer_seen[i].me, me) == 0)
+				break;
+		}
+		if (i == DHCP_MAX_SERVERS)
+			i = free_slot;
+		if (i >= 0) {
+			snprintf(g_peer_seen[i].me, DHCP_SERVER_NAME_MAX, "%s", me);
+			snprintf(g_peer_seen[i].peer, DHCP_SERVER_NAME_MAX, "%s", peer);
+			g_peer_seen[i].my_be = *my_be;
+			g_peer_seen[i].peer_be = *peer_be;
+		}
+		return 0;
+	}
+	for (i = 0; i < DHCP_MAX_SERVERS; i++)
+		if (strcmp(g_peer_seen[i].me, me) == 0 && strcmp(g_peer_seen[i].peer, peer) == 0) {
+			*my_be = g_peer_seen[i].my_be;
+			*peer_be = g_peer_seen[i].peer_be;
+			return 0;
+		}
+	return -1;
+}
+
+static int pair_addresses_resolve(const char *me, const char *peer,
+                                  const struct registry_network_attachment *self,
+                                  int self_count, uint32_t *my_be, uint32_t *peer_be)
+{
 	const struct registry_network_attachment *mine, *theirs, *pri;
 	int nm = attachments_of(me, self, self_count, &mine);
 	int np = attachments_of(peer, NULL, 0, &theirs);
+
+	if (np == 0)
+		np = def_attachments(peer, &theirs);
 	int me_primary = strcmp(me, peer) < 0;
 	int npri = me_primary ? nm : np;
 	int i, j;
@@ -1526,7 +1607,7 @@ void dhcp_leases_write_json(struct json_writer *w, long long now)
  * (cixd's own state, since a fixed-address host never appears in a lease
  * file), then every current lease's name from the last snapshot.
  */
-int dhcp_lease_names(struct dhcp_lease_name *out, int max)
+int dhcp_lease_names(struct dhcp_lease_name *out, int max, long long now)
 {
 	int i, n = 0;
 
@@ -1539,6 +1620,9 @@ int dhcp_lease_names(struct dhcp_lease_name *out, int max)
 	}
 	for (i = 0; i < g_snap_lease_count && n < max; i++) {
 		if (g_snap_leases[i].hostname[0] == '\0')
+			continue;
+		/* A lease past its end leaves DNS even before its file moves. */
+		if (g_snap_leases[i].expires_at != 0 && g_snap_leases[i].expires_at <= now)
 			continue;
 		out[n].ip_be = g_snap_leases[i].ip_be;
 		snprintf(out[n].hostname, sizeof(out[n].hostname), "%s", g_snap_leases[i].hostname);

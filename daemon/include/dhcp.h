@@ -176,7 +176,6 @@ enum dhcp_error dhcp_server_register(const char *container);
 enum dhcp_error dhcp_server_unregister(const char *container);
 int dhcp_server_is_registered(const char *container);
 int dhcp_server_list(char out[][DHCP_SERVER_NAME_MAX], int max);
-void dhcp_server_forget(const char *container);
 /* Each server, with its failover state from the last lease scan. */
 void dhcp_servers_write_json(struct json_writer *w);
 
@@ -188,7 +187,6 @@ int dhcp_relay_is_registered(const char *container);
 /* The service in that container that runs the relay, or NULL. */
 const char *dhcp_relay_service(const char *container);
 int dhcp_relay_list(char out[][DHCP_SERVER_NAME_MAX], int max);
-void dhcp_relay_forget(const char *container);
 void dhcp_relays_write_json(struct json_writer *w);
 /* One relay's /etc/dnsmasq-relay.conf, from the current state and the
  * registry's attachments (self as for dhcp_render_conf()). Bytes
@@ -247,11 +245,12 @@ int dhcp_snapshot_apply(const char *json, size_t len);
 /* The last snapshot's leases still current at `now`, as a JSON array. */
 void dhcp_leases_write_json(struct json_writer *w, long long now);
 
-/* The current leases' names, from the last snapshot. */
+/* The names of the reservations and of the last snapshot's leases still
+ * current at `now`. */
 struct dhcp_lease_name {
 	uint32_t ip_be;
 	char hostname[DHCP_HOSTNAME_MAX];
 };
-int dhcp_lease_names(struct dhcp_lease_name *out, int max);
+int dhcp_lease_names(struct dhcp_lease_name *out, int max, long long now);
 
 #endif /* DHCP_H */

@@ -10,7 +10,7 @@ This guide covers standing each service up, feeding it, and taking a server out 
 2. **The container is registered** as a server of its kind. Registration is what makes the daemon write configuration into it and track its health. Deleting a container forgets its registration.
 3. **Health is probed**, and a server can be drained by hand. See [Health, drain and undrain](#health-drain-and-undrain).
 
-A deployment can declare its own registration, so recreating the container from its recipe restores the server and not only the process: `dns_server` (`{"hosts_path": ...}`), `ntp_server: true`, `syslog_target: true` and `ldap_server` in the recipe are each equivalent to the matching register call after creation (see the `ContainerCreateRequest` schema in [`openapi.yaml`](../api/openapi.yaml)). The shipped `dns-1`/`dns-2` recipes declare `dns_server`, the `ntp-*` recipes `ntp_server` and the `syslog-*` recipes `syslog_target`, so applying any of them registers it. DHCP registration has no recipe field: after a DHCP server's container is deleted and recreated, register it again with `cixctl dhcp server add` and name it in its ranges again.
+A deployment can declare its own registration, so recreating the container from its recipe restores the server and not only the process: `dns_server` (`{"hosts_path": ...}`), `ntp_server: true`, `syslog_target: true` and `ldap_server` in the recipe are each equivalent to the matching register call after creation (see the `ContainerCreateRequest` schema in [`openapi.yaml`](../api/openapi.yaml)). The shipped `dns-1`/`dns-2` recipes declare `dns_server`, the `ntp-*` recipes `ntp_server` and the `syslog-*` recipes `syslog_target`, so applying any of them registers it. DHCP registration needs no recipe field: deleting a DHCP server's or relay's container keeps its registration and its place in ranges, so recreating it from its deployment restores it ([ADR-0386](../adr/0386-dhcp-is-served-by-an-isc-dhcpd-failover-pair.md)).
 
 The recipes, images and deployments reach a host through the recipe repository sync (`cixctl pkg sync`, configured with `cixctl pkg source`, ADR-0324), which publishes package recipes, image recipes and deployments together.
 
@@ -91,13 +91,13 @@ A server container runs `/usr/sbin/dhcpd -f -cf /etc/dhcpd.conf -lf /var/lib/dhc
 
 ```sh
 cixctl deployment apply dhcp-1
-cixctl dhcp server add dhcp-1          # restarts it; it starts with its configuration
+cixctl dhcp server add dhcp-1          # accepted while it is down; its next start has its configuration
 cixctl dhcp server add dhcp-2
 cixctl dhcp server ls
 cixctl dhcp server rm dhcp-2
 ```
 
-dhcpd will not start until its container is registered: before that it has no configuration and no lease file. Registering restarts it, and every start from then on stages `/etc/dhcpd.conf` and creates an empty lease file on the volume if there is none. `dhcp server ls` shows each server's partner and failover state; `normal` means both are serving. Removing a server also drops it from every range that named it, and disables any range left with no server.
+dhcpd will not start until its container is registered: before that it has no configuration and no lease file, so registration accepts a container that is down. Start it with `cixctl container start` if it is stopped; every start from then on stages `/etc/dhcpd.conf` and creates an empty lease file on the volume if there is none. `dhcp server ls` shows each server's partner and failover state; `normal` means both are serving. Removing a server also drops it from every range that named it, and disables any range left with no server.
 
 ### A range on a network
 

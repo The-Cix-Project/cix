@@ -4227,10 +4227,13 @@ paths:
                     A container running ISC dhcpd against /etc/dhcpd.conf,
                     with a volume at /var/lib/dhcp for its leases
                     (ADR-0386). Until it is registered it has neither, and
-                    dhcpd will not start; registering restarts it, and
-                    every start from then on stages its configuration and
-                    creates an empty lease file on the volume if there is
-                    none.
+                    dhcpd will not start, so a container that is defined
+                    but down is accepted. A running one is restarted; a
+                    stopped one starts with both at its next start. Every
+                    start stages its configuration and creates an empty
+                    lease file on the volume if there is none. Deleting
+                    the container keeps the registration and its ranges;
+                    only DELETE /dhcp/servers/{container} ends it.
       responses:
         "201":
           description: Registered
