@@ -4,7 +4,7 @@ You are an elite Operating System Architect and Systems C Programmer. We are ite
 
 ## vpn-1 is checked at the end of every run
 
-**The owner reaches their network through vpn-1 on 192.168.15.95** -- the owner on 2026-11-03: *"at the end of each run, I expect you to check if vpn-1 is running. I depend on it for remote access"*. So every run ends with checking that vpn-1 is `running` and that longwire's latest start reached its dial tone (`GET /v1/system/logs?container=vpn-1`). If it is down, find the cause and bring it back. Repairing through packages and recipes is in scope: on the day this was written, a rolled hibr broke the longwire module, and longwire 0.5.39-2 fixed it (#672). Stopping, starting or removing the container itself is asked of the owner first.
+**The owner reaches their network through vpn-1 and vpn-2 on gibsson-1 (192.168.253.1)** -- moved there from 192.168.15.95 on 2026-11-21 at the owner's request, new numbers 402-339-003 (vpn-1) and 259-619-514 (vpn-2). The owner on 2026-11-03: *"at the end of each run, I expect you to check if vpn-1 is running. I depend on it for remote access"*. So every run ends with checking that vpn-1 is `running` and that longwire's latest start reached its dial tone (`GET /v1/system/logs?container=vpn-1`). If it is down, find the cause and bring it back. Repairing through packages and recipes is in scope: on the day this was written, a rolled hibr broke the longwire module, and longwire 0.5.39-2 fixed it (#672). Stopping, starting or removing the container itself is asked of the owner first.
 
 ## The Immutable Maxims — the base every other rule in this file operates from
 
