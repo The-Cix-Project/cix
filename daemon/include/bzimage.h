@@ -34,6 +34,19 @@ int bzimage_check(const char *path);
 int bzimage_release(const char *path, char *out, size_t out_size);
 
 /*
+ * The build the image will report as `uname -v`: the version string
+ * after "<release> (<by>@<host>) ", which is the build number and the
+ * build time ("#1 SMP PREEMPT Sat Nov 21 23:46:42 UTC 2026"). Two
+ * builds of one release differ here, so this tells a rebuilt kernel
+ * from the running one where the release cannot (#703). That holds as
+ * long as a build does not pin KBUILD_BUILD_TIMESTAMP, which the kernel
+ * recipe does not (kernel@7.3.5-3, read 2026-11-21). 0 with out filled,
+ * -1 when path is not a bzImage or its string has no build part.
+ */
+#define BZIMAGE_BUILD_MAX 256
+int bzimage_build(const char *path, char *out, size_t out_size);
+
+/*
  * Whether release is one of the lines of list (newline-separated, as a
  * root's kernel-releases record is written). An empty list contains
  * nothing. 1 or 0.

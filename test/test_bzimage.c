@@ -95,6 +95,28 @@ int main(void)
 	if (bzimage_release(path, release, 4) == 0)
 		fail("a release longer than the buffer is refused, not truncated");
 
+	/* #703: the build part, which tells two builds of one release apart.
+	 * The string is the owner's box's own kernel's, 2026-11-21. */
+	{
+		char build[BZIMAGE_BUILD_MAX];
+
+		write_image("build", 1, 0x020F,
+		            "7.3.5 (@__pkgbuild-0) #1 SMP PREEMPT Sat Nov 21 23:46:42 UTC 2026", path,
+		            sizeof(path));
+		if (bzimage_build(path, build, sizeof(build)) != 0 ||
+		    strcmp(build, "#1 SMP PREEMPT Sat Nov 21 23:46:42 UTC 2026") != 0)
+			fail("the build is what follows \") \": uname -v");
+		write_image("nobuild", 1, 0x020F, "7.2.3", path, sizeof(path));
+		if (bzimage_build(path, build, sizeof(build)) == 0)
+			fail("a version string with only a release has no build");
+		write_image("plainbuild", 0, 0x020F, "7.3.5 (x) #1 SMP", path, sizeof(path));
+		if (bzimage_build(path, build, sizeof(build)) == 0)
+			fail("no build is read from a file that is not a bzImage");
+		write_image("smallbuild", 1, 0x020F, "7.3.5 (x) #1 SMP", path, sizeof(path));
+		if (bzimage_build(path, build, 4) == 0)
+			fail("a build longer than the buffer is refused, not truncated");
+	}
+
 	snprintf(path, sizeof(path), "%s/absent", g_dir);
 	if (bzimage_check(path) != -1)
 		fail("a missing file is -1");

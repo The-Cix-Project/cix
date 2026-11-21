@@ -11855,6 +11855,23 @@ static int hostroll_parts_read(struct hostroll_parts *p)
 	p->kernel_behind = p->kernel.available[0] != '\0' || p->kernel.failed;
 	p->kernel_not_running = p->kernel.installed[0] != '\0' &&
 	                        strcmp(kernel_upstream, running_kernel) != 0;
+	/*
+	 * #703: a rebuild at the same upstream version (a config change, a
+	 * new package release) reports the same `uname -r`, so the release
+	 * alone called kernel 7.3.5-3 running on a box booted into 7.3.5-1
+	 * (the owner's bare-metal box, 2026-11-21) and the roll never staged
+	 * it. The build string tells them apart: the hostbuild's bzImage
+	 * against `uname -v`. Unreadable on either side decides nothing.
+	 */
+	if (!p->kernel_not_running && p->kernel.installed[0] != '\0') {
+		char built[BZIMAGE_BUILD_MAX], kpath[PATH_MAX];
+		struct utsname uts;
+
+		snprintf(kpath, sizeof(kpath), "%s/kernel/bzImage", ARTIFACTS_DIR);
+		if (bzimage_build(kpath, built, sizeof(built)) == 0 && uname(&uts) == 0 &&
+		    strcmp(built, uts.version) != 0)
+			p->kernel_not_running = 1;
+	}
 	return 0;
 }
 

@@ -55,8 +55,17 @@ static int load_state(void)
 		return -1;
 	}
 
+	/*
+	 * #702: 0 is "no override", and it is what save_state() writes for a
+	 * port nobody set -- every fresh install. Refusing it refused the
+	 * whole file, and at boot that is only a warning on stderr, so the
+	 * management address in the same file was dropped and the host came
+	 * up loopback-only after every reboot (measured on the owner's
+	 * bare-metal box, 2026-11-21, twice). .95 never hit it: its ports
+	 * were set explicitly.
+	 */
 	jport = json_object_get(root, "port");
-	if (jport != NULL) {
+	if (jport != NULL && jport->type == JSON_NUMBER && json_as_number(jport) != 0) {
 		int port = (int)json_as_number(jport);
 
 		if (port < 1 || port > 65535) {
@@ -82,7 +91,8 @@ static int load_state(void)
 	}
 
 	jhttps_port = json_object_get(root, "https_port");
-	if (jhttps_port != NULL) {
+	if (jhttps_port != NULL && jhttps_port->type == JSON_NUMBER &&
+	    json_as_number(jhttps_port) != 0) { /* 0: no override, as for port above (#702) */
 		int port = (int)json_as_number(jhttps_port);
 
 		if (port < 1 || port > 65535) {

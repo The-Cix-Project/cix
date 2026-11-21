@@ -36,17 +36,14 @@ int bzimage_check(const char *path)
 	return ok;
 }
 
-int bzimage_release(const char *path, char *out, size_t out_size)
+/* The version string the setup header points at, NUL-terminated within
+ * text (text_size - 1 bytes at most; a short read is fine). 0 or -1. */
+static int version_text(const char *path, char *text, size_t text_size)
 {
 	unsigned char le[2];
 	unsigned version, pointer;
-	char text[BZIMAGE_RELEASE_MAX];
-	size_t i;
 	int fd;
 
-	if (out_size == 0)
-		return -1;
-	out[0] = '\0';
 	fd = open(path, O_RDONLY | O_CLOEXEC);
 	if (fd < 0)
 		return -1;
@@ -64,13 +61,51 @@ int bzimage_release(const char *path, char *out, size_t out_size)
 		close(fd);
 		return -1;
 	}
-	/* A short read is fine as long as the release word ends inside it. */
-	memset(text, 0, sizeof(text));
-	if (pread(fd, text, sizeof(text) - 1, (off_t)pointer + 0x200) <= 0) {
+	memset(text, 0, text_size);
+	if (pread(fd, text, text_size - 1, (off_t)pointer + 0x200) <= 0) {
 		close(fd);
 		return -1;
 	}
 	close(fd);
+	return 0;
+}
+
+int bzimage_build(const char *path, char *out, size_t out_size)
+{
+	char text[BZIMAGE_BUILD_MAX];
+	const char *hash;
+	size_t n;
+
+	if (out_size == 0)
+		return -1;
+	out[0] = '\0';
+	if (version_text(path, text, sizeof(text)) != 0)
+		return -1;
+	/* "<release> (<by>@<host>) <uts version>": the uts version is what
+	 * follows ") ", and starts with the build number's '#'. */
+	hash = strstr(text, ") #");
+	if (hash == NULL)
+		return -1;
+	hash += 2;
+	n = strcspn(hash, "\r\n");
+	if (n == 0 || n >= out_size)
+		return -1;
+	memcpy(out, hash, n);
+	out[n] = '\0';
+	return 0;
+}
+
+int bzimage_release(const char *path, char *out, size_t out_size)
+{
+	char text[BZIMAGE_RELEASE_MAX];
+	size_t i;
+
+	if (out_size == 0)
+		return -1;
+	out[0] = '\0';
+	/* A short read is fine as long as the release word ends inside it. */
+	if (version_text(path, text, sizeof(text)) != 0)
+		return -1;
 	for (i = 0; i < sizeof(text) - 1 && text[i] != '\0' && text[i] != ' '; i++)
 		if (text[i] < 0x21 || text[i] > 0x7E)
 			return -1;

@@ -6,6 +6,16 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The management address survives a reboot on a fresh install (#702)
+
+- **Before:** `daemon_config.json` is written with `"port": 0` and `"https_port": 0` for ports nobody set, which is every fresh install, and the loader refused 0 as an invalid port. That refused the whole file, at boot only as a warning on stderr, so the management address saved in it was dropped: the owner's bare-metal box came up loopback-only (`listening on http 127.0.0.1:80`) after both reboots on 2026-11-21 and was re-addressed from its console each time. .95 never hit it, as its ports were set explicitly.
+- **Now:** 0 loads as "no override", which is what the writer has always meant by it; an out-of-range port is still refused. `test_daemon_config` (in SELFTESTS) loads a file written the way a fresh install writes it.
+
+### A kernel rebuilt at the same upstream version is deployed by the roll (#703)
+
+- **Before:** the roll called the kernel running when the hostbuild's upstream version matched `uname -r`. kernel 7.3.5-3 (the NR_CPUS and rtw88 config) built over a running 7.3.5-1 was reported as `current: kernel 7.3.5-3 ... are the newest and running`, and was deployed by hand.
+- **Now:** when the releases match, the hostbuild bzImage's build string (`bzimage_build()`, the `#1 SMP ... <build time>` that `uname -v` reports) is compared with the running kernel's, and a different build is staged and booted like any newer kernel. Nothing is recorded, so a box running an older cix needs no migration.
+
 ### Two installs into one image no longer install a shared dependency twice (#701)
 
 - **Before:** the duplicate-job check compared chains' targets only, and a chain installs its dependencies first. On the owner's bare-metal box (2026-11-21), requesting an image's packages back to back put `zlib` into two build slots at once; both chains were then reclaimed as "build container gone", and the image was left half-installed.
