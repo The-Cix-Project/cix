@@ -180,8 +180,10 @@ static void test_render(void)
 
 	build_conf(&c, 1);
 	expect(dhcpd_render(&c, out, sizeof(out)) > 0, "primary renders");
-	expect_has(out, "failover peer \"cix\" {\n  primary;\n  mclt 3600;\n  split 128;\n",
-	           "primary carries mclt and split");
+	expect_has(out,
+	           "failover peer \"cix\" {\n  primary;\n  mclt 3600;\n  split 128;\n"
+	           "  load balance max seconds 3;\n",
+	           "primary carries mclt and split, and both peers load-balance");
 	expect_has(out, "  address 192.168.150.111;\n  port 647;\n  peer address 192.168.150.112;\n",
 	           "primary addresses");
 	expect_has(out, "  auto-partner-down 600;\n", "auto-partner-down");
@@ -206,7 +208,7 @@ static void test_render(void)
 
 	build_conf(&c, 0);
 	expect(dhcpd_render(&c, out, sizeof(out)) > 0, "secondary renders");
-	expect_has(out, "failover peer \"cix\" {\n  secondary;\n  address 192.168.150.112;\n",
+	expect_has(out, "failover peer \"cix\" {\n  secondary;\n  load balance max seconds 3;\n",
 	           "secondary");
 	expect_not(out, "mclt", "the secondary carries no mclt");
 	expect_not(out, "split", "the secondary carries no split");

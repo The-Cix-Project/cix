@@ -145,11 +145,18 @@ static inline int dhcpd_render(const struct dhcpd_conf *c, char *out, size_t out
 		              c->primary ? "primary" : "secondary") != 0)
 			return -1;
 		if (c->primary &&
-		    dhcpd_put(out, out_size, &off,
-		              "  mclt %d;\n  split 128;\n  load balance max seconds 3;\n",
+		    dhcpd_put(out, out_size, &off, "  mclt %d;\n  split 128;\n",
 		              DHCPD_MCLT_SECONDS) != 0)
 			return -1;
+		/*
+		 * Load balancing is set on BOTH peers. Measured on
+		 * 192.168.15.95, 2026-11-21 (0.2.57-708), with it on the primary
+		 * only: the secondary logged "load balancing will be disabled
+		 * for failover peer, cix, because its load balance max secs
+		 * is 0".
+		 */
 		if (dhcpd_put(out, out_size, &off,
+		              "  load balance max seconds 3;\n"
 		              "  address %s;\n  port %d;\n  peer address %s;\n  peer port %d;\n"
 		              "  max-response-delay 60;\n  max-unacked-updates 10;\n"
 		              "  auto-partner-down %d;\n}\n",

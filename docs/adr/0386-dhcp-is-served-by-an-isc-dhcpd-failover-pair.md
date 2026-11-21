@@ -42,8 +42,8 @@ From dhcpd's own manuals ([dhcpd.conf(5)](https://manpages.debian.org/bookworm/i
    - The peer channel runs over the first network, in the primary's attachment order, that both are attached to; a pair sharing no network is refused.
    - Peer addresses are re-rendered when either is re-addressed, as ADR-0383's relay addresses are.
 3. **Load-balancing, with dhcpd's own takeover.** The rendered peer declaration carries:
-   - `split 128`, `load balance max seconds 3` and `mclt 3600` on the primary (the manual: mclt *"must be specified on the primary, and may not be specified on the secondary"*);
-   - `max-response-delay 60` and `max-unacked-updates 10` on both;
+   - `split 128` and `mclt 3600` on the primary (the manual: mclt *"must be specified on the primary, and may not be specified on the secondary"*);
+   - `load balance max seconds 3`, `max-response-delay 60` and `max-unacked-updates 10` on both. *(Corrected 2026-11-21: this said load balancing was the primary's alone, and on 0.2.57-708 the secondary logged "load balancing will be disabled for failover peer, cix, because its load balance max secs is 0".)*
    - `auto-partner-down 600` on both.
 
    **cixd never declares partner-down** (the owner, *"don't get cixd involved"*). dhcpd moves itself after ten minutes without its peer, and then serves the whole pool. A restart takes seconds, so it never reaches partner-down. Only a real outage does, and a peer returning from one waits one MCLT while the survivor serves everything.

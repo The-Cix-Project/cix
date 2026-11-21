@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Both members of a DHCP pair load-balance (ADR-0386)
+
+- **Before:** `load balance max seconds` was rendered on the primary only. On 192.168.15.95 (0.2.57-708, 2026-11-21) the secondary logged that load balancing was disabled because its own value was 0.
+- **Now:** both peers carry it; `mclt` and `split` stay the primary's. ADR-0386's decision 3 is corrected in place.
+- **Gate:** `test_dhcpdconf` expects it on both.
+
 ### A DHCP server or relay can be registered while it is down (ADR-0386)
 
 - **Before:** registering a DHCP server or relay required the container to be running. A dhcpd container cannot start until it is registered, so it sat in its restart backoff and registering dhcp-1 on 192.168.15.95 was a 404 for two minutes of retries (2026-11-21, 0.2.57-707).
