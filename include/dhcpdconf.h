@@ -298,8 +298,16 @@ static inline void dhcpd_parse_quoted(const char *s, char *out, size_t out_size)
 	while (*s != '\0' && *s != '"') {
 		char ch = *s++;
 
-		if (ch == '\\' && *s != '\0')
+		/* dhcpd writes a byte it will not print as \ and three octal
+		 * digits (as the uid lines show), any other escaped byte as
+		 * itself. */
+		if (ch == '\\' && s[0] >= '0' && s[0] <= '7' && s[1] >= '0' && s[1] <= '7' &&
+		    s[2] >= '0' && s[2] <= '7') {
+			ch = (char)(((s[0] - '0') << 6) | ((s[1] - '0') << 3) | (s[2] - '0'));
+			s += 3;
+		} else if (ch == '\\' && *s != '\0') {
 			ch = *s++;
+		}
 		if ((unsigned char)ch < 0x20 || (unsigned char)ch > 0x7e)
 			bad = 1;
 		if (n + 1 < out_size)
