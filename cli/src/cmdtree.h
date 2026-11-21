@@ -495,6 +495,7 @@ static const struct cli_node n_logs_subs[] = {
 };
 
 static const char *const n_dhcp_flags[] = {
+	"--dns=",
 	"--hostname=",
 	"--ip=",
 	"--lease-seconds=",

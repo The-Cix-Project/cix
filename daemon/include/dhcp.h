@@ -7,7 +7,8 @@
 #include <sys/types.h>
 
 /*
- * DHCP as a self-contained service (ADR-0197).
+ * DHCP as a self-contained service (ADR-0197), served by ISC dhcpd
+ * (ADR-0386).
  *
  * Contained is the design constraint, not a tidiness preference: a
  * service that reaches into another service's registry can never be
@@ -15,53 +16,31 @@
  * owns its own ranges and reservations, and every endpoint it has lives
  * under /v1/dhcp. Nothing DHCP-shaped hangs off another resource.
  *
- * It still pairs with DNS, and that pairing is still what makes a lease
- * resolvable the moment it is issued -- dnsmasq answers for the names
- * of clients it has itself leased addresses to. But the pairing is now
- * a REPORTED fact rather than an enforced coupling: register the same
- * container as both a DNS server and a DHCP server and leases resolve;
- * register different ones and they do not. `resolves_leases` on each
- * server says which of those is true, so the operator can see it
- * instead of the daemon quietly requiring it.
+ * Every range is served by one registered dhcpd container, or by two
+ * forming a failover pair in load-balancing mode: both serve, and a
+ * survivor takes the whole pool by itself after auto-partner-down
+ * (ADR-0386 decision 3). cixd renders /etc/dhcpd.conf into each server
+ * and never speaks dhcpd's control protocol.
  *
  * A lease is not a DNS record. A record is durable operator intent
  * (dns.c, persisted, survives every server); a lease is short-lived
- * state owned by the server that issued it. Copying leases into the
- * record store would put two writers in one namespace and leave a
- * record pointing at an address someone else now holds the moment a
- * lease expired uncleanly. Leases are read back from each server's own
- * lease file instead.
+ * state owned by the server that issued it. Leases are read back from
+ * the servers' own lease files, in a helper child (ADR-0342: the file is
+ * an append log), and their names reach DNS through a file of their own
+ * (dns.c's leases file), never the records.
  *
- * Redundancy is SPLIT SCOPE, because dnsmasq implements no failover
- * protocol -- there is no equivalent of ISC dhcpd's peer relationship
- * for it to join, and two instances share no lease database. Each range
- * names the servers that serve it, and Cix divides it into one
- * disjoint slice per named server: all of them answer, a client takes
- * whichever offer reaches it first, and handing one address to two
- * machines is impossible because no two servers hold it. Any one of
- * them alone keeps serving from its own slice.
- *
- * Ranges are per network and options are TAGGED with the network's
- * name, which is what makes one server able to serve several. dnsmasq
- * already picks a range by the subnet of the interface a request
- * arrived on, so ranges never needed help -- but an untagged option is
- * sent to every client on every range, so a server on two networks
- * would hand both segments whichever default gateway was rendered
- * last. set:<network> on the range and tag:<network> on each option is
- * how a network's settings stay its own.
- *
- * Two rendered files, because dnsmasq treats them differently and
- * pretending otherwise would mean silently-inert settings:
- *   - the hosts file (static MAC->IP reservations) is re-read on
- *     its reload signal, which cix-init delivers (ADR-0384), so it updates live;
- *   - the conf file (ranges, lease time, options) is read only at
- *     startup, so changing a range restarts the serving container.
+ * dhcpd reads its conf only at start, so a change that alters a
+ * server's rendered conf restarts that server through the rolling
+ * restart timer, and the pair's roll_group keeps the two apart
+ * (ADR-0385).
  */
 
 #define DHCP_MAX_NETWORKS 32
 #define DHCP_MAX_SERVERS 16
-#define DHCP_MAX_RANGE_SERVERS 8
+/* ADR-0386: one server, or a failover pair. */
+#define DHCP_MAX_RANGE_SERVERS 2
 #define DHCP_MAX_STATIC 128
+#define DHCP_MAX_DNS 4
 #define DHCP_NETWORK_NAME_MAX 64  /* matches NETWORK_NAME_MAX by value, no header dependency */
 #define DHCP_SERVER_NAME_MAX 64   /* matches REGISTRY_NAME_MAX by value */
 #define DHCP_MAC_MAX 18           /* "aa:bb:cc:dd:ee:ff" + NUL */
@@ -71,22 +50,22 @@
  * or a decommissioned client frees its address the same afternoon. */
 #define DHCP_DEFAULT_LEASE_SECONDS 3600
 
-/* Fixed, well-known paths inside a serving container -- the same
- * "one name the platform knows" convention HOST_TOOLS_IMAGE uses.
- * A dnsmasq container must be started against these three; see
- * docs/api/README.md for the exact command. */
-#define DHCP_CONF_PATH "/etc/dnsmasq-dhcp.conf"
-#define DHCP_HOSTS_PATH "/etc/dnsmasq-dhcp-hosts"
 /*
- * #698: on a volume the serving container mounts at /var/lib/dnsmasq,
- * so a restart or a recreate keeps the leases. It was /run, a fresh
- * tmpfs at every container start: on 192.168.15.95, 2026-11-19, a range
- * change restarted both servers and every lease was forgotten, leaving
- * dnsmasq's ping-before-offer as the only guard against handing out an
- * address a client still held.
+ * Fixed, well-known paths inside a serving container. A dhcpd container
+ * runs `dhcpd -f -cf DHCP_CONF_PATH -lf DHCP_LEASE_PATH --no-pid` with a
+ * volume at DHCP_LEASE_DIR; see docs/guides/network-services.md.
+ *
+ * The lease file lives on that volume, so a restart or a recreate keeps
+ * every lease (#698), and dhcpd refuses to start without it (measured,
+ * ADR-0386), which is why cixd creates it there, empty, when it is
+ * absent (dhcp_seed_lease_file()).
  */
-#define DHCP_LEASE_DIR "/var/lib/dnsmasq"
-#define DHCP_LEASE_PATH DHCP_LEASE_DIR "/dnsmasq.leases"
+#define DHCP_CONF_PATH "/etc/dhcpd.conf"
+#define DHCP_LEASE_DIR "/var/lib/dhcp"
+#define DHCP_LEASE_FILE "dhcpd.leases"
+#define DHCP_LEASE_PATH DHCP_LEASE_DIR "/" DHCP_LEASE_FILE
+/* The largest rendered dhcpd.conf: every reservation, every range. */
+#define DHCP_CONF_RENDER_MAX 65536
 
 /*
  * ADR-0383: a relay's one file, rendered by cixd like a server's, and
@@ -105,29 +84,25 @@ struct dhcp_network {
 	uint32_t range_start_be;
 	uint32_t range_end_be;
 	int lease_seconds;
-	/*
-	 * The default route handed to clients on this network. 0 means
-	 * advertise none -- and that takes a deliberate line in the
-	 * rendered conf rather than silence, because dnsmasq's documented
-	 * default when the router option is absent is to send its OWN
-	 * address. Saying nothing pointed clients at whichever container
-	 * was serving DHCP, which does not route: a black hole rather than
-	 * an absent route.
-	 */
+	/* The default route handed to clients on this network; 0 sends
+	 * none (dhcpd has no default that names itself). */
 	uint32_t router_be;
 	/*
-	 * Which registered DHCP servers serve this range. Named rather
-	 * than inferred: how many servers a wire should have is an
-	 * operator's decision, and one, three or all of them are equally
-	 * valid answers. The range is split into one disjoint slice per
-	 * name here, in this order.
+	 * ADR-0386: the DNS servers handed to clients. Explicit because
+	 * DHCP does not read the DNS registry (containment, ADR-0197);
+	 * dnsmasq used to send its own address when this was unsaid, and
+	 * dhcpd sends nothing.
 	 */
+	uint32_t dns_be[DHCP_MAX_DNS];
+	int dns_count;
+	/* The registered DHCP servers that serve this range: one, or two
+	 * forming a failover pair (ADR-0386). */
 	char servers[DHCP_MAX_RANGE_SERVERS][DHCP_SERVER_NAME_MAX];
 	int server_count;
 	/*
 	 * ADR-0383: the registered relays on this network that carry its
 	 * requests to the servers above that are not on it. Empty for a
-	 * range every server is attached to, which is the ADR-0197 case.
+	 * range every server is attached to.
 	 */
 	char relays[DHCP_MAX_RANGE_RELAYS][DHCP_SERVER_NAME_MAX];
 	int relay_count;
@@ -148,7 +123,11 @@ enum dhcp_error {
 	DHCP_ERR_PERSIST_FAILED,
 	/* ADR-0383: a container is a server or a relay, never both -- on a
 	 * shared interface dnsmasq's relay function wins (its manual). */
-	DHCP_ERR_CONFLICT
+	DHCP_ERR_CONFLICT,
+	/* ADR-0386: a reservation inside a range's pool. dhcpd gives a
+	 * fixed-address host its address without a lease, so the two would
+	 * collide. */
+	DHCP_ERR_IN_POOL
 };
 
 int dhcp_init(const char *path);
@@ -161,23 +140,35 @@ enum dhcp_error dhcp_network_delete(const char *network);
 enum dhcp_error dhcp_static_add(const struct dhcp_static *entry);
 enum dhcp_error dhcp_static_delete(const char *mac);
 
-/* Renders the whole current state, always in full -- the same
- * always-rewrite-everything discipline dns_write_hosts_file() uses,
- * for the same reason: a partial update is a second thing that can be
- * wrong. Returns bytes written (excluding NUL), or -1 if it did not
- * fit. */
 /*
- * Renders only what THIS server should serve: its own slice of each
- * range that names it. A range on a network it is not attached to is
- * one it reaches through relays (ADR-0383), and carries its netmask.
+ * ADR-0386: why a range's servers cannot form what it asks for, or 0.
+ * Two servers must be distinct, share a network for their peer channel,
+ * and pair with each other only: a server is in at most one pair. The
+ * reason goes to err. Reads the registry for attachments.
+ */
+int dhcp_pair_refused(const struct dhcp_network *cfg, char *err, size_t err_size);
+
+/*
+ * One server's whole /etc/dhcpd.conf. A pool is rendered only when it
+ * can be served safely: a range of two servers whose peer cannot be
+ * resolved yet (the peer not created, or sharing no network) is
+ * declared without its pool, never as two pools with no failover.
  *
  * self/self_count are the container's own attachments. NULL reads them
  * from the registry; the create path passes its planned attachments,
  * because staging runs before the container is in the registry.
+ * Returns bytes written, or -1 when it did not fit.
  */
 struct registry_network_attachment;
 int dhcp_render_conf(const char *server_name, const struct registry_network_attachment *self,
                      int self_count, char *out, size_t out_size);
+
+/*
+ * Creates DHCP_LEASE_FILE empty in a server's lease volume, host-side,
+ * when it does not exist, and never touches one that does. dhcpd will
+ * not start without it. 0, or -1 with errno set.
+ */
+int dhcp_seed_lease_file(const char *volume_host_dir);
 
 /* ---- Servers: DHCP registers its own, like every other service ---- */
 
@@ -186,6 +177,7 @@ enum dhcp_error dhcp_server_unregister(const char *container);
 int dhcp_server_is_registered(const char *container);
 int dhcp_server_list(char out[][DHCP_SERVER_NAME_MAX], int max);
 void dhcp_server_forget(const char *container);
+/* Each server, with its failover state from the last lease scan. */
 void dhcp_servers_write_json(struct json_writer *w);
 
 /* ---- Relays (ADR-0383): registered like servers ---- */
@@ -211,19 +203,10 @@ int dhcp_render_relay_conf(const char *relay_name, const struct registry_network
 void dhcp_relays_sync(char changed[][DHCP_SERVER_NAME_MAX], int max_changed,
                       int *out_changed_count);
 
-/* The slice server_index of server_count would be given, for reporting
- * it back. Returns -1 if the range cannot be divided that many ways. */
-int dhcp_slice_for(const struct dhcp_network *cfg, int server_index, int server_count,
-                    uint32_t *out_start_be, uint32_t *out_end_be);
-int dhcp_render_hosts(char *out, size_t out_size);
-
 /*
- * Writes both files into every currently-running DNS server container
- * and, when the reservations changed, asks it to reload (ADR-0384), which puts a static-entry change into force
- * immediately. Ranges are NOT live: `changed` is filled with the names
- * of the servers whose conf now differs from what they were started
- * against -- only those need restarting, so a change on one network
- * never disturbs a server on another.
+ * Writes every running server's /etc/dhcpd.conf, and fills `changed`
+ * with the servers whose file differed: dhcpd has no reload, so only
+ * those need restarting, and the caller decides whether to.
  */
 void dhcp_sync_all(char changed[][DHCP_SERVER_NAME_MAX], int max_changed,
                     int *out_changed_count);
@@ -232,21 +215,43 @@ void dhcp_sync_all(char changed[][DHCP_SERVER_NAME_MAX], int max_changed,
 int dhcp_any_enabled(void);
 
 void dhcp_write_json(struct json_writer *w);
-/*
- * include_slices adds which registered server holds which part of the
- * range -- computed, never stored, so it is written for the API and not
- * for the state file. Seeing the split is how an operator knows
- * redundancy is actually in place rather than configured.
- */
-void dhcp_network_write_json(const struct dhcp_network *cfg, int include_slices,
-                              struct json_writer *w);
-
-/* Reads leases back from each running server's own lease file. This
- * is the server's state, not ours -- read every time, never cached. */
-void dhcp_leases_write_json(struct json_writer *w);
+void dhcp_network_write_json(const struct dhcp_network *cfg, struct json_writer *w);
 
 /* Called when a network is deleted, so its DHCP config cannot outlive
  * the thing it configures. */
 void dhcp_forget_network(const char *network);
+
+/* ---- Leases (ADR-0386 decision 7) ---- */
+
+/*
+ * The lease scan, run only in a helper child (dhcp_scan_tick() in
+ * main.c): reads every running server's lease file through its mount
+ * namespace, merges the pair's two answers, and writes the snapshot
+ * dhcp_snapshot_apply() installs -- each server's failover state and the
+ * leases current at `now` -- to fd as JSON. 0, or -1.
+ */
+int dhcp_leases_scan(int fd, long long now);
+
+/*
+ * Whether any running server's lease file moved (size or mtime) since
+ * the last call that answered 1. One stat per server, cheap enough for
+ * the loop; it decides whether a timed scan is worth a fork.
+ */
+int dhcp_lease_files_moved(void);
+
+/* The parent's half: installs a snapshot the child wrote, announcing
+ * getDhcpServers and getDhcpLeases when what they answer changed. 0, or
+ * -1 when it did not parse (the previous one is kept). */
+int dhcp_snapshot_apply(const char *json, size_t len);
+
+/* The last snapshot's leases still current at `now`, as a JSON array. */
+void dhcp_leases_write_json(struct json_writer *w, long long now);
+
+/* The current leases' names, from the last snapshot. */
+struct dhcp_lease_name {
+	uint32_t ip_be;
+	char hostname[DHCP_HOSTNAME_MAX];
+};
+int dhcp_lease_names(struct dhcp_lease_name *out, int max);
 
 #endif /* DHCP_H */

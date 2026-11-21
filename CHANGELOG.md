@@ -6,6 +6,17 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### DHCP is served by an ISC dhcpd failover pair (ADR-0386, #107)
+
+- **Before:** dnsmasq served DHCP on the DNS servers, and two servers on one range split it into disjoint slices. A survivor kept only its own slice, so with one server down, half of every range could not be handed out.
+- **Now:** a range is served by one registered ISC dhcpd container, or by two forming a failover pair in load-balancing mode.
+  - **The pair:** both serve the whole range and share its leases. A survivor renews every lease and, after ten minutes without its peer (`auto-partner-down`), hands out the whole pool.
+  - **Configuration:** cixd renders each server's `/etc/dhcpd.conf` and restarts it on a change, one member of a pair at a time. It creates the lease file on the server's volume when there is none, since dhcpd will not start without one.
+  - **Leases:** a helper child scans the lease files when they move. `GET /v1/dhcp/leases` and each server's failover state on `GET /v1/dhcp/servers` come from that scan, and current leases' names go to the DNS servers' new `/etc/dnsmasq-leases`.
+  - **The contract:** a range takes `dns_servers` and at most two `servers`. A reservation must lie outside every pool. `slices` and `resolves_leases` are gone.
+  - **Measured first on .95:** `isc-dhcp@4.4.3-P1-3` builds with tcc, a scratch pair served a dhcpcd client, and the takeover, recovery and restart timings are in the ADR.
+- **Gates:** `test_dhcpdconf` (new, in SELFTESTS) checks the render and the lease parser against real lease-file bytes; `test_dhcp` checks the pair, the refusals and the rendered files; `test_blocking_waits` counts the lease scan's one caller.
+
 ### The compile probe is the release recipe, renamed (#695)
 
 - **Before:** `probe-cix-compile` was a recipe of its own, copied forward from the previous probe. It built cix and ran the selftest, but not the release recipe's install and check phases. 0.2.57-694 and -695 both passed it, then failed in phases only the release had: 694 gated `cix-boot.efi` at a stale path, and 695's main package staged nothing.

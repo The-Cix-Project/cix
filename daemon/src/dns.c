@@ -745,6 +745,9 @@ void dns_server_sync_all(void)
 			continue;
 		container_reload(g_bindings[i].container_name); /* ADR-0384 */
 	}
+	/* ADR-0386: a record changed, so a lease name it now shadows, or
+	 * stops shadowing, changes too. */
+	dns_leases_sync_all();
 }
 
 void dns_server_write_json_one(const struct dns_server_binding *binding, struct json_writer *w)
@@ -796,4 +799,103 @@ void dns_server_write_json_list(struct json_writer *w)
 			dns_server_write_json_one(&g_bindings[i], w);
 	}
 	jw_arr_close(w);
+}
+
+/* ---- ADR-0386: the names DHCP handed out ---- */
+
+static struct dns_lease_name g_lease_raw[DNS_LEASE_NAMES_MAX];
+static int g_lease_raw_count;
+
+/* One DNS label, lower-cased into out; 0 when it is not one. */
+static int lease_label(const char *in, char *out, size_t out_size)
+{
+	size_t i, n = strlen(in);
+
+	if (n == 0 || n > 63 || n >= out_size || in[0] == '-' || in[n - 1] == '-')
+		return 0;
+	for (i = 0; i < n; i++) {
+		char c = in[i];
+
+		if (c >= 'A' && c <= 'Z')
+			c = (char)(c - 'A' + 'a');
+		if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'))
+			return 0;
+		out[i] = c;
+	}
+	out[n] = '\0';
+	return 1;
+}
+
+/* Kept as given and filtered at every render, so a record created or
+ * deleted since is honoured at the next sync, not the next lease scan. */
+void dns_lease_names_set(const struct dns_lease_name *v, int n)
+{
+	int i;
+
+	g_lease_raw_count = 0;
+	for (i = 0; i < n && g_lease_raw_count < DNS_LEASE_NAMES_MAX; i++)
+		g_lease_raw[g_lease_raw_count++] = v[i];
+	dns_leases_sync_all();
+}
+
+int dns_render_leases(char *out, size_t out_size)
+{
+	static char kept[DNS_LEASE_NAMES_MAX][64];
+	size_t off = 0;
+	int kept_count = 0;
+	int i, k;
+
+	if (out_size == 0)
+		return -1;
+	out[0] = '\0';
+	for (i = 0; i < g_lease_raw_count; i++) {
+		struct in_addr a;
+		char ipstr[INET_ADDRSTRLEN];
+		char label[64];
+		int n, dup = 0;
+
+		if (g_lease_raw[i].ip_be == 0 || !lease_label(g_lease_raw[i].name, label, sizeof(label)))
+			continue;
+		if (dns_record_find(label) != NULL)
+			continue; /* a record or a container name wins */
+		for (k = 0; k < kept_count; k++)
+			if (strcmp(kept[k], label) == 0)
+				dup = 1;
+		if (dup)
+			continue;
+		snprintf(kept[kept_count++], sizeof(kept[0]), "%s", label);
+		a.s_addr = g_lease_raw[i].ip_be;
+		inet_ntop(AF_INET, &a, ipstr, sizeof(ipstr));
+		n = snprintf(out + off, out_size - off, "%s %s\n", ipstr, label);
+		if (n < 0 || (size_t)n >= out_size - off)
+			return -1;
+		off += (size_t)n;
+	}
+	return (int)off;
+}
+
+void dns_leases_sync_all(void)
+{
+	static char buf[DNS_LEASE_NAMES_MAX * (INET_ADDRSTRLEN + 66)];
+	int n = dns_render_leases(buf, sizeof(buf));
+	int i;
+
+	if (n < 0)
+		return;
+	for (i = 0; i < DNS_SERVER_MAX; i++) {
+		char full_path[DNS_SERVER_PATH_MAX + 32];
+		struct registry_entry *entry;
+
+		if (g_bindings[i].container_name[0] == '\0')
+			continue;
+		entry = registry_find(g_bindings[i].container_name);
+		if (entry == NULL || !entry->running)
+			continue;
+		/* Host-side path, not the container's own id-mapped view (#269). */
+		container_file_host_path(g_bindings[i].container_name, DNS_LEASES_FILE_PATH, full_path,
+		                          sizeof(full_path));
+		if (write_if_changed(full_path, buf, (size_t)n) <= 0)
+			continue;
+		container_reload(g_bindings[i].container_name); /* ADR-0384 */
+	}
 }

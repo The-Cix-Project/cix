@@ -38,6 +38,7 @@
 /* A range split more than eight ways gives each server a handful of
  * addresses at best; past that the split is the problem, not the limit. */
 #define DHCP_CLI_MAX_SERVERS 8
+#define DHCP_CLI_MAX_DNS 4
 
 /*
  * The whole help text, and the only one (#438). `cixctl help` lists its
@@ -4240,9 +4241,8 @@ static int cmd_time(const struct cix_client *c, int json_mode, int argc, char **
 }
 
 /*
- * DHCP (ADR-0197). Served by the same dnsmasq that serves DNS, which is
- * why enabling it names a registered DNS server rather than a host and
- * port -- a lease resolves the moment it is handed out.
+ * DHCP (ADR-0197), served by registered ISC dhcpd containers: one, or a
+ * failover pair (ADR-0386).
  */
 static void fmt_dhcp(const struct json_value *v)
 {
@@ -4256,8 +4256,6 @@ static void fmt_dhcp(const struct json_value *v)
 			const struct json_value *n = nets->u.array.items[i];
 			const struct json_value *en = json_object_get(n, "enabled");
 			int on = en != NULL && en->type == JSON_BOOL && en->u.boolean;
-
-			const struct json_value *slices = json_object_get(n, "slices");
 
 			if (!any) {
 				printf("%-16s %-9s %-34s %s\n", "NETWORK", "STATE", "RANGE", "LEASE");
@@ -4276,20 +4274,29 @@ static void fmt_dhcp(const struct json_value *v)
 				       on ? "enabled" : "disabled", range,
 				       (long)json_as_number(json_object_get(n, "lease_seconds")));
 			}
-			/*
-			 * Which server holds which part. dnsmasq has no failover
-			 * protocol, so redundancy here is disjoint pools -- and the
-			 * split is the thing worth seeing, since it is what makes
-			 * two servers safe rather than merely two.
-			 */
-			if (slices != NULL && slices->type == JSON_ARRAY) {
+			/* ADR-0386: one server, or a failover pair sharing the range. */
+			{
+				const struct json_value *sv = json_object_get(n, "servers");
+				const struct json_value *dn = json_object_get(n, "dns_servers");
 				size_t k;
 
-				for (k = 0; k < slices->u.array.count; k++) {
-					const struct json_value *sl = slices->u.array.items[k];
-
-					printf("    served by %-14s %s - %s\n", json_str_field(sl, "server"),
-					       json_str_field(sl, "range_start"), json_str_field(sl, "range_end"));
+				if (sv != NULL && sv->type == JSON_ARRAY && sv->u.array.count > 0) {
+					printf("    served by ");
+					for (k = 0; k < sv->u.array.count; k++)
+						printf("%s%s", k ? " + " : "",
+						       json_as_string(sv->u.array.items[k]) != NULL
+						           ? json_as_string(sv->u.array.items[k])
+						           : "-");
+					printf("%s\n", sv->u.array.count == 2 ? " (failover pair)" : "");
+				}
+				if (dn != NULL && dn->type == JSON_ARRAY && dn->u.array.count > 0) {
+					printf("    dns ");
+					for (k = 0; k < dn->u.array.count; k++)
+						printf("%s%s", k ? ", " : "",
+						       json_as_string(dn->u.array.items[k]) != NULL
+						           ? json_as_string(dn->u.array.items[k])
+						           : "-");
+					printf("\n");
 				}
 			}
 			/* ADR-0383: the relays carrying it to servers not on it. */
@@ -4317,10 +4324,8 @@ static void fmt_dhcp(const struct json_value *v)
 	}
 }
 
-/* Whether a DHCP server is also a DNS server is REPORTED, not required:
- * dnsmasq answers for the names of clients it leased addresses to, so a
- * server that is both makes leases resolve the moment they are issued.
- * Saying which is true beats one service quietly requiring the other. */
+/* ADR-0386: each server, its failover partner, and the failover state
+ * its own lease file last recorded for itself and for that partner. */
 static void fmt_dhcp_servers(const struct json_value *v)
 {
 	const struct json_value *servers = json_object_get(v, "servers");
@@ -4330,17 +4335,18 @@ static void fmt_dhcp_servers(const struct json_value *v)
 		printf("no DHCP server registered\n");
 		return;
 	}
-	printf("%-24s %-12s %s\n", "CONTAINER", "STATE", "RESOLVES LEASES");
+	printf("%-20s %-9s %-20s %-26s %s\n", "CONTAINER", "STATE", "PARTNER", "FAILOVER",
+	       "PARTNER SAYS");
 	for (i = 0; i < servers->u.array.count; i++) {
 		const struct json_value *e = servers->u.array.items[i];
 		const struct json_value *run = json_object_get(e, "running");
-		const struct json_value *res = json_object_get(e, "resolves_leases");
+		const char *partner = json_str_field(e, "partner");
+		const char *fs = json_str_field(e, "failover_state");
+		const char *ps = json_str_field(e, "partner_state");
 
-		printf("%-24s %-12s %s\n", json_str_field(e, "container"),
+		printf("%-20s %-9s %-20s %-26s %s\n", json_str_field(e, "container"),
 		       run != NULL && run->type == JSON_BOOL && run->u.boolean ? "running" : "stopped",
-		       res != NULL && res->type == JSON_BOOL && res->u.boolean
-		           ? "yes"
-		           : "no -- not a DNS server");
+		       partner != NULL ? partner : "-", fs != NULL ? fs : "-", ps != NULL ? ps : "-");
 	}
 }
 
@@ -4373,15 +4379,18 @@ static void fmt_dhcp_leases(const struct json_value *v)
 		printf("no leases -- nothing has asked for an address yet\n");
 		return;
 	}
-	printf("%-20s %-16s %-20s %-12s %s\n", "MAC", "IP", "HOSTNAME", "EXPIRES(UNIX)", "SERVER");
+	printf("%-20s %-16s %-20s %s\n", "MAC", "IP", "HOSTNAME", "EXPIRES(UNIX)");
 	for (i = 0; i < leases->u.array.count; i++) {
 		const struct json_value *e = leases->u.array.items[i];
+		const struct json_value *x = json_object_get(e, "expires_at");
+		char exp[32];
 
-		printf("%-20s %-16s %-20s %-12lld %s\n", json_str_field(e, "mac"),
-		       json_str_field(e, "ip"),
-		       json_str_field(e, "hostname") != NULL ? json_str_field(e, "hostname") : "-",
-		       (long long)json_as_number(json_object_get(e, "expires_at")),
-		       json_str_field(e, "server"));
+		if (x != NULL && x->type == JSON_NUMBER)
+			snprintf(exp, sizeof(exp), "%lld", (long long)json_as_number(x));
+		else
+			snprintf(exp, sizeof(exp), "never");
+		printf("%-20s %-16s %-20s %s\n", json_str_field(e, "mac"), json_str_field(e, "ip"),
+		       json_str_field(e, "hostname") != NULL ? json_str_field(e, "hostname") : "-", exp);
 	}
 }
 
@@ -4394,6 +4403,8 @@ static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **
 	int server_count = 0;
 	const char *relays[DHCP_CLI_MAX_SERVERS];
 	int relay_count = 0;
+	const char *dns[DHCP_CLI_MAX_DNS];
+	int dns_count = 0, dns_given = 0;
 	const char *service = NULL;
 	const char *mac = NULL, *ip = NULL, *hostname = NULL;
 	long lease_seconds = -1;
@@ -4437,6 +4448,17 @@ static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **
 				return 2;
 			}
 			relays[relay_count++] = argv[i] + 8;
+		}
+		else if (strncmp(argv[i], "--dns=", 6) == 0) {
+			/* ADR-0386: repeatable; --dns=none sends an empty list. */
+			dns_given = 1;
+			if (strcmp(argv[i] + 6, "none") == 0)
+				continue;
+			if (dns_count >= DHCP_CLI_MAX_DNS) {
+				fprintf(stderr, "cixctl: too many --dns= flags (max %d)\n", DHCP_CLI_MAX_DNS);
+				return 2;
+			}
+			dns[dns_count++] = argv[i] + 6;
 		}
 		else if (strncmp(argv[i], "--service=", 10) == 0)
 			service = argv[i] + 10;
@@ -4485,12 +4507,13 @@ static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **
 			        "                            --server=CONTAINER [--server=CONTAINER ...]\n"
 			        "                            [--relay=CONTAINER ...]\n"
 			        "                            [--lease-seconds=N] [--router=IP]\n"
+			        "                            [--dns=IP ...|--dns=none]\n"
 			        "       cixctl dhcp disable --network=NAME\n"
 			        "       cixctl dhcp remove --network=NAME   -- delete the config entirely\n"
-			        "  --server= is repeatable. dnsmasq has no failover protocol, so a range\n"
-			        "  named to more than one server is split into disjoint slices: all of\n"
-			        "  them answer, and no two hold the same address. Register servers first\n"
-			        "  with `cixctl dhcp server add`.\n"
+			        "  --server= names one server, or twice for a dhcpd failover pair that\n"
+			        "  shares the whole range (ADR-0386). Register servers first with\n"
+			        "  `cixctl dhcp server add`.\n"
+			        "  --dns= is repeatable (up to 4): the DNS servers handed to clients.\n"
 			        "  --relay= names relays on this network that carry its requests to\n"
 			        "  servers not on it (ADR-0383); register them with `cixctl dhcp relay add`.\n");
 			return 2;
@@ -4541,6 +4564,13 @@ static int cmd_dhcp(const struct cix_client *c, int json_mode, int argc, char **
 			jw_arr_open(&w);
 			for (i = 0; i < relay_count; i++)
 				jw_str(&w, relays[i]);
+			jw_arr_close(&w);
+		}
+		if (dns_given) {
+			jw_key(&w, "dns_servers");
+			jw_arr_open(&w);
+			for (i = 0; i < dns_count; i++)
+				jw_str(&w, dns[i]);
 			jw_arr_close(&w);
 		}
 		if (lease_seconds >= 0) {

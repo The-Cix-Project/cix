@@ -643,6 +643,23 @@ static const char *const g_datadir_calls[] = {
 };
 
 /*
+ * A COUNTED SET for ADR-0386: reading the DHCP servers' lease files.
+ * dhcpd's lease file is an append log, rewritten only now and then, so
+ * dhcp_leases_scan() reads an unbounded amount (ADR-0342). Its one
+ * caller is dhcp_scan_work(), the helper child of the daemon's timed
+ * scan; GET /v1/dhcp/leases answers from the snapshot it leaves.
+ */
+static const struct call_budget g_dhcpleases_budgets[] = {
+	{ "dhcp.c", "dhcp_leases_scan(", 1, "the definition, not a call" },
+	{ "main.c", "dhcp_leases_scan(", 1, "dhcp_scan_work(), which runs only in a helper child" },
+};
+
+static const char *const g_dhcpleases_calls[] = {
+	"dhcp_leases_scan(",
+	NULL,
+};
+
+/*
  * AN ELEVENTH COUNTED SET (ADR-0376, #646): the announcement self-check's
  * reads. events_self_read() runs any handler the contract marks
  * self-readable, so it costs what the slowest one costs: GET
@@ -773,6 +790,11 @@ static const struct call_set g_call_sets[] = {
 	  "Reporting the data directory walks every tree beneath it, and cixd has one event loop. "
 	  "Ask for it through datadir_ask() (#249), which parks the request and makes the report "
 	  "in a helper child." },
+	{ "DHCP lease read", g_dhcpleases_budgets,
+	  (int)(sizeof(g_dhcpleases_budgets) / sizeof(g_dhcpleases_budgets[0])), g_dhcpleases_calls,
+	  "A dhcpd lease file is an append log, unbounded, and cixd has one event loop. Read "
+	  "leases from the snapshot dhcp_scan_tick() keeps (ADR-0386), which a helper child "
+	  "makes." },
 	{ "announcement self-check", g_selfcheck_budgets,
 	  (int)(sizeof(g_selfcheck_budgets) / sizeof(g_selfcheck_budgets[0])), g_selfcheck_calls,
 	  "A self-read runs a handler the contract marks self-readable, which costs what that "

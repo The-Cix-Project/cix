@@ -1,6 +1,6 @@
 # Network services: DNS, DHCP, NTP and syslog
 
-Cix does not implement these protocols itself. Each one is served by an ordinary container — dnsmasq for DNS and DHCP, chrony for NTP, sysklogd for syslog — and the daemon owns the configuration those containers serve: the records, the forwarders, the ranges and reservations, the upstream time sources, the forward targets. You declare intent over the API; the daemon writes it into every registered server and keeps it there.
+Cix does not implement these protocols itself. Each one is served by an ordinary container — dnsmasq for DNS and DHCP relaying, ISC dhcpd for DHCP, chrony for NTP, sysklogd for syslog — and the daemon owns the configuration those containers serve: the records, the forwarders, the ranges and reservations, the upstream time sources, the forward targets. You declare intent over the API; the daemon writes it into every registered server and keeps it there.
 
 This guide covers standing each service up, feeding it, and taking a server out of service. The exact request and response shapes are in [`docs/api/README.md`](../api/README.md); every command below is `cixctl` against a real host (`--host=` implied).
 
@@ -83,44 +83,46 @@ The usual arrangement: forwarders at real upstream resolvers, the host resolver 
 
 ## DHCP
 
-DHCP is served by the same dnsmasq that serves DNS, but it is its own service with its own registry: registering a container for DHCP is separate from registering it for DNS ([ADR-0197](../adr/0197-dhcp-served-by-the-dns-server.md)). A container registered as both makes each lease resolvable the moment it is handed out, and `dhcp server ls` reports whether that is true (`RESOLVES LEASES`).
+DHCP is served by ISC dhcpd, in containers of its own, and it is its own service with its own registry ([ADR-0197](../adr/0197-dhcp-served-by-the-dns-server.md), [ADR-0386](../adr/0386-dhcp-is-served-by-an-isc-dhcpd-failover-pair.md)). A range is served by one server, or by two forming a failover pair in load-balancing mode: both serve the whole range and share its leases, and if one is down the other renews every lease and, after ten minutes, hands out the whole pool by itself. cixd writes each server's `/etc/dhcpd.conf` and writes the leases' names into the DNS servers, so a lease resolves.
 
 ### Servers
 
+A server container runs `/usr/sbin/dhcpd -f -cf /etc/dhcpd.conf -lf /var/lib/dhcp/dhcpd.leases --no-pid` from an image with the `isc-dhcp` package, with a volume at `/var/lib/dhcp` and, for a pair, a common `roll_group`. The shipped `dhcp-1` and `dhcp-2` deployments are the reference.
+
 ```sh
-cixctl dhcp server add dns-1
-cixctl dhcp server add dns-2
+cixctl deployment apply dhcp-1
+cixctl dhcp server add dhcp-1          # restarts it; it starts with its configuration
+cixctl dhcp server add dhcp-2
 cixctl dhcp server ls
-cixctl dhcp server rm dns-2
+cixctl dhcp server rm dhcp-2
 ```
 
-Removing a server also drops it from every range that named it, and disables any range left with no server.
+dhcpd will not start until its container is registered: before that it has no configuration and no lease file. Registering restarts it, and every start from then on stages `/etc/dhcpd.conf` and creates an empty lease file on the volume if there is none. `dhcp server ls` shows each server's partner and failover state; `normal` means both are serving. Removing a server also drops it from every range that named it, and disables any range left with no server.
 
 ### A range on a network
 
 ```sh
 cixctl dhcp enable --network=access --range=192.168.151.100-192.168.151.200 \
-    --server=dns-1 --server=dns-2 --lease-seconds=3600 --router=192.168.151.254
+    --server=dhcp-1 --server=dhcp-2 --relay=cr-1 --relay=cr-2 \
+    --lease-seconds=3600 --router=192.168.151.254 --dns=192.168.150.101 --dns=192.168.150.102
 cixctl dhcp show
 ```
 
-- `--server=` is repeatable. dnsmasq has no failover protocol, so a range named to more than one server is split into disjoint slices, one per server in the order given; `dhcp show` prints which server holds which slice. Each server keeps serving its own slice if the other is down.
-- Each named server must be registered for DHCP and attached to that network, unless the range names relays (below).
-- The range must sit inside the network's subnet, must not cover the network's own address, and must have at least as many addresses as servers. Lease time is 60 seconds to 30 days.
-- `--router=` is the default route handed to clients. The update is partial, so omitting `--router=` keeps the stored value; pass `--router=0.0.0.0` to hand out none.
-- **Changing a range restarts the servers that serve it**, because dnsmasq reads ranges only at startup. Only servers whose rendered configuration changed are restarted.
+- `--server=` names one server, or two for a failover pair. The name that sorts first is the primary. A server pairs with one partner only, and the two must share a network for their failover channel.
+- Each named server must be registered and attached to that network, unless the range names relays (below).
+- The range must sit inside the network's subnet, must not cover the network's own address or a reservation. Lease time is 60 seconds to 30 days.
+- `--router=` is the default route handed to clients, and `--dns=` (repeatable, up to four) the DNS servers. The update is partial, so omitting either keeps the stored value; pass `--router=0.0.0.0` or `--dns=none` to hand out none.
+- **Changing a range restarts the servers that serve it**, because dhcpd reads its configuration only at start. Only servers whose rendered configuration changed are restarted, and a pair's roll group restarts them one at a time.
 - A network that reaches a real LAN will answer DHCP requests from machines that are not part of this platform.
 
 ### A range relayed to servers on another network
 
-A relay serves a network the DHCP servers have no interface on: a container on that network (the cores, `cr-1` and `cr-2`) runs dnsmasq as a relay and carries the requests to the servers ([ADR-0383](../adr/0383-a-dhcp-range-may-be-relayed.md)). The relay container declares a `dhcp-relay` service running `/usr/sbin/dnsmasq -k -u root --pid-file= --conf-file=/etc/dnsmasq-relay.conf` with `on_exit: restart`; the daemon writes that file.
+A relay serves a network the DHCP servers have no interface on: a container on that network (the cores, `cr-1` and `cr-2`) runs dnsmasq as a relay and carries the requests to the servers ([ADR-0383](../adr/0383-a-dhcp-range-may-be-relayed.md)). The relay container declares a `dhcp-relay` service running `/usr/sbin/dnsmasq -k -u root --pid-file= --conf-file=/etc/dnsmasq-relay.conf` with `on_exit: restart`; the daemon writes that file, with one line per server, so a pair is two.
 
 ```sh
 cixctl dhcp relay add cr-1            # --service=NAME if the service is not called dhcp-relay
 cixctl dhcp relay add cr-2
 cixctl dhcp relay ls
-cixctl dhcp enable --network=remote-access --range=192.168.152.100-192.168.152.200 \
-    --server=dns-1 --server=dns-2 --relay=cr-1 --relay=cr-2 --router=192.168.152.254
 ```
 
 - Each relay must be attached to the range's network and share a network with each server it reaches. Each such server needs a route back to the relay's address on the relayed network; a default route counts, including the one a container gets automatically via its first network's address.
@@ -141,9 +143,9 @@ cixctl dhcp static rm aa:bb:cc:dd:ee:01
 cixctl dhcp leases
 ```
 
-A reservation takes effect without a restart. The MAC must be lower-case `aa:bb:cc:dd:ee:ff`, and the hostname lower-case letters, digits and hyphens, not starting or ending with one (the daemon accepts no capitals, which "DNS label" used to imply it did); a MAC or address already reserved is refused. `dhcp leases` reads each running server's own lease file on every call. A lease is not a DNS record: records are durable intent, leases are short-lived state owned by the server that issued them.
+A reservation's address lies outside every range's pool, since dhcpd gives it without a lease. Adding or removing one restarts the servers whose configuration it changes, one at a time. The MAC must be lower-case `aa:bb:cc:dd:ee:ff`, and the hostname lower-case letters, digits and hyphens, not starting or ending with one; a MAC or address already reserved is refused. `dhcp leases` reports the leases from cixd's last scan of the servers' lease files, at most 15 seconds old. A lease is not a DNS record, but its name resolves: cixd writes current leases' names, and named reservations, into the DNS servers' `/etc/dnsmasq-leases`, leaving out any name a record or container already has.
 
-The dashboard's **Services > DHCP** page has the same four tabs (Servers, Ranges, Reservations, Leases), and a network's own **DHCP** tab lists the leases on that network. Full contract: [DHCP: a self-contained service](../api/README.md#dhcp-a-self-contained-service-adr-0197).
+The dashboard's **Services > DHCP** page has the same tabs (Servers, Relays, Ranges, Reservations, Leases), and a network's own **DHCP** tab lists the leases on that network. Full contract: [DHCP: a self-contained service](../api/README.md#dhcp-a-self-contained-service-adr-0197-adr-0386).
 
 ## NTP
 

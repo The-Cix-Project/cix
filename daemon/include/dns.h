@@ -158,6 +158,33 @@ enum dns_server_error {
  */
 #define DNS_DEFAULT_HOSTS_PATH "/etc/dnsmasq-hosts"
 
+/*
+ * ADR-0386: the names DHCP has handed out, in a file of their own that
+ * a DNS server reads with --addn-hosts and re-reads on its reload
+ * signal. Never the records file: a lease is not a record (ADR-0197).
+ * cixd's main loop gives this module the names (from the DHCP lease
+ * snapshot and the reservations), so DNS reads no other service's state.
+ *
+ * A name a record already resolves is left out, so an operator record
+ * or a container name always wins; a name that is not one DNS label
+ * (a client's own claim, untrusted) is left out; a name given twice is
+ * kept once, for the first address.
+ */
+#define DNS_LEASES_FILE_PATH "/etc/dnsmasq-leases"
+#define DNS_LEASE_NAMES_MAX 1152
+struct dns_lease_name {
+	uint32_t ip_be;
+	char name[64];
+};
+/* Replaces the names, and writes and reloads every running DNS server
+ * whose leases file changed. */
+void dns_lease_names_set(const struct dns_lease_name *v, int n);
+/* The leases file, rendered (the create path stages it). Bytes, or -1. */
+int dns_render_leases(char *out, size_t out_size);
+/* Writes the leases file into every running DNS server that differs,
+ * and reloads those. */
+void dns_leases_sync_all(void);
+
 /* Fills out[] with the configured forwarders; returns how many. */
 int dns_forwarders_get(char out[][DNS_FORWARDER_LEN], int max);
 

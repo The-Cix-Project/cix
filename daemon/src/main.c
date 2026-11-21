@@ -18614,42 +18614,31 @@ static int create_container_from_body(const char *body, size_t body_len,
 	}
 	stallwatch_step("container create: DHCP and DNS server files");
 	/*
-	 * ADR-0197: a container that is already a registered DNS server is
-	 * also a DHCP server, so it gets its own rendered DHCP files staged
-	 * HERE, before its process starts.
+	 * ADR-0386: a registered DHCP server gets its rendered dhcpd.conf
+	 * staged HERE, before its process starts, from the attachments this
+	 * create planned (the registry does not hold it yet).
 	 *
 	 * That timing is the whole point, and it was found the hard way on
-	 * the real box: dnsmasq reads its conf file only at startup, and a
-	 * restart re-stages the container's own creation-time files[] --
-	 * so a conf written into the running container was overwritten by
-	 * the empty placeholder on the very next restart, and the range
-	 * silently never took effect. Staging it as part of creation means
-	 * the file dnsmasq opens is the rendered one, every time.
-	 *
-	 * Staged after the caller's own files[] deliberately, so the
-	 * rendered content wins over the placeholder an operator staged to
-	 * let dnsmasq start the first time.
+	 * the real box with dnsmasq (ADR-0197): a server reads its conf only
+	 * at start, and a restart re-stages the container's own creation-time
+	 * files[] -- so a conf written into the running container was
+	 * overwritten by the placeholder on the very next restart. Staged
+	 * after the caller's own files[] deliberately, so the rendered
+	 * content wins over any placeholder.
 	 */
 	if (dhcp_server_is_registered(name)) {
-		char conf[4096];
-		char hosts[8192];
+		static char conf[DHCP_CONF_RENDER_MAX];
 
-		if (dhcp_render_conf(name, net_attachments, net_count, conf, sizeof(conf)) >= 0 &&
-		    dhcp_render_hosts(hosts, sizeof(hosts)) >= 0) {
-			if (stage_container_file(stage_dir, DHCP_CONF_PATH, conf, 0644, (uid_t)-1,
-			                          (gid_t)-1, stage_id_offset) == 0 &&
-			    file_count < CONTAINER_MAX_FILES) {
-				snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s",
-				         DHCP_CONF_PATH);
-				file_count++;
-			}
-			if (stage_container_file(stage_dir, DHCP_HOSTS_PATH, hosts, 0644, (uid_t)-1,
-			                          (gid_t)-1, stage_id_offset) == 0 &&
-			    file_count < CONTAINER_MAX_FILES) {
-				snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s",
-				         DHCP_HOSTS_PATH);
-				file_count++;
-			}
+		if (dhcp_render_conf(name, net_attachments, net_count, conf, sizeof(conf)) < 0)
+			logstore_write("cixd", "error",
+			               "container create %s: its dhcpd.conf does not fit; not staged",
+			               name);
+		else if (stage_container_file(stage_dir, DHCP_CONF_PATH, conf, 0644, (uid_t)-1,
+		                              (gid_t)-1, stage_id_offset) == 0 &&
+		         file_count < CONTAINER_MAX_FILES) {
+			snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s",
+			         DHCP_CONF_PATH);
+			file_count++;
 		}
 	}
 	/*
@@ -18682,6 +18671,20 @@ static int create_container_from_body(const char *body, size_t body_len,
 			snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s",
 			         DNS_SERVERS_FILE_PATH);
 			file_count++;
+		}
+		/* ADR-0386: and the names DHCP handed out, in their own file. */
+		{
+			static char leases_buf[DNS_LEASE_NAMES_MAX * (INET_ADDRSTRLEN + 66)];
+			int ln = dns_render_leases(leases_buf, sizeof(leases_buf));
+
+			if (ln >= 0 &&
+			    stage_container_file(stage_dir, DNS_LEASES_FILE_PATH, leases_buf, 0644,
+			                         (uid_t)-1, (gid_t)-1, stage_id_offset) == 0 &&
+			    file_count < CONTAINER_MAX_FILES) {
+				snprintf(file_paths[file_count], sizeof(file_paths[file_count]), "%s",
+				         DNS_LEASES_FILE_PATH);
+				file_count++;
+			}
 		}
 	}
 	/*
@@ -19032,6 +19035,17 @@ static int create_container_from_body(const char *body, size_t body_len,
 				spec.volumes[spec.volume_count].read_only =
 				    (jro != NULL && jro->type == JSON_BOOL && jro->u.boolean);
 				spec.volume_count++;
+				/*
+				 * ADR-0386: a DHCP server's lease volume gets an empty
+				 * lease file when it has none -- dhcpd refuses to start
+				 * without one (measured), and no API route writes into
+				 * a volume. An existing file is never touched.
+				 */
+				if (dhcp_server_is_registered(name) && strcmp(vpath, DHCP_LEASE_DIR) == 0 &&
+				    dhcp_seed_lease_file(hostpath) != 0)
+					logstore_write("cixd", "warn",
+					               "container create %s: could not create %s in volume %s: %s",
+					               name, DHCP_LEASE_FILE, vname, strerror(errno));
 			}
 		}
 	}
@@ -25643,18 +25657,98 @@ static void dhcp_relays_apply(void)
 	}
 }
 
+/*
+ * ADR-0386: the names DNS answers for from DHCP -- the reservations and
+ * the last lease snapshot's -- handed to the DNS module, which owns its
+ * file. DHCP and DNS each read only their own state; this glue is cixd's.
+ */
+static void dhcp_dns_names_push(void)
+{
+	static struct dhcp_lease_name names[DNS_LEASE_NAMES_MAX];
+	static struct dns_lease_name out[DNS_LEASE_NAMES_MAX];
+	int n = dhcp_lease_names(names, DNS_LEASE_NAMES_MAX);
+	int i;
+
+	for (i = 0; i < n; i++) {
+		out[i].ip_be = names[i].ip_be;
+		snprintf(out[i].name, sizeof(out[i].name), "%s", names[i].hostname);
+	}
+	dns_lease_names_set(out, n);
+}
+
+/*
+ * ADR-0386: the daemon's own lease scan. Every DHCP_SCAN_SECONDS while
+ * any range is enabled, it stats each server's lease file and forks a
+ * scan only when one moved; the child writes a snapshot (failover state
+ * and the current leases) to a memfd, and the parent installs it and
+ * pushes the names to DNS. Never while a host roll waits to switch in
+ * place, which waits for every helper (#689).
+ */
+#define DHCP_SCAN_SECONDS 15
+static long g_dhcp_scan_next;
+static int g_dhcp_scan_running;
+static int g_dhcp_scan_memfd = -1;
+
+static int dhcp_scan_work(void *arg)
+{
+	(void)arg;
+	return dhcp_leases_scan(g_dhcp_scan_memfd, (long long)time(NULL)) == 0 ? 0 : 1;
+}
+
+static void dhcp_scan_done(int exit_status, void *ctx)
+{
+	char *buf = NULL;
+	off_t len;
+
+	(void)ctx;
+	g_dhcp_scan_running = 0;
+	if (exit_status == 0 && (len = lseek(g_dhcp_scan_memfd, 0, SEEK_END)) > 0 &&
+	    (buf = malloc((size_t)len)) != NULL &&
+	    pread(g_dhcp_scan_memfd, buf, (size_t)len, 0) == (ssize_t)len) {
+		if (dhcp_snapshot_apply(buf, (size_t)len) == 0)
+			dhcp_dns_names_push();
+	} else if (exit_status != 0) {
+		logstore_write("cixd", "warn", "dhcp: the lease scan ended without a result");
+	}
+	free(buf);
+	close(g_dhcp_scan_memfd);
+	g_dhcp_scan_memfd = -1;
+}
+
+static void dhcp_scan_tick(void)
+{
+	long now = (long)time(NULL);
+
+	if (g_dhcp_scan_running || g_hostroll.step == HOSTROLL_SWITCH || now < g_dhcp_scan_next)
+		return;
+	g_dhcp_scan_next = now + DHCP_SCAN_SECONDS;
+	if (!dhcp_any_enabled() || !dhcp_lease_files_moved())
+		return;
+	g_dhcp_scan_memfd = memfd_create("cix-dhcpscan", MFD_CLOEXEC);
+	if (g_dhcp_scan_memfd < 0)
+		return;
+	if (helper_run(dhcp_scan_work, NULL, dhcp_scan_done, NULL, "a DHCP lease scan") != 0) {
+		close(g_dhcp_scan_memfd);
+		g_dhcp_scan_memfd = -1;
+		return;
+	}
+	g_dhcp_scan_running = 1;
+}
+
 static void dhcp_apply_and_maybe_restart(void)
 {
-	char names[DNS_SERVER_MAX][DNS_SERVER_NAME_MAX];
+	char names[DHCP_MAX_SERVERS][DHCP_SERVER_NAME_MAX];
 	int count = 0;
 	int i;
 
 	dhcp_relays_apply();
+	/* ADR-0386: a reservation's name reaches DNS from cixd's state. */
+	dhcp_dns_names_push();
 
 	/* Only the servers whose OWN conf changed. A range on one network
 	 * is nothing to a server on another, and restarting it anyway
-	 * would make an unrelated edit cost a DNS outage. */
-	dhcp_sync_all(names, DNS_SERVER_MAX, &count);
+	 * would make an unrelated edit cost a DHCP outage. */
+	dhcp_sync_all(names, DHCP_MAX_SERVERS, &count);
 	if (count == 0)
 		return;
 	for (i = 0; i < count; i++) {
@@ -25677,7 +25771,8 @@ static void dhcp_apply_and_maybe_restart(void)
 		arm_rolling_restart_timer(names[i], rolling_jitter_seconds(DHCP_RESTART_JITTER_SECONDS));
 	}
 	logstore_write("cixd", "info",
-	               "dhcp: ranges changed -- rolling %d DNS/DHCP server(s) so they take effect",
+	               "dhcp: configuration changed -- rolling %d DHCP server(s), one member of a pair "
+	               "at a time, so it takes effect (ADR-0386)",
 	               count);
 }
 
@@ -26668,6 +26763,8 @@ static void handle_dhcp_get(int fd)
 	jw_free(&w);
 }
 
+/* ADR-0386: answered from the last lease scan, which a helper child
+ * makes (dhcp_scan_tick()); a lease past its end is left out here. */
 static void handle_dhcp_leases_get(int fd)
 {
 	struct json_writer w;
@@ -26675,7 +26772,7 @@ static void handle_dhcp_leases_get(int fd)
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "leases");
-	dhcp_leases_write_json(&w);
+	dhcp_leases_write_json(&w, (long long)time(NULL));
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -26722,6 +26819,13 @@ static void handle_dhcp_static_post(int fd, const char *body, size_t body_len)
 		               "reserved for a different MAC");
 		return;
 	}
+	if (err == DHCP_ERR_IN_POOL) {
+		respond_error(fd, 400, "Bad Request",
+		               "that address is inside a range's pool -- a reservation is a fixed "
+		               "address dhcpd gives without a lease, so it must lie outside every "
+		               "range (ADR-0386)");
+		return;
+	}
 	if (err == DHCP_ERR_FULL) {
 		respond_error(fd, 507, "Insufficient Storage", "too many static reservations");
 		return;
@@ -26730,8 +26834,8 @@ static void handle_dhcp_static_post(int fd, const char *body, size_t body_len)
 		respond_error(fd, 500, "Internal Server Error", "failed to persist the reservation");
 		return;
 	}
-	/* Static entries are live: the servers re-read them on SIGHUP, so
-	 * no restart is involved and none is triggered. */
+	/* ADR-0386: a reservation is part of dhcpd.conf, which dhcpd reads
+	 * only at start, so the servers it reaches restart, one at a time. */
 	dhcp_apply_and_maybe_restart();
 	jw_init(&w);
 	dhcp_write_json(&w);
@@ -26782,7 +26886,7 @@ static void handle_network_dhcp_get(int fd, const char *network)
 		cfg = &empty;
 	}
 	jw_init(&w);
-	dhcp_network_write_json(cfg, 1, &w);
+	dhcp_network_write_json(cfg, &w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
@@ -26947,6 +27051,15 @@ static void handle_network_dhcp_put(int fd, const char *network, const char *bod
 		if (jsrv != NULL && jsrv->type == JSON_ARRAY) {
 			size_t k;
 
+			/* ADR-0386: one server or a pair; more is refused, never
+			 * cut down to the first two. */
+			if (jsrv->u.array.count > DHCP_MAX_RANGE_SERVERS) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request",
+				               "a range is served by one server, or by two forming a "
+				               "failover pair (ADR-0386)");
+				return;
+			}
 			cfg.server_count = 0;
 			memset(cfg.servers, 0, sizeof(cfg.servers));
 			for (k = 0; k < jsrv->u.array.count && cfg.server_count < DHCP_MAX_RANGE_SERVERS; k++) {
@@ -26956,6 +27069,33 @@ static void handle_network_dhcp_put(int fd, const char *network, const char *bod
 					continue;
 				snprintf(cfg.servers[cfg.server_count], DHCP_SERVER_NAME_MAX, "%s", nm);
 				cfg.server_count++;
+			}
+		}
+	}
+	{
+		/* ADR-0386: the DNS servers handed to clients. */
+		const struct json_value *jdns = json_object_get(root, "dns_servers");
+
+		if (jdns != NULL && jdns->type == JSON_ARRAY) {
+			size_t k;
+
+			if (jdns->u.array.count > DHCP_MAX_DNS) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request", "at most 4 dns_servers");
+				return;
+			}
+			cfg.dns_count = 0;
+			memset(cfg.dns_be, 0, sizeof(cfg.dns_be));
+			for (k = 0; k < jdns->u.array.count; k++) {
+				const char *d = json_as_string(jdns->u.array.items[k]);
+
+				if (d == NULL || inet_pton(AF_INET, d, &addr) != 1 || addr.s_addr == 0) {
+					json_free(root);
+					respond_error(fd, 400, "Bad Request",
+					               "each dns_servers entry must be an IPv4 address");
+					return;
+				}
+				cfg.dns_be[cfg.dns_count++] = addr.s_addr;
 			}
 		}
 	}
@@ -27003,15 +27143,10 @@ static void handle_network_dhcp_put(int fd, const char *network, const char *bod
 			               "own IP to a client is a conflict, not a lease");
 			return;
 		}
-		/*
-		 * DHCP is served by EVERY registered DNS server, so there has
-		 * to be at least one -- otherwise this stores a range nothing
-		 * will ever answer for.
-		 */
+		/* A range needs a server, or it is stored with nothing that will
+		 * ever answer for it. */
 		{
 			int servers = cfg.server_count;
-			uint32_t first = ntohl(cfg.range_start_be);
-			uint32_t last = ntohl(cfg.range_end_be);
 			int si;
 
 			if (servers == 0) {
@@ -27049,20 +27184,9 @@ static void handle_network_dhcp_put(int fd, const char *network, const char *bod
 				respond_error(fd, 400, "Bad Request", errbuf);
 				return;
 			}
-			/*
-			 * The range is split into one disjoint slice per server
-			 * (dnsmasq has no failover protocol, so disjoint pools are
-			 * what makes two servers safe). A range with fewer
-			 * addresses than servers cannot be split, and rounding one
-			 * server down to nothing would silently make it not a
-			 * server at all.
-			 */
-			if (last - first + 1 < (uint32_t)servers) {
-				snprintf(errbuf, sizeof(errbuf),
-				         "the range holds %u address(es) but %d servers must split it -- each "
-				         "needs at least one, since they have no shared lease database and "
-				         "only disjoint pools keep them from colliding",
-				         last - first + 1, servers);
+			/* ADR-0386: two servers are a failover pair -- distinct,
+			 * sharing a network, and paired with nobody else. */
+			if (dhcp_pair_refused(&cfg, errbuf, sizeof(errbuf))) {
 				respond_error(fd, 400, "Bad Request", errbuf);
 				return;
 			}
@@ -27070,6 +27194,13 @@ static void handle_network_dhcp_put(int fd, const char *network, const char *bod
 	}
 
 	err = dhcp_network_set(&cfg);
+	if (err == DHCP_ERR_IN_POOL) {
+		respond_error(fd, 400, "Bad Request",
+		               "the range covers a reservation -- a reservation is a fixed address "
+		               "dhcpd gives without a lease, so it must lie outside every range "
+		               "(ADR-0386); move the range or remove the reservation");
+		return;
+	}
 	if (err == DHCP_ERR_INVALID) {
 		respond_error(fd, 400, "Bad Request",
 		               "enabling DHCP needs range_start, range_end (start <= end), a "
@@ -27086,7 +27217,7 @@ static void handle_network_dhcp_put(int fd, const char *network, const char *bod
 	}
 	dhcp_apply_and_maybe_restart();
 	jw_init(&w);
-	dhcp_network_write_json(dhcp_network_find(network), 1, &w);
+	dhcp_network_write_json(dhcp_network_find(network), &w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
@@ -43342,6 +43473,7 @@ static int cixd_main(int argc, char **argv)
 		fwscan_tick();   /* ADR-0381 */
 		reprobe_tick();  /* ADR-0381 release 3 */
 		quota_tick(); /* #689 */
+		dhcp_scan_tick(); /* ADR-0386 */
 
 		drain_pending_free();
 

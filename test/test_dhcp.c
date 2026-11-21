@@ -1,15 +1,15 @@
 /*
- * DHCP (ADR-0197) end-to-end over real HTTP: the per-network config,
- * static reservations, and -- the part that matters most -- that the
- * rendered dnsmasq files actually land inside a registered server
- * container, read back through the container file-read endpoint rather
- * than by trusting the write.
+ * DHCP (ADR-0197, ADR-0386) end-to-end over real HTTP: the per-network
+ * config, static reservations, failover pairs, and -- the part that
+ * matters most -- that the rendered dhcpd.conf actually lands inside a
+ * registered server container, read back through the container
+ * file-read endpoint rather than by trusting the write.
  *
  * The serving container here is an ordinary test child, not a real
- * dnsmasq: what is being proved is that Cix renders and delivers the
- * right bytes to the right path. Whether dnsmasq then hands out an
- * address is dnsmasq's own behaviour, verified on real hardware where
- * there is a wire and a client to hand one to.
+ * dhcpd: what is being proved is that Cix renders and delivers the
+ * right bytes to the right path. What dhcpd does with them is dhcpd's
+ * own behaviour, measured on real hardware (ADR-0386's Context), and
+ * the render itself is checked byte for byte by test_dhcpdconf.
  */
 #include "httpclient.h"
 #include "json.h"
@@ -46,11 +46,6 @@ static int wait_for_daemon(const struct cix_client *c, int max_attempts)
 		usleep(100000);
 	}
 	return -1;
-}
-
-static const char *json_str_field(const struct json_value *obj, const char *key)
-{
-	return json_as_string(json_object_get(obj, key));
 }
 
 static pid_t start_daemon(void)
@@ -222,11 +217,8 @@ int main(void)
 	        "a hostname with a space");
 
 	/*
-	 * 4. Two registered servers, and the range is split between them.
-	 * dnsmasq has no failover protocol and the two share no lease
-	 * database, so disjoint pools are the only thing stopping them
-	 * handing one address to two machines -- which makes the split the
-	 * property worth asserting, not the fact that a file was written.
+	 * 4. Two registered servers forming a failover pair (ADR-0386): both
+	 * serve the whole range, and each one's dhcpd.conf names the other.
 	 */
 	expect(&client, "POST", "/v1/containers",
 	        "{\"name\":\"dhcpsrv\",\"image\":\"dhcptest\","
@@ -248,64 +240,67 @@ int main(void)
 	expect(&client, "POST", "/v1/dhcp/servers", "{\"container\":\"nosuchcontainer\"}", 404,
 	        "registering a container that does not exist");
 
-	/* A range with fewer addresses than servers cannot be split, and
-	 * rounding one server down to nothing would quietly make it not a
-	 * server at all. */
+	/* A pair is two different servers, and a range names at most two. */
 	expect(&client, "PUT", "/v1/dhcp/networks/selftest-dhcp",
-	        "{\"enabled\":true,\"range_start\":\"172.30.7.100\",\"range_end\":\"172.30.7.100\","
-	        "\"servers\":[\"dhcpsrv\",\"dhcpsrv2\"]}",
-	        400, "one address between two servers");
+	        "{\"enabled\":true,\"range_start\":\"172.30.7.100\",\"range_end\":\"172.30.7.200\","
+	        "\"servers\":[\"dhcpsrv\",\"dhcpsrv\"]}",
+	        400, "a pair of one server twice");
+	expect(&client, "PUT", "/v1/dhcp/networks/selftest-dhcp",
+	        "{\"enabled\":true,\"range_start\":\"172.30.7.100\",\"range_end\":\"172.30.7.200\","
+	        "\"servers\":[\"dhcpsrv\",\"dhcpsrv2\",\"dhcpsrv\"]}",
+	        400, "three servers on one range");
+	/* A reservation is a fixed address dhcpd gives without a lease, so
+	 * a range may not cover one (172.30.7.50 is reserved above). */
+	expect(&client, "PUT", "/v1/dhcp/networks/selftest-dhcp",
+	        "{\"enabled\":true,\"range_start\":\"172.30.7.40\",\"range_end\":\"172.30.7.60\","
+	        "\"servers\":[\"dhcpsrv\"]}",
+	        400, "a range covering a reservation");
 
 	expect(&client, "PUT", "/v1/dhcp/networks/selftest-dhcp",
 	        "{\"enabled\":true,\"range_start\":\"172.30.7.100\",\"range_end\":\"172.30.7.200\","
-	        "\"router\":\"172.30.7.1\",\"servers\":[\"dhcpsrv\",\"dhcpsrv2\"]}",
-	        200, "enabling DHCP across both servers");
+	        "\"router\":\"172.30.7.1\",\"dns_servers\":[\"172.30.7.53\"],"
+	        "\"servers\":[\"dhcpsrv\",\"dhcpsrv2\"]}",
+	        200, "enabling DHCP on a failover pair");
+	expect(&client, "POST", "/v1/dhcp/static", "{\"mac\":\"aa:bb:cc:dd:ee:05\",\"ip\":\"172.30.7.150\"}",
+	        400, "a reservation inside a pool");
 
-	/* The two slices are reported, adjacent, and cover the whole range
-	 * with nothing shared: 101 addresses over two servers is 51 + 50. */
+	/* The pair and the DNS servers are reported. */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "GET", "/v1/dhcp/networks/selftest-dhcp", NULL, &r) != 0 ||
-	    r.status != 200) {
-		fprintf(stderr, "FAIL: GET the split, status=%d\n", r.status);
+	    r.status != 200 || r.body == NULL ||
+	    strstr(r.body, "\"servers\":[\"dhcpsrv\",\"dhcpsrv2\"]") == NULL ||
+	    strstr(r.body, "\"dns_servers\":[\"172.30.7.53\"]") == NULL) {
+		fprintf(stderr, "FAIL: the range does not report its pair and DNS servers: %s\n",
+		        r.body != NULL ? r.body : "(none)");
 		ok = 0;
-	} else {
-		const struct json_value *slices = json_object_get(r.json, "slices");
-
-		if (slices == NULL || slices->type != JSON_ARRAY || slices->u.array.count != 2) {
-			fprintf(stderr, "FAIL: two servers did not produce two slices\n");
-			ok = 0;
-		} else {
-			const struct json_value *a = slices->u.array.items[0];
-			const struct json_value *b = slices->u.array.items[1];
-
-			if (strcmp(json_str_field(a, "range_start"), "172.30.7.100") != 0 ||
-			    strcmp(json_str_field(a, "range_end"), "172.30.7.150") != 0 ||
-			    strcmp(json_str_field(b, "range_start"), "172.30.7.151") != 0 ||
-			    strcmp(json_str_field(b, "range_end"), "172.30.7.200") != 0) {
-				fprintf(stderr, "FAIL: the slices are not disjoint and adjacent: %s-%s / %s-%s\n",
-				        json_str_field(a, "range_start"), json_str_field(a, "range_end"),
-				        json_str_field(b, "range_start"), json_str_field(b, "range_end"));
-				ok = 0;
-			}
-		}
 	}
 	cix_response_free(&r);
-
-	/* And each server's own rendered conf carries only its own slice --
-	 * the split is real in the file dnsmasq reads, not just in the
-	 * answer we give about it. */
-	if (!wait_for_file(&client, "/v1/containers/dhcpsrv2/files?path=/etc/dnsmasq-dhcp.conf",
-	                    "dhcp-range=set:selftest-dhcp,172.30.7.151,172.30.7.200,3600s"))
-		fprintf(stderr, "FAIL: the second server did not get its own slice\n");
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "GET",
-	                       "/v1/containers/dhcpsrv2/files?path=/etc/dnsmasq-dhcp.conf", NULL,
-	                       &r) == 0 && r.status == 200 && r.body != NULL &&
-	    strstr(r.body, "172.30.7.100,") != NULL) {
-		fprintf(stderr, "FAIL: the second server also carries the first's slice\n");
+	if (cix_client_request(&client, "GET", "/v1/dhcp/servers", NULL, &r) != 0 ||
+	    r.status != 200 || r.body == NULL ||
+	    strstr(r.body, "\"partner\":\"dhcpsrv2\"") ==
+	        NULL) {
+		fprintf(stderr, "FAIL: the servers read does not name the partner: %s\n",
+		        r.body != NULL ? r.body : "(none)");
 		ok = 0;
 	}
 	cix_response_free(&r);
+
+	/* Each member's own dhcpd.conf: the name that sorts first is the
+	 * primary and carries mclt and split; both serve the whole range
+	 * through the pair's peer. */
+	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dhcpd.conf",
+	                    "failover peer \"cix\" {\n  primary;\n  mclt 3600;\n  split 128;\n"))
+		fprintf(stderr, "FAIL: dhcpsrv is not the pair's primary\n");
+	if (!wait_for_file(&client, "/v1/containers/dhcpsrv2/files?path=/etc/dhcpd.conf",
+	                    "failover peer \"cix\" {\n  secondary;\n"))
+		fprintf(stderr, "FAIL: dhcpsrv2 is not the pair's secondary\n");
+	if (!wait_for_file(&client, "/v1/containers/dhcpsrv2/files?path=/etc/dhcpd.conf",
+	                    "    failover peer \"cix\";\n    range 172.30.7.100 172.30.7.200;\n"))
+		fprintf(stderr, "FAIL: the secondary does not serve the whole range through the pair\n");
+	if (!wait_for_file(&client, "/v1/containers/dhcpsrv2/files?path=/etc/dhcpd.conf",
+	                    "  peer address 172.30.7."))
+		fprintf(stderr, "FAIL: the secondary's peer is not on the shared network\n");
 
 	/*
 	 * A registered DNS server on a DIFFERENT network gets none of this
@@ -325,27 +320,31 @@ int main(void)
 	expect(&client, "POST", "/v1/dhcp/servers", "{\"container\":\"dhcpelsewhere\"}", 201,
 	        "register it as a DHCP server too");
 	/* Naming a server that is not on this wire is refused: it has no
-	 * interface in the subnet, so its slice would be addresses handed
-	 * to something that cannot answer for them. */
+	 * interface in the subnet, so its half of the pool would be handed
+	 * to something that cannot answer for it. */
 	expect(&client, "PUT", "/v1/dhcp/networks/selftest-dhcp",
 	        "{\"enabled\":true,\"range_start\":\"172.30.7.100\",\"range_end\":\"172.30.7.200\","
 	        "\"servers\":[\"dhcpsrv\",\"dhcpelsewhere\"]}",
 	        400, "naming a server that is not on this network");
+	/* Its own file declares only its own network, with no pool. */
+	if (!wait_for_file(&client, "/v1/containers/dhcpelsewhere/files?path=/etc/dhcpd.conf",
+	                    "subnet 172.30.9.0 netmask 255.255.255.0 { }\n"))
+		fprintf(stderr, "FAIL: a registered server did not get its own network declared\n");
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "GET",
-	                       "/v1/containers/dhcpelsewhere/files?path=/etc/dnsmasq-dhcp.conf", NULL,
+	                       "/v1/containers/dhcpelsewhere/files?path=/etc/dhcpd.conf", NULL,
 	                       &r) == 0 && r.status == 200 && r.body != NULL &&
-	    strstr(r.body, "dhcp-range=") != NULL) {
+	    strstr(r.body, "range ") != NULL) {
 		fprintf(stderr, "FAIL: a server no range names was given one anyway\n");
 		ok = 0;
 	}
 	cix_response_free(&r);
-	/* And it did not change the split on the network it is not on. */
+	/* And it did not change the pair on the network it is not on. */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "GET", "/v1/dhcp/networks/selftest-dhcp", NULL, &r) != 0 ||
-	    r.status != 200 || json_object_get(r.json, "slices") == NULL ||
-	    json_object_get(r.json, "slices")->u.array.count != 2) {
-		fprintf(stderr, "FAIL: an unrelated server changed this network's split\n");
+	    r.status != 200 || r.body == NULL ||
+	    strstr(r.body, "\"servers\":[\"dhcpsrv\",\"dhcpsrv2\"]") == NULL) {
+		fprintf(stderr, "FAIL: an unrelated server changed this network's pair\n");
 		ok = 0;
 	}
 	cix_response_free(&r);
@@ -360,91 +359,53 @@ int main(void)
 	 * container is mid-recreate. What is being asserted is that the
 	 * rendered conf ends up there, not how quickly.
 	 */
-	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
-	                    "dhcp-range=set:selftest-dhcp,172.30.7.100,172.30.7.150,3600s"))
-		fprintf(stderr, "FAIL: the rendered dhcp conf did not reach the first server\n");
-	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
-	                    "dhcp-option=tag:selftest-dhcp,3,172.30.7.1"))
-		fprintf(stderr, "FAIL: the router option did not reach the first server\n");
+	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dhcpd.conf",
+	                    "subnet 172.30.7.0 netmask 255.255.255.0 {\n"
+	                    "  option routers 172.30.7.1;\n"
+	                    "  option domain-name-servers 172.30.7.53;\n"
+	                    "  default-lease-time 3600;\n"))
+		fprintf(stderr, "FAIL: the rendered range did not reach the first server\n");
+	/* A reservation is a host declaration, named by its MAC. */
+	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dhcpd.conf",
+	                    "host r-aa-bb-cc-dd-ee-01 {\n  hardware ethernet aa:bb:cc:dd:ee:01;\n"
+	                    "  fixed-address 172.30.7.50;\n  option host-name \"printer\";\n}\n"))
+		fprintf(stderr, "FAIL: the rendered reservation did not reach the server\n");
 
-	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp-hosts",
-	                    "aa:bb:cc:dd:ee:01,172.30.7.50,printer"))
-		fprintf(stderr, "FAIL: the rendered reservations did not reach the server\n");
-
 	/*
-	 * One server, TWO networks -- the case the whole per-network model
-	 * exists for, and the one nothing exercised until now.
+	 * One server, TWO networks: dhcpsrv is in the pair on selftest-dhcp
+	 * and serves selftest-dhcp2 alone. That pool is its own, so it
+	 * carries no failover peer the partner does not know about.
 	 *
-	 * dnsmasq picks a RANGE by the subnet of the interface a request
-	 * arrived on, so untagged ranges were always fine. An untagged
-	 * OPTION is a different thing entirely: dnsmasq sends it to every
-	 * client on every range. So a server on two networks used to render
-	 * two bare "dhcp-option=3,..." lines and hand both segments the
-	 * same default gateway -- correct-looking output, one wrong subnet.
-	 *
-	 * The assertion that catches a regression is the third one: not
-	 * that the tagged forms are present, but that no UNTAGGED router
-	 * option is left anywhere in the file.
-	 */
-	/*
-	 * dhcpsrv was created on both segments above, which is what lets it
-	 * be named here: enabling DHCP for a server with no interface on
-	 * the network is refused -- "it has no interface in this subnet, so
-	 * it could not answer here".
-	 */
-	/*
-	 * Configured with NO router first, deliberately. This PUT is a
-	 * partial update over whatever is already stored -- the same
-	 * convention every config PUT here uses -- so omitting "router"
-	 * later would KEEP the previous one rather than clear it. The only
-	 * way to observe the no-router rendering is on a network that has
-	 * never had one.
-	 *
-	 * It matters because saying nothing is not the same as saying none:
-	 * dnsmasq's documented default, when the router option is absent,
-	 * is to send its own address. A network with no gateway would
-	 * otherwise point every client at the container serving DHCP, which
-	 * does not route.
+	 * Configured with NO router first. This PUT is a partial update, so
+	 * omitting "router" later would KEEP the previous one; the only way
+	 * to observe the no-router rendering is on a network that has never
+	 * had one. dhcpd sends no router when none is declared.
 	 */
 	expect(&client, "PUT", "/v1/dhcp/networks/selftest-dhcp2",
 	        "{\"enabled\":true,\"range_start\":\"172.30.8.100\",\"range_end\":\"172.30.8.150\","
 	        "\"servers\":[\"dhcpsrv\"]}",
 	        200, "the same server also serves the second network, with no router");
-	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
-	                    "dhcp-option=tag:selftest-dhcp2,option:router"))
-		fprintf(stderr, "FAIL: a network with no router did not suppress the router option -- "
-		                "dnsmasq would advertise itself as the gateway\n");
+	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dhcpd.conf",
+	                    "subnet 172.30.8.0 netmask 255.255.255.0 {\n  default-lease-time 3600;\n"
+	                    "  max-lease-time 3600;\n  pool {\n    range 172.30.8.100 172.30.8.150;\n"))
+		fprintf(stderr, "FAIL: a server's own range has a router or a failover peer it should "
+		                "not\n");
 
-	/* Now give it one, and the tagged value replaces the suppression. */
+	/* Now give it one. */
 	expect(&client, "PUT", "/v1/dhcp/networks/selftest-dhcp2",
 	        "{\"enabled\":true,\"range_start\":\"172.30.8.100\",\"range_end\":\"172.30.8.150\","
 	        "\"router\":\"172.30.8.254\",\"servers\":[\"dhcpsrv\"]}",
 	        200, "give the second network a router");
-
-	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
-	                    "dhcp-range=set:selftest-dhcp2,172.30.8.100,172.30.8.150,3600s"))
-		fprintf(stderr, "FAIL: the second network's range did not reach the shared server\n");
-	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
-	                    "dhcp-option=tag:selftest-dhcp2,3,172.30.8.254"))
-		fprintf(stderr, "FAIL: the second network's router option is not tagged to it\n");
-
+	if (!wait_for_file(&client, "/v1/containers/dhcpsrv/files?path=/etc/dhcpd.conf",
+	                    "subnet 172.30.8.0 netmask 255.255.255.0 {\n"
+	                    "  option routers 172.30.8.254;\n"))
+		fprintf(stderr, "FAIL: the second network's router did not reach the shared server\n");
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "GET",
-	                       "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf", NULL,
-	                       &r) == 0 && r.status == 200 && r.body != NULL) {
-		/* Both networks' own tagged options, and no global one. */
-		if (strstr(r.body, "dhcp-option=3,") != NULL) {
-			fprintf(stderr, "FAIL: an UNTAGGED router option is in a two-network conf -- "
-			                "every client on every range would receive it\n");
-			ok = 0;
-		}
-		if (strstr(r.body, "dhcp-option=tag:selftest-dhcp,3,172.30.7.1") == NULL) {
-			fprintf(stderr, "FAIL: the first network's tagged router option went missing when "
-			                "a second network was added\n");
-			ok = 0;
-		}
-	} else {
-		fprintf(stderr, "FAIL: could not read back the two-network conf\n");
+	if (cix_client_request(&client, "GET", "/v1/containers/dhcpsrv/files?path=/etc/dhcpd.conf",
+	                       NULL, &r) != 0 || r.status != 200 || r.body == NULL ||
+	    strstr(r.body, "  option routers 172.30.7.1;\n") == NULL) {
+		fprintf(stderr, "FAIL: the first network's router went missing when a second network "
+		                "was added\n");
 		ok = 0;
 	}
 	cix_response_free(&r);
@@ -454,7 +415,7 @@ int main(void)
 
 	/*
 	 * The render survives a restart, which is the property that
-	 * actually makes a range take effect. dnsmasq reads its conf only
+	 * actually makes a range take effect. dhcpd reads its conf only
 	 * at startup and a restart re-stages the container's own
 	 * creation-time files[] -- so a conf written into the RUNNING
 	 * container is overwritten by the placeholder on the next restart,
@@ -485,9 +446,9 @@ int main(void)
 		for (i = 0; i < 60; i++) {
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "GET",
-			                       "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp.conf",
+			                       "/v1/containers/dhcpsrv/files?path=/etc/dhcpd.conf",
 			                       NULL, &r) == 0 && r.status == 200 && r.body != NULL &&
-			    strstr(r.body, "dhcp-range=set:selftest-dhcp,172.30.7.100,172.30.7.150,3600s") != NULL) {
+			    strstr(r.body, "    range 172.30.7.100 172.30.7.200;\n") != NULL) {
 				cix_response_free(&r);
 				break;
 			}
@@ -526,7 +487,7 @@ int main(void)
 		for (i = 0; i < 60; i++) {
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "GET",
-			                       "/v1/containers/dhcpsrv/files?path=/etc/dnsmasq-dhcp-hosts",
+			                       "/v1/containers/dhcpsrv/files?path=/etc/dhcpd.conf",
 			                       NULL, &r) == 0 && r.status == 200 && r.body != NULL &&
 			    strstr(r.body, "aa:bb:cc:dd:ee:01") == NULL) {
 				cix_response_free(&r);
@@ -594,12 +555,21 @@ int main(void)
 	        "{\"enabled\":true,\"range_start\":\"172.30.10.100\",\"range_end\":\"172.30.10.150\","
 	        "\"router\":\"172.30.10.1\",\"servers\":[\"dhcpsrv3\"],\"relays\":[\"dhcprelay1\"]}",
 	        200, "a relayed range");
-	/* The server's range carries the netmask (dnsmasq's manual, for a
-	 * relayed network); its attached range would not. */
-	if (!wait_for_file(&client, "/v1/containers/dhcpsrv3/files?path=/etc/dnsmasq-dhcp.conf",
-	                    "dhcp-range=set:st-relayed,172.30.10.100,172.30.10.150,"
-	                    "255.255.255.0,3600s"))
-		fprintf(stderr, "FAIL: the server's relayed range has no netmask\n");
+	/* The server declares the relayed network's subnet with the pool,
+	 * and its own network with none, so it listens there and serves
+	 * requests relayed from the other (ADR-0386). */
+	if (!wait_for_file(&client, "/v1/containers/dhcpsrv3/files?path=/etc/dhcpd.conf",
+	                    "subnet 172.30.10.0 netmask 255.255.255.0 {\n"
+	                    "  option routers 172.30.10.1;\n"))
+		fprintf(stderr, "FAIL: the server does not declare the relayed range\n");
+	if (!wait_for_file(&client, "/v1/containers/dhcpsrv3/files?path=/etc/dhcpd.conf",
+	                    "subnet 172.30.7.0 netmask 255.255.255.0 { }\n"))
+		fprintf(stderr, "FAIL: the server does not declare its own network\n");
+	/* dhcpsrv is already paired with dhcpsrv2: a server is in at most
+	 * one pair. */
+	expect(&client, "PUT", "/v1/dhcp/networks/st-relayed",
+	        "{\"servers\":[\"dhcpsrv\",\"dhcpsrv3\"],\"relays\":[\"dhcprelay1\"]}", 400,
+	        "pairing a server that already has a partner");
 	/* The relay's file: DNS off, a line from its address on the relayed
 	 * network to the server's on the shared one, replies accepted on
 	 * eth0 (selftest-dhcp), and it listens only on eth1. */

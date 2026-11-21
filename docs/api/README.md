@@ -224,7 +224,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/networks/{name}/interfaces` | Attach a real host network interface to this network's bridge |
 | DELETE | `/networks/{name}/interfaces/{ifname}` | Detach a previously-attached interface (refused while the network carries the management address) |
 | GET | `/dhcp` | Every DHCP range and reservation (ADR-0197) |
-| GET | `/dhcp/servers` | Registered DHCP servers, and whether each also resolves its own leases |
+| GET | `/dhcp/servers` | Registered DHCP servers, each with its failover partner and state (ADR-0386) |
 | POST | `/dhcp/servers` | Register a container as a DHCP server |
 | DELETE | `/dhcp/servers/{container}` | Unregister one -- also drops it from every range that named it |
 | GET | `/dhcp/relays` | Registered DHCP relays, and the service each runs its relay as (ADR-0383) |
@@ -1426,7 +1426,7 @@ POST /v1/containers
 - A `tcp_port` probe connects on **any** of the container's own addresses: `127.0.0.1` first, then each attached network's address in declaration order, one candidate per supervision turn until one answers ([#477](https://git.home.arpa/itdlabs/cix/issues/477), [ADR-0298](../adr/0298-a-readiness-probe-tries-every-address-the-container-has.md)). There is no single right address — “listening” covers a service bound to `0.0.0.0`, one bound to loopback only, and one bound to exactly one interface of a multi-network container. Until #477 this probe only ever tried `127.0.0.1`, whatever addresses the container had, so a service binding only its network address could never be reported ready.
 - `on_exit` is `restart` (daemons' default: restart after `restart_delay_seconds`, default 2 — **declared, never computed**), `stop` (leave it exited), or `fail-container` (oneshots' default: stop everything else in reverse order and end the container with this service's status, which the container-level `restart` policy then acts on). A failing daemon restarts alone; there is no cascade.
 - `stop_signal` (default `SIGTERM`) and `stop_timeout_seconds` (default 10) govern both an operator stop and the container's shutdown, which stops services in reverse dependency order. `uid`/`gid` run the service (and its probe) as someone other than the container's root.
-- `reload_signal` (no default) is how the program re-reads its files ([ADR-0384](../adr/0384-a-service-declares-how-it-reloads.md)). When the daemon rewrites files a container serves -- a DNS server's records and forwarders, a DHCP server's reservations -- it asks the container's cix-init, which sends that signal to each ready service declaring one. A service that declares none is never signalled and picks the files up at its next start. A container whose cix-init predates this has those services restarted instead. dnsmasq declares `SIGHUP`.
+- `reload_signal` (no default) is how the program re-reads its files ([ADR-0384](../adr/0384-a-service-declares-how-it-reloads.md)). When the daemon rewrites files a container serves -- a DNS server's records, forwarders and lease names -- it asks the container's cix-init, which sends that signal to each ready service declaring one. A service that declares none is never signalled and picks the files up at its next start. A container whose cix-init predates this has those services restarted instead. dnsmasq declares `SIGHUP`.
 
 The declaration is the only truth, and every state is read back: `GET /containers/{name}` carries `ready` (derived: every probed service passed, every oneshot exited 0) and `services[]` with each service's `state` (`pending`, `starting`, `running`, `exited`, `restart-wait`, `stopped`, `failed`), `pid`, `restarts`, `last_exit` and `failure`. Output is attributed: every captured or forwarded line is prefixed with the service that wrote it, `cix-init:` for the supervisor's own.
 
@@ -3380,56 +3380,41 @@ The most important field is the one you cannot set: **`selected_entry`** names t
 Two refusals, both hard errors rather than warnings, because anyone using this endpoint is by definition not at the console: a `default` matching **zero** existing entries is refused with 409 (it is silent, and strands the host on next boot — the error names what does exist), and the **last remaining** entry for the running slot cannot be deleted, though duplicates of it can, since clearing accumulated duplicates is what removal is for. A `loader.conf` rewrite preserves directives this daemon has no opinion about (`console-mode`, `editor`, …) rather than regenerating the file and silently dropping them.
 
 
-## DHCP: a self-contained service (ADR-0197)
+## DHCP: a self-contained service (ADR-0197, ADR-0386)
 
 ```
 GET    /v1/dhcp/servers
-POST   /v1/dhcp/servers          {"container": "dns-1"}
+POST   /v1/dhcp/servers          {"container": "dhcp-1"}
 PUT    /v1/dhcp/networks/lab     {"enabled": true, "range_start": "172.30.7.100",
                                   "range_end": "172.30.7.200", "lease_seconds": 3600,
-                                  "router": "172.30.7.1", "servers": ["dns-1", "dns-2"]}
+                                  "router": "172.30.7.1", "dns_servers": ["172.30.7.53"],
+                                  "servers": ["dhcp-1", "dhcp-2"]}
 POST   /v1/dhcp/static           {"mac": "aa:bb:cc:dd:ee:01", "ip": "172.30.7.50", "hostname": "printer"}
 GET    /v1/dhcp/leases
 ```
 
-**Contained is the design constraint.** DHCP registers its own servers, owns its own ranges and reservations, and every endpoint it has lives under `/v1/dhcp`. It reads no other service's registry and nothing DHCP-shaped hangs off another resource — which is what has to be true for a service to be made optional later rather than tangled through everything.
+**Contained is the design constraint.** DHCP registers its own servers, owns its own ranges and reservations, and every endpoint it has lives under `/v1/dhcp`. It reads no other service's registry and nothing DHCP-shaped hangs off another resource — which is what has to be true for a service to be made optional later rather than tangled through everything. That is why a range names its `dns_servers` itself rather than taking them from the DNS service.
 
-**It still pairs with DNS, and the pairing is reported rather than enforced.** dnsmasq answers for the names of clients it has itself leased addresses to, so registering the *same* container as both a DNS server and a DHCP server makes a lease resolvable the instant it is issued. `resolves_leases` on each server says whether that is true:
-
-```json
-{"servers": [{"container": "dns-1", "running": true, "resolves_leases": true},
-             {"container": "dns-2", "running": true, "resolves_leases": true}]}
-```
-
-Enforcing it would mean one service reaching into another's table; reporting it means an operator can see what they have.
-
-**A lease is not a DNS record.** A record is durable operator intent — persisted, surviving every server, listed at `/v1/dns/records`. A lease is short-lived state owned by the server that issued it. Mirroring leases into the record store would put two writers in one namespace and leave a record pointing at an address another machine now holds the first time a lease expired uncleanly. `GET /v1/dhcp/leases` reads them from each server's own lease file, every time.
-
-**A range belongs to a network, and one server serves as many networks as you name it on.** DHCP config is keyed by network (`PUT /v1/dhcp/networks/{network}`), and each network owns its own `range_start`/`range_end`, `lease_seconds` (60 seconds to 30 days, 3600 for a new range), `router` and `servers` list. The `PUT` is a partial update, and `"router": ""` removes the router as `"0.0.0.0"` does — an emptied field sends `""`, and keeping the old router in answer to it would be a `200` for a change not made (#592). There is no global range and no per-server range — the same container can appear in the `servers` list of every network, and each one's settings stay its own.
-
-Two different mechanisms keep them apart, and only one of them is dnsmasq's to handle:
-
-- **Ranges** need no help. dnsmasq matches a request to a range by the subnet of the interface it arrived on, so a server attached to two bridges serves the right pool on each by construction.
-- **Options** do. An untagged `dhcp-option` is sent to every client on every range, so a server on two networks would hand both segments whichever default gateway was rendered last. Cix therefore renders each range as `dhcp-range=set:<network>,…` and every option as `dhcp-option=tag:<network>,…`, so a network's settings can only reach that network's clients.
-
-**A network with no `router` gets an explicit suppressing option, not silence.** dnsmasq's documented default when the router option is absent is to send *its own* address — which would point clients at the container serving DHCP, a machine that does not route. So a network with no gateway renders `dhcp-option=tag:<network>,option:router`. Note the PUT is a *partial update* over what is already stored, in the same way as every other config PUT here: omitting `router` keeps the value already set rather than clearing it, so pass `"0.0.0.0"` to remove one.
-
-**Redundancy is split scope, because with dnsmasq it has to be.** dnsmasq implements no failover protocol — there is no equivalent of ISC dhcpd's primary/backup peer relationship for it to join, so two instances share no lease database and cannot coordinate. A range names the servers that serve it, and Cix divides it into one disjoint slice each: all of them answer, a client takes whichever offer reaches it first, and handing one address to two machines is impossible because no two servers hold it. Any one alone keeps serving from its own slice.
+**DHCP is served by ISC dhcpd, one server or a failover pair ([ADR-0386](../adr/0386-dhcp-is-served-by-an-isc-dhcpd-failover-pair.md)).** A range's `servers` names one registered server, or two that form a dhcpd failover pair in load-balancing mode: both serve the whole range and share its leases. When one is down, the other renews every lease and, after ten minutes without its peer (`auto-partner-down 600`), hands out the whole pool by itself; a peer coming back from that waits one MCLT (an hour) before serving again, while the survivor keeps serving everything. A restart takes seconds, so it never reaches partner-down. The name that sorts first is the primary; the order given does not matter. cixd never declares partner-down and never speaks dhcpd's control protocol. A server pairs with one partner only, and the two must share a network, which carries their failover channel.
 
 ```json
-{"network": "lab", "enabled": true, "range_start": "172.30.7.100", "range_end": "172.30.7.200",
- "servers": ["dns-1", "dns-2"],
- "slices": [{"server": "dns-1", "range_start": "172.30.7.100", "range_end": "172.30.7.150"},
-            {"server": "dns-2", "range_start": "172.30.7.151", "range_end": "172.30.7.200"}]}
+{"servers": [{"container": "dhcp-1", "running": true, "partner": "dhcp-2",
+              "failover_state": "normal", "partner_state": "normal"},
+             {"container": "dhcp-2", "running": true, "partner": "dhcp-1",
+              "failover_state": "normal", "partner_state": "normal"}]}
 ```
 
-One server, three, or more are all valid — how many a wire should have is an operator's decision. The **order** is preserved because it is the slice order: a derived order would move every client's address whenever something unrelated changed. Unregistering a server drops it from every range that named it, and disables any range left with no servers at all — a range naming a server nobody serves from is a slice handed to nothing, which looks like coverage and is not.
+`failover_state` is what the server's own lease file last recorded for itself (`normal`, `communications-interrupted`, `partner-down`, `recover`, `recover-wait`, ...), and `partner_state` what it recorded for its partner.
 
-If you need true primary/backup with a failover protocol — a hot standby that takes over the *whole* pool knowing what its peer has leased — that needs a DHCP server implementing one (ISC Kea or dhcpd), which this platform does not package.
+**A lease is not a DNS record.** A record is durable operator intent — persisted, surviving every server, listed at `/v1/dns/records`. A lease is short-lived state owned by the server that issued it, and mirroring leases into the record store would put two writers in one namespace. `GET /v1/dhcp/leases` reports them from the servers' own lease files: a helper child reads the files whenever one has moved, at most every 15 seconds, since a dhcpd lease file is an append log of no bounded size (ADR-0342), and merges a pair's two records for one address into one. A lease still resolves: cixd writes the current leases' names, and every named reservation, into `/etc/dnsmasq-leases` in each registered DNS server, which dnsmasq reads with `--addn-hosts` and re-reads on reload. A name a record or a container already resolves is left out, as is a client-supplied name that is not one DNS label.
 
-**Static reservations are live; range changes are not.** dnsmasq re-reads the reservations file on `SIGHUP`, so `POST /v1/dhcp/static` takes effect immediately. It reads ranges only at startup — so **changing a range restarts the servers that serve it**, through the same jittered rolling-restart timer a rolling image update uses, and only those whose own rendered conf actually changed.
+**A range belongs to a network, and one server serves as many networks as you name it on.** DHCP config is keyed by network (`PUT /v1/dhcp/networks/{network}`), and each network owns its own `range_start`/`range_end`, `lease_seconds` (60 seconds to 30 days, 3600 for a new range), `router`, `dns_servers` and `servers`. The `PUT` is a partial update: omitting `router` or `dns_servers` keeps what is set, `"router": ""` or `"0.0.0.0"` removes the router (#592), and `"dns_servers": []` sends none. With no router declared, dhcpd sends none. A server serving a range alone gives that pool no failover peer, even when it is in a pair on another range.
 
-Everything that could not serve is refused at the point of asking: a range outside the network's own subnet, a range covering the network's own address, a range that runs backwards, a lease time outside 60s–30d, no servers named, a server that is not registered, a server not attached to that network with no relay to reach it, or a range with fewer addresses than servers to split it between. Two reservations for one address is a `409`. MACs and hostnames are refused, never sanitised.
+**Every change that alters a server's configuration restarts it.** dhcpd reads `/etc/dhcpd.conf` only at start, and has no reload signal. So a range or reservation change restarts the servers whose own rendered file changed, through the same rolling-restart timer a rolling image update uses, and a pair's `roll_group` keeps its two members from restarting together ([ADR-0385](../adr/0385-a-roll-group-restarts-one-member-at-a-time.md)). Measured on 192.168.15.95: a member restarted with its lease file kept is back in failover `normal` within a second.
+
+**A reservation is a fixed address outside every pool.** dhcpd gives a `fixed-address` host its address without a lease, so a reservation inside a range's pool, or a range covering a reservation, is a `400`. A reservation appears in the configuration of every server serving a pool on its network, as `host r-<mac> { ... }`.
+
+Everything that could not serve is refused at the point of asking: a range outside the network's own subnet, a range covering the network's own address, a range that runs backwards, a lease time outside 60s–30d, no servers named, more than two, a server that is not registered, a server that cannot hear the network (not attached, and no relay to reach it), a pair whose members share no network, a server paired with a different partner on another range, or a range covering a reservation. Two reservations for one address is a `409`. MACs and hostnames are refused, never sanitised. Unregistering a server drops it from every range that named it, and disables any range left with no servers.
 
 ### Relays: serving a network the servers are not on (ADR-0383)
 
@@ -3438,19 +3423,19 @@ POST   /v1/dhcp/relays             {"container": "cr-1", "service": "dhcp-relay"
 PUT    /v1/dhcp/networks/remote-access
                                    {"enabled": true, "range_start": "192.168.152.100",
                                     "range_end": "192.168.152.200", "router": "192.168.152.254",
-                                    "servers": ["dns-1", "dns-2"], "relays": ["cr-1", "cr-2"]}
+                                    "servers": ["dhcp-1", "dhcp-2"], "relays": ["cr-1", "cr-2"]}
 ```
 
-A **relay** is a container attached to a network that carries its DHCP requests to servers that are not on it — the cores relaying `remote-access`, which dns-1 and dns-2 have no interface on. It runs dnsmasq in relay-only mode from `/etc/dnsmasq-relay.conf`, which Cix renders from DHCP's own state, exactly as it does a server's files:
+A **relay** is a container attached to a network that carries its DHCP requests to servers that are not on it — the cores relaying `access` and `remote-access`, which the DHCP servers have no interface on. It runs dnsmasq in relay-only mode from `/etc/dnsmasq-relay.conf`, which Cix renders from DHCP's own state:
 
 ```
 port=0
-dhcp-relay=192.168.152.253,192.168.150.101,services
-dhcp-relay=192.168.152.253,192.168.150.102,services
+dhcp-relay=192.168.152.253,192.168.150.111,services
+dhcp-relay=192.168.152.253,192.168.150.112,services
 interface=remote-access
 ```
 
-Each line relays from the relay's address on the relayed network (which becomes `giaddr`, how the server picks the range and where it replies) to one server's address on a network the two share, accepting replies on that shared interface. `interface=` names only the relayed networks, so a core never acts on broadcasts from another (a LAN with its own DHCP server); replies are matched before that check, so they still arrive. A server's range for a network it is not on carries the netmask, which dnsmasq cannot learn from an interface it does not have; an attached range renders as before.
+Each line relays from the relay's address on the relayed network (which becomes `giaddr`, how the server picks the subnet and where it replies) to one server's address on a network the two share, accepting replies on that shared interface, so a pair is two lines. `interface=` names only the relayed networks, so a core never acts on broadcasts from another (a LAN with its own DHCP server); replies are matched before that check, so they still arrive. A server declares every range's subnet with its netmask, and its own networks with no pool, since dhcpd listens only on an interface whose subnet is declared.
 
 **A change restarts the relay service, never its container.** The cores also run bird and keepalived. Cix rewrites the file only when it differs from the one in the container, then asks that container's cix-init to restart the service named at registration (`service`, default `dhcp-relay`). The file is staged at create too, so a container restart starts with it, and it is re-rendered when a server or relay comes, goes or changes address, since it names their addresses.
 
@@ -3460,19 +3445,17 @@ The relay container declares the service: `/usr/sbin/dnsmasq -k -u root --pid-fi
 
 ### Setting up a serving container
 
-The rendered files live at three well-known paths, so the dnsmasq container is started against them:
+A server runs the `isc-dhcp` package's dhcpd against two well-known paths:
 
 ```
---conf-file=/etc/dnsmasq-dhcp.conf
---dhcp-hostsfile=/etc/dnsmasq-dhcp-hosts
---dhcp-leasefile=/var/lib/dnsmasq/dnsmasq.leases
+/usr/sbin/dhcpd -f -cf /etc/dhcpd.conf -lf /var/lib/dhcp/dhcpd.leases --no-pid
 ```
 
-Create the container with `files[]` entries for the first two (empty is fine — dnsmasq refuses to start on a `--conf-file` that does not exist), then `POST /v1/dhcp/servers`. From then on Cix stages the **rendered** files into the container at creation, before its process starts, so the file dnsmasq opens is always the current one. Register the same container with `POST /v1/dns/servers` as well and its leases resolve. Mount a volume at `/var/lib/dnsmasq` (`"volumes": [{"name": "dns-1-dhcp", "path": "/var/lib/dnsmasq"}]`) so the leases survive a restart and a recreate (#698); `/run`, where they used to be, is a fresh tmpfs at every start.
+Mount a volume at `/var/lib/dhcp` (`"volumes": [{"name": "dhcp-1-state", "path": "/var/lib/dhcp"}]`), so the leases and the failover state survive a restart and a recreate. Then `POST /v1/dhcp/servers`. dhcpd will not start until it is registered — it has no configuration, and it refuses to start without a lease file — and registering restarts it. From then on every start stages the **rendered** `/etc/dhcpd.conf` before dhcpd runs, and creates an empty `dhcpd.leases` on the volume when there is none; Cix never writes that file otherwise. Give a pair a common `roll_group`.
 
 > **Enabling DHCP on a network that reaches a real LAN will answer requests from machines that are not this platform's.** A home or office LAN almost certainly already has a DHCP server, and a second one is not a redundant pair — it is two servers with separate lease databases handing out overlapping addresses. Nothing here prevents it, because nothing here can tell a lab bridge from an uplinked one. Use an isolated network unless you own the LAN's addressing.
 
-`cixctl dhcp server ls|add|rm`, `cixctl dhcp relay ls|add|rm`, `cixctl dhcp enable --network=… --range=… --server=… [--server=…] [--relay=…]`, `cixctl dhcp static add|rm`, `cixctl dhcp show|leases` is the CLI surface; the dashboard has DHCP under Services (Servers / Relays / Ranges / Reservations / Leases), with each network's own page showing the leases on it.
+`cixctl dhcp server ls|add|rm`, `cixctl dhcp relay ls|add|rm`, `cixctl dhcp enable --network=… --range=… --server=… [--server=…] [--relay=…] [--dns=…]`, `cixctl dhcp static add|rm`, `cixctl dhcp show|leases` is the CLI surface; the dashboard has DHCP under Services (Servers / Relays / Ranges / Reservations / Leases), with each network's own page showing the leases on it.
 
 ## Samepage merging: KSM (issue #50)
 

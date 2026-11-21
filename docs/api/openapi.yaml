@@ -4182,11 +4182,11 @@ paths:
         service's registry -- which is what has to be true for it to be
         made optional later rather than tangled through everything.
 
-        `resolves_leases` reports whether that same container is also a
-        registered DNS server. dnsmasq answers for the names of clients
-        it has itself leased addresses to, so a server that is both
-        makes leases resolve the instant they are issued. Reported, not
-        required.
+        Each server reports its failover `partner` and, from its own
+        lease file at cixd's last scan, its `failover_state` and what it
+        believes its partner's is (`normal`, `communications-interrupted`,
+        `partner-down`, `recover`, ...). A server with no partner reports
+        nulls (ADR-0386).
       operationId: getDhcpServers
       x-cix-read: state
       x-cix-permission: services:read
@@ -4224,9 +4224,13 @@ paths:
                   title: Container
                   pattern: '^[A-Za-z0-9_\-]+$'
                   description: >
-                    A running container serving dnsmasq. Register the same
-                    container as a DNS server too and its leases resolve
-                    immediately.
+                    A container running ISC dhcpd against /etc/dhcpd.conf,
+                    with a volume at /var/lib/dhcp for its leases
+                    (ADR-0386). Until it is registered it has neither, and
+                    dhcpd will not start; registering restarts it, and
+                    every start from then on stages its configuration and
+                    creates an empty lease file on the volume if there is
+                    none.
       responses:
         "201":
           description: Registered
@@ -4240,8 +4244,8 @@ paths:
       description: >
         Also drops it from every range that named it, and disables any
         range left with no servers at all -- a range naming a server
-        nobody serves from is a slice of addresses handed to nothing,
-        which looks like coverage and is not.
+        nobody serves from is a pool handed to nothing, which looks like
+        coverage and is not.
       operationId: unregisterDhcpServer
       x-cix-invalidates: [getDhcp, getDhcpServers, listContainers]
       x-cix-permission: services:write
@@ -4383,33 +4387,32 @@ paths:
       description: >
         Partial update -- absent fields keep what is configured now.
 
-        `servers` names which registered DHCP servers serve this range,
-        and the range is split into one **disjoint slice** per name, in
-        that order. dnsmasq implements no failover protocol and the
-        servers share no lease database, so disjoint pools are the only
-        thing preventing two of them handing one address to two
-        machines. Any one of them alone keeps serving from its own
-        slice. Naming one server is equally valid; how many a wire
-        should have is an operator's decision, not this daemon's.
-
-        The order matters and is preserved: it is the slice order, so a
-        derived order would move every client's address whenever
-        something unrelated changed.
+        `servers` names one registered DHCP server, or two that form an
+        ISC dhcpd **failover pair** in load-balancing mode (ADR-0386).
+        Both members of a pair serve the whole range and share its
+        leases; when one is down, the other renews every lease and, after
+        ten minutes without its peer (`auto-partner-down`), hands out the
+        whole pool by itself. The name that sorts first is the primary;
+        the order given here does not matter.
 
         Refused for anything that could not serve: a range outside the
         network's own subnet, a range covering the network's own address
         (a conflict, not a lease), a range that runs backwards, a lease
-        time outside 60s..30d, no servers named, a server that is not
-        registered, a server not attached to this network (it has no
-        interface in the subnet), or a range with fewer addresses than
-        servers to split it between.
+        time outside 60s..30d, no servers named, more than two, a server
+        that is not registered, a server that cannot hear this network
+        (not attached, and no relay carries its requests -- ADR-0383), a
+        pair whose members share no network for their failover channel,
+        a server paired with a different partner on another range, or a
+        range covering a reservation.
 
-        **Changing a range restarts the servers that serve it.** dnsmasq
-        reads ranges only at startup, so rendering without restarting
-        would leave a setting that says it is in force and is not. Only
-        the servers whose own rendered conf changed are restarted.
+        **Changing a range restarts the servers that serve it.** dhcpd
+        reads its configuration only at start, so rendering without
+        restarting would leave a setting that says it is in force and is
+        not. Only the servers whose own rendered conf changed are
+        restarted, and a pair's `roll_group` keeps its two members from
+        restarting together (ADR-0385).
       operationId: setDhcpNetwork
-      x-cix-invalidates: [getDhcp, getDhcpNetwork]
+      x-cix-invalidates: [getDhcp, getDhcpNetwork, getDhcpServers]
       x-cix-permission: services:write
       x-cix-mcp: tool
       x-cix-expose: [cli, web]
@@ -4458,30 +4461,32 @@ paths:
                     stored, so omitting it KEEPS the current value rather
                     than clearing it; pass "" or "0.0.0.0" to say
                     explicitly that there is none, or simply never set one.
-
-
-                    A network with no router is rendered as an explicit
-                    suppressing option rather than as silence, because
-                    dnsmasq's own default when the router option is
-                    absent is to send its own address -- clients would be
-                    pointed at whichever container serves DHCP, which
-                    does not route.
+                    With none, clients are sent no router.
+                dns_servers:
+                  type: array
+                  maxItems: 4
+                  items:
+                    type: string
+                    format: ipv4
+                  title: DNS servers
+                  description: >
+                    The DNS servers handed to clients on this network, in
+                    order (ADR-0386). Partial update: omitting it keeps
+                    the current list, and an empty list sends none. DHCP
+                    reads no other service's registry, so these are
+                    named here rather than taken from the DNS servers.
                 servers:
                   type: array
+                  minItems: 1
+                  maxItems: 2
                   items:
                     type: string
                   title: Servers
                   description: >
-                    Which registered DHCP servers serve this network's
-                    range. The range is split into one disjoint slice
-                    per name, in this order, because dnsmasq has no
-                    failover protocol and two servers on one wire are
-                    safe only when their pools cannot overlap. One
-                    server may appear on as many networks as you like --
-                    each network's range, lease and router are its own,
-                    and every option is rendered tagged with the network
-                    name so a shared server cannot leak one segment's
-                    settings onto another.
+                    One registered DHCP server, or two forming a dhcpd
+                    failover pair in load-balancing mode (ADR-0386). A
+                    server may serve as many networks as you like, but
+                    pairs with one partner only.
 
 
                     A server not attached to this network serves it
@@ -4514,7 +4519,7 @@ paths:
     delete:
       summary: Remove a network's DHCP range (ADR-0197)
       operationId: deleteDhcpNetwork
-      x-cix-invalidates: [getDhcp, getDhcpNetwork]
+      x-cix-invalidates: [getDhcp, getDhcpNetwork, getDhcpServers]
       x-cix-permission: services:write
       x-cix-mcp: tool
       x-cix-expose: [cli, web]
@@ -4531,15 +4536,19 @@ paths:
           description: This network had no range
   /dhcp/leases:
     get:
-      summary: Current leases, read from each server's own lease file (ADR-0197)
+      summary: Current leases, read from the servers' own lease files (ADR-0386)
       description: >
-        Read every time, never cached: these are the server's own record
-        of what it handed out, and a copy here would be a second answer
-        to a question only the server can answer.
+        The leases as the servers' own lease files say, from cixd's last
+        scan of them. A helper child reads the files whenever one has
+        moved, at most every 15 seconds, because a dhcpd lease file is
+        an append log of no bounded size (ADR-0342); a failover pair's
+        two files are merged into one answer per address. A lease past
+        its end is left out.
 
         A lease is deliberately **not** a DNS record. Records are
         durable operator intent (`/dns/records`); a lease is short-lived
-        state owned by its server.
+        state owned by its server. Its name still resolves: cixd writes
+        current leases' names into the DNS servers' own leases file.
       operationId: getDhcpLeases
       x-cix-read: sample
       x-cix-sample-period: 30
@@ -4562,15 +4571,18 @@ paths:
     post:
       summary: Reserve an address for a MAC (ADR-0197)
       description: >
-        Live: the reservations file is re-read by the servers on SIGHUP,
-        so this takes effect without restarting anything.
+        A reservation is a dhcpd `fixed-address` host, so it lies
+        outside every range's pool: one inside a pool is a `400`
+        (ADR-0386). dhcpd reads it only at start, so adding or removing
+        one restarts the servers whose configuration it changes, one
+        member of a pair at a time.
 
         Refused rather than sanitised. The MAC must be lower-case
         `aa:bb:cc:dd:ee:ff` and the hostname, if given, must be a plain
-        DNS label -- both are written into a file dnsmasq parses, and
-        the hostname additionally becomes a name it answers for. A MAC
-        that already has a reservation, or an address already reserved
-        for a different MAC, is a `409`.
+        DNS label -- both are written into a file dhcpd parses, and the
+        hostname additionally becomes a name DNS answers for. A MAC that
+        already has a reservation, or an address already reserved for a
+        different MAC, is a `409`.
       operationId: addDhcpReservation
       x-cix-invalidates: [getDhcp]
       x-cix-permission: services:write
@@ -4616,7 +4628,7 @@ paths:
         "201":
           description: Reserved
         "400":
-          description: Malformed MAC, address, or hostname
+          description: Malformed MAC, address, or hostname, or an address inside a range's pool
         "409":
           description: That MAC or that address is already reserved
   /dhcp/static/{mac}:
@@ -17301,7 +17313,7 @@ components:
           x-cix-config-kind: array
           x-cix-config-key: "container"
           x-cix-config-apply: reconcile
-          x-cix-config-state: "running,resolves_leases"
+          x-cix-config-state: "running,partner,failover_state,partner_state"
         dhcp_relays:
           description: >
             Containers registered as DHCP relays, each with the service
@@ -20309,7 +20321,9 @@ components:
           nullable: true
         servers:
           type: array
-          description: The registered DHCP servers this range names, in slice order.
+          description: >
+            The registered DHCP server this range names, or the two
+            forming its failover pair (ADR-0386).
           items:
             type: string
         relays:
@@ -20320,20 +20334,11 @@ components:
             server is attached.
           items:
             type: string
-        slices:
+        dns_servers:
           type: array
-          description: >
-            Which registered server holds which part of the range.
-            Computed, never stored, and present only on the API view.
+          description: The DNS servers handed to clients, in order (ADR-0386).
           items:
-            type: object
-            properties:
-              server:
-                type: string
-              range_start:
-                type: string
-              range_end:
-                type: string
+            type: string
     Dhcp:
       type: object
       properties:
@@ -20371,12 +20376,24 @@ components:
           type: string
         running:
           type: boolean
-        resolves_leases:
-          type: boolean
+        partner:
+          type: string
+          nullable: true
           description: >
-            Whether this same container is also a registered DNS server,
-            which is what makes a lease resolve the moment it is issued.
-            Reported, not required.
+            The other member of this server's failover pair, or null when
+            it serves alone (ADR-0386).
+        failover_state:
+          type: string
+          nullable: true
+          description: >
+            This server's failover state as its own lease file last said
+            (`normal`, `communications-interrupted`, `partner-down`,
+            `recover`, `recover-wait`, ...). Null with no partner, or
+            before cixd has scanned its lease file.
+        partner_state:
+          type: string
+          nullable: true
+          description: What this server last recorded as its partner's failover state.
     DhcpRelay:
       type: object
       properties:
@@ -20389,9 +20406,10 @@ components:
           type: boolean
     DhcpLease:
       type: object
+      description: >
+        One lease, as the servers' lease files say: a failover pair's two
+        records for one address are merged into one (ADR-0386).
       properties:
-        server:
-          type: string
         mac:
           type: string
         ip:
@@ -20403,7 +20421,8 @@ components:
         expires_at:
           type: integer
           format: unix-seconds
-          description: When this lease expires.
+          nullable: true
+          description: When this lease expires; null for a lease that never does.
 
     ImageVersionPackage:
       type: object

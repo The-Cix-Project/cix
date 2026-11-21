@@ -1738,12 +1738,11 @@
 			</div>
 <div class="tab-panel" data-tab="dhcp-servers">
 				<p class="hint">
-					Containers running dnsmasq that serve DHCP. Register one from the Services menu.
-					<strong>Resolves leases</strong> says whether that same container is also a
-					registered DNS server: dnsmasq answers for the names of clients it has itself
-					leased addresses to, so when it is both, a lease resolves the moment it is handed
-					out. Reported rather than required &mdash; one service does not reach into
-					another's registry.
+					Containers running ISC dhcpd that serve DHCP. Register one from the Services menu.
+					Two servers named on one range are a <strong>failover pair</strong>;
+					<strong>Failover</strong> is each one's state as its own lease file last said,
+					and <strong>normal</strong> means both are serving. Lease names reach DNS through
+					cixd, which writes them into the DNS servers.
 				</p>
 				<table id="dhcp-servers-table">
 					<tbody></tbody>
@@ -1764,13 +1763,12 @@
 			</div>
 <div class="tab-panel" data-tab="dhcp-ranges" hidden>
 				<p class="hint">
-					One range per network, and the servers that serve it. dnsmasq implements no
-					failover protocol, so a range named to more than one server is split into
-					<strong>disjoint slices</strong> &mdash; all of them answer, a client takes
-					whichever offer arrives first, and no two servers hold the same address. Any one
-					of them alone keeps serving from its own slice. Changing a range restarts the
-					servers that serve it: dnsmasq reads ranges only at startup. A server need not be
-					on the range's network when the range names <strong>relays</strong> there.
+					One range per network, served by one server or by a failover pair. Both members
+					of a pair serve the whole range and share its leases; when one is down, the other
+					renews every lease and, after ten minutes, hands out the whole pool by itself.
+					Changing a range restarts the servers that serve it, one at a time: dhcpd reads
+					its configuration only at start. A server need not be on the range's network when
+					the range names <strong>relays</strong> there.
 				</p>
 				<table id="dhcp-ranges-table">
 					<tbody></tbody>
@@ -1778,9 +1776,9 @@
 			</div>
 <div class="tab-panel" data-tab="dhcp-static" hidden>
 				<p class="hint">
-					A MAC always gets the same address. Live &mdash; the servers re-read these on
-					SIGHUP, so nothing restarts. A hostname here becomes a name the DNS side answers
-					for too. Reserve one from the Services menu.
+					A MAC always gets the same address, which lies outside every range. Adding or
+					removing one restarts the servers, one at a time. A hostname here becomes a name
+					the DNS side answers for too. Reserve one from the Services menu.
 				</p>
 				<table id="dhcp-static-table">
 					<tbody></tbody>

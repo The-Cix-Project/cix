@@ -5779,13 +5779,18 @@ function renderDhcpServers(servers) {
 	renderTable(document.getElementById("dhcp-servers-table"), "DhcpServer", servers, [
 		"container",
 		{ field: "running", label: "Running", badge: (v) => (v ? "ok" : "unknown") },
-		{ field: "resolves_leases", label: "Resolves leases" },
+		/* ADR-0386: the pair, and its failover state as each member's
+		 * own lease file last said. */
+		{ field: "partner", label: "Partner" },
+		{ field: "failover_state", label: "Failover",
+		  badge: (v) => (v === "normal" ? "ok" : v === null ? "unknown" : "warn") },
+		{ field: "partner_state", label: "Partner says" },
 		{ label: "", actions: (srv) => [dhcpActionButton("Unregister",
 		    "unregisterDhcpServer",
 		    "Unregister DHCP server " + srv.container + "? It is dropped from every range that "
 		    + "named it, and a range left with no server stops serving.", async () => {
 			await apiRequest("DELETE", CIX_API.unregisterDhcpServer(srv.container));
-			showStatus("Unregistered -- any range that named it has been re-split.", false);
+			showStatus("Unregistered -- it no longer serves any range.", false);
 			refreshDhcp();
 		})] },
 	], {
@@ -5855,13 +5860,11 @@ function renderDhcpRanges(networks) {
 		{ label: "Range", text: (n) => (n.range_start === null
 		    ? FIELD_ABSENT : n.range_start + " – " + n.range_end) },
 		{ field: "lease_seconds", label: "Lease" },
-		/* The split, not the count: two servers are redundant only
-		 * because their pools are disjoint, and that is the thing
-		 * worth seeing. */
-		{ label: "Slices", text: (n) => ((n.slices || []).length === 0
-		    ? FIELD_ABSENT
-		    : (n.slices || []).map((s) => s.server + " " + s.range_start +
-		        "–" + s.range_end).join(", ")) },
+		/* ADR-0386: one server, or a failover pair sharing the range. */
+		{ label: "Servers", text: (n) => ((n.servers || []).length === 0
+		    ? FIELD_ABSENT : n.servers.join(" + ")) },
+		{ label: "DNS", text: (n) => ((n.dns_servers || []).length === 0
+		    ? FIELD_ABSENT : n.dns_servers.join(", ")) },
 		{ label: "Relays", text: (n) => ((n.relays || []).length === 0
 		    ? FIELD_ABSENT : n.relays.join(", ")) },
 		{ label: "", actions: (n) => [
@@ -5973,8 +5976,13 @@ async function refreshNetworkDhcp(name) {
 			apiRequest("GET", CIX_API.getDhcpLeases()),
 		]);
 		const cfg = (all.networks || []).find((n) => n.network === name);
-		const servers = cfg === undefined ? [] : (cfg.slices || []).map((s) => s.server);
-		const mine = (leases.leases || []).filter((l) => servers.indexOf(l.server) !== -1);
+		/* ADR-0386: a lease belongs to this network when its address is
+		 * in this network's range; a pair's leases are merged, so no
+		 * lease names a server any more. */
+		const ipNum = (s) => s.split(".").reduce((a, o) => a * 256 + Number(o), 0);
+		const mine = cfg === undefined || cfg.range_start === null ? [] :
+		    (leases.leases || []).filter((l) => ipNum(l.ip) >= ipNum(cfg.range_start) &&
+		        ipNum(l.ip) <= ipNum(cfg.range_end));
 
 		renderLeaseRows(document.querySelector("#nd-dhcp-leases tbody"), mine,
 		    "nd-dhcp-leases");
@@ -6006,10 +6014,7 @@ async function dhcpRangeChoices(newOnly) {
 		network: (nets.networks || [])
 			.filter((n) => !newOnly || configured.indexOf(n.name) === -1)
 			.map((n) => ({ value: n.name })),
-		servers: (servers.servers || []).map((s) => ({
-			value: s.container,
-			label: s.container + (s.resolves_leases ? "" : " (leases will not resolve)"),
-		})),
+		servers: (servers.servers || []).map((s) => ({ value: s.container })),
 		/* ADR-0383: only registered relays can relay; the daemon says
 		 * which of them is on the range's network when it is saved. */
 		relays: (relays.relays || []).map((r) => ({ value: r.container })),
