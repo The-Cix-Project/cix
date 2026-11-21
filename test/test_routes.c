@@ -180,19 +180,49 @@ int main(void)
 		}
 	}
 
-	/* 4. Adding the exact same route again must fail -- the kernel
-	 * itself rejects the duplicate (no NLM_F_REPLACE), and the daemon
-	 * must surface that as 400, not silently succeed or crash. */
+	/* 4. ADR-0387: adding the exact same route again is asking for
+	 * what is there, so it is 204, not the 400 it used to be (which read
+	 * like a failure at gibsson-1's console, 2026-11-21). */
 	memset(&r, 0, sizeof(r));
 	if (ok && (cix_client_request(&client, "POST", "/v1/system/routes",
 	                              "{\"dest\":\"" TEST_DEST "\",\"prefix\":24,\"gateway\":\"" TEST_GATEWAY
 	                              "\"}",
 	                              &r) != 0 ||
-	           r.status != 400)) {
-		fprintf(stderr, "FAIL: duplicate POST /v1/system/routes expected 400, got %d\n", r.status);
+	           r.status != 204)) {
+		fprintf(stderr, "FAIL: duplicate POST /v1/system/routes expected 204, got %d\n", r.status);
 		ok = 0;
 	}
 	cix_response_free(&r);
+
+	/* 4b. ADR-0387: the route is kept -- listed under "saved" as
+	 * applied, and written to the state file a start reads back. */
+	memset(&r, 0, sizeof(r));
+	if (ok && (cix_client_request(&client, "GET", "/v1/system/routes", NULL, &r) != 0 ||
+	           r.status != 200 || r.body == NULL ||
+	           strstr(r.body, "\"saved\":[{\"dest\":\"" TEST_DEST "\",\"prefix\":24,\"gateway\":\""
+	                          TEST_GATEWAY "\",\"state\":\"applied\"}]") == NULL)) {
+		fprintf(stderr, "FAIL: the added route is not listed as kept and applied: %s\n",
+		        r.body != NULL ? r.body : "(no body)");
+		ok = 0;
+	}
+	cix_response_free(&r);
+	if (ok) {
+		char path[512], buf[512];
+		FILE *f;
+		size_t n = 0;
+
+		snprintf(path, sizeof(path), "%s/state/routes.json", g_data_dir);
+		f = fopen(path, "r");
+		if (f != NULL) {
+			n = fread(buf, 1, sizeof(buf) - 1, f);
+			fclose(f);
+		}
+		buf[n] = '\0';
+		if (strstr(buf, TEST_DEST) == NULL) {
+			fprintf(stderr, "FAIL: %s does not keep the route: '%s'\n", path, buf);
+			ok = 0;
+		}
+	}
 
 	/* 5. Malformed body (bad dest) must 400, not crash or silently
 	 * install a garbage route. */
@@ -248,6 +278,17 @@ int main(void)
 			ok = 0;
 		}
 	}
+
+	/* 7b. ADR-0387: deleted without naming its gateway, it is forgotten
+	 * too, so no later pass puts it back. */
+	memset(&r, 0, sizeof(r));
+	if (ok && (cix_client_request(&client, "GET", "/v1/system/routes", NULL, &r) != 0 ||
+	           r.status != 200 || r.body == NULL || strstr(r.body, "\"saved\":[]") == NULL)) {
+		fprintf(stderr, "FAIL: the deleted route is still kept: %s\n",
+		        r.body != NULL ? r.body : "(no body)");
+		ok = 0;
+	}
+	cix_response_free(&r);
 
 	/* 8. Deleting an already-gone route must 404, not crash or silently
 	 * report success. */

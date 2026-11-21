@@ -2264,7 +2264,10 @@ paths:
         "default" dest entry (if present) is the box's own upstream
         default route; gateway/interface are null for on-link routes
         the kernel derives automatically from each network's own
-        assigned address (see GET /networks).
+        assigned address (see GET /networks). `saved` lists the routes
+        this host keeps (ADR-0387): every route added through POST,
+        put back at each start and retried until its gateway is
+        reachable, with whether the kernel has it now.
       operationId: getSystemRoutes
       x-cix-read: state
       x-cix-permission: networks:read
@@ -2277,12 +2280,16 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [routes]
+                required: [routes, saved]
                 properties:
                   routes:
                     type: array
                     items:
                       $ref: "#/components/schemas/KernelRoute"
+                  saved:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SavedRoute"
         "500":
           description: The rtnetlink dump itself failed (transport-level, not a "no routes" case)
           content:
@@ -2292,11 +2299,14 @@ paths:
     post:
       summary: Add a real IPv4 route to the host's own kernel routing table (ADR-0067 Part 3)
       description: >
-        A thin wrapper over rtnl_route_add_ipv4() -- not a persisted
-        Cix resource, same as the GET above: nothing added here
-        survives a reboot. Scoped to exactly what that primitive
-        supports -- no interface/RTA_OIF binding, no route-replace
-        semantics beyond plain NLM_F_CREATE.
+        Adds the route to the kernel through rtnl_route_add_ipv4() and
+        keeps it (ADR-0387): it is put back at every start, and retried
+        every few seconds while its gateway is unreachable (a gateway
+        that is a container's address is reachable only once that
+        container runs). A route the kernel already has is kept too and
+        answers 204. Scoped to exactly what that primitive supports --
+        no interface/RTA_OIF binding, no route-replace semantics beyond
+        plain NLM_F_CREATE.
       operationId: postSystemRoute
       x-cix-invalidates: [getSystemRoutes]
       x-cix-permission: networks:write
@@ -2310,18 +2320,21 @@ paths:
               $ref: "#/components/schemas/RouteMutationRequest"
       responses:
         "204":
-          description: Route added
+          description: Route added (or already present) and kept
         "400":
           description: >
             Invalid JSON body, prefix out of [0, 32], dest missing/invalid
-            when prefix > 0, gateway invalid, or the kernel itself rejected
-            the route (already exists, unreachable gateway, etc.)
+            when prefix > 0, gateway invalid, or the kernel refused the
+            route; the message names the kernel's reason (an unreachable
+            gateway among them). A refused route is not kept.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "500":
-          description: Could not open the rtnetlink socket
+          description: >
+            Could not open the rtnetlink socket, or the route is in the
+            kernel but could not be saved (it will not survive a reboot)
           content:
             application/json:
               schema:
@@ -2330,7 +2343,11 @@ paths:
       summary: Remove a route from the host's own kernel routing table (ADR-0067 Part 3)
       description: >
         The mirror-image of the POST above, via rtnl_route_del_ipv4() --
-        same body shape identifies which route to remove.
+        same body shape identifies which route to remove. The route is
+        forgotten too (ADR-0387); with no gateway in the body, a kept
+        route is matched whatever its gateway, as the kernel's own
+        delete matches it. A kept route waiting for its gateway is not
+        in the kernel, and deleting it is still a 204.
       operationId: deleteSystemRoute
       x-cix-invalidates: [getSystemRoutes]
       x-cix-permission: networks:write
@@ -23978,6 +23995,32 @@ components:
         scope:
           type: integer
           description: Raw rtm_scope value -- not reinterpreted into a name.
+
+    SavedRoute:
+      type: object
+      required: [dest, prefix, gateway, state]
+      description: >
+        A route this host keeps and puts back (ADR-0387), added through
+        POST /system/routes.
+      properties:
+        dest:
+          type: string
+          description: An IPv4 address; "0.0.0.0" with prefix 0 is the default route.
+        prefix:
+          type: integer
+          minimum: 0
+          maximum: 32
+        gateway:
+          type: string
+          nullable: true
+          description: Null for an on-link route.
+        state:
+          type: string
+          enum: [applied, waiting]
+          description: >
+            applied: the kernel has it. waiting: the kernel refuses it for
+            now, almost always because its gateway is not reachable yet,
+            and it is tried again every few seconds.
 
     RouteMutationRequest:
       type: object

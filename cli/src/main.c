@@ -1249,10 +1249,31 @@ static void fmt_route_list(const struct json_value *v)
 	const struct json_value *routes = json_object_get(v, "routes");
 	size_t i;
 
+	const struct json_value *saved = json_object_get(v, "saved");
+
 	if (routes == NULL || routes->type != JSON_ARRAY)
 		return;
 	for (i = 0; i < routes->u.array.count; i++)
 		fmt_route_line(routes->u.array.items[i]);
+	/* ADR-0387: what this host keeps and puts back at every start. */
+	if (saved == NULL || saved->type != JSON_ARRAY || saved->u.array.count == 0)
+		return;
+	printf("\nkept (put back at every start):\n");
+	for (i = 0; i < saved->u.array.count; i++) {
+		const struct json_value *s = saved->u.array.items[i];
+		const char *dest = json_str_field(s, "dest");
+		const char *gateway = json_str_field(s, "gateway");
+		const char *state = json_str_field(s, "state");
+		long prefix = (long)json_as_number(json_object_get(s, "prefix"));
+		char dest_buf[48];
+
+		if (prefix == 0)
+			snprintf(dest_buf, sizeof(dest_buf), "default");
+		else
+			snprintf(dest_buf, sizeof(dest_buf), "%s/%ld", dest != NULL ? dest : "", prefix);
+		printf("%-20s via %-16s %s\n", dest_buf, gateway != NULL ? gateway : "-",
+		       state != NULL ? state : "-");
+	}
 }
 
 static void fmt_image_line(const struct json_value *v)

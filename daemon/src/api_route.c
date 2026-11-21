@@ -4,9 +4,11 @@
 #include "http.h"
 #include "json.h"
 #include "network.h"
+#include "routeconfig.h"
 #include "rtnetlink.h"
 
 #include <arpa/inet.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <linux/rtnetlink.h>
 #include <stdio.h>
@@ -54,6 +56,10 @@ void handle_route_list(int fd)
 		respond_error(fd, 500, "Internal Server Error", "failed to read kernel routing table");
 		return;
 	}
+	/* ADR-0387: the routes this host keeps and puts back, and which of
+	 * them the kernel has. */
+	jw_key(&w, "saved");
+	routeconfig_write_json(&w);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
@@ -69,9 +75,11 @@ void handle_route_list(int fd)
  * gateway is optional (omitted means a direct/on-link route). Scoped
  * to exactly what that primitive supports -- no RTA_OIF/interface
  * binding, no route replace semantics beyond what NLM_F_CREATE
- * already gives it. Not a persisted Cix resource (see
- * network_write_routes_json()'s own comment) -- nothing here is
- * remembered across a reboot, same as this whole endpoint family. */
+ * already gives it. Kept since ADR-0387 (#715): routeconfig.c saves
+ * every route this adds and puts it back at each start, retrying
+ * until its gateway is reachable. Until then an added route lived only
+ * in the kernel, and gibsson-1 lost its default route at every reboot
+ * (2026-11-21). */
 void handle_route_add(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root = NULL;
@@ -136,13 +144,31 @@ void handle_route_add(int fd, const char *body, size_t body_len)
 		respond_error(fd, 500, "Internal Server Error", "could not open rtnetlink socket");
 		return;
 	}
-	if (rtnl_route_add_ipv4(rtfd, dest_be, prefix_len, gateway_be) != 0) {
+	/*
+	 * ADR-0387: an added route is kept, and put back at every start. A
+	 * route the kernel already has is the operator asking for what is
+	 * there, so it is kept too and answered 204 -- it used to be a 400
+	 * that read like a failure (gibsson-1's console, 2026-11-21). Any
+	 * other refusal is the kernel's verdict now, keeps nothing, and
+	 * names the cause.
+	 */
+	if (rtnl_route_add_ipv4(rtfd, dest_be, prefix_len, gateway_be) != 0 && errno != EEXIST) {
+		char msg[160];
+		int err = errno;
+
 		rtnl_close(rtfd);
-		respond_error(fd, 400, "Bad Request",
-		              "kernel rejected the route (already exists, unreachable gateway, or invalid)");
+		snprintf(msg, sizeof(msg), "the kernel refused the route: %s%s", strerror(err),
+		         err == ENETUNREACH ? " -- no network this host is on contains the gateway" : "");
+		respond_error(fd, 400, "Bad Request", msg);
 		return;
 	}
 	rtnl_close(rtfd);
+	if (routeconfig_add(dest_be, prefix_len, gateway_be, 1) != 0) {
+		respond_error(fd, 500, "Internal Server Error",
+		              "the route is in the kernel, but could not be saved, so it will not "
+		              "survive a reboot");
+		return;
+	}
 
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
@@ -216,12 +242,19 @@ void handle_route_del(int fd, const char *body, size_t body_len)
 		respond_error(fd, 500, "Internal Server Error", "could not open rtnetlink socket");
 		return;
 	}
-	if (rtnl_route_del_ipv4(rtfd, dest_be, prefix_len, gateway_be) != 0) {
+	{
+		/* ADR-0387: forgotten as well, so it does not come back at the
+		 * next start; a kept route waiting for its gateway is not in the
+		 * kernel, and deleting it is still a success. */
+		int in_kernel = rtnl_route_del_ipv4(rtfd, dest_be, prefix_len, gateway_be) == 0;
+		int was_kept = routeconfig_del(dest_be, prefix_len, gateway_be);
+
 		rtnl_close(rtfd);
-		respond_error(fd, 404, "Not Found", "no matching route to delete");
-		return;
+		if (!in_kernel && !was_kept) {
+			respond_error(fd, 404, "Not Found", "no matching route to delete");
+			return;
+		}
 	}
-	rtnl_close(rtfd);
 
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);

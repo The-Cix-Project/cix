@@ -80,6 +80,7 @@
 #include "startup_steps.h"
 #include "hostroll_verdict.h"
 #include "rootslot.h"
+#include "routeconfig.h"
 #include "firmware.h"
 #include "rootslot_verdict.h"
 #include "handover.h"
@@ -355,6 +356,7 @@ char DEVICEMAP_STATE_PATH[PATH_MAX];
 char SYSCTLCONFIG_STATE_PATH[PATH_MAX]; /* ADR-0160 */
 char KMODCONFIG_STATE_PATH[PATH_MAX]; /* ADR-0159 */
 char KMODPOLICY_STATE_PATH[PATH_MAX]; /* ADR-0348 */
+char ROUTES_STATE_PATH[PATH_MAX];     /* ADR-0387 */
 char DISKROLE_STATE_PATH[PATH_MAX];
 /* ADR-0141 Phase 2: which disk (if any) is the active placement for
  * state-storage/rebuildable-storage/log-storage -- g_base_dir-relative,
@@ -544,6 +546,7 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(SYSCTLCONFIG_STATE_PATH, sizeof(SYSCTLCONFIG_STATE_PATH), "%s/sysctl_config.json", STATE_DIR);
 	snprintf(KMODCONFIG_STATE_PATH, sizeof(KMODCONFIG_STATE_PATH), "%s/kmod_config.json", STATE_DIR);
 	snprintf(KMODPOLICY_STATE_PATH, sizeof(KMODPOLICY_STATE_PATH), "%s/kmod_policy.json", STATE_DIR);
+	snprintf(ROUTES_STATE_PATH, sizeof(ROUTES_STATE_PATH), "%s/routes.json", STATE_DIR);
 	snprintf(DAEMON_CONFIG_PATH, sizeof(DAEMON_CONFIG_PATH), "%s/daemon_config.json", STATE_DIR);
 	snprintf(QUOTAMAP_STATE_PATH, sizeof(QUOTAMAP_STATE_PATH), "%s/quota_projids.json", STATE_DIR);
 	snprintf(SIGNING_KEYS_DIR, sizeof(SIGNING_KEYS_DIR), "%s/keys", STATE_DIR);
@@ -6269,6 +6272,8 @@ static void handle_uevent_event(struct conn *cc)
 	int is_add = 0, is_remove = 0, is_usb = 0, is_pci = 0, is_whole_device = 0;
 	int is_hardware = 0; /* ADR-0339: a subsystem the device and storage reads list */
 	int is_change = 0, is_block = 0; /* ADR-0377 */
+	int is_net = 0;                  /* #715 */
+	const char *netif = NULL;        /* #715: INTERFACE= of a net event */
 	const char *modalias = NULL, *devpath = NULL, *devname = NULL;
 	size_t off;
 
@@ -6309,8 +6314,11 @@ static void handle_uevent_event(struct conn *cc)
 			is_usb = strcmp(line + 10, "usb") == 0;
 			is_pci = strcmp(line + 10, "pci") == 0;
 			is_block = strcmp(line + 10, "block") == 0;
+			is_net = strcmp(line + 10, "net") == 0;
 			is_hardware = is_usb || is_pci || strcmp(line + 10, "block") == 0 ||
 			              strcmp(line + 10, "scsi") == 0;
+		} else if (strncmp(line, "INTERFACE=", 10) == 0) {
+			netif = line + 10;
 		} else if (strncmp(line, "DEVPATH=", 8) == 0) {
 			const char *base = strrchr(line + 8, '/');
 
@@ -6399,6 +6407,13 @@ static void handle_uevent_event(struct conn *cc)
 		reconcile_pending_device_attachments();
 	else if (is_remove && ((is_usb && is_whole_device) || is_pci))
 		reconcile_live_device_revocations();
+
+	/* #715: an interface a network records, absent until now -- a NIC
+	 * whose driver loaded late, or a USB adapter plugged in. Only names
+	 * a network waits for are touched, so a container's veth costs a
+	 * strcmp over the records. */
+	if (is_add && is_net && netif != NULL && network_reattach_waiting(netif) > 0)
+		events_announce(EV_listNetworks);
 }
 
 /*
@@ -25762,6 +25777,32 @@ static void dhcp_scan_done(int exit_status, void *ctx)
 	g_dhcp_scan_memfd = -1;
 }
 
+/*
+ * ADR-0387: puts the kept routes the kernel lacks back. Every few
+ * seconds while one waits for its gateway, then once a minute, which is
+ * what notices a route the kernel dropped (an interface going down
+ * takes its routes with it). One rtnetlink add per waiting route, so
+ * nothing here can hold the loop.
+ */
+#define ROUTE_TICK_WAITING_SECONDS 5
+#define ROUTE_TICK_SETTLED_SECONDS 60
+static long g_route_next;
+
+static void route_tick(void)
+{
+	long now = (long)time(NULL);
+	int waiting, changed;
+
+	if (now < g_route_next)
+		return;
+	waiting = routeconfig_apply(&changed);
+	/* ADR-0339: the daemon moved the routing table itself, with no
+	 * request to announce it. */
+	if (changed)
+		events_announce(EV_getSystemRoutes);
+	g_route_next = now + (waiting > 0 ? ROUTE_TICK_WAITING_SECONDS : ROUTE_TICK_SETTLED_SECONDS);
+}
+
 static void dhcp_scan_tick(void)
 {
 	long now = (long)time(NULL);
@@ -42429,6 +42470,11 @@ static int cixd_main(int argc, char **argv)
 
 	if (boot_subsystem_init(init_mode, "network", network_init(NETWORKS_STATE_PATH)) != 0)
 		return 1;
+	/* ADR-0387: the kept routes. Applied from the main loop's tick, the
+	 * first pass included, so a gateway that is a container's address
+	 * (the cores' VRRP address) is tried again once they are up. */
+	if (boot_subsystem_init(init_mode, "routes", routeconfig_init(ROUTES_STATE_PATH)) != 0)
+		return 1;
 	/* Must be initialized before apply_configured_sysctls() below can
 	 * read anything out of it (ADR-0160) -- moved up from alongside
 	 * this function's other, later _init() calls specifically for
@@ -42546,6 +42592,9 @@ static int cixd_main(int argc, char **argv)
 	if (first_in_kernel()) {
 		kmodscan_boot_sweep();
 		load_configured_modules();
+		/* #715: network_init() ran before these loads, so a NIC whose
+		 * driver one of them loaded was absent then. */
+		(void)network_reattach_waiting(NULL);
 	} else if (!g_handover) {
 		kmodscan_not_run("start-up module loads run only on a real boot (--init-mode)");
 	}
@@ -43544,6 +43593,7 @@ static int cixd_main(int argc, char **argv)
 		reprobe_tick();  /* ADR-0381 release 3 */
 		quota_tick(); /* #689 */
 		dhcp_scan_tick(); /* ADR-0386 */
+		route_tick();     /* ADR-0387 */
 
 		drain_pending_free();
 

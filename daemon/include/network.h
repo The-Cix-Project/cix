@@ -48,6 +48,9 @@ struct network_attached_interface {
 	                                   * the derived "<ifname>.<vlan_id>" sub-interface
 	                                   * that's actually enslaved to the bridge */
 	int vlan_id;                     /* 0: ifname itself is enslaved directly (untagged) */
+	int waiting;                     /* #715: recorded, but not in the bridge -- it was
+	                                   * absent when last applied; in memory only, never
+	                                   * persisted */
 };
 
 struct network_def {
@@ -96,6 +99,17 @@ struct network_def {
  * Call once at daemon startup, before serving any request.
  */
 int network_init(const char *state_path);
+
+/*
+ * #715: attaches every recorded interface that is waiting -- absent
+ * when network_init() or an earlier call tried -- and is present now.
+ * ifname NULL tries every waiting one; otherwise only those recorded
+ * as ifname (the parent, for a VLAN attach). Called once the boot's
+ * module loads have run, since a NIC whose driver is a module does not
+ * exist when network_init() runs, and on every net add uevent. Says
+ * once in the log for each interface it attaches. Returns how many.
+ */
+int network_reattach_waiting(const char *ifname);
 
 /*
  * ADR-0141 Phase 2: repoints where future save_state() calls write to,

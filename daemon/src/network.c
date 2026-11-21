@@ -298,6 +298,42 @@ static int network_apply_interface(int fd, const struct network_def *net,
 	return 0;
 }
 
+int network_reattach_waiting(const char *ifname)
+{
+	int i, j, attached = 0, fd = -1;
+
+	for (i = 0; i < NETWORK_MAX; i++) {
+		if (!g_networks[i].in_use)
+			continue;
+		for (j = 0; j < g_networks[i].interface_count; j++) {
+			struct network_attached_interface *ifc = &g_networks[i].interfaces[j];
+
+			if (!ifc->waiting || (ifname != NULL && strcmp(ifc->ifname, ifname) != 0))
+				continue;
+			if (if_nametoindex(ifc->ifname) == 0)
+				continue; /* still absent: stays waiting, nothing to say */
+			if (fd < 0 && (fd = rtnl_open()) < 0)
+				return attached;
+			if (network_apply_interface(fd, &g_networks[i], ifc, 1) != 0) {
+				logstore_write("cixd", "error",
+				               "network %s: interface %s appeared, and attaching it failed "
+				               "(%s)",
+				               g_networks[i].name, ifc->ifname, strerror(errno));
+				continue;
+			}
+			ifc->waiting = 0;
+			attached++;
+			logstore_write("cixd", "info",
+			               "network %s: interface %s attached -- it appeared after startup "
+			               "(#715)",
+			               g_networks[i].name, ifc->ifname);
+		}
+	}
+	if (fd >= 0)
+		rtnl_close(fd);
+	return attached;
+}
+
 void network_repoint(const char *new_state_path)
 {
 	snprintf(g_state_path, sizeof(g_state_path), "%s", new_state_path);
@@ -365,16 +401,15 @@ int network_init(const char *state_path)
 				continue;
 			if (network_apply_interface(rfd, &g_networks[i], &g_networks[i].interfaces[j], 1) !=
 			    0) {
-				fprintf(stderr,
-				        "%s: could not re-attach interface %s to network %s on startup "
-				        "(hardware not present on this boot?)\n",
-				        g_state_path, g_networks[i].interfaces[j].ifname, g_networks[i].name);
-				/* #700: and in the log store. On 192.168.200.1 a boot
-				 * left `border` recording eth0 with no port in its
-				 * bridge, and nothing anyone could read said why. */
-				logstore_write("cixd", "error",
-				               "network %s: could not re-attach interface %s at startup (%s) -- "
-				               "the network records it but its bridge does not have it",
+				/* #700: in the log store, not only stderr. #715: and
+				 * it is waiting, not lost -- a NIC whose driver is a
+				 * module does not exist yet here (r8169 on the owner's
+				 * box, 2026-11-21), and network_reattach_waiting()
+				 * attaches it once it appears. */
+				g_networks[i].interfaces[j].waiting = 1;
+				logstore_write("cixd", "warn",
+				               "network %s: interface %s is not present at startup (%s) -- "
+				               "waiting for it, and attaching it when it appears",
 				               g_networks[i].name, g_networks[i].interfaces[j].ifname,
 				               strerror(errno));
 			}
@@ -631,8 +666,16 @@ enum network_error network_attach_interface(const char *name, const char *ifname
 	if (net->interface_count >= NETWORK_MAX_INTERFACES)
 		return NETWORK_ERR_INTERFACE_FULL;
 	for (i = 0; i < net->interface_count; i++) {
-		if (strcmp(net->interfaces[i].ifname, ifname) == 0)
-			return NETWORK_ERR_INTERFACE_ATTACHED;
+		if (strcmp(net->interfaces[i].ifname, ifname) != 0)
+			continue;
+		/* #715: recorded but waiting -- an operator asking for it is
+		 * asking for exactly what the record says, so attach it now
+		 * rather than answer "already attached" for an interface the
+		 * bridge does not have. */
+		if (net->interfaces[i].waiting && vlan_id == net->interfaces[i].vlan_id)
+			return network_reattach_waiting(ifname) > 0 ? NETWORK_OK
+			                                             : NETWORK_ERR_INTERFACE_NOT_FOUND;
+		return NETWORK_ERR_INTERFACE_ATTACHED;
 	}
 	if (vlan_id != 0 &&
 	    snprintf(derived, sizeof(derived), "%s.%d", ifname, vlan_id) >= (int)sizeof(derived))

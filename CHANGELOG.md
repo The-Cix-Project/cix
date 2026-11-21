@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A reboot keeps the uplink and the default route (#715, ADR-0387)
+
+- **Before:** on gibsson-1 (2026-11-21) every reboot left the box unreachable until someone fixed it at the console. `network_init()` re-attaches each network's recorded interfaces before the boot's module loads, and the uplink NIC (r8169) is a module, so `eth0` did not exist yet; the attach failed, the record kept saying `eth0` was on the network, nothing retried, and `attach-interface` answered 409 "already attached". Separately, a route added through `POST /v1/system/routes` was never kept, so the default route via the cores' VRRP address was gone after every reboot.
+- **Now:** an absent recorded interface is waiting, and is attached after the boot's module loads or on its net add uevent, with one log line; `attach-interface` on a waiting interface attaches it. Added routes are kept in `STATE_DIR/routes.json`, put back at every start and retried every 5 s while their gateway is unreachable (then once a minute, which restores a route the kernel dropped). `GET /v1/system/routes` lists them under `saved` (`applied` or `waiting`), and `cixctl routes` shows them. A duplicate add answers 204 instead of a 400 that read like a failure, any other refusal names the kernel's reason, and a delete forgets the route too. `test_routes` gates it.
+
 ### The management address survives a reboot on a fresh install (#702)
 
 - **Before:** `daemon_config.json` is written with `"port": 0` and `"https_port": 0` for ports nobody set, which is every fresh install, and the loader refused 0 as an invalid port. That refused the whole file, at boot only as a warning on stderr, so the management address saved in it was dropped: the owner's bare-metal box came up loopback-only (`listening on http 127.0.0.1:80`) after both reboots on 2026-11-21 and was re-addressed from its console each time. .95 never hit it, as its ports were set explicitly.

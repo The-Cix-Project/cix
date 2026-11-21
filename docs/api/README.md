@@ -82,9 +82,9 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | DELETE | `/system/catalogue-key` | Remove it; indexes already signed stay valid |
 | POST | `/system/iso/publish` | Publish the finished installer ISO and its signature to the artifact cache |
 | GET | `/system/iso/published` | Installer ISOs this host has published, newest first — a log of what left the box, separate from `/system/iso`'s snapshot of what is on it ([ADR-0272](../adr/0272-a-pipeline-run-is-a-log-entry-not-join-state.md)'s split, same as `/pipeline` vs `/pipeline/runs`). One entry per (ISO, repository), written when that repository has taken both the signature and the image |
-| GET | `/system/routes` | The box's own real kernel IPv4 routing table |
-| POST | `/system/routes` | Add a real kernel route (gone on next reboot unless something else re-applies it) |
-| DELETE | `/system/routes` | Remove a real kernel route |
+| GET | `/system/routes` | The box's own real kernel IPv4 routing table, and the routes it keeps (`saved`, ADR-0387) |
+| POST | `/system/routes` | Add a real kernel route; it is kept and put back at every start, retried until its gateway is reachable (ADR-0387) |
+| DELETE | `/system/routes` | Remove a real kernel route, and forget it |
 | GET | `/system/swap` | Whether a host swap file is currently enabled, and its size |
 | POST | `/system/swap` | Enable a host swap file at a given size |
 | DELETE | `/system/swap` | Disable and remove the host swap file |
