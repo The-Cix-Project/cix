@@ -83,8 +83,15 @@ void diskpart_capture_tool_output(int fd)
 	ssize_t n;
 
 	g_sfdisk_last_error[0] = '\0';
-	while ((n = read(fd, chunk, sizeof(chunk))) > 0) {
-		size_t got = (size_t)n;
+	for (;;) {
+		size_t got;
+
+		n = read(fd, chunk, sizeof(chunk));
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			break;
+		got = (size_t)n;
 
 		if (got >= keep) {
 			memcpy(buf, chunk + (got - keep), keep);
