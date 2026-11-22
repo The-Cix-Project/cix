@@ -28,7 +28,7 @@ Gitea's REST API covers all of these: `/orgs`, `/orgs/{org}/teams`, `/repos/{own
 
 5. **`forgesync` runs in the `git` container, as a service of the deployment.** It runs once at start and then every 5 minutes. It authenticates with an admin token the setup service mints locally (`gitea admin user generate-access-token`) on the volume, so no forge credential is in git either. It reads `forge.json` from the forge's own copy of `itdlabs/site-config`.
 
-6. **`forgesync` is written in hibr** (the owner, 2026-11-22), packaged and installed into the `gitea` image the way hibr programs are distributed; how that works is settled with the hibr maintainer before building, and recorded here when it is. It holds no credential of its own beyond the token decision 5 describes.
+6. **`forgesync` is written in hibr** (the owner, 2026-11-22), settled with the hibr maintainer the same day: its source is its own repository, `itdlabs/forgesync`, and not the hibr catalogue, which is the desktop's signed store of apps and the wrong shape for infrastructure baked into an image. It is a Cix package, a CPDL recipe in cix-recipes depending on `hibr`, that installs one script as `/usr/bin/forgesync` with a `#!/usr/bin/hibr` first line, so an image needs nothing fetched at run time. It uses hibr's `fetch` module for HTTPS and JSON, verifying the forge against the site CA through `HIBR_TLS_CAFILE` and never skipping verification, and the built-in `json`. It logs one line per change to standard error, which hibr does not buffer, and `hibr --plan` runs it as a dry run that refuses every write.
 
 ## Alternatives considered
 
