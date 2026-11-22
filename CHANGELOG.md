@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A staged slot outranks a boot entry written by a fast clock (#723)
+
+- **Before:** a staged boot entry's `version` was `time(NULL)`, on the assumption that now is always later than any entry already on the ESP. On gibsson-1 (2026-11-22) slot b had been staged while the clock ran 8 hours fast (#716), so slot a, into which 0.2.57-711 switched in place, sorted below it; the next reboot came up on slot b and 0.2.57-710, and 711 was marked as failing to deploy.
+- **Now:** the version is the larger of now and one more than the highest version on the ESP (`esp_next_entry_version()`). The boot counter, which systemd-boot applies before the version, still decides fallback: an entry whose tries are spent sorts after every good one. `test_rootswitch` gates the rule.
+
 ### A reboot keeps the uplink and the default route (#715, ADR-0387)
 
 - **Before:** on gibsson-1 (2026-11-21) every reboot left the box unreachable until someone fixed it at the console. `network_init()` re-attaches each network's recorded interfaces before the boot's module loads, and the uplink NIC (r8169) is a module, so `eth0` did not exist yet; the attach failed, the record kept saying `eth0` was on the network, nothing retried, and `attach-interface` answered 409 "already attached". Separately, a route added through `POST /v1/system/routes` was never kept, so the default route via the cores' VRRP address was gone after every reboot.

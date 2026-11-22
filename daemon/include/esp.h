@@ -114,6 +114,18 @@ enum esp_error esp_loader_set(const char *default_pattern, const int *timeout);
 int esp_entries_list(struct esp_entry *out, int max);
 
 /*
+ * The BLS "version" a newly staged entry gets, so that it sorts first:
+ * now, or one more than the highest numeric version already on the ESP,
+ * whichever is larger. Staging used to write now alone, on the
+ * assumption that now is always later than any entry already written.
+ * A clock that ran fast when an entry was staged breaks that: on
+ * gibsson-1 (2026-11-21) slot b was staged while the clock was 8 hours
+ * ahead, so the slot a that 0.2.57-711 was switched into lost to it,
+ * and the next reboot came back on b and 0.2.57-710.
+ */
+long esp_next_entry_version(long now);
+
+/*
  * Removes one loader entry. Refuses the entry the live system booted
  * from (ESP_ERR_WOULD_ORPHAN) -- deleting that is how a remote operator
  * makes a machine they cannot physically reach unbootable.

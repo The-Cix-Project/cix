@@ -204,6 +204,45 @@ static void hold_cases(const char *dir)
 	      "an entry with no tries left must be refused, got: %s", err);
 }
 
+static void write_file(const char *path, const char *text)
+{
+	FILE *f = fopen(path, "w");
+
+	if (f != NULL) {
+		fputs(text, f);
+		fclose(f);
+	}
+}
+
+/* A newly staged entry outranks every entry already on the ESP, even one
+ * staged while the clock ran fast (gibsson-1, 2026-11-21: slot b staged
+ * 8 hours ahead beat the slot a 0.2.57-711 switched into, and a reboot
+ * came back on 0.2.57-710). */
+static void version_cases(const char *dir)
+{
+	char loader[512], entries[512], path[600];
+
+	snprintf(loader, sizeof(loader), "%s/vloader", dir);
+	snprintf(entries, sizeof(entries), "%s/ventries", dir);
+	mkdir(loader, 0755);
+	mkdir(entries, 0755);
+	esp_init(loader, entries);
+	snprintf(path, sizeof(path), "%s/cix-a.conf", entries);
+	write_file(path, "title Cix (A)\nsort-key cix\nversion 100\nlinux /cix-bzImage-a\n");
+	snprintf(path, sizeof(path), "%s/cix-b.conf", entries);
+	write_file(path, "title Cix (B)\nsort-key cix\nversion 5000\nlinux /cix-bzImage-b\n");
+	CHECK(esp_next_entry_version(200) == 5001,
+	      "an entry from a fast clock (5000) must be outranked: got %ld",
+	      esp_next_entry_version(200));
+	CHECK(esp_next_entry_version(9000) == 9000,
+	      "a clock later than every entry is used as it is: got %ld",
+	      esp_next_entry_version(9000));
+	snprintf(path, sizeof(path), "%s/cix-b.conf", entries);
+	write_file(path, "title Cix (B)\nsort-key cix\nlinux /cix-bzImage-b\n");
+	CHECK(esp_next_entry_version(200) == 200,
+	      "an entry with no version does not move it: got %ld", esp_next_entry_version(200));
+}
+
 int main(void)
 {
 	char tmpl[512];
@@ -218,6 +257,7 @@ int main(void)
 	plan_cases();
 	target_cases(tmpl);
 	hold_cases(tmpl);
+	version_cases(tmpl);
 	printf("ROOTSWITCH: %s\n", g_fail ? "FAIL" : "PASS");
 	return g_fail ? 1 : 0;
 }

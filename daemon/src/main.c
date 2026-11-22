@@ -4345,7 +4345,9 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 
 	snprintf(entry_path, sizeof(entry_path), "%s/cix-%s+%d.conf", g_esp_entries_dir,
 	         inactive_slot, ROOT_UPDATE_TRIES);
-	/* version is this boot's own current timestamp -- always higher
+	/* version is this boot's own current timestamp, or one more than the
+	 * highest already on the ESP when that is later (a clock that ran
+	 * fast when the other slot was staged, gibsson-1 2026-11-21) -- always higher
 	 * than whatever's already on disk, so systemd-boot sorts this
 	 * entry first, with no need to parse the existing entry's own
 	 * version back out first. linux always references this slot's own
@@ -4428,7 +4430,7 @@ static int do_system_update(const char *body, size_t body_len, char *out_slot,
 		          */
 		         "options %s%sroot=PARTUUID=%s ro panic=10 init=/bin/cixd -- --init-mode "
 		         "--slot=%s\n",
-		         inactive_slot[0] == 'a' ? "A" : "B", (long)time(NULL), inactive_slot,
+		         inactive_slot[0] == 'a' ? "A" : "B", esp_next_entry_version((long)time(NULL)), inactive_slot,
 		         console_opts, console_opts[0] != '\0' ? " " : "", root_partuuid,
 		         inactive_slot);
 	}

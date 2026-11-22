@@ -292,6 +292,25 @@ int esp_entries_list(struct esp_entry *out, int max)
 	return count;
 }
 
+long esp_next_entry_version(long now)
+{
+	static struct esp_entry entries[ESP_MAX_ENTRIES];
+	long version = now;
+	int n = esp_entries_list(entries, ESP_MAX_ENTRIES), i;
+
+	for (i = 0; i < n; i++) {
+		char *end;
+		long v;
+
+		if (entries[i].version[0] == '\0')
+			continue;
+		v = strtol(entries[i].version, &end, 10);
+		if (*end == '\0' && v >= version)
+			version = v + 1;
+	}
+	return version;
+}
+
 /*
  * Rewrites loader.conf with default/timeout replaced, every other line
  * kept verbatim. Preserving the rest matters: loader.conf legitimately
