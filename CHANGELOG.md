@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Grow opens the generated form, not a native prompt (#728)
+
+- **Before:** a partition's Grow button asked for the size through the browser's native `prompt()`, the one action outside the dashboard's widget table. On gibsson-1 (2026-11-22) the owner clicked it and nothing appeared, while the API had the room right: `nvme0n1p5` ends at sector 35391488, where a 221 GiB free extent starts.
+- **Now:** Grow opens the generated form for `resizeStoragePartition`, titled with the partition's size and the room after it. `size_mib` has a `title` in the contract. 0 still means all the room.
+
 ### A pki_issue certificate carries the site-qualified name (#727)
 
 - **Before:** a `pki_issue` container's certificate named the container and its addresses only. On gibsson-1 (2026-11-22) `nas` resolved as `nas.uk.home.arpa` through `dns_register`, and a client trusting the site CA refused that name: `subjectAltName does not match hostname nas.uk.home.arpa`.

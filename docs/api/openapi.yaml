@@ -8034,6 +8034,7 @@ paths:
               type: object
               properties:
                 size_mib:
+                  title: New total size (MiB)
                   type: integer
                   minimum: 0
                   description: >

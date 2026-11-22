@@ -8477,38 +8477,34 @@ async function growPartition(p) {
 		);
 		return;
 	}
-	const roomMib = room === null ? null : Math.floor(room / (1024 * 1024));
-	const answer = prompt(
-		"Grow " +
+	const mib = (bytes) => Math.floor(bytes / (1024 * 1024));
+
+	/*
+	 * The generated form, like every other action (web-ux-guidelines'
+	 * modal form). This was a native prompt() until 2026-11-22, the one
+	 * action outside the widget table, and on gibsson-1 the owner
+	 * clicked Grow and saw nothing: a browser may suppress a native
+	 * dialog with no sign at all (#728).
+	 */
+	openForm("resizeStoragePartition", {
+		title:
+			"Grow " +
 			p.name +
-			" by how much?\n\n" +
-			"Enter a new TOTAL size in MiB, or leave blank to use all " +
-			(roomMib === null ? "free space after it" : roomMib + " MiB available after it") +
-			".\n\nCurrent size: " +
-			Math.floor(p.size_bytes / (1024 * 1024)) +
-			" MiB. A partition can only be grown, never shrunk.",
-		""
-	);
-
-	if (answer === null)
-		return;
-	const body = { size_mib: answer.trim() === "" ? 0 : parseInt(answer, 10) };
-
-	if (answer.trim() !== "" && (!body.size_mib || body.size_mib <= 0)) {
-		showStatus("That is not a valid size.", true);
-		return;
-	}
-	try {
-		await apiRequest("POST", CIX_API.resizeStoragePartition(p.parent_disk, p.name),
-			body
-		);
-		clearStatus();
-		await refreshDisks();
-		renderDiskDetail(p.name);
-		renderTree();
-	} catch (e) {
-		showStatus("Failed to grow partition: " + e.message, true);
-	}
+			" (now " +
+			mib(p.size_bytes) +
+			" MiB" +
+			(room === null ? "" : ", " + mib(room) + " MiB free after it") +
+			")",
+		submit: "Grow",
+		args: [p.parent_disk, p.name],
+		values: { size_mib: 0 },
+		after: async () => {
+			await refreshDisks();
+			renderDiskDetail(p.name);
+			renderTree();
+		},
+		failed: "Failed to grow " + p.name,
+	});
 }
 
 async function deletePartition(diskName, partitionName) {
