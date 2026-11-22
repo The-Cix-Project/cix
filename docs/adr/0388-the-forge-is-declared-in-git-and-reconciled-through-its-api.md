@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-11-22. Written at the owner's request after the forge moved to gibsson-1: *"I want our git to be totally API driven so we don't have to faff around with the interface, and I want its config ... to be in a git repo"*, *"I want the sync to be independent of the repo"*, and *"please proceed now"*.
+Accepted, 2026-11-22, by the owner: *"Accept it as written, let's please write it in hibr"*, which sets decision 6's language. Proposed the same day. Written at the owner's request after the forge moved to gibsson-1: *"I want our git to be totally API driven so we don't have to faff around with the interface, and I want its config ... to be in a git repo"*, *"I want the sync to be independent of the repo"*, and *"please proceed now"*.
 
 ## Context
 
@@ -28,7 +28,7 @@ Gitea's REST API covers all of these: `/orgs`, `/orgs/{org}/teams`, `/repos/{own
 
 5. **`forgesync` runs in the `git` container, as a service of the deployment.** It runs once at start and then every 5 minutes. It authenticates with an admin token the setup service mints locally (`gitea admin user generate-access-token`) on the volume, so no forge credential is in git either. It reads `forge.json` from the forge's own copy of `itdlabs/site-config`.
 
-6. **`forgesync` is a Cix package built from the owner's forge like any other**, in C with libcurl, held to the house rules (TCC, `-Wall -Werror`).
+6. **`forgesync` is written in hibr** (the owner, 2026-11-22), packaged and installed into the `gitea` image the way hibr programs are distributed; how that works is settled with the hibr maintainer before building, and recorded here when it is. It holds no credential of its own beyond the token decision 5 describes.
 
 ## Alternatives considered
 
