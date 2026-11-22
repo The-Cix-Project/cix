@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container's LDAP account is staged before it starts, and its files can name it (#733)
+
+- **Before:** `ldap_provision` created a container's account after the container started and wrote `bind.secret` through `/proc/<pid>/root`, so a service reading it at startup could start before it existed: the race #414 removed for certificates. And the secret existed only as that file, so `nas`'s lighttpd, which needs its bind credential in its own config, held the platform's shared LDAP client credential instead.
+- **Now:** the account is made (or, on a restart, takes the new secret) before `clone3()`, and `bind.secret` is staged with the other files. A file in `files[]` can name the account as `{{LDAP:PROVISIONED_DN}}` and `{{LDAP:PROVISIONED_SECRET}}`, filled in as it is staged (`ldaptoken_render()`, tested by the new gated `test_ldaptoken`). A create that cannot be given its identity is refused instead of starting without it. [ADR-0389](docs/adr/0389-a-containers-ldap-account-is-staged-before-it-starts.md).
+
 ### A refused partition operation reports sfdisk's reason (#729)
 
 - **Before:** `diskpart`'s capture of a tool's output kept its first 511 bytes and stopped reading, though its comment said the tail is what matters. sfdisk prints the disk and the old table first and its reason last, so on gibsson-1 (2026-11-22) a refused grow of `nvme0n1p5` reported only the disk banner and two partitions.

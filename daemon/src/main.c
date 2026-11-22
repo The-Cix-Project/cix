@@ -45,6 +45,7 @@
 #include "syslogfwd.h"
 #include "dns.h"
 #include "ldap.h"
+#include "ldaptoken.h"
 #include "subid.h"
 #include "serverhealth.h"
 #include "volume.h"
@@ -18459,6 +18460,88 @@ static int create_container_from_body(const char *body, size_t body_len,
 			stage_id_offset = rootfs_st.st_uid;
 	}
 
+	/*
+	 * ldap_provision (ADR-0389, #733): the container's own search-only
+	 * account, with a fresh secret for this start, made BEFORE clone3()
+	 * and staged into the tree like every other identity the daemon
+	 * writes for a container (#414). It used to run after the container
+	 * was up and write bind.secret through /proc/<pid>/root, so a
+	 * service reading its credential at startup could start before it
+	 * existed -- the race #414 removed for certificates and missed here.
+	 * Staged first so the declared files below can name the account as
+	 * {{LDAP:PROVISIONED_DN}} / {{LDAP:PROVISIONED_SECRET}}, which is
+	 * how a service such as nas's lighttpd binds as itself instead of
+	 * holding the platform's shared client credential.
+	 *
+	 * A container that asks for an identity and cannot be given one
+	 * fails to create, as pki_issue does since #414.
+	 */
+	char prov_secret[LDAP_PROVISION_SECRET_LEN + 1];
+	char prov_dn[sizeof(ldap_config_get()->base_dn) + 2 * LDAP_GROUP_NAME_MAX + 64];
+
+	prov_secret[0] = '\0';
+	prov_dn[0] = '\0';
+	stallwatch_step("container create: provision the container's LDAP account");
+	if (ldap_provision) {
+		const struct ldap_group *g = ldap_group_find(ldap_group_buf); /* validated above */
+		const char *uname = ldap_user_buf[0] != '\0' ? ldap_user_buf : name;
+		int uid = ldap_uid != 0 ? ldap_uid : ldap_uid_alloc();
+		char hash[PWHASH_BCRYPT_LEN + 1];
+		char secret_path[PATH_MAX];
+		struct ldap_user *u = NULL;
+		enum ldap_record_error lerr;
+
+		if (!ldap_username_is_valid(uname)) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size,
+			         "ldap_provision: the container name is not a valid LDAP username -- "
+			         "set ldap_user");
+			return 400;
+		}
+		/* On the loop, ~350 ms (pwhash.h): this create path has no
+		 * request to park, and the secret must exist before the
+		 * container's services start. #611. */
+		if (g == NULL || ldap_generate_secret(prov_secret) != 0 ||
+		    pwhash_bcrypt_new(prov_secret, hash, sizeof(hash)) != 0) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size,
+			         "ldap_provision: the group vanished, or the secret could not be "
+			         "generated or hashed");
+			return 500;
+		}
+		lerr = ldap_user_create(uname, uid, g->gidnumber, NULL, 0, NULL, NULL, NULL, NULL, NULL,
+		                         hash, 0, name, 1, NULL, &u);
+		if (lerr == LDAP_RECORD_ERR_DUPLICATE) {
+			/* A restart: the account is this container's own, from its
+			 * first start; it takes this start's secret. */
+			u = ldap_user_find(uname);
+			if (u != NULL)
+				lerr = ldap_user_update(uname, NULL, uid, g->gidnumber, u->secondary_groups,
+				                         u->secondary_group_count, u->givenname, u->sn,
+				                         u->mail, u->loginshell, u->homedirectory, hash,
+				                         u->disabled, u->ssh_public_key, u->can_search, &u);
+		}
+		if (lerr != LDAP_RECORD_OK || u == NULL) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size,
+			         "ldap_provision: the account could not be created or updated (err=%d)",
+			         (int)lerr);
+			return 500;
+		}
+		/* glauth's own DN for a user: cn=NAME,ou=PRIMARYGROUP,ou=users,BASE
+		 * (measured on gibsson-1, 2026-11-22). */
+		snprintf(prov_dn, sizeof(prov_dn), "cn=%s,ou=%s,ou=users,%s", uname, g->name,
+		         ldap_config_get()->base_dn);
+		if (snprintf(secret_path, sizeof(secret_path), "%s/bind.secret", ldap_secret_dir_buf) >=
+		        (int)sizeof(secret_path) ||
+		    stage_container_file(stage_dir, secret_path, prov_secret, 0600, (uid_t)-1,
+		                         (gid_t)-1, stage_id_offset) != 0) {
+			json_free(root);
+			snprintf(err_msg, err_msg_size, "ldap_provision: could not stage bind.secret");
+			return 500;
+		}
+	}
+
 	stallwatch_step("container create: stage the declared files");
 	if (jfiles != NULL) {
 		/*
@@ -18497,6 +18580,21 @@ static int create_container_from_body(const char *body, size_t body_len,
 			char *rendered = NULL;
 			size_t rendered_len = 0;
 			int staged;
+			char *prov_rendered = NULL;
+			int pr = ldaptoken_render(content, ldap_provision ? prov_dn : NULL,
+			                          ldap_provision ? prov_secret : NULL, &prov_rendered);
+
+			if (pr < 0) {
+				json_free(root);
+				snprintf(err_msg, err_msg_size,
+				         "files[]: %s names {{LDAP:PROVISIONED_DN}} or "
+				         "{{LDAP:PROVISIONED_SECRET}} without ldap_provision, or another "
+				         "{{LDAP:PROVISIONED_...}} token, which does not exist (ADR-0389)",
+				         path != NULL ? path : "a file");
+				return 400;
+			}
+			if (pr == 1)
+				content = prov_rendered;
 
 			if (ldap_cfg_path != NULL && path != NULL && content != NULL &&
 			    strcmp(path, ldap_cfg_path) == 0 &&
@@ -18509,6 +18607,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 
 				if (z == NULL) {
 					free(rendered);
+					free(prov_rendered);
 					json_free(root);
 					snprintf(err_msg, err_msg_size, "failed to stage files");
 					return 500;
@@ -18524,6 +18623,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 				staged = stage_container_file(stage_dir, path, content, (mode_t)mode, owner,
 				                               group, stage_id_offset);
 			}
+			free(prov_rendered);
 			if (staged != 0) {
 				json_free(root);
 				snprintf(err_msg, err_msg_size, "failed to stage files");
@@ -18533,6 +18633,8 @@ static int create_container_from_body(const char *body, size_t body_len,
 		}
 		file_count = (int)jfiles->u.array.count;
 	}
+	/* The plaintext lives only in the staged files from here on. */
+	explicit_bzero(prov_secret, sizeof(prov_secret));
 	stallwatch_step("container create: LDAP client files");
 	if (ldap_client) {
 		/* Rendered from the daemon's own LDAP client config (validated
@@ -19554,93 +19656,14 @@ static int create_container_from_body(const char *body, size_t body_len,
 			        entry->name, (int)derr);
 	}
 
-	stallwatch_step("container create: LDAP provisioning");
 	/*
-	 * pki_issue / pki_cert are handled at STAGING time, well above --
-	 * the certificate is written into the container's tree before
-	 * clone3(), not pushed into it once it is already running (#414).
-	 * Nothing remains to do here, and that is the point: the block that
-	 * used to live at this spot is what created the startup race every
-	 * image was then expected to work around.
+	 * pki_issue / pki_cert and ldap_provision are all handled at STAGING
+	 * time, well above: each identity is written into the container's
+	 * tree before clone3(), never pushed into it once it is running
+	 * (#414; ADR-0389 for ldap_provision). Nothing remains to do here,
+	 * and that is the point: the blocks that used to live at this spot
+	 * created the startup race every image was expected to work around.
 	 */
-	if (ldap_provision) {
-		/* task #727: a service/bind identity for this container itself --
-		 * NOT a human login account (those are created directly via
-		 * POST /v1/ldap/users, task #726). Mirrors pki_issue's own
-		 * shape closely: pid-dependent (secret delivery needs a live
-		 * container root), so it fires in this same post-pidfd block,
-		 * and tolerates its own "already exists" case the identical
-		 * way pki_issue tolerates PKI_ERR_DUPLICATE -- a respawn under
-		 * restart-always gets a fresh pid and needs its secret
-		 * delivered again even though the account itself already
-		 * exists. The plaintext secret is never persisted anywhere
-		 * (see ldap_generate_secret()'s own comment) -- a fresh one is
-		 * generated and re-hashed into the account on every single
-		 * fire of this block, respawn or not, and only this one
-		 * delivery ever sees the plaintext. */
-		const struct ldap_group *g = ldap_group_find(ldap_group_buf); /* validated non-empty above */
-		const char *ldap_user_name = ldap_user_buf[0] != '\0' ? ldap_user_buf : entry->name;
-		int uid = ldap_uid != 0 ? ldap_uid : ldap_uid_alloc();
-		char secret[LDAP_PROVISION_SECRET_LEN + 1];
-		char hash[PWHASH_BCRYPT_LEN + 1];
-		struct ldap_user *u = NULL;
-		enum ldap_record_error lerr = LDAP_RECORD_ERR_NOT_FOUND;
-
-		if (!ldap_username_is_valid(ldap_user_name)) {
-			fprintf(stderr,
-			        "%s: ldap_provision requested but the container name isn't a valid "
-			        "LDAP username -- pass ldap_user= explicitly\n",
-			        entry->name);
-		} else if (g == NULL || ldap_generate_secret(secret) != 0 ||
-		           /* On the loop, ~350 ms (pwhash.h): this create path has
-		            * no request to park, and the secret must reach the
-		            * container before its services start. #611. */
-		           pwhash_bcrypt_new(secret, hash, sizeof(hash)) != 0) {
-			fprintf(stderr, "%s: ldap_provision requested but the group vanished, "
-			                "/dev/urandom couldn't be read, or the secret could not be "
-			                "hashed\n",
-			        entry->name);
-		} else {
-			lerr = ldap_user_create(ldap_user_name, uid, g->gidnumber, NULL, 0, NULL, NULL, NULL,
-			                         NULL, NULL, hash, 0, entry->name, 1, NULL, &u);
-			if (lerr == LDAP_RECORD_ERR_DUPLICATE) {
-				/* Respawn under restart-always: the account already
-				 * exists (from this container's own first start) --
-				 * re-hash the freshly generated secret into it so
-				 * this respawn's own delivery below is valid. */
-				u = ldap_user_find(ldap_user_name);
-				if (u != NULL)
-					lerr = ldap_user_update(ldap_user_name, NULL, uid, g->gidnumber,
-					                         u->secondary_groups, u->secondary_group_count,
-					                         u->givenname, u->sn, u->mail, u->loginshell,
-					                         u->homedirectory, hash, u->disabled,
-					                         u->ssh_public_key, u->can_search, &u);
-			}
-			if (lerr != LDAP_RECORD_OK || u == NULL) {
-				fprintf(stderr,
-				        "%s: ldap_provision requested but the account create/update failed "
-				        "(err=%d)\n",
-				        entry->name, (int)lerr);
-			} else {
-				char parent[PATH_MAX + 32], dst[PATH_MAX + 32];
-
-				/* Host-side tree (#269) -- see containerpath.h. */
-				container_file_host_path(entry->name,
-				                          ldap_secret_dir_buf, parent, sizeof(parent));
-				if (parent[0] == '\0' ||
-				    snprintf(dst, sizeof(dst), "%s/bind.secret", parent) >= (int)sizeof(dst) ||
-				    persist_mkdir_p(parent) != 0 ||
-				    persist_atomic_write(dst, secret, strlen(secret)) != 0) {
-					fprintf(stderr,
-					        "%s: ldap_provision account ready but delivering its secret "
-					        "into the container failed\n",
-					        entry->name);
-				} else {
-					chmod(dst, 0600);
-				}
-			}
-		}
-	}
 
 	stallwatch_step("container create: sync the DNS servers");
 	/*

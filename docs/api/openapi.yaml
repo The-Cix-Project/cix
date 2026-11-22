@@ -18087,23 +18087,32 @@ components:
           default: false
           description: >
             Create an LDAP service account for this container and write its secret into the container.
-            If true, automatically creates an LDAP service/bind account
-            (see POST /ldap/users) for the container itself -- NOT a
-            human login account, those are created directly via POST
-            /ldap/users -- as part of container creation, and delivers a
-            freshly generated secret into the container's own filesystem.
-            Requires ldap_group to name an existing LDAP group (400
-            otherwise). A "search" capability is granted by default
-            (glauth denies all LDAP operations by default otherwise). The
-            plaintext secret is never persisted anywhere in Cix's own
-            state -- only its SHA-256 hash survives -- so every
-            restart-always respawn regenerates and re-delivers a fresh
-            one. Best-effort past validation: an "already exists" account
-            (e.g. a respawn under restart:always) is tolerated and just
-            gets its secret re-delivered rather than failing container
-            creation. The account's owner field is set to this
-            container's name, and it is automatically removed when the
-            container is deleted.
+            If true, creates an LDAP service/bind account (see POST
+            /ldap/users) for the container itself -- NOT a human login
+            account, those are created directly via POST /ldap/users --
+            with a freshly generated secret, BEFORE the container
+            starts (ADR-0389): the secret is staged into the container's
+            tree at ldap_secret_dir/bind.secret (mode 0600) with every
+            other file, so a service reading it at startup always finds
+            it. A file in files[] may name the account as
+            {{LDAP:PROVISIONED_DN}} and {{LDAP:PROVISIONED_SECRET}},
+            filled in when that file is staged -- how a service whose
+            config holds its bind credential (lighttpd's
+            mod_authn_ldap) binds as itself. Those tokens without
+            ldap_provision, or any other {{LDAP:PROVISIONED_...}} name,
+            are a 400. Requires ldap_group to name an existing LDAP
+            group (400 otherwise). A "search" capability is granted
+            (glauth denies all LDAP operations by default otherwise).
+            The plaintext secret is never persisted in Cix's own state
+            -- only its bcrypt hash -- so every start, a restart-always
+            respawn included, generates a new one; an account that
+            already exists (this container's own, from an earlier
+            start) takes the new secret. An account that cannot be
+            created or updated, or a secret that cannot be staged,
+            fails the create (500) rather than starting the container
+            without its identity, as pki_issue does since #414. The
+            account's owner field is set to this container's name, and
+            it is removed when the container is deleted.
         ldap_user:
           title: LDAP username
           type: string

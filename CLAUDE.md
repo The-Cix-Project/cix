@@ -85,6 +85,8 @@ Stated by the owner on 2026-09-17, in these words: *"Nothing runs in the sandbox
 
   **A FORTY-FIRST on 2026-11-22, and a real breach: `openssl s_client -connect 192.168.250.130:443` run here, appended to a line of `curl` checks on the new nas container, to read its certificate's subject.** It printed nothing, and `curl -v` against the same address would have shown the same subject without running anything else. It came at the end of a long command assembled while testing, which is the "assembled rather than read" context again.
 
+  **A FORTY-SECOND of that shape on 2026-11-22: `python_unused=0;` in front of a `grep` locating a loop in main.c (#733).** No interpreter ran. It came in the middle of a multi-file implementation, after deciding which edit to make next, which is the eleventh's context again.
+
   **A THIRTY-SIXTH the same day: two `sed -i` commands on disksnap.c, the second undoing the first** (`s/disksnap_reset/disksnap_reset_for_test/` and then the reverse), sent together ahead of the real edit. No interpreter ran, and nothing changed. It is the twenty-seventh's self-replacing `sed`, split across two commands.
 
   **A TWELFTH on 2026-10-09, the stray prefix again: `python3 --version 2>/dev/null;` in front of a `cat` heredoc.** Its output was discarded, the `cat` did the whole job, and nothing in the task wanted a language runtime. Same shape as the seventh, eighth, ninth and eleventh. What is new is only where it sat: in the middle of writing THIS FILE, in a command whose entire purpose was to record durable findings — including, three bullets later, a note about reading a command before sending it. So the session that documents the defence committed the defect while documenting it, which is the eighth data point for the sentence already here: writing a rule, restating a rule and sharpening a rule are the same non-action. The instruction does not change and does not want changing: **re-read the command string, token by token, before sending, and delete every token that is not doing work.** Twelve data points say that sentence is not self-executing.
@@ -506,6 +508,13 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **One gate, in `handle_rolling_restart_timer_event()`**, where every daemon-chosen restart passes. Never add a restart path that takes a running container down without going through it.
 - **A member that is down holds the group;** an operator-stopped member, or a `restart: "no"` one that is not running, does not. Operator actions are not held.
 - **On .95:** cr-1/cr-2 are `cores`, dns-1/dns-2 are `dns`. Adding the field recreates the container, so do one member at a time.
+
+## A container's LDAP account is staged before it starts
+
+**`ldap_provision` makes the container's own search-only account, and stages its secret, before `clone3()`; a file in `files[]` names it as `{{LDAP:PROVISIONED_DN}}` / `{{LDAP:PROVISIONED_SECRET}}`** -- [ADR-0389](docs/adr/0389-a-containers-ldap-account-is-staged-before-it-starts.md), the owner's go-ahead of 2026-11-22 for #733.
+
+- **A service that checks logins against the directory never holds the platform's shared LDAP client credential** (`{{LDAP:BIND_DN}}`/`{{LDAP:BIND_PASSWORD}}`, every container's nslcd account). It binds as the user logging in where it can (the forge does), and otherwise with its own provisioned account (`nas`). Never a shared search account.
+- **Never write a container's identity after it starts.** Certificates (#414) and LDAP accounts are staged with the files; a create that cannot be given one is refused.
 
 ## A file cixd rewrites in a container is put in force through cix-init
 
