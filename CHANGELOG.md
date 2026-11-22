@@ -9,7 +9,7 @@ All notable changes to this project are recorded here, **newest first**. Format 
 ### A staged slot outranks a boot entry written by a fast clock (#723)
 
 - **Before:** a staged boot entry's `version` was `time(NULL)`, on the assumption that now is always later than any entry already on the ESP. On gibsson-1 (2026-11-22) slot b had been staged while the clock ran 8 hours fast (#716), so slot a, into which 0.2.57-711 switched in place, sorted below it; the next reboot came up on slot b and 0.2.57-710, and 711 was marked as failing to deploy.
-- **Now:** the version is the larger of now and one more than the highest version on the ESP (`esp_next_entry_version()`). The boot counter, which systemd-boot applies before the version, still decides fallback: an entry whose tries are spent sorts after every good one. `test_rootswitch` gates the rule.
+- **Now:** the version is the larger of now and one more than the highest version on the ESP (`esp_next_entry_version()`). And because a switch is staged by the release it switches *from*, 0.2.57-712 itself still landed on a losing entry: confirming a slot now also makes its entry outrank every other (`esp_entry_make_newest()`, written beside the entry, fsynced and renamed), at every boot, so the confirmed slot is what boots next. The boot counter, which systemd-boot applies before the version, still decides fallback: an entry whose tries are spent sorts after every good one, and a failing slot is never confirmed. A slot an operator boots with `boot-next` is confirmed like any other, so a rollback now holds across reboots, as ADR-0380 says it should. `test_rootswitch` gates both.
 
 ### A reboot keeps the uplink and the default route (#715, ADR-0387)
 

@@ -752,6 +752,82 @@ int esp_rename_durable(const char *entries_dir, const char *from, const char *to
 	return esp_entries_sync(entries_dir);
 }
 
+int esp_entry_make_newest(const char *entries_dir, const char *name)
+{
+	static struct esp_entry entries[ESP_MAX_ENTRIES];
+	char path[PATH_MAX], tmp[PATH_MAX], line[64];
+	char *buf = NULL, *out, *p;
+	size_t len = 0, out_len = 0;
+	long mine = -1, top = -1;
+	int n = esp_entries_list(entries, ESP_MAX_ENTRIES), i, fd, replaced = 0;
+
+	for (i = 0; i < n; i++) {
+		char *end;
+		long v;
+
+		if (entries[i].version[0] == '\0')
+			continue;
+		v = strtol(entries[i].version, &end, 10);
+		if (*end != '\0')
+			continue;
+		if (strcmp(entries[i].name, name) == 0)
+			mine = v;
+		else if (v > top)
+			top = v;
+	}
+	if (mine > top)
+		return 0; /* already the newest: nothing to write */
+
+	snprintf(path, sizeof(path), "%s/%s", entries_dir, name);
+	if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)
+		return -1;
+	out = malloc(len + sizeof(line) + 1);
+	if (out == NULL) {
+		free(buf);
+		return -1;
+	}
+	snprintf(line, sizeof(line), "version %ld\n", top + 1);
+	/* Every line kept verbatim except "version", which is replaced in
+	 * place (or added after the last line when absent). */
+	for (p = buf; p < buf + len;) {
+		char *nl = memchr(p, '\n', (size_t)(buf + len - p));
+		size_t l = nl != NULL ? (size_t)(nl - p) + 1 : (size_t)(buf + len - p);
+
+		if (l >= 8 && strncmp(p, "version", 7) == 0 && (p[7] == ' ' || p[7] == '\t')) {
+			memcpy(out + out_len, line, strlen(line));
+			out_len += strlen(line);
+			replaced = 1;
+		} else {
+			memcpy(out + out_len, p, l);
+			out_len += l;
+		}
+		p += l;
+	}
+	if (!replaced) {
+		if (out_len > 0 && out[out_len - 1] != '\n')
+			out[out_len++] = '\n';
+		memcpy(out + out_len, line, strlen(line));
+		out_len += strlen(line);
+	}
+	free(buf);
+	/* Beside the entry under a name the loader never reads (no .conf),
+	 * fsynced, then renamed over it: a power cut leaves the old entry or
+	 * the new one, never half of one. */
+	snprintf(tmp, sizeof(tmp), "%s/.%s.new", entries_dir, name);
+	fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+	if (fd < 0 || write(fd, out, out_len) != (ssize_t)out_len || fsync(fd) != 0) {
+		if (fd >= 0)
+			close(fd);
+		unlink(tmp);
+		free(out);
+		return -1;
+	}
+	close(fd);
+	free(out);
+	snprintf(line, sizeof(line), ".%s.new", name);
+	return esp_rename_durable(entries_dir, line, name);
+}
+
 int esp_entry_hold(const char *entries_dir, const char *slot, char *from, char *to,
                    size_t name_size, char *err, size_t err_size)
 {

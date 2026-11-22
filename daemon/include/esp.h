@@ -126,6 +126,16 @@ int esp_entries_list(struct esp_entry *out, int max);
 long esp_next_entry_version(long now);
 
 /*
+ * #723: makes the named entry outrank every other entry's version, so
+ * the slot it boots is the one systemd-boot chooses (spent counters
+ * still sort last, before versions are compared, so fallback is
+ * unchanged). Called when a slot is confirmed: that is when cixd knows
+ * the slot works. A no-op when it already outranks the rest. Written
+ * beside the entry, fsynced and renamed over it. 0 or -1.
+ */
+int esp_entry_make_newest(const char *entries_dir, const char *name);
+
+/*
  * Removes one loader entry. Refuses the entry the live system booted
  * from (ESP_ERR_WOULD_ORPHAN) -- deleting that is how a remote operator
  * makes a machine they cannot physically reach unbootable.

@@ -241,6 +241,39 @@ static void version_cases(const char *dir)
 	write_file(path, "title Cix (B)\nsort-key cix\nlinux /cix-bzImage-b\n");
 	CHECK(esp_next_entry_version(200) == 200,
 	      "an entry with no version does not move it: got %ld", esp_next_entry_version(200));
+
+	/* Confirming makes the confirmed entry outrank the other, rewriting
+	 * only its version line; a second call writes nothing. */
+	snprintf(path, sizeof(path), "%s/cix-b.conf", entries);
+	write_file(path, "title Cix (B)\nsort-key cix\nversion 5000\nlinux /cix-bzImage-b\n");
+	CHECK(esp_entry_make_newest(entries, "cix-a.conf") == 0, "make_newest failed");
+	{
+		struct esp_entry e[8];
+		int n = esp_entries_list(e, 8), i;
+		long va = -1, vb = -1;
+		char buf[256];
+		FILE *f;
+		size_t r = 0;
+
+		for (i = 0; i < n; i++) {
+			if (strcmp(e[i].name, "cix-a.conf") == 0)
+				va = strtol(e[i].version, NULL, 10);
+			if (strcmp(e[i].name, "cix-b.conf") == 0)
+				vb = strtol(e[i].version, NULL, 10);
+		}
+		CHECK(n == 2, "only the two entries remain, no leftover file: %d", n);
+		CHECK(va == 5001 && vb == 5000, "cix-a must outrank cix-b: a=%ld b=%ld", va, vb);
+		snprintf(path, sizeof(path), "%s/cix-a.conf", entries);
+		f = fopen(path, "r");
+		if (f != NULL) {
+			r = fread(buf, 1, sizeof(buf) - 1, f);
+			fclose(f);
+		}
+		buf[r] = '\0';
+		CHECK(strcmp(buf, "title Cix (A)\nsort-key cix\nversion 5001\nlinux /cix-bzImage-a\n") == 0,
+		      "only the version line changes, got:\n%s", buf);
+	}
+	CHECK(esp_entry_make_newest(entries, "cix-a.conf") == 0, "a second make_newest failed");
 }
 
 int main(void)

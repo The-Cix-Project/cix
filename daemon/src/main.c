@@ -3463,8 +3463,16 @@ static int confirm_boot(const char *slot)
 
 	snprintf(oldpath, sizeof(oldpath), "%s/%s", g_esp_entries_dir, entry_name);
 	snprintf(newpath, sizeof(newpath), "%s/cix-%s.conf", g_esp_entries_dir, slot);
-	if (strcmp(oldpath, newpath) == 0)
-		return 0; /* already confirmed (no counter suffix) -- nothing to do */
+	if (strcmp(oldpath, newpath) == 0) {
+		/* Already confirmed. #723: it must also be what boots next. An
+		 * entry staged before the fix could have lost to one written by
+		 * a fast clock (gibsson-1: 0.2.57-712 confirmed on slot a while
+		 * the loader still chose cix-b.conf). */
+		if (esp_entry_make_newest(g_esp_entries_dir, entry_name) != 0)
+			fprintf(stderr, "confirm_boot: could not make %s the newest entry\n", entry_name);
+		events_announce(EV_getEsp);
+		return 0;
+	}
 	/* rename(2) replaces any stale confirmed entry of the same name,
 	 * which is exactly what should happen to the previous cycle's. On
 	 * disk, name and content, before anything reports it: a vfat rename
@@ -3477,6 +3485,9 @@ static int confirm_boot(const char *slot)
 			perror("confirm_boot rename");
 			return -1;
 		}
+		/* #723: and what boots next, whatever the other entry's clock. */
+		if (esp_entry_make_newest(g_esp_entries_dir, confirmed) != 0)
+			fprintf(stderr, "confirm_boot: could not make %s the newest entry\n", confirmed);
 	}
 	/* ADR-0339: the booted entry is confirmed some minutes after boot,
 	 * by the daemon and no API call -- the ESP and boot reads show it,
