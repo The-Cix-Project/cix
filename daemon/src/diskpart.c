@@ -68,21 +68,37 @@ const char *diskpart_last_tool_error(void)
 	return g_sfdisk_last_error;
 }
 
-/* Drains what the child wrote, bounded, and trims it to one line's
- * worth of the most useful part -- sfdisk is chatty on success and
- * terse on failure, so the tail is what matters. */
-static void capture_tool_stderr(int fd)
+/* Drains everything the child wrote and keeps its LAST
+ * sizeof(g_sfdisk_last_error) - 1 bytes. sfdisk prints the disk and
+ * the old table first and its reason last, so the tail is what
+ * matters. This kept the first 511 bytes until #729: on gibsson-1
+ * (2026-11-22) a refused grow reported the disk banner and the first
+ * two partitions, and the reason was cut off. */
+void diskpart_capture_tool_output(int fd)
 {
 	char buf[sizeof(g_sfdisk_last_error)];
+	char chunk[1024];
+	size_t keep = sizeof(buf) - 1;
 	size_t total = 0;
 	ssize_t n;
 
 	g_sfdisk_last_error[0] = '\0';
-	while (total < sizeof(buf) - 1) {
-		n = read(fd, buf + total, sizeof(buf) - 1 - total);
-		if (n <= 0)
-			break;
-		total += (size_t)n;
+	while ((n = read(fd, chunk, sizeof(chunk))) > 0) {
+		size_t got = (size_t)n;
+
+		if (got >= keep) {
+			memcpy(buf, chunk + (got - keep), keep);
+			total = keep;
+		} else if (total + got <= keep) {
+			memcpy(buf + total, chunk, got);
+			total += got;
+		} else {
+			size_t drop = total + got - keep;
+
+			memmove(buf, buf + drop, total - drop);
+			memcpy(buf + (total - drop), chunk, got);
+			total = keep;
+		}
 	}
 	buf[total] = '\0';
 	/* Collapse newlines so the whole thing survives a single-line
@@ -150,7 +166,7 @@ static int run_sfdisk_stdin(char *const argv[], const char *script)
 	close(pipefd[1]);
 	/* Drained BEFORE waitpid: sfdisk can fill the pipe and block on
 	 * write while we wait for it to exit, which would deadlock. */
-	capture_tool_stderr(errpipe[0]);
+	diskpart_capture_tool_output(errpipe[0]);
 	close(errpipe[0]);
 	if (waitpid(pid, &status, 0) != pid)
 		return -1;
@@ -991,7 +1007,7 @@ static int run_tool_argv(const char *bin, char *const argv[])
 		_exit(127);
 	}
 	close(pipefd[1]);
-	capture_tool_stderr(pipefd[0]);
+	diskpart_capture_tool_output(pipefd[0]);
 	close(pipefd[0]);
 	if (waitpid(pid, &status, 0) != pid)
 		return -1;

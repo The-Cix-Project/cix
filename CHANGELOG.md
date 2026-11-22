@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A refused partition operation reports sfdisk's reason (#729)
+
+- **Before:** `diskpart`'s capture of a tool's output kept its first 511 bytes and stopped reading, though its comment said the tail is what matters. sfdisk prints the disk and the old table first and its reason last, so on gibsson-1 (2026-11-22) a refused grow of `nvme0n1p5` reported only the disk banner and two partitions.
+- **Now:** `diskpart_capture_tool_output()` drains the output to EOF and keeps its last 511 bytes. The new gated `test_toolcapture` writes 2000 bytes ending in a reason and checks the capture ends with it.
+
 ### Grow opens the generated form, not a native prompt (#728)
 
 - **Before:** a partition's Grow button asked for the size through the browser's native `prompt()`, the one action outside the dashboard's widget table. On gibsson-1 (2026-11-22) the owner clicked it and nothing appeared, while the API had the room right: `nvme0n1p5` ends at sector 35391488, where a 221 GiB free extent starts.

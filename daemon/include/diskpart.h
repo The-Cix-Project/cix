@@ -185,6 +185,13 @@ int diskpart_os_layout_untouchable(const char *name, int is_os_disk, int is_part
 const char *diskpart_last_tool_error(void);
 
 /*
+ * Drains fd to EOF and keeps the LAST bytes it carried as
+ * diskpart_last_tool_error(), newlines folded to spaces: sfdisk puts
+ * its reason last (#729). Exported for test_toolcapture.
+ */
+void diskpart_capture_tool_output(int fd);
+
+/*
  * Checks and repairs the FAT filesystem on dev_path, which must not be
  * mounted (#638). fsck.fat's own status: 0 nothing to repair, 1 repairs
  * written, anything else a failure; -1 when it could not be run, -2
