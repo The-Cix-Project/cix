@@ -16242,11 +16242,14 @@ paths:
                       exclusive allocated extents.
                   source:
                     type: string
-                    enum: [qgroup, walk]
+                    enum: [qgroup, walk, filesystem]
                     description: >
                       Which mechanism produced `bytes`. `qgroup` is the
                       kernel's own counter for a btrfs subvolume with
-                      quotas enabled; `walk` is a tree walk.
+                      quotas enabled; `walk` is a tree walk; `filesystem`
+                      is the whole filesystem's used space, answered for
+                      an adopted volume (ADR-0390), which is its whole
+                      filesystem.
                   quota_bytes:
                     type: integer
                     description: >
@@ -19171,6 +19174,18 @@ components:
             "root" from "unsaid" is one that gets read wrong eventually.
         owner_gid:
           type: [integer, "null"]
+        adopted:
+          type: boolean
+          description: >
+            ADR-0390: an existing filesystem taken as this volume (POST
+            /volumes with adopt). Cix never changes its data, and DELETE
+            only forgets it.
+        disk_uuid:
+          type: [string, "null"]
+          description: >
+            The adopted filesystem's UUID, which the volume follows
+            whatever the kernel names its disk. Null for an ordinary
+            volume.
         host_path:
           type: string
           description: The resolved host directory backing this volume, for operator visibility.
@@ -19215,6 +19230,22 @@ components:
           type: integer
           title: Owner gid
           description: The owning group, given together with owner_uid.
+        adopt:
+          type: boolean
+          title: Adopt the disk's existing filesystem
+          default: false
+          description: >
+            ADR-0390. Take the existing filesystem on `disk` -- a disk
+            with the volume-storage role, mounted -- as this volume,
+            unchanged: an operator's disk with their data on it. The
+            volume's tree is that filesystem's root, and it follows the
+            filesystem's UUID whatever the kernel names the disk. Cix
+            never creates, empties, moves, re-owns, limits, snapshots or
+            restores it (each refuses with 409), and DELETE forgets the
+            record and leaves the data. Requires `disk`; owner_uid and
+            owner_gid are refused (the files keep their owners); 409
+            when the filesystem's UUID is not known yet or another
+            volume already adopts it.
 
     NetworkAttachmentRequest:
       type: object

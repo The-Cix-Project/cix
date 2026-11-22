@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/statvfs.h>
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
@@ -91,6 +92,16 @@ static void respond_volume_error(int fd, enum volume_error e)
 		respond_error(fd, 500, "Internal Server Error", msg);
 		return;
 	}
+	case VOLUME_ERR_ADOPTED:
+		respond_error(fd, 409, "Conflict",
+		              "this is an adopted volume -- an existing filesystem Cix did not create "
+		              "(ADR-0390) -- so Cix never moves, re-owns, limits or snapshots it");
+		return;
+	case VOLUME_ERR_NO_UUID:
+		respond_error(fd, 409, "Conflict",
+		              "that disk's filesystem UUID is not known (it may still be being read -- "
+		              "retry), or a volume already adopts that filesystem");
+		return;
 	default:
 		respond_error(fd, 500, "Internal Server Error", "could not persist the volume");
 		return;
@@ -170,7 +181,32 @@ void handle_volume_create(int fd, const char *body, size_t body_len)
 			return;
 		}
 
-		verr = volume_create(name, disk, &v);
+		/*
+		 * ADR-0390: "adopt": true takes the existing filesystem on
+		 * `disk` as the volume, unchanged -- an operator's disk with
+		 * their data on it. Its files keep the owners they have, so an
+		 * owner here would be a request Cix refuses to carry out.
+		 */
+		{
+			const struct json_value *ja = json_object_get(root, "adopt");
+			int adopt = (ja != NULL && ja->type == JSON_BOOL && ja->u.boolean);
+
+			if (adopt && ju != NULL) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request",
+				              "an adopted volume keeps its files' own owners -- owner_uid and "
+				              "owner_gid cannot be set on one (ADR-0390)");
+				return;
+			}
+			if (adopt && (disk == NULL || disk[0] == '\0')) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request",
+				              "adopt needs disk: the disk whose existing filesystem becomes "
+				              "the volume");
+				return;
+			}
+			verr = adopt ? volume_adopt(name, disk, &v) : volume_create(name, disk, &v);
+		}
 		if (verr != VOLUME_OK) {
 			json_free(root);
 			respond_volume_error(fd, verr);
@@ -621,7 +657,23 @@ void handle_volume_usage(int fd, const char *name)
 	/* ENODATA (quotas on, this subvolume not yet accounted) and ENOENT
 	 * (quotas never enabled) are ordinary states, not failures: the
 	 * volume still has a real size and the walk still knows it. */
-	if (cix_btrfs_qgroup_query(path, &used, &kernel_limit, &qstate) == 0) {
+	if (v->adopted) {
+		/* ADR-0390: an adopted volume IS its whole filesystem, so the
+		 * filesystem's own used space is the exact answer, and a walk
+		 * of an operator's multi-terabyte disk on the event loop is not
+		 * a measurement anyone should wait for. */
+		struct statvfs sv;
+
+		if (statvfs(path, &sv) != 0) {
+			char err[256];
+
+			snprintf(err, sizeof(err), "could not measure %s: %s", path, strerror(errno));
+			respond_error(fd, 500, "Internal Server Error", err);
+			return;
+		}
+		source = "filesystem";
+		bytes = (long long)((unsigned long long)(sv.f_blocks - sv.f_bfree) * sv.f_frsize);
+	} else if (cix_btrfs_qgroup_query(path, &used, &kernel_limit, &qstate) == 0) {
 		source = "qgroup";
 		bytes = (long long)used;
 	} else if (treesize_bytes(path, &bytes) != 0) {
@@ -676,6 +728,12 @@ void handle_volume_quota_put(int fd, const char *name, const char *body, size_t 
 
 	if (v == NULL) {
 		respond_error(fd, 404, "Not Found", "no such volume");
+		return;
+	}
+	/* ADR-0390: refused before the path is resolved, which an absent
+	 * adopted filesystem cannot be -- that would read as a 500. */
+	if (v->adopted) {
+		respond_volume_error(fd, VOLUME_ERR_ADOPTED);
 		return;
 	}
 	root = json_parse(body, body_len);
@@ -851,6 +909,11 @@ static void respond_volumebackup_error(int fd, enum volumebackup_error e)
 		break;
 	case VOLUMEBACKUP_ERR_INVALID:
 		respond_error(fd, 400, "Bad Request", "invalid request");
+		break;
+	case VOLUMEBACKUP_ERR_ADOPTED:
+		respond_error(fd, 409, "Conflict",
+		              "this is an adopted volume (ADR-0390): Cix never snapshots or restores an "
+		              "existing filesystem it did not create");
 		break;
 	default:
 		respond_error(fd, 500, "Internal Server Error", "could not persist the backup config");

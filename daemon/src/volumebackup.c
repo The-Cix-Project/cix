@@ -300,6 +300,10 @@ enum volumebackup_error volumebackup_take(const char *volume_name,
 
 	if (v == NULL)
 		return VOLUMEBACKUP_ERR_NOT_FOUND;
+	/* ADR-0390: an adopted volume is an existing filesystem Cix did not
+	 * create; a restore would empty it first. Never snapshot or restore. */
+	if (v->adopted)
+		return VOLUMEBACKUP_ERR_ADOPTED;
 	/*
 	 * A live writer means the copy captures whatever was on disk at
 	 * that moment, so a file being written mid-copy is caught
@@ -374,6 +378,10 @@ enum volumebackup_error volumebackup_restore(const char *volume_name, const char
 
 	if (v == NULL)
 		return VOLUMEBACKUP_ERR_NOT_FOUND;
+	/* ADR-0390: an adopted volume is an existing filesystem Cix did not
+	 * create; a restore would empty it first. Never snapshot or restore. */
+	if (v->adopted)
+		return VOLUMEBACKUP_ERR_ADOPTED;
 	if (stamp == NULL || stamp[0] == '\0' || strchr(stamp, '/') != NULL)
 		return VOLUMEBACKUP_ERR_INVALID;
 	/* Always refused while running, whatever the volume's snapshot

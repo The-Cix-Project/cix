@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A volume can adopt a disk's existing filesystem (#725)
+
+- **Before:** every volume was a new, empty directory Cix created, so a disk an operator brought with their own data on it could not be given to a container. And Cix's volume operations (delete, migrate, owner, quota, snapshots, restore) were built for data Cix made.
+- **Now:** `POST /v1/volumes` with `"adopt": true` (`cixctl volume create --name=share --disk=sda --adopt`) takes the existing filesystem, unchanged, as a volume whose tree is its root, followed by the filesystem's UUID. Cix never moves, re-owns, limits, snapshots, restores or formats it, each refused with 409; delete only forgets the record; an absent filesystem gives no path rather than a fallback directory; and usage is the filesystem's used space, not a tree walk. Formatting the disk or removing its role is refused while it is adopted, matched by UUID as well as name. `test_volume` checks every refusal. [ADR-0390](docs/adr/0390-a-volume-can-adopt-an-existing-filesystem.md).
+
 ### A container's LDAP account is staged before it starts, and its files can name it (#733)
 
 - **Before:** `ldap_provision` created a container's account after the container started and wrote `bind.secret` through `/proc/<pid>/root`, so a service reading it at startup could start before it existed: the race #414 removed for certificates. And the secret existed only as that file, so `nas`'s lighttpd, which needs its bind credential in its own config, held the platform's shared LDAP client credential instead.

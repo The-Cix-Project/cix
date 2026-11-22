@@ -164,7 +164,9 @@ static const char USAGE_TEXT[] =
 	        "  volume ls | show NAME | rm NAME  -- persistent volumes (issue #88): storage\n"
 	        "               that outlives the containers using it; rm is refused while any\n"
 	        "               container definition still references the volume\n"
-	        "  volume create --name=NAME [--disk=DISK]\n"
+	        "  volume create --name=NAME [--disk=DISK] [--adopt]  -- --adopt takes the disk's\n"
+	        "               existing filesystem, unchanged, as the volume (ADR-0390): never\n"
+	        "               formatted, moved, re-owned or snapshotted; rm only forgets it\n"
 	        "  volume migrate NAME [--disk=DISK]  -- move it to another disk\n"
 	        "  volume quota NAME BYTES  -- a kernel-enforced size limit; 0 removes it\n"
 	        "  volume usage NAME  -- bytes used, measured now rather than stored\n"
@@ -6493,6 +6495,19 @@ static void fmt_volume_one(const struct json_value *v)
 
 	printf("%-20s disk=%-12s path=%s\n", name != NULL ? name : "?",
 	       disk != NULL ? disk : "(default)", path != NULL ? path : "?");
+	/* ADR-0390: an adopted volume says so first, and nothing below
+	 * about limits or owners applies to it. */
+	{
+		const struct json_value *ad = json_object_get(v, "adopted");
+		const char *uuid = json_as_string(json_object_get(v, "disk_uuid"));
+
+		if (ad != NULL && ad->type == JSON_BOOL && ad->u.boolean) {
+			printf("%-20s adopted: filesystem %s, its files keep their owners; Cix never "
+			       "changes its data, and rm only forgets it\n",
+			       "", uuid != NULL ? uuid : "?");
+			return;
+		}
+	}
 	/* Said explicitly rather than omitted when absent: "no limit" is a
 	 * real state worth seeing on a volume, not a blank. */
 	if (quota > 0)
@@ -6843,6 +6858,8 @@ static int cmd_volume(const struct cix_client *c, int json_mode, int argc, char 
 		/* Issue #102: who the volume belongs to, since a volume created
 		 * as root is one its own workload cannot write to. */
 		const char *owner_uid = NULL, *owner_gid = NULL;
+		/* ADR-0390: take the disk's existing filesystem as the volume. */
+		int adopt = 0;
 		int i, rc;
 
 		for (i = 1; i < argc; i++) {
@@ -6854,10 +6871,12 @@ static int cmd_volume(const struct cix_client *c, int json_mode, int argc, char 
 				owner_uid = argv[i] + 12;
 			else if (strncmp(argv[i], "--owner-gid=", 12) == 0)
 				owner_gid = argv[i] + 12;
+			else if (strcmp(argv[i], "--adopt") == 0)
+				adopt = 1;
 		}
 		if (name == NULL || (owner_uid != NULL) != (owner_gid != NULL)) {
 			fprintf(stderr, "usage: cixctl volume create --name=NAME [--disk=DISK] "
-			                "[--owner-uid=N --owner-gid=N]\n");
+			                "[--owner-uid=N --owner-gid=N] [--adopt]\n");
 			return 2;
 		}
 		jw_init(&w);
@@ -6867,6 +6886,10 @@ static int cmd_volume(const struct cix_client *c, int json_mode, int argc, char 
 		if (disk != NULL) {
 			jw_key(&w, "disk");
 			jw_str(&w, disk);
+		}
+		if (adopt) {
+			jw_key(&w, "adopt");
+			jw_bool(&w, 1);
 		}
 		if (owner_uid != NULL) {
 			jw_key(&w, "owner_uid");

@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -107,6 +108,17 @@ int volume_init(const char *state_path)
 		if (created != NULL && created->type == JSON_NUMBER)
 			g_volumes[count].created_at = (time_t)json_as_number(created);
 		{
+			/* ADR-0390. Absent means an ordinary volume, which every
+			 * record written before adoption existed is. */
+			const struct json_value *ad = json_object_get(item, "adopted");
+			const char *du = json_as_string(json_object_get(item, "disk_uuid"));
+
+			g_volumes[count].adopted = (ad != NULL && ad->type == JSON_BOOL && ad->u.boolean);
+			if (du != NULL)
+				snprintf(g_volumes[count].disk_uuid, sizeof(g_volumes[count].disk_uuid), "%s",
+				         du);
+		}
+		{
 			/* Issue #96. Absent means off with the default retention --
 			 * a state file written before this existed loads as
 			 * "backups not asked for", which is the correct reading of
@@ -166,6 +178,29 @@ int volume_host_path(const struct volume *v, char *out, size_t out_size)
 
 	if (v == NULL)
 		return -1;
+	/*
+	 * ADR-0390: an adopted volume is its filesystem's root, found by the
+	 * filesystem's UUID wherever the kernel put the disk this boot. Not
+	 * mounted, or not present, is -1 -- never the default location
+	 * below, which would hand a container an empty directory in place
+	 * of the operator's data, and a later write would land there.
+	 */
+	if (v->adopted) {
+		char now[VOLUME_DISK_NAME_MAX];
+
+		if (v->disk_uuid[0] == '\0' ||
+		    diskrole_resolve_recorded(v->disk, v->disk_uuid, now, sizeof(now)) < 0)
+			return -1;
+		count = disk_enumerate(disks, DISK_ENUM_MAX, g_volumes_dir);
+		for (i = 0; i < count; i++) {
+			if (strcmp(disks[i].name, now) == 0 && disks[i].mounted &&
+			    disks[i].mount_path[0] != '\0') {
+				snprintf(out, out_size, "%s", disks[i].mount_path);
+				return 0;
+			}
+		}
+		return -1;
+	}
 	if (v->disk[0] != '\0') {
 		count = disk_enumerate(disks, DISK_ENUM_MAX, g_volumes_dir);
 		for (i = 0; i < count; i++) {
@@ -299,6 +334,68 @@ enum volume_error volume_create(const char *name, const char *disk, struct volum
 	return VOLUME_OK;
 }
 
+enum volume_error volume_adopt(const char *name, const char *disk, struct volume **out)
+{
+	struct discovered_disk disks[DISK_ENUM_MAX];
+	struct volume *v;
+	const char *uuid = NULL;
+	int count, i, slot = -1;
+
+	if (!volume_name_is_valid(name))
+		return VOLUME_ERR_INVALID_NAME;
+	if (find_slot(name) != NULL)
+		return VOLUME_ERR_DUPLICATE;
+	if (disk == NULL || disk[0] == '\0')
+		return VOLUME_ERR_TARGET_NOT_FOUND;
+	{
+		/* The same check volume_create() makes: the volume-storage
+		 * role, and mounted -- which is how the role found the
+		 * existing filesystem and mounted it, unformatted (#660). */
+		enum volume_error derr = volume_check_disk(disk);
+
+		if (derr != VOLUME_OK)
+			return derr;
+	}
+	count = disk_enumerate(disks, DISK_ENUM_MAX, g_volumes_dir);
+	for (i = 0; i < count; i++) {
+		if (strcmp(disks[i].name, disk) == 0 && disks[i].identity_known &&
+		    disks[i].fs_uuid[0] != '\0') {
+			uuid = disks[i].fs_uuid;
+			break;
+		}
+	}
+	if (uuid == NULL)
+		return VOLUME_ERR_NO_UUID;
+	for (i = 0; i < VOLUME_MAX; i++) {
+		if (g_volumes[i].in_use && g_volumes[i].adopted &&
+		    strcasecmp(g_volumes[i].disk_uuid, uuid) == 0)
+			return VOLUME_ERR_NO_UUID;
+		if (!g_volumes[i].in_use && slot < 0)
+			slot = i;
+	}
+	if (slot < 0)
+		return VOLUME_ERR_FULL;
+
+	v = &g_volumes[slot];
+	memset(v, 0, sizeof(*v));
+	v->owner_uid = -1;
+	v->owner_gid = -1;
+	snprintf(v->name, sizeof(v->name), "%s", name);
+	snprintf(v->disk, sizeof(v->disk), "%s", disk);
+	snprintf(v->disk_uuid, sizeof(v->disk_uuid), "%s", uuid);
+	v->adopted = 1;
+	v->created_at = time(NULL);
+	v->in_use = 1;
+	/* Nothing is created on the disk: the volume IS what is there. */
+	if (save_state() != 0) {
+		memset(v, 0, sizeof(*v));
+		return VOLUME_ERR_PERSIST_FAILED;
+	}
+	if (out != NULL)
+		*out = v;
+	return VOLUME_OK;
+}
+
 enum volume_error volume_delete(const char *name)
 {
 	struct volume *v = find_slot(name);
@@ -312,7 +409,9 @@ enum volume_error volume_delete(const char *name)
 	 * is responsible for having established that nothing references it
 	 * (main.c refuses while any container definition still names it).
 	 */
-	if (volume_host_path(v, path, sizeof(path)) == 0)
+	/* ADR-0390: an adopted volume's data was never Cix's. Deleting it
+	 * forgets the record and leaves the filesystem exactly as it is. */
+	if (!v->adopted && volume_host_path(v, path, sizeof(path)) == 0)
 		persist_remove_tree(path);
 	memset(v, 0, sizeof(*v));
 	return save_state() == 0 ? VOLUME_OK : VOLUME_ERR_PERSIST_FAILED;
@@ -348,6 +447,15 @@ void volume_write_json_one(const struct volume *v, struct json_writer *w)
 		jw_null(w);
 	jw_key(w, "created_at");
 	jw_int(w, (long long)v->created_at);
+	/* ADR-0390: an adopted volume is an existing filesystem's root,
+	 * which Cix never changes; disk_uuid is what it follows. */
+	jw_key(w, "adopted");
+	jw_bool(w, v->adopted);
+	jw_key(w, "disk_uuid");
+	if (v->disk_uuid[0] != '\0')
+		jw_str(w, v->disk_uuid);
+	else
+		jw_null(w);
 	/* Issue #96: the volume's own backup policy. Persisted through the
 	 * same writer the state file uses, so the API response and the
 	 * on-disk record can never describe different policies. */
@@ -452,6 +560,9 @@ enum volume_error volume_set_owner(const char *name, int uid, int gid)
 
 	if (v == NULL)
 		return VOLUME_ERR_NOT_FOUND;
+	/* ADR-0390: an adopted volume's data is never changed by Cix. */
+	if (v->adopted)
+		return VOLUME_ERR_ADOPTED;
 	/* Both or neither: a volume owned by one user and one unrelated
 	 * group is almost always a typo, and "leave the other alone" is
 	 * expressible by passing the value it already has. */
@@ -466,6 +577,9 @@ enum volume_error volume_apply_owner(const struct volume *v, int recursive)
 
 	if (v == NULL)
 		return VOLUME_ERR_NOT_FOUND;
+	/* ADR-0390: an adopted volume's data is never changed by Cix. */
+	if (v->adopted)
+		return VOLUME_ERR_ADOPTED;
 	if (v->owner_uid < 0 && v->owner_gid < 0)
 		return VOLUME_OK; /* nothing asked for -- root, as it always was */
 	if (volume_host_path(v, path, sizeof(path)) != 0)
@@ -510,6 +624,9 @@ enum volume_error volume_migrate(const char *name, const char *disk_name)
 
 	if (v == NULL)
 		return VOLUME_ERR_NOT_FOUND;
+	/* ADR-0390: an adopted volume's data is never changed by Cix. */
+	if (v->adopted)
+		return VOLUME_ERR_ADOPTED;
 	if (disk_name == NULL)
 		disk_name = "";
 
@@ -597,6 +714,9 @@ enum volume_error volume_convert_to_subvolume(const char *name)
 
 	if (v == NULL)
 		return VOLUME_ERR_NOT_FOUND;
+	/* ADR-0390: an adopted volume's data is never changed by Cix. */
+	if (v->adopted)
+		return VOLUME_ERR_ADOPTED;
 	if (volume_host_path(v, path, sizeof(path)) != 0)
 		return VOLUME_ERR_IO;
 	/* Not on btrfs, or already a subvolume: nothing to do, and saying
@@ -675,6 +795,10 @@ enum volume_error volume_set_backup_policy(const char *name, int enabled, int re
 
 	if (v == NULL)
 		return VOLUME_ERR_NOT_FOUND;
+	/* ADR-0390: an adopted volume is never snapshotted (a restore
+	 * would empty it first); turning backups off is always allowed. */
+	if (v->adopted && enabled)
+		return VOLUME_ERR_ADOPTED;
 	v->backup_enabled = enabled ? 1 : 0;
 	v->backup_while_running = while_running;
 	if (retain > 0)
@@ -702,6 +826,9 @@ enum volume_error volume_set_quota(const char *name, long long quota_bytes)
 
 	if (v == NULL)
 		return VOLUME_ERR_NOT_FOUND;
+	/* ADR-0390: an adopted volume's data is never changed by Cix. */
+	if (v->adopted)
+		return VOLUME_ERR_ADOPTED;
 	if (quota_bytes < 0)
 		return VOLUME_ERR_INVALID_NAME;
 	v->quota_bytes = quota_bytes;

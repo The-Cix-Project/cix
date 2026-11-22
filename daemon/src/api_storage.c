@@ -339,6 +339,21 @@ int disk_holds_volumes(const char *disk_name)
 	for (i = 0; i < count; i++) {
 		if (vols[i].disk[0] != '\0' && strcmp(vols[i].disk, disk_name) == 0)
 			return 1;
+		/*
+		 * ADR-0390: an adopted volume is an operator's existing
+		 * filesystem, and its disk is the one carrying that UUID now,
+		 * whatever it is called -- so a renamed disk is still refused a
+		 * format or a role removal, and the data is never one rename
+		 * away from being formatted.
+		 */
+		if (vols[i].adopted && vols[i].disk_uuid[0] != '\0') {
+			char now[VOLUME_DISK_NAME_MAX];
+
+			if (diskrole_resolve_recorded(vols[i].disk, vols[i].disk_uuid, now,
+			                              sizeof(now)) >= 0 &&
+			    strcmp(now, disk_name) == 0)
+				return 1;
+		}
 	}
 	return 0;
 }

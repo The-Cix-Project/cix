@@ -60,7 +60,13 @@ enum volume_error {
 	VOLUME_ERR_TARGET_WRONG_ROLE,
 	VOLUME_ERR_SAME_PLACE,
 	VOLUME_ERR_IN_USE_RUNNING,
-	VOLUME_ERR_COPY_FAILED
+	VOLUME_ERR_COPY_FAILED,
+	/* ADR-0390: the operation would create, empty, move, re-own,
+	 * limit, snapshot or restore an adopted volume's data. */
+	VOLUME_ERR_ADOPTED,
+	/* ADR-0390: the disk to adopt has no known filesystem UUID, or
+	 * already carries a volume adopted from it. */
+	VOLUME_ERR_NO_UUID
 };
 
 /*
@@ -153,6 +159,19 @@ struct volume {
 	 */
 	int owner_uid;
 	int owner_gid;
+	/*
+	 * ADR-0390, #725: an ADOPTED volume is a filesystem Cix did not
+	 * make -- an operator's existing disk -- and its tree is that
+	 * filesystem's root on `disk`, not <disk>/volumes/<name>. Cix never
+	 * creates, empties, moves, re-owns, limits, snapshots or restores
+	 * it: every such operation refuses with VOLUME_ERR_ADOPTED, and a
+	 * delete forgets the record and leaves the data. `disk_uuid` is the
+	 * filesystem's UUID, so the volume follows the drive whatever the
+	 * kernel names it, and a volume whose filesystem is absent has no
+	 * path at all (never a fallback directory in its place).
+	 */
+	int adopted;
+	char disk_uuid[64];
 	int in_use;
 };
 
@@ -179,6 +198,15 @@ int volume_name_is_valid(const char *name);
  * VOLUME_ERR_DUPLICATE if one already exists by that name.
  */
 enum volume_error volume_create(const char *name, const char *disk, struct volume **out);
+
+/*
+ * ADR-0390, #725: records the existing filesystem on `disk` (a disk with
+ * the volume-storage role, mounted) as volume `name`, whose tree is that
+ * filesystem's root. Nothing on the disk is created or changed. Refuses
+ * VOLUME_ERR_NO_UUID when the disk's filesystem UUID is not known, or
+ * when another volume already adopts it.
+ */
+enum volume_error volume_adopt(const char *name, const char *disk, struct volume **out);
 
 /*
  * Removes the record AND the data. Callers must establish that nothing

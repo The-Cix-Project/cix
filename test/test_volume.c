@@ -159,6 +159,29 @@ int main(void)
 		return 1;
 	}
 
+	/*
+	 * ADR-0390, #725: an ADOPTED volume, seeded as a record whose
+	 * filesystem is not present -- a test daemon has no spare disk to
+	 * adopt, and the absent case is the one that must never fall back to
+	 * an empty directory. The checks are near the end.
+	 */
+	{
+		char sd[PATH_MAX], sf[PATH_MAX + 32];
+		FILE *f;
+
+		snprintf(sd, sizeof(sd), "%s/state", g_data_dir);
+		mkdir(sd, 0755);
+		snprintf(sf, sizeof(sf), "%s/volumes.json", sd);
+		f = fopen(sf, "w");
+		if (f == NULL) {
+			test_data_dir_cleanup(g_data_dir);
+			return 1;
+		}
+		fprintf(f, "[{\"name\":\"adoptedvol\",\"disk\":\"sdz\",\"created_at\":1,"
+		           "\"adopted\":true,\"disk_uuid\":\"7e57ad09-0000-4000-8000-000000000725\"}]\n");
+		fclose(f);
+	}
+
 	daemon_pid = start_daemon();
 	if (daemon_pid < 0) {
 		test_data_dir_cleanup(g_data_dir);
@@ -793,6 +816,56 @@ int main(void)
 	check(cix_client_request(&client, "GET", "/v1/volumes/vol1", NULL, &r) == 0 && r.status == 404,
 	      "deleted volume is gone");
 	cix_response_free(&r);
+
+	/*
+	 * ADR-0390: an adopted volume (seeded above, its filesystem absent).
+	 * Every operation that would change its data is refused, it has no
+	 * host path rather than a fallback directory, and a delete forgets
+	 * the record.
+	 */
+	{
+		static const struct {
+			const char *method, *path, *body, *what;
+		} refused[] = {
+			{ "PUT", "/v1/volumes/adoptedvol/quota", "{\"quota_bytes\":1048576}",
+			  "an adopted volume refuses a size limit" },
+			{ "PUT", "/v1/volumes/adoptedvol/owner", "{\"uid\":1000,\"gid\":1000}",
+			  "an adopted volume refuses a new owner" },
+			{ "POST", "/v1/volumes/adoptedvol/migrate", "{\"disk\":null}",
+			  "an adopted volume refuses a move" },
+			{ "PUT", "/v1/volumes/adoptedvol/backups", "{\"enabled\":true}",
+			  "an adopted volume refuses snapshots" },
+			{ "POST", "/v1/volumes/adoptedvol/restore", "{\"snapshot\":\"20260101T000000Z\"}",
+			  "an adopted volume refuses a restore, which would empty it" },
+		};
+		size_t k;
+
+		memset(&r, 0, sizeof(r));
+		check(cix_client_request(&client, "GET", "/v1/volumes/adoptedvol", NULL, &r) == 0 &&
+		          r.status == 200 && r.body != NULL && strstr(r.body, "\"adopted\":true") != NULL &&
+		          strstr(r.body, "\"host_path\":null") != NULL,
+		      "an adopted volume whose filesystem is absent reports no host path, not a fallback");
+		cix_response_free(&r);
+		for (k = 0; k < sizeof(refused) / sizeof(refused[0]); k++) {
+			memset(&r, 0, sizeof(r));
+			check(cix_client_request(&client, refused[k].method, refused[k].path,
+			                         refused[k].body, &r) == 0 &&
+			          r.status == 409,
+			      refused[k].what);
+			cix_response_free(&r);
+		}
+		memset(&r, 0, sizeof(r));
+		check(cix_client_request(&client, "POST", "/v1/volumes",
+		                         "{\"name\":\"adoptedvol2\",\"adopt\":true}", &r) == 0 &&
+		          r.status == 400,
+		      "adopting needs a disk");
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		check(cix_client_request(&client, "DELETE", "/v1/volumes/adoptedvol", NULL, &r) == 0 &&
+		          r.status == 204,
+		      "an adopted volume can be forgotten");
+		cix_response_free(&r);
+	}
 
 	check(test_assert_no_drift(&client, NULL) == 0,
 	      "nothing this test changed went unannounced (ADR-0339)");

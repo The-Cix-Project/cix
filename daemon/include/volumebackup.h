@@ -60,7 +60,9 @@ enum volumebackup_error {
 	VOLUMEBACKUP_ERR_NO_SUCH_SNAPSHOT,
 	VOLUMEBACKUP_ERR_COPY_FAILED,
 	VOLUMEBACKUP_ERR_PERSIST_FAILED,
-	VOLUMEBACKUP_ERR_INVALID
+	VOLUMEBACKUP_ERR_INVALID,
+	/* ADR-0390: an adopted volume is never snapshotted or restored. */
+	VOLUMEBACKUP_ERR_ADOPTED
 };
 
 struct volumebackup_snapshot {
