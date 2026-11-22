@@ -175,9 +175,22 @@ static int run_sfdisk_stdin(char *const argv[], const char *script)
 	 * write while we wait for it to exit, which would deadlock. */
 	diskpart_capture_tool_output(errpipe[0]);
 	close(errpipe[0]);
-	if (waitpid(pid, &status, 0) != pid)
+	if (waitpid(pid, &status, 0) != pid) {
+		snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),
+		         "could not collect sfdisk's exit status (%s)", strerror(errno));
 		return -1;
-	return sfdisk_status_to_rc(status);
+	}
+	{
+		int rc = sfdisk_status_to_rc(status);
+
+		/* What a successful run printed is not an error, and left in
+		 * place it is what a later step's failure reports instead of
+		 * its own reason -- which is how a grow on gibsson-1 showed
+		 * sfdisk's success banner as the cause (#729). */
+		if (rc == 0)
+			g_sfdisk_last_error[0] = '\0';
+		return rc;
+	}
 }
 
 /* sfdisk --delete takes no stdin script at all -- a plain argv
@@ -447,6 +460,51 @@ struct cix_blkpg_ioctl_arg {
 };
 
 /*
+ * One line of `sfdisk -d DEV`: "DEVn : start=S, size=N, ...". The
+ * partition name is the device name plus the number, with a "p" between
+ * them when the device name ends in a digit (nvme0n1p5, mmcblk0p1),
+ * which is the kernel's own rule. Until #729 this read the number
+ * straight after the device name, so every NVMe line parsed as
+ * partition 0 and was skipped: on gibsson-1 (2026-11-22) a grow of
+ * nvme0n1p5 rewrote the table and then failed to find its own entry.
+ */
+int diskpart_parse_dump_line(const char *dev_path, const char *line, int *out_pno,
+                             unsigned long long *out_start_sector,
+                             unsigned long long *out_sectors)
+{
+	const char *colon = strchr(line, ':');
+	const char *num, *sp, *sz;
+	size_t dlen = strlen(dev_path);
+	unsigned long long sectors;
+	int pno;
+
+	if (colon == NULL || dlen == 0 || strncmp(line, dev_path, dlen) != 0)
+		return 0;
+	num = line + dlen;
+	if (dev_path[dlen - 1] >= '0' && dev_path[dlen - 1] <= '9') {
+		if (num[0] != 'p')
+			return 0;
+		num++;
+	}
+	if (num[0] < '0' || num[0] > '9')
+		return 0;
+	pno = atoi(num);
+	if (pno <= 0)
+		return 0;
+	sp = strstr(colon, "start=");
+	sz = strstr(colon, "size=");
+	if (sp == NULL || sz == NULL)
+		return 0;
+	sectors = strtoull(sz + 5, NULL, 10);
+	if (sectors == 0)
+		return 0;
+	*out_pno = pno;
+	*out_start_sector = strtoull(sp + 6, NULL, 10);
+	*out_sectors = sectors;
+	return 1;
+}
+
+/*
  * Reads back one partition's aligned geometry from the on-disk table.
  *
  * want_pno == 0 returns the highest-numbered entry (the just-appended
@@ -477,29 +535,18 @@ static int read_table_partition(const char *dev_path, int want_pno, int *out_pno
 	argv[2] = (char *)dev_path;
 	argv[3] = NULL;
 	rc = run_sfdisk_capture(argv, buf, sizeof(buf), NULL);
-	if (rc != 0)
+	if (rc != 0) {
+		snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),
+		         "could not read %s's partition table back (sfdisk -d failed)", dev_path);
 		return -1;
+	}
 
 	for (line = strtok_r(buf, "\n", &saveptr); line != NULL;
 	     line = strtok_r(NULL, "\n", &saveptr)) {
-		const char *colon = strchr(line, ':');
-		const char *sp, *sz;
 		unsigned long long start, sectors;
 		int pno;
-		size_t dlen = strlen(dev_path);
 
-		if (colon == NULL || strncmp(line, dev_path, dlen) != 0)
-			continue;
-		pno = atoi(line + dlen);
-		if (pno <= 0)
-			continue;
-		sp = strstr(colon, "start=");
-		sz = strstr(colon, "size=");
-		if (sp == NULL || sz == NULL)
-			continue;
-		start = strtoull(sp + 6, NULL, 10);
-		sectors = strtoull(sz + 5, NULL, 10);
-		if (sectors == 0)
+		if (!diskpart_parse_dump_line(dev_path, line, &pno, &start, &sectors))
 			continue;
 		/* A specific partition was asked for: return it exactly. */
 		if (want_pno != 0) {
@@ -520,7 +567,15 @@ static int read_table_partition(const char *dev_path, int want_pno, int *out_pno
 			*out_sectors = sectors;
 		}
 	}
-	return best > 0 ? 0 : -1;
+	if (best > 0)
+		return 0;
+	if (want_pno != 0)
+		snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),
+		         "%s's partition table has no entry %d", dev_path, want_pno);
+	else
+		snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),
+		         "%s's partition table has no entries", dev_path);
+	return -1;
 }
 
 static int read_appended_partition(const char *dev_path, int *out_pno,
@@ -1158,12 +1213,42 @@ enum diskpart_error diskpart_resize(const char *disk_name, const char *partition
 	 * elsewhere on the disk cannot extend this partition, and reporting
 	 * a total would promise room that does not apply here.
 	 */
-	if (diskpart_free_space_from_path(parent.dev_path, &fs) != DISKPART_OK)
+	if (diskpart_free_space_from_path(parent.dev_path, &fs) != DISKPART_OK) {
+		if (g_sfdisk_last_error[0] == '\0')
+			snprintf(g_sfdisk_last_error, sizeof(g_sfdisk_last_error),
+			         "could not read %s's free space", parent.dev_path);
 		return DISKPART_ERR_SFDISK_FAILED;
-	current_bytes = part.size_bytes;
-	part_end_sector = 0;
-	if (fs.sector_bytes > 0)
-		part_end_sector = part.start_sector + (current_bytes / fs.sector_bytes);
+	}
+	partno = partition_name + strlen(disk_name);
+	if (partno[0] == 'p' && partno[1] >= '0' && partno[1] <= '9')
+		partno++;
+	if (partno[0] < '0' || partno[0] > '9')
+		return DISKPART_ERR_WRONG_PARENT;
+	snprintf(partno_str, sizeof(partno_str), "%s", partno);
+
+	/*
+	 * The size and end come from the TABLE, not the kernel. They agree
+	 * except after a grow whose table write landed and whose kernel
+	 * notify did not, and then the free space starts at the table's
+	 * end: measuring from the kernel's end found no room and refused
+	 * every further grow (gibsson-1, 2026-11-22, #729). The kernel side
+	 * is reconciled to the table in step 1b either way.
+	 */
+	{
+		int tpno;
+		unsigned long long tstart = 0, tsectors = 0;
+
+		if (read_table_partition(parent.dev_path, atoi(partno_str), &tpno, &tstart,
+		                         &tsectors) != 0)
+			return DISKPART_ERR_SFDISK_FAILED;
+		current_bytes = tsectors * 512ULL;
+		if (current_bytes < part.size_bytes)
+			current_bytes = part.size_bytes;
+		part_end_sector = 0;
+		if (fs.sector_bytes > 0)
+			part_end_sector = tstart * 512ULL / fs.sector_bytes +
+			                  tsectors * 512ULL / fs.sector_bytes;
+	}
 	for (i = 0; i < fs.extent_count; i++) {
 		if (fs.extents[i].start_sector == part_end_sector) {
 			room_bytes = fs.extents[i].sectors * fs.sector_bytes;
@@ -1177,13 +1262,6 @@ enum diskpart_error diskpart_resize(const char *disk_name, const char *partition
 		if (terr != DISKPART_OK)
 			return terr;
 	}
-
-	partno = partition_name + strlen(disk_name);
-	if (partno[0] == 'p' && partno[1] >= '0' && partno[1] <= '9')
-		partno++;
-	if (partno[0] < '0' || partno[0] > '9')
-		return DISKPART_ERR_WRONG_PARENT;
-	snprintf(partno_str, sizeof(partno_str), "%s", partno);
 
 	/*
 	 * Step 1a: grow the table entry -- but only if it actually needs to

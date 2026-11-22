@@ -192,6 +192,16 @@ const char *diskpart_last_tool_error(void);
 void diskpart_capture_tool_output(int fd);
 
 /*
+ * Parses one line of `sfdisk -d DEV` for partition number, start and
+ * size in sectors. A partition is DEV plus its number, with a "p"
+ * between when DEV ends in a digit (nvme0n1p5), as the kernel names
+ * them (#729). Returns 1 for a partition line, 0 for anything else.
+ */
+int diskpart_parse_dump_line(const char *dev_path, const char *line, int *out_pno,
+                             unsigned long long *out_start_sector,
+                             unsigned long long *out_sectors);
+
+/*
  * Checks and repairs the FAT filesystem on dev_path, which must not be
  * mounted (#638). fsck.fat's own status: 0 nothing to repair, 1 repairs
  * written, anything else a failure; -1 when it could not be run, -2

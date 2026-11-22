@@ -10,6 +10,8 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 - **Before:** `diskpart`'s capture of a tool's output kept its first 511 bytes and stopped reading, though its comment said the tail is what matters. sfdisk prints the disk and the old table first and its reason last, so on gibsson-1 (2026-11-22) a refused grow of `nvme0n1p5` reported only the disk banner and two partitions.
 - **Now:** `diskpart_capture_tool_output()` drains the output to EOF and keeps its last 511 bytes. The new gated `test_toolcapture` writes 2000 bytes ending in a reason and checks the capture ends with it.
+- **The cause behind it:** the grow's sfdisk had succeeded, and its own entry could not be read back. `sfdisk -d` names an NVMe partition `/dev/nvme0n1p5`, and the parser read the number straight after the device name, so every line parsed as partition 0 (.95's `/dev/vda5` never hit it). `diskpart_parse_dump_line()` follows the kernel's naming (a `p` when the device name ends in a digit), tested with nvme, vda and mmcblk lines; this also fixes adding a partition on NVMe.
+- **And the state it left:** the table at 50000 MiB, the kernel at 16 GiB. A grow now measures its size and room from the table entry rather than the kernel's view, so it continues from there, and step 1b brings the kernel to the table. A successful sfdisk run no longer leaves its output to be reported as a later step's error, the read-back, free-space and waitpid failures each say what failed, and the dashboard's Grow opens its form even when its own advisory room reads 0.
 
 ### Grow opens the generated form, not a native prompt (#728)
 

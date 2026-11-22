@@ -8468,15 +8468,12 @@ async function growPartition(p) {
 	} catch (e) {
 		/* Advisory only; the daemon validates for real. */
 	}
-	if (room === 0) {
-		showStatus(
-			"There is no free space immediately after " +
-				p.name +
-				" — free space elsewhere on the disk cannot extend it.",
-			true
-		);
-		return;
-	}
+	/* No stop on 0: the kernel's size can lag the table after a grow
+	 * whose notify failed, and then the free space does not start where
+	 * this reads the partition as ending (#729). The daemon measures
+	 * from the table and says when there is no room. */
+	if (room === 0)
+		room = null;
 	const mib = (bytes) => Math.floor(bytes / (1024 * 1024));
 
 	/*
