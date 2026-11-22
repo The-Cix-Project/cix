@@ -3,6 +3,7 @@
 ## Status
 
 Accepted, 2026-11-22, by the owner: *"Accept it as written, let's please write it in hibr"*, which sets decision 6's language. Proposed the same day. Written at the owner's request after the forge moved to gibsson-1: *"I want our git to be totally API driven so we don't have to faff around with the interface, and I want its config ... to be in a git repo"*, *"I want the sync to be independent of the repo"*, and *"please proceed now"*.
+**Built the same day:** forgesync 1.0.0-3 runs as a service of the `git` deployment (git@1.1.0, gitea image 1.0.2). Measured on gibsson-1: `--export` wrote 75 repositories and 21 mirrors as the starting `forge.json`; a dry pass found nothing to change; a commit to site-config was applied in the next pass (1 change, then 0); and a setting changed through the API behind its back was put back in the following pass.
 
 ## Context
 
