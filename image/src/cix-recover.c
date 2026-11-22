@@ -342,8 +342,15 @@ static int recover_main(void)
 	dual_printf("Type RESET (all capitals) and press Enter to proceed, anything else to\n");
 	dual_printf("abort and reboot with nothing changed: ");
 
-	if (fgets(line, sizeof(line), stdin) == NULL || strncmp(line, "RESET", 5) != 0 ||
-	    (line[5] != '\n' && line[5] != '\0')) {
+	/*
+	 * #721: read from whichever console the operator types on. The
+	 * recovery entry boots `console=tty0 console=ttyS0`, so stdin is
+	 * ttyS0, and on a machine with nothing on its serial port fgets()
+	 * returned at once: gibsson-1 printed "Aborted -- nothing was
+	 * changed" twice, with no time to type, on 2026-11-21. The prompt
+	 * went to both consoles already; now the answer comes from both.
+	 */
+	if (dual_console_readline(line, sizeof(line)) < 0 || strcmp(line, "RESET") != 0) {
 		dual_printf("\nAborted -- nothing was changed.\n");
 		json_free(root);
 		umount(g_mount_point);

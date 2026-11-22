@@ -883,6 +883,8 @@ static int holds_elsewhere(const char *username, void *ctx)
 
 	if (q->skip_user != NULL && strcmp(username, q->skip_user) == 0)
 		return 0;
+	if (!ldap_user_can_log_in(username)) /* #720: a holder who cannot sign in holds nothing */
+		return 0;
 	for (i = 0; i < g_perm_group_count; i++) {
 		if (!g_perm_groups[i].has[q->idx])
 			continue;
@@ -939,7 +941,8 @@ int hostauth_user_change_keeps_grantor(const char *username, int primarygroup,
 	q.idx = idx;
 	if (ldap_user_for_each(holds_elsewhere, &q))
 		return 1;
-	return !deleting && gids_hold(idx, primarygroup, secondary_groups, secondary_count, disabled);
+	return !deleting && ldap_user_can_log_in(username) &&
+	       gids_hold(idx, primarygroup, secondary_groups, secondary_count, disabled);
 }
 
 int hostauth_group_change_keeps_grantor(const char *group)
@@ -1356,6 +1359,18 @@ static int one_holder(const char *username, void *ctx)
 {
 	const struct holder_query *q = ctx;
 
+	/*
+	 * #720: only a holder who can sign in counts. Measured on
+	 * gibsson-1, 2026-11-21: `ldap user add --name=claude` into
+	 * cix-admins, with no password yet, switched authentication on, and
+	 * the request meant to set that password was refused 401, leaving
+	 * no way in but cix-recover. Counting only users with a password
+	 * makes adding a user and then setting its password, in either
+	 * order, never lock anyone out: gating starts when the first
+	 * password lands.
+	 */
+	if (!ldap_user_can_log_in(username))
+		return 0;
 	return user_holds_under(q->groups, q->count, username, q->idx); /* 1 stops the walk */
 }
 

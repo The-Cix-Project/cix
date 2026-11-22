@@ -10315,7 +10315,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: A group with this name already exists
+          description: A group with this name, or with this gidnumber, already exists (#720)
           content:
             application/json:
               schema:
@@ -10532,7 +10532,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: A user with this name already exists
+          description: A user with this name, or with this uidnumber, already exists (#720)
           content:
             application/json:
               schema:
@@ -10639,7 +10639,7 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: >
-            New name already taken by a different user -- OR this is the only remaining
+            New name or uidnumber already taken by a different user (#720) -- OR this is the only remaining
             admin user and the request would disable it or remove it from every admin
             group, turning off write authentication for the whole API (#370). Add
             another admin first.

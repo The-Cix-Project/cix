@@ -231,11 +231,17 @@ void dhcp_forget_network(const char *network);
 int dhcp_leases_scan(int fd, long long now);
 
 /*
- * Whether any running server's lease file moved (size or mtime) since
- * the last call that answered 1. One stat per server, cheap enough for
- * the loop; it decides whether a timed scan is worth a fork.
+ * Whether any server's lease file moved (size or mtime) since the last
+ * scan whose result was applied. One stat per server, cheap enough for
+ * the loop; it decides whether a timed scan is worth a fork. It
+ * remembers what it saw as pending only: dhcp_lease_files_seen() makes
+ * that the baseline once the scan's result is in (#719). A scan that
+ * never started or ended without a result leaves the files unread, so
+ * the next tick scans them again, rather than waiting for dhcpd to
+ * write, which a quiet network may not do for hours.
  */
 int dhcp_lease_files_moved(void);
+void dhcp_lease_files_seen(void);
 
 /* The parent's half: installs a snapshot the child wrote, announcing
  * getDhcpServers and getDhcpLeases when what they answer changed. 0, or

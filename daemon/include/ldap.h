@@ -354,6 +354,14 @@ void ldap_user_write_json_list(struct json_writer *w);
  * caller, same fail-closed posture every other auth check here has). */
 int ldap_user_is_in_group(const char *user_name, const char *group_name);
 
+/* Whether user_name can log in at all: it exists, is not disabled, and
+ * has a password set. An app password does not count, since it never
+ * satisfies identity:write (ADR-0370), and the directory glauth serves
+ * is rendered from these same hashes, so no other route signs in a user
+ * this answers 0 for. #720: what decides whether authentication is in
+ * force counts only users this answers 1 for. */
+int ldap_user_can_log_in(const char *user_name);
+
 /*
  * ADR-0317 section 8 (#543): app passwords.
  *

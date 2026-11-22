@@ -6,7 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
-### Fresh-install fixes: a certificate's own name, the busy message, shell quoting (#734, #732, #717)
+### Fresh-install fixes: a certificate's own name, the busy message, shell quoting, login lockout, recovery prompt, DHCP state (#734, #732, #717, #720, #721, #719)
+
+- **#720:** authentication switches on only once a user **who has a password** holds `identity:write` (`ldap_user_can_log_in()`), and the last-grantor guards count only such users. Creating the first administrator and then setting its password, in either order, no longer locks the API and the console out. A `uidnumber` or `gidnumber` already in use is refused with 409 on create and update. A container's provisioned LDAP account keeps its uid across restarts instead of taking a newly allocated one at each start.
+- **#721:** cix-recover reads its `RESET` confirmation from whichever console the operator types on (`dual_console_readline()`), not stdin, which was the serial port and returned at once on a machine with nothing attached. The reader also drops a console that only reports a hang-up.
+- **#719:** the DHCP lease files count as read only once a scan's result is applied (`dhcp_lease_files_seen()`), so a scan that failed to start or ended without a result is retried within 15 s instead of waiting for dhcpd's next write. Whether this caused the null state seen on 2026-11-21 is not established; the state reads `normal` on 0.2.57-719.
 
 - **#734:** `POST /v1/pki/certs` with `sans` now always makes the certificate's own qualified name its first SAN, as the contract already promised. Before, `--name=git --sans=git.home.arpa,...` made `git.uk.home.arpa` with no SAN naming it, so it did not verify for its own name.
 - **#732:** a 409 for a busy package job names the slots as the cause only when every slot is taken, with the configured limit. Otherwise it says a running job blocks this one and lists what is running. It used to say "all 1 package job slots are in use" on a box with ten, counting running jobs as slots.

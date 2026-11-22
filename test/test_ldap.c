@@ -467,6 +467,28 @@ int main(void)
 		}
 		cix_response_free(&r);
 
+		/* #720: a uid or gid already in use is refused, so a file's
+		 * owner and a group's members name one record each. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/ldap/users",
+		                       "{\"name\":\"dup_uid\",\"uidnumber\":5001,\"primarygroup\":6001}",
+		                       &r) != 0 ||
+		    r.status != 409) {
+			fprintf(stderr, "FAIL: #720 a second user with uid 5001: status=%d, want 409\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/ldap/groups",
+		                       "{\"name\":\"dup_gid\",\"gidnumber\":6001}", &r) != 0 ||
+		    r.status != 409) {
+			fprintf(stderr, "FAIL: #720 a second group with gid 6001: status=%d, want 409\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
 		/* 16. the container's own config file now shows the preserved
 		 * prefix plus a correctly-rendered managed tail, including a
 		 * real bcrypt hash of "dogood" (ADR-0144 -- bcrypt is

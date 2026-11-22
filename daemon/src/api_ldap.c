@@ -322,7 +322,8 @@ static void respond_ldap_record_error(int fd, enum ldap_record_error err)
 		respond_error(fd, 400, "Bad Request", "invalid uidnumber/gidnumber");
 		break;
 	case LDAP_RECORD_ERR_DUPLICATE:
-		respond_error(fd, 409, "Conflict", "already exists");
+		respond_error(fd, 409, "Conflict",
+		              "a record with this name, or with this uidnumber/gidnumber, already exists");
 		break;
 	case LDAP_RECORD_ERR_FULL:
 		respond_error(fd, 500, "Internal Server Error", "LDAP record table full");

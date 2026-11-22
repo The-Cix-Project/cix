@@ -1840,6 +1840,10 @@ enum ldap_record_error ldap_group_create(const char *name, int gidnumber, struct
 		return LDAP_RECORD_ERR_INVALID_FIELD;
 	if (ldap_group_find(name) != NULL)
 		return LDAP_RECORD_ERR_DUPLICATE;
+	/* #720: one gid, one group, as ldap_group_update() already holds.
+	 * gibsson-1 accepted --gidnumber=10000 while cix-admins had it. */
+	if (ldap_group_find_by_gid(gidnumber) != NULL)
+		return LDAP_RECORD_ERR_DUPLICATE;
 
 	for (i = 0; i < LDAP_GROUP_MAX; i++) {
 		if (g_groups[i].name[0] == '\0') {
@@ -2008,6 +2012,19 @@ static void fill_user_fields(struct ldap_user *u, int uidnumber, int primarygrou
 		strncpy(u->ssh_public_key, ssh_public_key, sizeof(u->ssh_public_key) - 1);
 }
 
+/* #720: one uid, one user, so a file's owner names one account. Every
+ * other user than `self` (NULL for a create) is compared. */
+static int uid_taken_by_other(int uidnumber, const struct ldap_user *self)
+{
+	int i;
+
+	for (i = 0; i < LDAP_USER_MAX; i++)
+		if (g_users[i].name[0] != '\0' && &g_users[i] != self &&
+		    g_users[i].uidnumber == uidnumber)
+			return 1;
+	return 0;
+}
+
 enum ldap_record_error ldap_user_create(const char *name, int uidnumber, int primarygroup,
                                          const int *secondary_groups, int secondary_group_count,
                                          const char *givenname, const char *sn, const char *mail,
@@ -2026,6 +2043,8 @@ enum ldap_record_error ldap_user_create(const char *name, int uidnumber, int pri
 	if (verr != LDAP_RECORD_OK)
 		return verr;
 	if (ldap_user_find(name) != NULL)
+		return LDAP_RECORD_ERR_DUPLICATE;
+	if (uid_taken_by_other(uidnumber, NULL))
 		return LDAP_RECORD_ERR_DUPLICATE;
 
 	for (i = 0; i < LDAP_USER_MAX; i++) {
@@ -2080,6 +2099,8 @@ enum ldap_record_error ldap_user_update(const char *name, const char *new_name, 
 		if (ldap_user_find(new_name) != NULL)
 			return LDAP_RECORD_ERR_DUPLICATE;
 	}
+	if (uid_taken_by_other(uidnumber, u))
+		return LDAP_RECORD_ERR_DUPLICATE;
 
 	/* passbcrypt == NULL means "keep the existing hash" -- fill_user_
 	 * fields() only overwrites the stored hash when passbcrypt is non-NULL
@@ -2147,6 +2168,13 @@ int ldap_user_is_in_group(const char *user_name, const char *group_name)
 			return 1;
 	}
 	return 0;
+}
+
+int ldap_user_can_log_in(const char *user_name)
+{
+	const struct ldap_user *u = ldap_user_find(user_name);
+
+	return u != NULL && !u->disabled && u->passbcrypt[0] != '\0';
 }
 
 /*

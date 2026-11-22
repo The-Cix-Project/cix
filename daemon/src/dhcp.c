@@ -1444,12 +1444,16 @@ int dhcp_leases_scan(int fd, long long now)
 	return rc == 0 ? 0 : -1;
 }
 
-/* What each server's lease file was at the last scan that ran. */
-static struct {
+/* What each server's lease file was when the last applied scan began
+ * (g_lease_stat), and what the check before the scan in flight saw
+ * (g_lease_pending), which becomes the former only on success. */
+struct lease_stat {
 	char name[DHCP_SERVER_NAME_MAX];
 	long long size;
 	long long mtime_ns;
-} g_lease_stat[DHCP_MAX_SERVERS];
+};
+static struct lease_stat g_lease_stat[DHCP_MAX_SERVERS];
+static struct lease_stat g_lease_pending[DHCP_MAX_SERVERS];
 
 int dhcp_lease_files_moved(void)
 {
@@ -1470,16 +1474,21 @@ int dhcp_lease_files_moved(void)
 		if (strcmp(g_lease_stat[i].name, names[i]) != 0 || g_lease_stat[i].size != size ||
 		    g_lease_stat[i].mtime_ns != mtime_ns)
 			moved = 1;
-		snprintf(g_lease_stat[i].name, sizeof(g_lease_stat[i].name), "%s", names[i]);
-		g_lease_stat[i].size = size;
-		g_lease_stat[i].mtime_ns = mtime_ns;
+		snprintf(g_lease_pending[i].name, sizeof(g_lease_pending[i].name), "%s", names[i]);
+		g_lease_pending[i].size = size;
+		g_lease_pending[i].mtime_ns = mtime_ns;
 	}
 	for (; i < DHCP_MAX_SERVERS; i++) {
 		if (g_lease_stat[i].name[0] != '\0')
 			moved = 1;
-		g_lease_stat[i].name[0] = '\0';
+		g_lease_pending[i].name[0] = '\0';
 	}
 	return moved;
+}
+
+void dhcp_lease_files_seen(void)
+{
+	memcpy(g_lease_stat, g_lease_pending, sizeof(g_lease_stat));
 }
 
 /*

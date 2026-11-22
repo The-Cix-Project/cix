@@ -18515,11 +18515,26 @@ static int create_container_from_body(const char *body, size_t body_len,
 			/* A restart: the account is this container's own, from its
 			 * first start; it takes this start's secret. */
 			u = ldap_user_find(uname);
-			if (u != NULL)
-				lerr = ldap_user_update(uname, NULL, uid, g->gidnumber, u->secondary_groups,
-				                         u->secondary_group_count, u->givenname, u->sn,
-				                         u->mail, u->loginshell, u->homedirectory, hash,
-				                         u->disabled, u->ssh_public_key, u->can_search, &u);
+			if (u == NULL) {
+				/* #720: not this container's account, so the name is
+				 * free and the declared ldap_uid is someone else's. */
+				json_free(root);
+				snprintf(err_msg, err_msg_size,
+				         "ldap_provision: uid %d already belongs to another directory "
+				         "user -- choose another ldap_uid",
+				         uid);
+				return 409;
+			}
+			/* The account keeps the uid it was given at its first start
+			 * unless the definition declares one: ldap_uid_alloc() above
+			 * answers a different, free number at every start, which
+			 * moved the account's uid each time. */
+			if (ldap_uid == 0)
+				uid = u->uidnumber;
+			lerr = ldap_user_update(uname, NULL, uid, g->gidnumber, u->secondary_groups,
+			                        u->secondary_group_count, u->givenname, u->sn,
+			                        u->mail, u->loginshell, u->homedirectory, hash,
+			                        u->disabled, u->ssh_public_key, u->can_search, &u);
 		}
 		if (lerr != LDAP_RECORD_OK || u == NULL) {
 			json_free(root);
@@ -25814,8 +25829,10 @@ static void dhcp_scan_done(int exit_status, void *ctx)
 	if (exit_status == 0 && (len = lseek(g_dhcp_scan_memfd, 0, SEEK_END)) > 0 &&
 	    (buf = malloc((size_t)len)) != NULL &&
 	    pread(g_dhcp_scan_memfd, buf, (size_t)len, 0) == (ssize_t)len) {
-		if (dhcp_snapshot_apply(buf, (size_t)len) == 0)
+		if (dhcp_snapshot_apply(buf, (size_t)len) == 0) {
+			dhcp_lease_files_seen(); /* #719: only a result read them */
 			dhcp_dns_names_push();
+		}
 	} else if (exit_status != 0) {
 		logstore_write("cixd", "warn", "dhcp: the lease scan ended without a result");
 	}

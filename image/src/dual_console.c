@@ -106,8 +106,20 @@ int dual_console_readline(char *out, size_t out_size)
 			char c;
 			ssize_t n;
 
-			if (idx[i] < 0 || !(pfds[idx[i]].revents & POLLIN))
+			if (idx[i] < 0)
 				continue;
+			if (!(pfds[idx[i]].revents & POLLIN)) {
+				/* #721: a console that only hangs up (a serial port
+				 * with nothing on it) is dropped, or poll() would
+				 * answer for it at once on every pass. */
+				if (pfds[idx[i]].revents & (POLLHUP | POLLERR | POLLNVAL)) {
+					if (i == 0)
+						g_fd0 = -1;
+					else
+						g_fd1 = -1;
+				}
+				continue;
+			}
 			n = read(fds[i], &c, 1);
 			if (n <= 0) {
 				if (!(n < 0 && (errno == EINTR || errno == EAGAIN))) {

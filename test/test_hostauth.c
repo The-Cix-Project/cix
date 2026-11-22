@@ -515,12 +515,21 @@ static int test_permission_mapping(void)
 	ok &= expect_status(&c, NULL, "PUT", "/v1/system/hostauth/permissions/keepers",
 	                    "{\"permissions\":[\"identity:read\",\"identity:write\"]}", 200,
 	                    "grant keepers");
+	/* #720: a holder who cannot sign in does not switch gating on.
+	 * Created without a password first, as on gibsson-1 on 2026-11-21,
+	 * the box must still answer the request that gives it one. */
 	ok &= expect_status(&c, NULL, "POST", "/v1/ldap/users",
+	                    "{\"name\":\"keeper\",\"uidnumber\":7311,\"primarygroup\":7303}",
+	                    201, "create keeper, with no password yet");
+	ok &= expect_status(&c, NULL, "GET", "/v1/system/hostauth/permissions", NULL, 200,
+	                    "#720: a grantor with no password does not switch gating on");
+	ok &= expect_status(&c, NULL, "PUT", "/v1/ldap/users/keeper",
 	                    "{\"name\":\"keeper\",\"uidnumber\":7311,\"primarygroup\":7303,"
 	                    "\"password\":\"keeps the keys\"}",
-	                    201, "create keeper");
+	                    200, "#720: setting the first grantor's password is still answered");
 	ok &= expect_status(&c, NULL, "GET", "/v1/system/hostauth/permissions", NULL, 401,
-	                    "an unauthenticated read once someone holds identity:write");
+	                    "an unauthenticated read once someone who can sign in holds "
+	                    "identity:write");
 	if (!login_as(&c, "keeper", "keeps the keys", ktok, sizeof(ktok))) {
 		fprintf(stderr, "FAIL: #540 login as keeper\n");
 		ok = 0;
