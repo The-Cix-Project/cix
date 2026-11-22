@@ -835,7 +835,8 @@ int main(void)
 			  "an adopted volume refuses a move" },
 			{ "PUT", "/v1/volumes/adoptedvol/backups", "{\"enabled\":true}",
 			  "an adopted volume refuses snapshots" },
-			{ "POST", "/v1/volumes/adoptedvol/restore", "{\"snapshot\":\"20260101T000000Z\"}",
+			{ "POST", "/v1/volumes/adoptedvol/restore",
+			  "{\"snapshot\":\"20260101T000000Z\",\"confirm_volume_name\":\"adoptedvol\"}",
 			  "an adopted volume refuses a restore, which would empty it" },
 		};
 		size_t k;

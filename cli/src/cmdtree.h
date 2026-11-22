@@ -596,6 +596,7 @@ static const char *const n_volume_backups_flags[] = {
 };
 
 static const char *const n_volume_flags[] = {
+	"--adopt",
 	"--disk=",
 	"--gid=",
 	"--name=",
