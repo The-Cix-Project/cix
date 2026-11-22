@@ -263,7 +263,7 @@ composed locally. So it is signed, and the check happens on a machine
 you already trust, before the stick is written:
 
 ```
-minisign -Vm cix-installer-<version>-<release>-<arch>.iso -p cix-release-2026-09.pub
+minisign -Vm cix-installer-<version>-<release>-<arch>.iso -p cix-release-2026-11.pub
 ```
 
 Use **stock `minisign`**, not a Cix tool: an installer verifying its own
@@ -273,7 +273,7 @@ all. A stranger with no Cix software must be able to tell a genuine
 installer from a fabricated one — the last step deliberately is not
 ours.
 
-The current key is committed at [`docs/keys/cix-release-2026-09.pub`](../keys/cix-release-2026-09.pub) (key id `0b19db46b2b6db6c`). An ISO published before 2026-09-06 verifies against the retired [`cix-release.pub`](../keys/cix-release.pub), which stays in git;
+The current key is committed at [`docs/keys/cix-release-2026-11.pub`](../keys/cix-release-2026-11.pub) (key id `d5bcc1724f77a9fa`). An ISO published before 2026-11-22 verifies against the retired [`cix-release-2026-09.pub`](../keys/cix-release-2026-09.pub), and one before 2026-09-06 against [`cix-release.pub`](../keys/cix-release.pub), which stays in git;
 pin a copy once rather than re-fetching it, and see
 [`docs/keys/README.md`](../keys/README.md) for why it lives in git and
 not beside the ISO.

@@ -8,10 +8,15 @@ is ever kept here, or anywhere else in this repository.
 
 | File | What it verifies | Status |
 |---|---|---|
-| [`cix-release-2026-09.pub`](cix-release-2026-09.pub) | Installer ISOs published to the artifact cache, from 2026-09-06 onward. Key id `0b19db46b2b6db6c` | **Current** — held by the one host that cuts release media ([ADR-0220](../adr/0220-a-separate-release-signing-key.md)) |
+| [`cix-release-2026-11.pub`](cix-release-2026-11.pub) | Installer ISOs and packages published from 2026-11-22 onward, by gibsson-1. Key id `d5bcc1724f77a9fa` | **Current** — held by the one host that cuts release media ([ADR-0220](../adr/0220-a-separate-release-signing-key.md)), with the private half kept off-box in two places |
+| [`cix-release-2026-09.pub`](cix-release-2026-09.pub) | Installer ISOs published from 2026-09-06 to 2026-11-21. Key id `0b19db46b2b6db6c` | **Retired** — kept, never deleted; see below |
 | [`cix-release.pub`](cix-release.pub) | Installer ISOs published **before** 2026-09-06 | **Retired** — kept, never deleted; see below |
 | [`cix-secureboot.crt`](cix-secureboot.crt) | The EFI binaries on installer media (shim/GRUB/kernel), and the MOK certificate an operator enrolls to boot them. `CN = Cix Secure Boot Signing`, SHA-256 fingerprint `D6:3F:94:CA:B7:DD:72:FF:2E:56:D3:FB:67:5D:08:FC:83:EC:68:DC:E2:FF:D7:D5:77:ED:D4:02:B8:CC:93:75` | Current |
 | [`cix-secureboot-2026-08.crt`](cix-secureboot-2026-08.crt) | The EFI binaries on installer media built before the 2026-09-06 rotation, and the MOK certificate installs of that time enrolled. SHA-256 fingerprint `87:D4:C9:86:6B:80:ED:AD:08:08:6E:42:BC:80:88:1F:F1:31:F7:11:A7:1E:47:43:7C:DC:FB:BE:A8:5E:9E:E0` | **Retired** — kept so that what it signed stays checkable. It sat in `image/keys/cix-signing.crt` until 2026-10-30, where the guides still pointed at it as current (#628) |
+
+### Why the release key was rotated on 2026-11-22
+
+The build and release host moved from 192.168.15.95 to gibsson-1, and the September private key existed only on .95: the off-box copies taken on 2026-09-06 could not be found. Rather than depend on a retiring host's disk, a new pair was made, on the owner's desktop, and installed on gibsson-1 with `release-key set`; its private half is kept off-box in two places. Not a compromise. Everything signed with `cix-release-2026-09.pub` stays verifiable against it. The Secure Boot pair was replaced at the same time, for the same reason.
 
 ### Why the release key was rotated on 2026-09-06
 
@@ -36,7 +41,7 @@ owner's decision (#628) so that one key has one home.
 ```
 curl -fsSLO http://<cache>:8080/cix-installer-<version>-<release>-<arch>.iso
 curl -fsSLO http://<cache>:8080/cix-installer-<version>-<release>-<arch>.iso.minisig
-minisign -Vm cix-installer-<version>-<release>-<arch>.iso -p cix-release-2026-09.pub
+minisign -Vm cix-installer-<version>-<release>-<arch>.iso -p cix-release-2026-11.pub
 ```
 
 A good result names the release it is vouching for, because the version
@@ -75,7 +80,7 @@ in this directory.
 
 ## Pinning
 
-Take a copy of `cix-release-2026-09.pub` **once**, from a source you trust, and
+Take a copy of `cix-release-2026-11.pub` **once**, from a source you trust, and
 keep it. Re-fetching it before every verification defeats the exercise:
 whoever could hand you a bad ISO could hand you the key that matches it.
 

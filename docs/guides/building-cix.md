@@ -137,12 +137,12 @@ Published as `cix-installer-<version>-<arch>.iso`, alongside its `.minisig`. On 
 ```
 curl -fsSLO http://<cache>:8080/cix-installer-<version>-<arch>.iso
 curl -fsSLO http://<cache>:8080/cix-installer-<version>-<arch>.iso.minisig
-minisign -Vm cix-installer-<version>-<arch>.iso -p cix-release-2026-09.pub
+minisign -Vm cix-installer-<version>-<arch>.iso -p cix-release-2026-11.pub
 ```
 
 Verify on a machine you already trust, before writing the stick. An installer that checks its own signature is the code being checked doing the checking — a substituted ISO would report success.
 
-The current public key is committed at [`docs/keys/cix-release-2026-09.pub`](../keys/cix-release-2026-09.pub); ISOs published before 2026-09-06 verify against the retired `cix-release.pub`. Pin a copy once and keep it, rather than re-fetching it each time (whoever could hand you a bad ISO could hand you the key that matches it). It lives in git rather than in the artifact cache on purpose: a cache that also served the key would be vouching for its own payload. See [`docs/keys/README.md`](../keys/README.md).
+The current public key is committed at [`docs/keys/cix-release-2026-11.pub`](../keys/cix-release-2026-11.pub); ISOs published before 2026-11-22 verify against the retired `cix-release-2026-09.pub`, and before 2026-09-06 against `cix-release.pub`. Pin a copy once and keep it, rather than re-fetching it each time (whoever could hand you a bad ISO could hand you the key that matches it). It lives in git rather than in the artifact cache on purpose: a cache that also served the key would be vouching for its own payload. See [`docs/keys/README.md`](../keys/README.md).
 
 An empty `iso build` (no flags) is the normal case, and produces the ISO you want for general use: it passes the installer no arguments, and the installer asks for the disk and the network on the console with the machine's own disks and NICs listed. Pass flags only to build media that installs one specific machine unattended.
 
