@@ -24158,8 +24158,10 @@ components:
           minItems: 1
           maxItems: 8
           description: >
-            Subject Alternative Names (each a hostname). Omit to default to [name] --
-            a cert always carries at least its own name as a SAN.
+            Subject Alternative Names (each a hostname or address). The
+            certificate's own qualified name is always the first SAN, whether
+            or not it is listed here (#734), so at most 7 others fit; an entry
+            equal to the name is not repeated. Omit for [name] alone.
         days:
           type: integer
           title: Validity (days)

@@ -6,6 +6,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Fresh-install fixes: a certificate's own name, the busy message, shell quoting (#734, #732, #717)
+
+- **#734:** `POST /v1/pki/certs` with `sans` now always makes the certificate's own qualified name its first SAN, as the contract already promised. Before, `--name=git --sans=git.home.arpa,...` made `git.uk.home.arpa` with no SAN naming it, so it did not verify for its own name.
+- **#732:** a 409 for a busy package job names the slots as the cause only when every slot is taken, with the configured limit. Otherwise it says a running job blocks this one and lists what is running. It used to say "all 1 package job slots are in use" on a box with ten, counting running jobs as slots.
+- **#717:** cixctl's interactive and console shells split a line as a POSIX shell quotes it (`client/src/shellwords.c`, gated by `test_shellwords`): a quote may start mid-word and is removed, so `--secret=KEY='a b'` stores `a b`. An unclosed quote or a trailing backslash is refused and nothing runs. Before, the quotes were stored as part of the value, which gave br-2 a wrong RIP password.
+- **#730 (cix-recipes):** htop, less, mtr, screen, vim and procps require `ncurses-terminfo` at run time, so an image that installs them has a terminal database.
+
 ### A volume can adopt a disk's existing filesystem (#725)
 
 - **Before:** every volume was a new, empty directory Cix created, so a disk an operator brought with their own data on it could not be given to a container. And Cix's volume operations (delete, migrate, owner, quota, snapshots, restore) were built for data Cix made.

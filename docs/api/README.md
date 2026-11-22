@@ -2716,7 +2716,7 @@ POST /v1/pki/certs
 ```
 
 - `name` is a hostname (same RFC 1035 rules as `DnsRecord.name`) — it becomes the certificate's CN and this endpoint's REST identifier. A `name` with no `.` gets this install's own site suffix appended by default, same rule as DNS records — fully overridable by including a `.`.
-- `sans` is optional and defaults to `[name]` — a cert always carries at least its own name as a Subject Alternative Name. The default-qualification rule above is never applied to an explicitly-supplied `sans` entry, only to `name` and the default SAN derived from it.
+- `sans` is optional and defaults to `[name]`. A cert always carries its own qualified name as its first Subject Alternative Name, whether or not `sans` lists it (#734), so at most 7 others fit, and an entry equal to the name is not repeated. The default-qualification rule above is never applied to an explicitly-supplied `sans` entry, only to `name`.
 - `days` is optional, default 365.
 
 The `201` response (`PkiCertIssued`) is the **only** place the leaf's private key is returned in the clear at issuance (a `POST /pki/reset` reissue returns the new one the same way, below):

@@ -1178,6 +1178,43 @@ int main(void)
 		cix_client_request(&client, "DELETE", "/v1/pki/certs/explicit.other", NULL, &r);
 		cix_response_free(&r);
 
+		/* #734: explicit sans that leave out the certificate's own
+		 * (qualified) name still get it, first; an entry equal to it
+		 * is not repeated; and seven others plus the name is the most
+		 * that fits. */
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pki/certs",
+		                       "{\"name\":\"own734\",\"sans\":[\"own734.alias\",\"10.7.3.4\","
+		                       "\"OWN734.lab1.corp.internal\"]}",
+		                       &r) != 0 || r.status != 201) {
+			fprintf(stderr, "FAIL: #734 cert with explicit sans: status=%d\n", r.status);
+			ok = 0;
+		} else {
+			const struct json_value *sans = json_object_get(r.json, "sans");
+
+			if (sans == NULL || sans->type != JSON_ARRAY || sans->u.array.count != 3 ||
+			    !str_eq(json_as_string(sans->u.array.items[0]), "own734.lab1.corp.internal") ||
+			    !str_eq(json_as_string(sans->u.array.items[1]), "own734.alias") ||
+			    !str_eq(json_as_string(sans->u.array.items[2]), "10.7.3.4")) {
+				fprintf(stderr, "FAIL: #734 a cert's own name is not its first SAN, exactly once\n");
+				ok = 0;
+			}
+		}
+		cix_response_free(&r);
+		cix_client_request(&client, "DELETE", "/v1/pki/certs/own734.lab1.corp.internal", NULL, &r);
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/pki/certs",
+		                       "{\"name\":\"full734\",\"sans\":[\"a1\",\"a2\",\"a3\",\"a4\",\"a5\","
+		                       "\"a6\",\"a7\",\"a8\"]}",
+		                       &r) != 0 || r.status != 400) {
+			fprintf(stderr, "FAIL: #734 eight others plus the name were not refused: status=%d\n",
+			        r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+
 		/* ADR-0052: siteconfig_qualify() is gated on site_name being
 		 * non-empty -- reset it to "" here (keeping instance_name/
 		 * domain_suffix, which Part 5 below still needs) so the bare

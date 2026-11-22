@@ -8,6 +8,7 @@
  */
 #include "console.h"
 #include "httpclient.h"
+#include "shellwords.h"
 #include "version.h" /* CIX_BUILD_VERSION -- cixctl's own build, for the shell banner (#440) */
 /*
  * ADR-0218 layer 1: every API path this client uses comes from the
@@ -20280,46 +20281,6 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 
 #define SHELL_MAX_TOKENS 64
 
-/*
- * Splits line (modified in place) into up to max_tokens whitespace-
- * separated tokens, treating a "..."/'...' span as one token with the
- * quotes stripped -- not a full shell grammar (no backslash-escapes
- * inside quotes), just enough for the one real case that needs it:
- * "run --name=X --image=Y -- /bin/sh -c \"sleep 1\"", where a CMD arg
- * needs an embedded space.
- */
-static int tokenize_line(char *line, char **tokens, int max_tokens)
-{
-	int n = 0;
-	char *p = line;
-
-	while (*p != '\0' && n < max_tokens) {
-		char quote = '\0';
-
-		while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
-			p++;
-		if (*p == '\0')
-			break;
-		if (*p == '"' || *p == '\'') {
-			quote = *p;
-			p++;
-		}
-		tokens[n++] = p;
-		if (quote != '\0') {
-			while (*p != '\0' && *p != quote)
-				p++;
-		} else {
-			while (*p != '\0' && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r')
-				p++;
-		}
-		if (*p != '\0') {
-			*p = '\0';
-			p++;
-		}
-	}
-	return n;
-}
-
 #define SHELL_LINE_MAX 4096
 #define SHELL_HISTORY_MAX 100
 
@@ -20840,7 +20801,15 @@ static int run_shell_fallback(const struct cix_client *client, int json_mode)
 			printf("\n");
 			break;
 		}
-		n = tokenize_line(line, tokens, SHELL_MAX_TOKENS);
+		{
+			const char *werr;
+
+			n = shellwords_split(line, tokens, SHELL_MAX_TOKENS, &werr);
+			if (n < 0) {
+				fprintf(stderr, "cixctl: %s -- nothing was run\n", werr);
+				continue;
+			}
+		}
 		if (n == 0)
 			continue;
 		if (strcmp(tokens[0], "exit") == 0 || strcmp(tokens[0], "quit") == 0)
@@ -20977,7 +20946,15 @@ static int run_shell(const struct cix_client *client, int json_mode)
 			break;
 		}
 		shell_history_add(line);
-		n = tokenize_line(line, tokens, SHELL_MAX_TOKENS);
+		{
+			const char *werr;
+
+			n = shellwords_split(line, tokens, SHELL_MAX_TOKENS, &werr);
+			if (n < 0) {
+				fprintf(stderr, "cixctl: %s -- nothing was run\n", werr);
+				continue;
+			}
+		}
 		if (n == 0)
 			continue;
 		if (strcmp(tokens[0], "exit") == 0 || strcmp(tokens[0], "quit") == 0)

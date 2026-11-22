@@ -26261,13 +26261,29 @@ int pkg_error_describe(enum pkg_error err, const char **phrase, char *msg, size_
 		 */
 		char busy[512];
 		int n = pkg_active_chain_names(busy, sizeof(busy));
+		int max_jobs = pkg_build_get_max_jobs();
 
+		/*
+		 * #732: n is the number of jobs running, not the number of
+		 * slots, and PKG_ERR_BUSY is also the answer to a job for the
+		 * same package and image, a dependency another job is
+		 * installing (#701), a hostbuild, a recipe commit or a sync.
+		 * "all 1 package job slots are in use" on a box with ten told
+		 * an operator the wrong limit. So the slots are named as the
+		 * cause only when every one of them is taken, with the real
+		 * limit; otherwise the message names what is running.
+		 */
 		*phrase = "Conflict";
-		if (n > 0)
+		if (n > 0 && n >= max_jobs)
 			snprintf(msg, msg_size,
 			         "all %d package job slots are in use (%s) -- wait for one to finish, or "
 			         "cancel it with POST /v1/pkg/cancel",
-			         n, busy);
+			         max_jobs, busy);
+		else if (n > 0)
+			snprintf(msg, msg_size,
+			         "a package job already running blocks this one (running: %s; %d of %d "
+			         "slots in use) -- wait for it to finish; the log says which job",
+			         busy, n, max_jobs);
 		else
 			snprintf(msg, msg_size, "another package install is already in progress");
 		return 409;

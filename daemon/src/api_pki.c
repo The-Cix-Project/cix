@@ -15,6 +15,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 
 static void respond_pki_error(int fd, enum pki_error err)
 {
@@ -278,9 +279,9 @@ void handle_pki_cert_create(int fd, const char *body, size_t body_len)
 	}
 
 	/* ADR-0052: same server-side default-qualification rule as DNS
-	 * records above -- only the CN/default-SAN name, never an
-	 * explicitly-supplied sans[] entry (an operator who lists exact
-	 * SANs has already opted into precise control there). */
+	 * records above -- only the CN name, never an explicitly-supplied
+	 * sans[] entry (an operator who lists exact SANs has opted into
+	 * precise control of those). */
 	siteconfig_qualify(name, qualified_name, sizeof(qualified_name));
 	name = qualified_name;
 
@@ -291,14 +292,34 @@ void handle_pki_cert_create(int fd, const char *body, size_t body_len)
 			respond_error(fd, 400, "Bad Request", "sans must be a non-empty array of at most 8 entries");
 			return;
 		}
-		san_count = (int)jsans->u.array.count;
-		for (i = 0; i < (size_t)san_count; i++) {
-			sans_buf[i] = json_as_string(jsans->u.array.items[i]);
-			if (sans_buf[i] == NULL) {
+		/* The certificate's own name is always a SAN (#734): a client
+		 * ignores the CN when SANs are present, so a list that left it
+		 * out made a certificate that did not verify for its own name.
+		 * Measured on gibsson-1, 2026-11-22: `pki cert create --name=git
+		 * --sans=git.home.arpa,192.168.250.131` gave git.uk.home.arpa
+		 * with neither SAN naming it. Slot 0 is the name; the list
+		 * follows, minus any entry equal to it. */
+		sans_buf[0] = name;
+		san_count = 1;
+		for (i = 0; i < jsans->u.array.count; i++) {
+			const char *s = json_as_string(jsans->u.array.items[i]);
+
+			if (s == NULL) {
 				json_free(root);
 				respond_error(fd, 400, "Bad Request", "sans must be an array of strings");
 				return;
 			}
+			if (strcasecmp(s, name) == 0) {
+				continue;
+			}
+			if (san_count == PKI_MAX_SANS) {
+				json_free(root);
+				respond_error(fd, 400, "Bad Request",
+				              "sans plus the certificate's own name come to more than 8 entries -- "
+				              "the name is always a SAN, so list at most 7 others");
+				return;
+			}
+			sans_buf[san_count++] = s;
 		}
 	} else {
 		sans_buf[0] = name;
