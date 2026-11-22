@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A pki_issue certificate carries the site-qualified name (#727)
+
+- **Before:** a `pki_issue` container's certificate named the container and its addresses only. On gibsson-1 (2026-11-22) `nas` resolved as `nas.uk.home.arpa` through `dns_register`, and a client trusting the site CA refused that name: `subjectAltName does not match hostname nas.uk.home.arpa`.
+- **Now:** when a site is set, the certificate also carries `siteconfig_qualify(name)`, the ADR-0052 name `dns_register` publishes and `POST /pki/certs` gives a bare name. With no site name nothing changes. `test_pki` creates a `pki_issue` container under a site and checks both names.
+- **Existing certificates are kept** until reissued (the limit recorded at the issuance code); recreating the container reissues one.
+
 ### A staged slot outranks a boot entry written by a fast clock (#723)
 
 - **Before:** a staged boot entry's `version` was `time(NULL)`, on the assumption that now is always later than any entry already on the ESP. On gibsson-1 (2026-11-22) slot b had been staged while the clock ran 8 hours fast (#716), so slot a, into which 0.2.57-711 switched in place, sorted below it; the next reboot came up on slot b and 0.2.57-710, and 711 was marked as failing to deploy.

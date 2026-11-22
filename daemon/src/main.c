@@ -18829,6 +18829,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 		if (pki_issue) {
 			const char *pki_sans[PKI_MAX_SANS];
 			char pki_san_ips[PKI_MAX_SANS][INET_ADDRSTRLEN];
+			char pki_san_fqdn[3 * SITECONFIG_NAME_MAX];
 			int pki_san_count = 0;
 			int ni;
 			struct json_writer scratch;
@@ -18856,6 +18857,16 @@ static int create_container_from_body(const char *body, size_t body_len,
 			 * the cert (or the container) reissues it.
 			 */
 			pki_sans[pki_san_count++] = name;
+			/*
+			 * And the site-qualified name (ADR-0052), which is what
+			 * dns_register publishes and what a person types: on
+			 * gibsson-1, 2026-11-22, nas.uk.home.arpa resolved and its
+			 * certificate, carrying only "nas" and the address, failed
+			 * verification by that name (#727).
+			 */
+			siteconfig_qualify(name, pki_san_fqdn, sizeof(pki_san_fqdn));
+			if (pki_san_fqdn[0] != '\0' && strcmp(pki_san_fqdn, name) != 0)
+				pki_sans[pki_san_count++] = pki_san_fqdn;
 			for (ni = 0; ni < net_count && pki_san_count < PKI_MAX_SANS; ni++) {
 				struct in_addr a4;
 

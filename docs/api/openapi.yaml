@@ -18008,7 +18008,7 @@ components:
           description: >
             Issue a TLS certificate named after this container and write it into the container.
             If true, automatically issues a leaf TLS certificate (see POST
-            /pki/certs) named after this container (CN and sole SAN) and
+            /pki/certs) named after this container (its CN) and
             delivers it into the container's own filesystem as part of
             container creation -- requires the CA to already be
             bootstrapped (400 otherwise; unlike dns_register this does NOT
@@ -18021,7 +18021,9 @@ components:
             a colliding cert. The cert's owner field is set to this
             container's name, and it is automatically removed when the
             container is deleted. The cert is issued for the container's
-            name AND every address it is reachable at, read from its own
+            name, its site-qualified name when a site is set (the name
+            dns_register publishes, ADR-0052, #727), AND every address it
+            is reachable at, read from its own
             networks[] -- a TLS client verifies the name it dialled, and
             an address dialled as an address is never matched against a
             DNS SAN (#414).

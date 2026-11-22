@@ -2759,7 +2759,7 @@ Unlike `dns_register`, `pki_issue` does **not** require `networks` — the cert 
 
 `pki_cert_create()` emits an `IP:` SAN for any SAN that parses as an IPv4 literal and a `DNS:` SAN for everything else. That distinction is not cosmetic — a TLS client checks the name it **dialled** against the matching SAN *type*, and an address dialled as an address is never matched against a `DNS:` SAN however identical the string looks.
 
-`pki_issue` therefore issues for the container's name **plus every address it is actually reachable at**, read from the container's own `networks[]` rather than typed by hand into a separate `POST /pki/certs` call — the address is declared once, in the container body, and a second copy is what drifts the first time a container moves. Up to `PKI_MAX_SANS` (8) entries: the name, then up to seven addresses.
+`pki_issue` therefore issues for the container's name, **its site-qualified name when a site is set** (the name `dns_register` publishes, ADR-0052; #727), **plus every address it is actually reachable at**, read from the container's own `networks[]` rather than typed by hand into a separate `POST /pki/certs` call — the address is declared once, in the container body, and a second copy is what drifts the first time a container moves. Up to `PKI_MAX_SANS` (8) entries: the name, the qualified name, then the addresses.
 
 This is what makes LDAPS work here (#414): `effective_client_uri` hands clients the registered servers' **live IPs**, so a cert carrying only `DNS:ldap-1` cannot verify no matter how correct it looks.
 

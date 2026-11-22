@@ -991,6 +991,58 @@ int main(void)
 			}
 			cix_response_free(&r);
 
+			/*
+			 * #727: with a site set, a pki_issue container's cert also
+			 * carries the site-qualified name, the one dns_register
+			 * publishes -- nas.uk.home.arpa failed verification by name
+			 * on gibsson-1 (2026-11-22) because the cert carried only
+			 * "nas" and its address.
+			 */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/containers",
+			                       "{\"name\":\"fqdntls\",\"image\":\"pkitest\","
+			                       "\"services\":[{\"name\":\"main\",\"on_exit\":\"fail-container\","
+			                       "\"cmd\":[\"/bin/daemon_child\",\"20\"]}],\"pki_issue\":true}",
+			                       &r) != 0 ||
+			    r.status != 201) {
+				fprintf(stderr, "FAIL: POST fqdntls (pki_issue with a site), status=%d: %s\n",
+				        r.status, err_of(&r));
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/pki/certs/fqdntls", NULL, &r) != 0 ||
+			    r.status != 200) {
+				fprintf(stderr, "FAIL: GET fqdntls cert, status=%d\n", r.status);
+				ok = 0;
+			} else {
+				const struct json_value *sans = json_object_get(r.json, "sans");
+				int has_bare = 0, has_fqdn = 0;
+				size_t i;
+
+				if (sans != NULL && sans->type == JSON_ARRAY) {
+					for (i = 0; i < sans->u.array.count; i++) {
+						const char *s = json_as_string(sans->u.array.items[i]);
+
+						if (str_eq(s, "fqdntls"))
+							has_bare = 1;
+						if (str_eq(s, "fqdntls.lab1.corp.internal"))
+							has_fqdn = 1;
+					}
+				}
+				if (!has_bare || !has_fqdn) {
+					fprintf(stderr,
+					        "FAIL: fqdntls cert SANs: bare=%d qualified=%d, want both\n",
+					        has_bare, has_fqdn);
+					ok = 0;
+				}
+			}
+			cix_response_free(&r);
+
+			cix_client_request(&client, "DELETE", "/v1/containers/fqdntls", NULL, &r);
+			cix_response_free(&r);
+
 			/* Changing instance_name must genuinely reissue "host" --
 			 * new SAN, new serial, not left stale. */
 			memset(&r, 0, sizeof(r));
