@@ -9680,6 +9680,15 @@ paths:
         created (#696): the placeholder is never written into a container.
 
 
+        ADR-0392 (#724): the secrets an apply is given are kept for this
+        deployment (0600, never returned by any read), and a later apply
+        takes every key it is not given from them, so one is typed once.
+        Applying a deployment whose container already exists replaces it in
+        place: 200 unchanged when nothing changed, 202 restarting when it
+        did (through the rolling restart), 200 updated when the container is
+        stopped. Kept secrets are removed with the deployment.
+
+
         ADR-0270: if the image this deployment names exists but has not
         been built yet, the apply does NOT fail. It declares that image's
         own recipe into its manifest when the manifest is still empty,
@@ -9720,8 +9729,10 @@ paths:
                     type: string
                   description: >
                     KEY -> real value, one per {{SECRET:KEY}} token the recipe's
-                    own content references. A token with no matching key is left
-                    exactly as it is, never silently blanked.
+                    own content references. Kept for this deployment, so a later
+                    apply needs only the ones that change (ADR-0392). A token
+                    neither given nor kept refuses the apply (400), never
+                    silently blanked.
       responses:
         "201":
           description: Container created
@@ -9729,14 +9740,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Container"
+        "200":
+          description: >
+            ADR-0392 (#724). The container already exists, and the
+            deployment was re-applied in place. unchanged: the render, with
+            the image version and isolation mode the container was created
+            with, equals its stored definition, so nothing happened.
+            updated: the container is stopped, and the new definition
+            applies at its next start.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, state]
+                properties:
+                  name:
+                    type: string
+                  state:
+                    type: string
+                    enum: [unchanged, updated]
         "202":
           description: >
-            ADR-0270. The image this deployment names is not built yet.
-            It has been queued for a build and the deployment has been
-            persisted as waiting; it will be created automatically once
-            the image is realized. Its progress is visible at
-            GET /pipeline, where it reports stage "acquire", status
-            "blocked", and blocked_on {kind: "image", name}.
+            One of two cases, told apart by state. awaiting-image
+            (ADR-0270): the image this deployment names is not built yet; it
+            has been queued for a build and the deployment persisted as
+            waiting, to be created once the image is realized (GET /pipeline
+            reports stage "acquire", status "blocked", blocked_on {kind:
+            "image", name}). restarting (ADR-0392): the container exists and
+            its definition changed; the new definition is stored and the
+            container restarts through the rolling restart, so a roll group
+            is held apart (ADR-0385) and its volumes stay.
           content:
             application/json:
               schema:
@@ -9744,13 +9777,13 @@ paths:
                 properties:
                   name:
                     type: string
-                    description: The deployment now waiting.
+                    description: The deployment.
                   state:
                     type: string
-                    enum: ["awaiting-image"]
+                    enum: ["awaiting-image", "restarting"]
                   awaiting_image:
                     type: string
-                    description: The image being waited on and queued for a build.
+                    description: The image being waited on and queued for a build (awaiting-image only).
         "400":
           description: >
             Invalid secrets JSON, the rendered body failed real
@@ -9770,9 +9803,11 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: >-
-            A container with this name already exists. The message distinguishes
-            a name held by a container that is still shutting down (teardown is
-            asynchronous -- retry shortly) from a genuine conflict (#417).
+            The container is still shutting down from a delete (teardown is
+            asynchronous -- retry shortly, #417), or the re-apply changes a
+            field only a create reads (restart, restart_delay_seconds,
+            depends_on, follow_rolling, follow_rolling_jitter_seconds): remove
+            the container and apply again; its secrets are kept (ADR-0392).
           content:
             application/json:
               schema:
@@ -18503,6 +18538,12 @@ components:
         container_defs:
           type: string
           description: Raw content of container_defs.json (every persisted container's exact create request, verbatim -- ADR-0025).
+        deployment_secrets:
+          type: string
+          description: >
+            Raw content of deployment-secrets.json, the secrets each deployment was applied
+            with (ADR-0392). The same values are already inside container_defs; a restore
+            writes this file back 0600. Empty when none are kept.
         networks:
           type: string
           description: Raw content of networks.json.

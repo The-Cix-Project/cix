@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A deployment is re-applied in place, and keeps its secrets (#724, ADR-0392)
+
+- **Before:** changing one thing in a running container's deployment meant `container rm`, then `deployment apply` with every `--secret` typed again. vpn-1/vpn-2 needed both longwire secrets retyped for one `--pair` argument, and ar-1, cr-1/cr-2 and br-2 went the same way.
+- **Now:** the secrets an apply is given are kept for that deployment (`STATE_DIR/deployment-secrets.json`, 0600 from creation through the new `persist_atomic_write_private()`, never returned by a read). A later apply takes every key it is not given from them. Applying a deployment whose container exists updates it in place: 200 `unchanged`, 202 `restarting` through the rolling restart (roll groups held apart), or 200 `updated` when stopped. A change to a field only a create reads (`restart`, `restart_delay_seconds`, `depends_on`, `follow_rolling`, `follow_rolling_jitter_seconds`) is a 409 saying to remove and apply, which no longer needs a secret typed. Kept secrets go with the deployment, and travel in system backups as `deployment_secrets`. `cixctl deployment apply` prints the state.
+
 ### Discovery writes every release it finds, and its schedule says what it did (#735, #736)
 
 - **#735:** when an authored recipe commit finishes, the next candidate is authored at once (`authored_commit_done()`), one commit at a time, instead of one revision per discovery pass. Packages released together waited an hour each: on gibsson-1 longwire 0.5.81 waited a pass behind hibr 0.99.558.

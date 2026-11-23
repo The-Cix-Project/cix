@@ -509,6 +509,14 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **A member that is down holds the group;** an operator-stopped member, or a `restart: "no"` one that is not running, does not. Operator actions are not held.
 - **On .95:** cr-1/cr-2 are `cores`, dns-1/dns-2 are `dns`. Adding the field recreates the container, so do one member at a time.
 
+## A deployment is re-applied in place, and keeps its secrets
+
+**`deployment apply NAME` on an existing container updates it in place, and the secrets a deployment was applied with are kept** -- [ADR-0392](docs/adr/0392-a-deployment-is-re-applied-in-place-and-keeps-its-secrets.md), accepted by the owner on 2026-11-23 for #724, after *"why are we recreating the vpn servers? I don't understand?"*.
+
+- **Never remove a container to change its deployment.** Re-apply it: 200 unchanged, 202 restarting (through the rolling restart, roll groups held apart), or 200 updated when stopped. Only a change to `restart`, `restart_delay_seconds`, `depends_on`, `follow_rolling` or `follow_rolling_jitter_seconds` needs remove and apply, and that is a 409 saying so.
+- **Kept secrets** live in `STATE_DIR/deployment-secrets.json`, written only through `persist_atomic_write_private()` (0600 from creation), and never returned by any read. They go with the deployment (`DELETE /v1/deployments/NAME`), never with the container.
+- **vpn-1/vpn-2:** a re-apply that changes their definition restarts them, so it is still asked of the owner first.
+
 ## A container's LDAP account is staged before it starts
 
 **`ldap_provision` makes the container's own search-only account, and stages its secret, before `clone3()`; a file in `files[]` names it as `{{LDAP:PROVISIONED_DN}}` / `{{LDAP:PROVISIONED_SECRET}}`** -- [ADR-0389](docs/adr/0389-a-containers-ldap-account-is-staged-before-it-starts.md), the owner's go-ahead of 2026-11-22 for #733.

@@ -3,6 +3,8 @@
 #include "mkinstalleriso_args.h"
 #include "container.h"
 #include "containerdef.h"
+#include "depsecret.h"
+#include "jsondiff.h"
 #include "nsswitch.h"
 #include "internal.h"
 #include "device.h"
@@ -448,6 +450,7 @@ char RESOLV_CONF_PATH[PATH_MAX];
  * records/servers pair already uses. */
 char NTP_STATE_PATH[PATH_MAX];
 char NTP_SERVERS_STATE_PATH[PATH_MAX];
+char DEPLOYMENT_SECRETS_PATH[PATH_MAX];
 char SYSLOGFWD_STATE_PATH[PATH_MAX];
 /* Per-source-IP HTTPS-handshake-failure throttling config (GET/PUT
  * /v1/system/tls-throttle) -- the tracked-peer table itself is
@@ -554,6 +557,8 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(RESOLV_CONF_PATH, sizeof(RESOLV_CONF_PATH), "%s/resolv.conf", STATE_DIR);
 	snprintf(NTP_STATE_PATH, sizeof(NTP_STATE_PATH), "%s/ntp.conf", STATE_DIR);
 	snprintf(NTP_SERVERS_STATE_PATH, sizeof(NTP_SERVERS_STATE_PATH), "%s/ntp_servers.json", STATE_DIR);
+	snprintf(DEPLOYMENT_SECRETS_PATH, sizeof(DEPLOYMENT_SECRETS_PATH), "%s/deployment-secrets.json",
+	         STATE_DIR);
 	snprintf(SYSLOGFWD_STATE_PATH, sizeof(SYSLOGFWD_STATE_PATH), "%s/syslog_targets.json", STATE_DIR);
 	snprintf(CONNTHROTTLE_CONFIG_PATH, sizeof(CONNTHROTTLE_CONFIG_PATH), "%s/tls_throttle.json", STATE_DIR);
 	snprintf(BACKUP_CONFIG_PATH, sizeof(BACKUP_CONFIG_PATH), "%s/backup_config.json", STATE_DIR);
@@ -4844,6 +4849,16 @@ static void do_system_backup(struct json_writer *w)
 		jw_str(w, "");
 	}
 
+	/* ADR-0392: the deployments' kept secrets go where the container
+	 * definitions holding the same values go. */
+	jw_key(w, "deployment_secrets");
+	if (persist_read_file(DEPLOYMENT_SECRETS_PATH, &buf, &len) == 0 && buf != NULL) {
+		jw_str(w, buf);
+		free(buf);
+	} else {
+		jw_str(w, "");
+	}
+
 	jw_key(w, "networks");
 	if (persist_read_file(NETWORKS_STATE_PATH, &buf, &len) == 0 && buf != NULL) {
 		jw_str(w, buf);
@@ -5079,7 +5094,7 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 {
 	struct json_value *root;
 	const struct json_value *jcontainer_defs, *jnetworks, *jdns_records, *jpkg_installed;
-	const struct json_value *jtrust_anchors;
+	const struct json_value *jtrust_anchors, *jdeployment_secrets;
 	const struct json_value *jpkg_recipes, *jsite_config, *jvolumes;
 	size_t i;
 	int have_any = 0;
@@ -5090,6 +5105,12 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 		return 400;
 	}
 
+	jdeployment_secrets = json_object_get(root, "deployment_secrets"); /* ADR-0392 */
+	if (jdeployment_secrets != NULL && !json_string_field_is_valid(jdeployment_secrets)) {
+		json_free(root);
+		snprintf(out_errmsg, out_errmsg_size, "deployment_secrets is not valid JSON");
+		return 400;
+	}
 	jcontainer_defs = json_object_get(root, "container_defs");
 	jnetworks = json_object_get(root, "networks");
 	jdns_records = json_object_get(root, "dns_records");
@@ -5225,6 +5246,14 @@ static int do_system_restore(const char *body, size_t body_len, char *out_errmsg
 	    restore_write_field(CONTAINER_DEFS_STATE_PATH, json_as_string(jcontainer_defs)) != 0) {
 		json_free(root);
 		snprintf(out_errmsg, out_errmsg_size, "failed to write container_defs.json");
+		return 500;
+	}
+	/* ADR-0392: kept secrets, owner-only, as they were written. */
+	if (jdeployment_secrets != NULL && json_as_string(jdeployment_secrets)[0] != '\0' &&
+	    persist_atomic_write_private(DEPLOYMENT_SECRETS_PATH, json_as_string(jdeployment_secrets),
+	                                 strlen(json_as_string(jdeployment_secrets))) != 0) {
+		json_free(root);
+		snprintf(out_errmsg, out_errmsg_size, "failed to write deployment-secrets.json");
 		return 500;
 	}
 	if (jnetworks != NULL &&
@@ -23761,6 +23790,12 @@ static void handle_container_recipe_delete(int fd, const char *name)
 		respond_container_recipe_error(fd, perr);
 		return;
 	}
+	/* ADR-0392: kept secrets live as long as the deployment. */
+	if (depsecret_forget(name) != 0)
+		logstore_write("cixd", "error",
+		               "deployment %s removed, but its kept secrets could not be forgotten "
+		               "(%s)",
+		               name, DEPLOYMENT_SECRETS_PATH);
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
 }
@@ -23926,11 +23961,156 @@ static void deployment_mark_pending(int fd, const char *name, const char *image,
 	jw_free(&w);
 }
 
+static void arm_rolling_restart_timer(const char *name, int delay_seconds);
+
+/*
+ * ADR-0392 (#724): applying a deployment whose container exists replaces
+ * it in place. The new definition is the render plus what the daemon pins
+ * at creation and the render does not say: the image version the
+ * container runs (ADR-0107/0108; a roll moves it) and, when the
+ * deployment leaves it to the default, the isolation mode (ADR-0207).
+ * Unchanged: nothing happens. Changed: the definition is stored and the
+ * container restarted through the rolling-restart timer, so a roll group
+ * is held apart exactly as for an image roll (ADR-0385), and its volumes
+ * stay. A stopped container takes the new definition at its next start.
+ *
+ * Not validated beyond parsing: there is no create that does nothing, so
+ * a definition the create refuses leaves the container down, retried
+ * with its reason in restart_refused (ADR-0346), until a corrected
+ * deployment is applied.
+ */
+static void deployment_replace(int fd, const char *name, struct container_def *def,
+                               const char *rendered)
+{
+	struct json_value *nroot = json_parse(rendered, strlen(rendered));
+	struct json_value *oroot = json_parse(def->body, def->body_len);
+	struct json_value *proot = NULL;
+	struct json_writer w, out;
+	const char *nname;
+	const char *state;
+	int status;
+	size_t i;
+
+	if (nroot == NULL || nroot->type != JSON_OBJECT || oroot == NULL) {
+		json_free(nroot);
+		json_free(oroot);
+		respond_error(fd, 400, "Bad Request",
+		              "the deployment did not render to a JSON object -- nothing was changed");
+		return;
+	}
+	nname = json_as_string(json_object_get(nroot, "name"));
+	if (nname == NULL || strcmp(nname, name) != 0) {
+		json_free(nroot);
+		json_free(oroot);
+		respond_error(fd, 400, "Bad Request",
+		              "the deployment renders a container with a different name -- nothing "
+		              "was changed");
+		return;
+	}
+
+	jw_init(&w);
+	jw_obj_open(&w);
+	for (i = 0; i < nroot->u.object.count; i++) {
+		jw_key(&w, nroot->u.object.keys[i]);
+		jw_value(&w, nroot->u.object.values[i]);
+	}
+	if (json_object_get(nroot, "image_version") == NULL &&
+	    json_object_get(oroot, "image_version") != NULL) {
+		jw_key(&w, "image_version");
+		jw_value(&w, json_object_get(oroot, "image_version"));
+	}
+	if (json_object_get(nroot, "userns") == NULL && json_object_get(oroot, "userns") != NULL) {
+		jw_key(&w, "userns");
+		jw_value(&w, json_object_get(oroot, "userns"));
+	}
+	jw_obj_close(&w);
+	json_free(nroot);
+	proot = json_parse(w.buf, w.len);
+
+	/*
+	 * These fields are parsed once, by the create that persists the
+	 * definition, into its cached index (containerdef_add()), and a
+	 * restart replays the body without re-persisting it. A body change
+	 * here would leave the index describing the old one, so a change to
+	 * any of them goes through remove and apply instead, which since this
+	 * ADR needs no secret typed again.
+	 */
+	if (proot != NULL) {
+		static const char *const indexed[] = { "restart", "restart_delay_seconds", "depends_on",
+		                                        "follow_rolling", "follow_rolling_jitter_seconds" };
+		size_t k;
+
+		for (k = 0; k < sizeof(indexed) / sizeof(indexed[0]); k++) {
+			const struct json_value *a = json_object_get(proot, indexed[k]);
+			const struct json_value *b = json_object_get(oroot, indexed[k]);
+			char msg[384];
+
+			if ((a == NULL && b == NULL) || (a != NULL && b != NULL && jsondiff_equal(a, b) == 1))
+				continue;
+			snprintf(msg, sizeof(msg),
+			         "this re-apply changes %s, which is only read when a container is "
+			         "created -- remove it (cixctl container rm %s) and apply the deployment "
+			         "again; its secrets are kept, so none need typing; nothing was changed",
+			         indexed[k], name);
+			json_free(proot);
+			json_free(oroot);
+			jw_free(&w);
+			respond_error(fd, 409, "Conflict", msg);
+			return;
+		}
+	}
+
+	if (proot != NULL && jsondiff_equal(proot, oroot) == 1) {
+		state = "unchanged";
+		status = 200;
+	} else if (containerdef_set_body(name, w.buf, w.len) != 0) {
+		json_free(proot);
+		json_free(oroot);
+		jw_free(&w);
+		respond_error(fd, 500, "Internal Server Error",
+		              "could not store the new definition -- nothing was changed");
+		return;
+	} else if (def->stopped || registry_find(name) == NULL) {
+		state = "updated";
+		status = 200;
+		logstore_write("cixd", "info",
+		               "deployment %s re-applied: definition updated, applied at its next start "
+		               "(ADR-0392)",
+		               name);
+	} else {
+		state = "restarting";
+		status = 202;
+		arm_rolling_restart_timer(name, 0);
+		logstore_write("cixd", "info",
+		               "deployment %s re-applied: definition changed, restarting it through the "
+		               "rolling restart (ADR-0392)",
+		               name);
+	}
+	json_free(proot);
+	json_free(oroot);
+	jw_free(&w);
+
+	jw_init(&out);
+	jw_obj_open(&out);
+	jw_key(&out, "name");
+	jw_str(&out, name);
+	jw_key(&out, "state");
+	jw_str(&out, state);
+	jw_obj_close(&out);
+	http_set_blocking(fd);
+	http_write_response(fd, status, status == 202 ? "Accepted" : "OK", "application/json",
+	                    out.buf, out.len);
+	jw_free(&out);
+}
+
 static void handle_container_recipe_apply(int fd, const char *name, const char *body,
                                            size_t body_len)
 {
 	struct json_value *root = NULL;
-	const struct json_value *secrets = NULL;
+	const struct json_value *given = NULL;
+	struct json_value *secrets;
+	struct json_writer sw;
+	struct container_def *def;
 	char *rendered;
 	enum pkg_error perr;
 
@@ -23940,13 +24120,19 @@ static void handle_container_recipe_apply(int fd, const char *name, const char *
 			respond_error(fd, 400, "Bad Request", "invalid JSON body");
 			return;
 		}
-		secrets = json_object_get(root, "secrets");
+		given = json_object_get(root, "secrets");
 	}
 
+	/* ADR-0392: the secrets given, then the ones this deployment was
+	 * applied with before for every key not given. */
+	jw_init(&sw);
+	depsecret_merge(name, given, &sw);
+	secrets = json_parse(sw.buf, sw.len);
+	jw_free(&sw);
 	rendered = container_recipe_render(name, secrets, &perr);
-	if (root != NULL)
-		json_free(root);
+	json_free(secrets);
 	if (rendered == NULL) {
+		json_free(root);
 		respond_container_recipe_error(fd, perr);
 		return;
 	}
@@ -23956,14 +24142,31 @@ static void handle_container_recipe_apply(int fd, const char *name, const char *
 
 		if (container_recipe_unfilled_secrets(rendered, keys, sizeof(keys)) > 0) {
 			free(rendered);
+			json_free(root);
 			snprintf(msg, sizeof(msg),
-			         "deployment %s needs secrets it was not given: %s -- pass each in the "
-			         "request's \"secrets\" (cixctl deployment apply %s --secret=KEY=VALUE); "
-			         "nothing was created",
+			         "deployment %s needs secrets it was not given and has not kept: %s -- "
+			         "pass each in the request's \"secrets\" (cixctl deployment apply %s "
+			         "--secret=KEY=VALUE) once; they are kept for later applies; nothing was "
+			         "changed",
 			         name, keys, name);
 			respond_error(fd, 400, "Bad Request", msg);
 			return;
 		}
+	}
+	/* Kept from here on: the render needed nothing it was not given. */
+	if (given != NULL && depsecret_keep(name, given) != 0)
+		logstore_write("cixd", "error",
+		               "deployment %s: the secrets it was given could not be kept (%s); a "
+		               "later apply will ask for them again",
+		               name, DEPLOYMENT_SECRETS_PATH);
+	json_free(root);
+
+	/* ADR-0392: a container that exists is replaced in place. */
+	def = containerdef_find(name);
+	if (def != NULL && def->awaiting_image[0] == '\0') {
+		deployment_replace(fd, name, def, rendered);
+		free(rendered);
+		return;
 	}
 
 	/*

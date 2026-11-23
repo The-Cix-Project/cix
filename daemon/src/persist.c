@@ -21,7 +21,7 @@ void persist_set_readonly(void)
 
 /* The one implementation behind both contracts: `durable` says whether
  * the temporary is fsynced before the rename (persist.h). */
-static int atomic_write(const char *path, const char *data, size_t len, int durable)
+static int atomic_write(const char *path, const char *data, size_t len, int durable, mode_t mode)
 {
 	char tmp_path[PATH_MAX + 8];
 	int fd;
@@ -34,7 +34,17 @@ static int atomic_write(const char *path, const char *data, size_t len, int dura
 	if (snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path) >= (int)sizeof(tmp_path))
 		return -1;
 
-	fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+	/* A private file (#724): a temporary left by a crash keeps whatever
+	 * mode it was made with, and O_CREAT applies `mode` only to a new
+	 * file, so it goes first, and the new one is never readable by anyone
+	 * else, even for a moment. Every other file keeps the shared
+	 * truncate it always had. */
+	if (mode == 0600) {
+		unlink(tmp_path);
+		fd = open(tmp_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode);
+	} else {
+		fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, mode);
+	}
 	if (fd < 0) {
 		perror(tmp_path);
 		return -1;
@@ -64,12 +74,17 @@ static int atomic_write(const char *path, const char *data, size_t len, int dura
 
 int persist_atomic_write(const char *path, const char *data, size_t len)
 {
-	return atomic_write(path, data, len, 1);
+	return atomic_write(path, data, len, 1, 0644);
 }
 
 int persist_atomic_replace(const char *path, const char *data, size_t len)
 {
-	return atomic_write(path, data, len, 0);
+	return atomic_write(path, data, len, 0, 0644);
+}
+
+int persist_atomic_write_private(const char *path, const char *data, size_t len)
+{
+	return atomic_write(path, data, len, 1, 0600);
 }
 
 /*

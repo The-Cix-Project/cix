@@ -33,6 +33,13 @@ int persist_atomic_write(const char *path, const char *data, size_t len);
 int persist_atomic_replace(const char *path, const char *data, size_t len);
 
 /*
+ * persist_atomic_write(), for a file only root may read: the file is
+ * created 0600 and is never, even between create and rename, readable
+ * by anyone else. Kept deployment secrets are the first (ADR-0392).
+ */
+int persist_atomic_write_private(const char *path, const char *data, size_t len);
+
+/*
  * Same, but keeps the inode rather than renaming a new file over the
  * target -- required for any file inside a RUNNING container, where a
  * rename into an overlay upper layer is invisible through the merged

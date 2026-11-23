@@ -329,28 +329,98 @@ int main(void)
 	      "secret was substituted, correctly JSON-escaped through the pipeline");
 	cix_response_free(&r);
 
+	/* --- scenario 5b (ADR-0392, #724): re-applying a deployment whose
+	 * container exists needs no secret typed again, changes nothing when
+	 * nothing changed, and refuses a change to a field only a create
+	 * reads. After `container rm`, an apply with no secrets uses the kept
+	 * ones. vpn-1/vpn-2 needed both secrets retyped for one argument. --- */
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "POST", "/v1/deployments/crtest/apply", "{}", &r) == 0 &&
+	          r.status == 200 && r.body != NULL && strstr(r.body, "\"unchanged\"") != NULL,
+	      "#724: re-applying an unchanged deployment with no secrets is 200 unchanged");
+	if (r.status != 200)
+		fprintf(stderr, "  re-apply said: status=%d body=%s\n", r.status,
+		        r.body != NULL ? r.body : "(null)");
+	cix_response_free(&r);
+	{
+		static const char changed[] =
+		    "{\"name\":\"crtest\",\"content\":\"{\\\"name\\\":\\\"crtest\\\",\\\"image\\\":"
+		    "\\\"base\\\",\\\"services\\\":[{\\\"name\\\":\\\"main\\\",\\\"on_exit\\\":"
+		    "\\\"fail-container\\\",\\\"cmd\\\":[\\\"/bin/true\\\"]}],\\\"restart\\\":"
+		    "\\\"on-failure\\\",\\\"files\\\":[{\\\"path\\\":\\\"/etc/secret.conf\\\","
+		    "\\\"content\\\":\\\"password={{SECRET:PW}}\\\\n\\\"}]}\"}";
+
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "POST", "/v1/deployments", changed, &r) == 0 &&
+		          r.status == 204,
+		      "change crtest's restart policy in its deployment");
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "POST", "/v1/deployments/crtest/apply", "{}", &r) ==
+		              0 &&
+		          r.status == 409 && r.body != NULL && strstr(r.body, "restart") != NULL,
+		      "#724: a re-apply changing restart is refused with 409, naming it");
+		cix_response_free(&r);
+	}
+
+	CHECK(cix_client_request(&client, "DELETE", "/v1/containers/crtest", NULL, &r) == 0,
+	      "rm crtest to apply its deployment again from nothing");
+	cix_response_free(&r);
+	CHECK(wait_container_gone(&client, "crtest") == 0,
+	      "the deleted crtest finishes tearing down, freeing its name");
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "POST", "/v1/deployments/crtest/apply", "{}", &r) == 0 &&
+	          r.status == 201,
+	      "#724: after container rm, applying with no secrets uses the kept one (201)");
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "GET", "/v1/containers/crtest/files?path=/etc/secret.conf",
+	                         NULL, &r) == 0 &&
+	          r.status == 200 && r.body != NULL && strstr(r.body, "password=hunter\"2") != NULL,
+	      "#724: the kept secret is the value first given");
+	cix_response_free(&r);
 	CHECK(cix_client_request(&client, "DELETE", "/v1/containers/crtest", NULL, &r) == 0,
 	      "rm crtest to free the name for scenario 6");
 	cix_response_free(&r);
 	CHECK(wait_container_gone(&client, "crtest") == 0,
 	      "the deleted crtest finishes tearing down, freeing its name");
 
-	/* --- scenario 6 (#696): apply with NO secret supplied is refused,
-	 * naming the missing key, and creates nothing. It used to create the
-	 * container with the literal placeholder in its file -- which is how
-	 * two cores on 192.168.15.95 ran with "{{SECRET:RIP_PASSWORD}}" as
-	 * their RIP password and lost every route back to their networks. --- */
+	/* --- scenario 6 (#696): apply with a secret neither given nor kept
+	 * is refused, naming the missing key, and creates nothing. It used
+	 * to create the container with the literal placeholder in its file
+	 * -- which is how two cores on 192.168.15.95 ran with
+	 * "{{SECRET:RIP_PASSWORD}}" as their RIP password and lost every
+	 * route back to their networks. A deployment never given its secret,
+	 * since crtest's is kept. --- */
+	{
+		static const char nosec[] =
+		    "{\"name\":\"crnosec\",\"content\":\"{\\\"name\\\":\\\"crnosec\\\",\\\"image\\\":"
+		    "\\\"base\\\",\\\"services\\\":[{\\\"name\\\":\\\"main\\\",\\\"on_exit\\\":"
+		    "\\\"fail-container\\\",\\\"cmd\\\":[\\\"/bin/true\\\"]}],\\\"restart\\\":\\\"no\\\","
+		    "\\\"files\\\":[{\\\"path\\\":\\\"/etc/secret.conf\\\",\\\"content\\\":"
+		    "\\\"password={{SECRET:QW}}\\\\n\\\"}]}\"}";
+
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "POST", "/v1/deployments", nosec, &r) == 0 &&
+		          r.status == 204,
+		      "add crnosec, a deployment never given its secret");
+		cix_response_free(&r);
+	}
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "POST", "/v1/deployments/crtest/apply", "{}", &r) ==
-	              0 &&
-	          r.status == 400 && r.body != NULL && strstr(r.body, "PW") != NULL,
+	CHECK(cix_client_request(&client, "POST", "/v1/deployments/crnosec/apply", "{}", &r) == 0 &&
+	          r.status == 400 && r.body != NULL && strstr(r.body, "QW") != NULL,
 	      "apply-recipe with a secret missing is refused, naming it (400)");
 	cix_response_free(&r);
 
 	memset(&r, 0, sizeof(r));
-	CHECK(cix_client_request(&client, "GET", "/v1/containers/crtest", NULL, &r) == 0 &&
+	CHECK(cix_client_request(&client, "GET", "/v1/containers/crnosec", NULL, &r) == 0 &&
 	          r.status == 404,
 	      "and no container was created");
+	cix_response_free(&r);
+	memset(&r, 0, sizeof(r));
+	CHECK(cix_client_request(&client, "DELETE", "/v1/deployments/crnosec", NULL, &r) == 0 &&
+	          r.status == 204,
+	      "remove crnosec again");
 	cix_response_free(&r);
 
 	/* --- scenario 6.5 (issue #66): {{LDAP:FIELD}} tokens resolve from

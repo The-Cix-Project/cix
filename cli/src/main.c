@@ -12845,6 +12845,17 @@ static int cmd_container_apply_recipe(const struct cix_client *c, int json_mode,
 		cix_response_free(&r);
 		return 1;
 	}
+	/* ADR-0392: an existing container answers with its name and what
+	 * the re-apply did (unchanged, updated, restarting); ADR-0270's
+	 * awaiting-image answers the same way. 201 is a new container. */
+	if (r.status != 201 && !json_mode && json_str_field(r.json, "state") != NULL) {
+		printf("%-20s %s\n", json_str_field(r.json, "name") != NULL
+		                         ? json_str_field(r.json, "name")
+		                         : name,
+		       json_str_field(r.json, "state"));
+		cix_response_free(&r);
+		return 0;
+	}
 	return emit(&r, json_mode, fmt_container_line);
 }
 
