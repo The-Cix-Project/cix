@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Discovery writes every release it finds, and its schedule says what it did (#735, #736)
+
+- **#735:** when an authored recipe commit finishes, the next candidate is authored at once (`authored_commit_done()`), one commit at a time, instead of one revision per discovery pass. Packages released together waited an hour each: on gibsson-1 longwire 0.5.81 waited a pass behind hibr 0.99.558.
+- **#736:** a finished discovery run records its outcome on its schedule (`scheduler_note_action()`, as #692 does for the roll): nothing new, new revisions being written, or packages that could not be refreshed. Before, `last_reason` said only "kernel.org release list fetching; discovery follows", the same words for every run.
+
 ### The host's clock comes from outside the box; discovery by default; one firmware line per device (#718, #716, #722, #709)
 
 - **#718 (ADR-0391):** the host syncs its clock only from configured upstream servers. A registered NTP container is never a source for the host it runs on. Its chrony served the host's own clock, so .95 and gibsson-1 both reported `state=ok` from their own ntp-1, and gibsson-1 ran 8 hours fast.

@@ -7715,13 +7715,31 @@ static int kernel_releases_fetch_start(char *err_msg, size_t err_msg_size);
  * ADR-0323: the discovery helper has refreshed the gitea-tags listings
  * and authenticated what it could, for every kind. The author stage
  * runs here, in the parent, because a recipe commit is the parent's
- * job: the first candidate is written and its commit helper started --
- * one per run.
+ * job: the first candidate is written and its commit helper started,
+ * and when that commit is done the next one is (authored_commit_done()),
+ * one commit at a time until no candidate is left.
  */
+static void start_authored_commit(const char *who);
+
+/*
+ * #735: a run used to write one revision and stop, so packages released
+ * together waited one discovery pass, an hour, each. Measured on
+ * gibsson-1, 2026-11-23: the 1795400999 pass wrote hibr 0.99.558, and
+ * longwire 0.5.81, authenticated in the same pass, waited for the next.
+ * The commit helper is still one at a time (pkg_recipe_commit_start()
+ * refuses a second), so the next is written only once this one is in.
+ */
+static void authored_commit_done(int exit_status, void *ctx)
+{
+	pkg_recipe_commit_done(exit_status, ctx);
+	if (pkg_discover_author_next() == 1 || pkg_abi_author_next() == 1)
+		start_authored_commit("pkg author");
+}
+
 /* The commit helper for a revision an author stage has just staged. */
 static void start_authored_commit(const char *who)
 {
-	if (helper_run(pkg_recipe_commit_work, NULL, pkg_recipe_commit_done, NULL,
+	if (helper_run(pkg_recipe_commit_work, NULL, authored_commit_done, NULL,
 	               "pkg recipe commit") != 0) {
 		char err[160];
 
@@ -7733,11 +7751,30 @@ static void start_authored_commit(const char *who)
 
 static void discover_done(int exit_status, void *ctx)
 {
+	int authored;
+	char outcome[160];
+
 	pkg_upstream_refresh_done(exit_status, ctx);
 	/* ADR-0373: a discovered release first, then an ABI rebuild; one
-	 * commit either way. */
-	if (pkg_discover_author_next() == 1 || pkg_abi_author_next() == 1)
+	 * commit at a time, the next when this one is in (#735). */
+	authored = pkg_discover_author_next() == 1 || pkg_abi_author_next() == 1;
+	if (authored)
 		start_authored_commit("pkg discover");
+	/*
+	 * #736: the schedule's reason said only how the run started ("...
+	 * discovery follows") and kept saying it, identically for every run,
+	 * so whether this one had written anything could only be read from
+	 * the source catalogue. The outcome, as #692 records the roll's.
+	 */
+	if (exit_status != 0)
+		snprintf(outcome, sizeof(outcome), "%s",
+		         "discovery finished; some packages could not be refreshed -- "
+		         "pkg source-catalogue says which");
+	else
+		snprintf(outcome, sizeof(outcome), "discovery finished; %s",
+		         authored ? "new revisions are being written and published"
+		                  : "nothing new to write");
+	scheduler_note_action("pkg.discover", exit_status == 0, outcome);
 }
 
 /*
