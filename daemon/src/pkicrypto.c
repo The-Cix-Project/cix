@@ -306,9 +306,13 @@ int pkicrypto_ca_create(const char *key_path, const char *common_name, int days,
 	 * basicConstraints critical CA:TRUE. */
 	X509V3_set_ctx(&ctx, cert, cert, NULL, NULL, 0);
 	X509V3_set_ctx_nodb(&ctx);
+	/* ADR-0395: and keyUsage, which RFC 5280 requires of a CA and
+	 * Python 3.13's strict verification enforces; the intermediate always
+	 * had it. */
 	if (add_ext(cert, &ctx, "subjectKeyIdentifier=hash", err, err_size) != 0 ||
 	    add_ext(cert, &ctx, "authorityKeyIdentifier=keyid", err, err_size) != 0 ||
-	    add_ext(cert, &ctx, "basicConstraints=critical,CA:TRUE", err, err_size) != 0)
+	    add_ext(cert, &ctx, "basicConstraints=critical,CA:TRUE", err, err_size) != 0 ||
+	    add_ext(cert, &ctx, "keyUsage=critical,keyCertSign,cRLSign", err, err_size) != 0)
 		goto out;
 	if (X509_sign(cert, key, EVP_sha256()) <= 0) {
 		fail(err, err_size, "cannot sign the CA certificate");
@@ -316,6 +320,83 @@ int pkicrypto_ca_create(const char *key_path, const char *common_name, int days,
 	}
 	rc = write_cert(cert_path, cert, err, err_size);
 out:
+	X509_free(cert);
+	EVP_PKEY_free(key);
+	return rc;
+}
+
+int pkicrypto_ca_has_key_usage(const char *cert_path)
+{
+	X509 *cert = load_cert(cert_path, NULL, 0);
+	int has;
+
+	if (cert == NULL)
+		return -1;
+	has = X509_get_ext_by_NID(cert, NID_key_usage, -1) >= 0;
+	X509_free(cert);
+	return has;
+}
+
+/*
+ * ADR-0395: the root certificate again, from its own key: the same
+ * subject and expiry, a new serial and start, and the extensions a root
+ * gets now, keyUsage included. Everything the key signed still verifies,
+ * since the key is the same. Written beside the old one and renamed over
+ * it, so a crash leaves one or the other whole.
+ */
+int pkicrypto_ca_reissue(const char *key_path, const char *cert_path, char *err, size_t err_size)
+{
+	EVP_PKEY *key = load_key(key_path, err, err_size);
+	X509 *old = NULL, *cert = NULL;
+	BIGNUM *serial = NULL;
+	X509V3_CTX ctx;
+	char tmp[4096];
+	time_t now = time(NULL);
+	int rc = -1;
+
+	if (key == NULL)
+		return -1;
+	old = load_cert(cert_path, err, err_size);
+	cert = X509_new();
+	serial = BN_new();
+	if (old == NULL || cert == NULL || serial == NULL) {
+		fail(err, err_size, "cannot read the root certificate");
+		goto out;
+	}
+	if (X509_set_version(cert, 2) != 1 ||
+	    BN_rand(serial, SERIAL_RAND_BITS, BN_RAND_TOP_ANY, BN_RAND_BOTTOM_ANY) != 1 ||
+	    BN_to_ASN1_INTEGER(serial, X509_get_serialNumber(cert)) == NULL ||
+	    X509_time_adj_ex(X509_getm_notBefore(cert), 0, 0, &now) == NULL ||
+	    X509_set1_notAfter(cert, X509_get0_notAfter(old)) != 1 ||
+	    X509_set_subject_name(cert, X509_get_subject_name(old)) != 1 ||
+	    X509_set_issuer_name(cert, X509_get_subject_name(old)) != 1 ||
+	    X509_set_pubkey(cert, key) != 1) {
+		fail(err, err_size, "cannot build the re-issued root certificate");
+		goto out;
+	}
+	X509V3_set_ctx(&ctx, cert, cert, NULL, NULL, 0);
+	X509V3_set_ctx_nodb(&ctx);
+	if (add_ext(cert, &ctx, "subjectKeyIdentifier=hash", err, err_size) != 0 ||
+	    add_ext(cert, &ctx, "authorityKeyIdentifier=keyid", err, err_size) != 0 ||
+	    add_ext(cert, &ctx, "basicConstraints=critical,CA:TRUE", err, err_size) != 0 ||
+	    add_ext(cert, &ctx, "keyUsage=critical,keyCertSign,cRLSign", err, err_size) != 0)
+		goto out;
+	if (X509_sign(cert, key, EVP_sha256()) <= 0) {
+		fail(err, err_size, "cannot sign the re-issued root certificate");
+		goto out;
+	}
+	if (snprintf(tmp, sizeof(tmp), "%s.reissue", cert_path) >= (int)sizeof(tmp) ||
+	    write_cert(tmp, cert, err, err_size) != 0)
+		goto out;
+	if (rename(tmp, cert_path) != 0) {
+		fail(err, err_size, "cannot put the re-issued root certificate in place");
+		unlink(tmp);
+		goto out;
+	}
+	rc = 0;
+out:
+	BN_free(serial);
+	X509_free(old);
 	X509_free(cert);
 	EVP_PKEY_free(key);
 	return rc;

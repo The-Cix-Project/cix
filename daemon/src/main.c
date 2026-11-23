@@ -31101,6 +31101,12 @@ static void op_resetPki(const struct api_ctx *ctx)
 	handle_pki_reset(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
+/* POST /v1/pki/ca/reissue (ADR-0395) */
+static void op_reissuePkiCa(const struct api_ctx *ctx)
+{
+	handle_pki_ca_reissue(ctx->fd);
+}
+
 /* POST /v1/pki/export */
 static void op_exportPki(const struct api_ctx *ctx)
 {

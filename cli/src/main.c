@@ -327,6 +327,7 @@ static const char USAGE_TEXT[] =
 	        "               token; always succeeds, even if not currently logged in\n"
 	        "  pki ca bootstrap [--common-name=NAME] [--days=N]\n"
 	        "  pki ca show\n"
+	        "  pki ca reissue  -- re-signs the root with its own key, adding keyUsage (ADR-0395)\n"
 	        "  pki intermediate bootstrap [--common-name=NAME] [--days=N]  -- second CA tier,\n"
 	        "               root must already be bootstrapped; once done, every future\n"
 	        "               pki cert create is signed by it instead of the root\n"
@@ -14782,6 +14783,17 @@ static int cmd_pki_ca(const struct cix_client *c, int json_mode, int argc, char 
 		return cmd_pki_ca_bootstrap(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "show") == 0)
 		return cmd_pki_ca_show(c, json_mode);
+	if (strcmp(sub, "reissue") == 0) {
+		/* ADR-0395: the root again from its own key, with keyUsage. */
+		struct cix_response r;
+
+		if (cix_client_request(c, CIX_API_reissuePkiCa_METHOD, CIX_API_reissuePkiCa, NULL,
+		                       &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_pki_ca);
+	}
 
 	fprintf(stderr, "cixctl: unknown pki ca subcommand '%s'\n", sub);
 	return 2;

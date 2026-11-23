@@ -45,6 +45,15 @@ int pkicrypto_key_file_write(const char *key_path, const char *pem, size_t len, 
 int pkicrypto_ca_create(const char *key_path, const char *common_name, int days,
                         const char *cert_path, char *err, size_t err_size);
 
+/* ADR-0395: 1 when cert_path carries a keyUsage extension, 0 when it does
+ * not, -1 when it cannot be read. */
+int pkicrypto_ca_has_key_usage(const char *cert_path);
+
+/* ADR-0395: re-signs the root at cert_path with its own key at key_path:
+ * the same subject and expiry, a new serial, keyUsage added. Everything
+ * the key signed keeps verifying. */
+int pkicrypto_ca_reissue(const char *key_path, const char *cert_path, char *err, size_t err_size);
+
 /*
  * A certificate for subject_key_path, subject CN=common_name, issued by
  * issuer_cert_path/issuer_key_path. ext[] holds ext_count extensions in

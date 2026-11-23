@@ -38,7 +38,8 @@ enum pki_error {
 	PKI_ERR_FULL,
 	PKI_ERR_NOT_FOUND,
 	PKI_ERR_OPENSSL_FAILED,
-	PKI_ERR_PERSIST_FAILED
+	PKI_ERR_PERSIST_FAILED,
+	PKI_ERR_ALREADY_CURRENT /* ADR-0395: the root already carries keyUsage */
 };
 
 /*
@@ -254,6 +255,15 @@ enum pki_error pki_cert_read_pem(const char *name, char **out_key_pem, char **ou
  * too (replay the same check for every currently-live container after
  * a successful reset).
  */
+/*
+ * ADR-0395: re-signs the existing root with its own key, adding the
+ * keyUsage extension RFC 5280 requires of a CA and Python 3.13 enforces.
+ * The same key, subject and expiry; nothing it signed changes. Writes
+ * the new root as pki_ca_get() does. PKI_ERR_NOT_BOOTSTRAPPED with no
+ * root, PKI_ERR_ALREADY_CURRENT when it already carries keyUsage.
+ */
+enum pki_error pki_ca_reissue(struct json_writer *w);
+
 enum pki_error pki_ca_reset(const char *root_common_name, const char *intermediate_common_name,
                              int root_days, int intermediate_days, int leaf_days,
                              struct json_writer *w);

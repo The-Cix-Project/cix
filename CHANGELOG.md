@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A root CA carries keyUsage, and an existing one is re-issued with its own key (ADR-0395)
+
+- **Before:** a root CA was made with subjectKeyIdentifier, authorityKeyIdentifier and basicConstraints, and no keyUsage, which RFC 5280 requires of a CA. Python 3.13 verifies strictly, so every Python TLS client refused every chain under a Cix root: Radicale's LDAP login on gibsson-1 failed with `CA cert does not include key usage extension`.
+- **Now:** a new root carries `keyUsage=critical,keyCertSign,cRLSign`, as the intermediate always did. `POST /v1/pki/ca/reissue` (`cixctl pki ca reissue`) re-signs an existing root with its own key, keeping its subject and expiry, written beside the old one and renamed over it. Nothing the key signed changes, so the intermediate, every certificate and every trusted copy of the old root keep validating. It answers 409 when the root already carries keyUsage, which `test_pki` checks for a newly made root.
+
 ### One user can no longer lock everyone out of logging in (#738, ADR-0394)
 
 - **Before:** the session table holds 64, and a full table refused every login with "too many active sessions". On gibsson-1 a client logging in on every poll (my build-wait loops) held 61 slots, and the owner could not log in.

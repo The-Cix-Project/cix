@@ -374,6 +374,18 @@ int main(void)
 	}
 	cix_response_free(&r);
 
+	/* ADR-0395: a root made now carries keyUsage, so re-issuing it is
+	 * refused -- there is nothing to add. (gibsson-1's root, made before,
+	 * lacked it, and Python 3.13 refused every chain under it.) */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "POST", "/v1/pki/ca/reissue", NULL, &r) != 0 ||
+	    r.status != 409) {
+		fprintf(stderr, "FAIL: ADR-0395 re-issuing a new root answered %d, expected 409\n",
+		        r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
 	if (ca_cert_pem[0] != '\0') {
 		char scratch_dir[] = "/tmp/cix_test_pki_XXXXXX";
 		char ca_path[128], leaf_path[128];

@@ -11029,6 +11029,47 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /pki/ca/reissue:
+    post:
+      summary: Re-issue the root CA with its own key, adding keyUsage (ADR-0395)
+      description: >
+        Re-signs the existing root certificate with the same key, subject and expiry and a
+        new serial, adding `keyUsage=critical,keyCertSign,cRLSign`, which RFC 5280 requires
+        of a CA and Python 3.13's strict verification enforces. Roots made before ADR-0395
+        lack it. Nothing the key signed changes, so the intermediate, every issued
+        certificate and every copy of the old root already trusted keep validating.
+        Containers take the new root into their trust bundle at their next start.
+      operationId: reissuePkiCa
+      x-cix-invalidates: [getPkiCa]
+      x-cix-permission: pki:write
+      x-cix-mcp: tool
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: The re-issued root
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkiCa"
+        "400":
+          description: No root CA exists yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The root already carries keyUsage; there is nothing to re-issue
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Reading or signing the root failed; the old root is untouched
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /pki/intermediate:
     get:
       summary: Inspect the intermediate CA (never includes the private key)

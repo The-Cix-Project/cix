@@ -38,6 +38,11 @@ static void respond_pki_error(int fd, enum pki_error err)
 	case PKI_ERR_NOT_FOUND:
 		respond_error(fd, 404, "Not Found", "no such CA / cert");
 		break;
+	case PKI_ERR_ALREADY_CURRENT:
+		respond_error(fd, 409, "Conflict",
+		              "the root CA already carries keyUsage -- there is nothing to re-issue "
+		              "(ADR-0395)");
+		break;
 	case PKI_ERR_OPENSSL_FAILED:
 	case PKI_ERR_PERSIST_FAILED:
 	default:
@@ -641,6 +646,25 @@ void handle_pki_reset(int fd, const char *body, size_t body_len)
 	 */
 	reissue_host_pki_cert();
 
+	respond_json(fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* POST /v1/pki/ca/reissue (ADR-0395): the root again, from its own key,
+ * with the keyUsage extension it lacked. Containers take the new root
+ * into their trust bundle at their next start. */
+void handle_pki_ca_reissue(int fd)
+{
+	struct json_writer w;
+	enum pki_error perr;
+
+	jw_init(&w);
+	perr = pki_ca_reissue(&w);
+	if (perr != PKI_OK) {
+		jw_free(&w);
+		respond_pki_error(fd, perr);
+		return;
+	}
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }

@@ -334,6 +334,28 @@ enum pki_error pki_ca_get(struct json_writer *w)
 	return write_ca_json(w, g_ca_cert_path);
 }
 
+enum pki_error pki_ca_reissue(struct json_writer *w)
+{
+	char err[256];
+	int has;
+
+	if (!pki_ca_bootstrapped())
+		return PKI_ERR_NOT_BOOTSTRAPPED;
+	has = pkicrypto_ca_has_key_usage(g_ca_cert_path);
+	if (has < 0)
+		return PKI_ERR_OPENSSL_FAILED;
+	if (has == 1)
+		return PKI_ERR_ALREADY_CURRENT;
+	if (pkicrypto_ca_reissue(g_ca_key_path, g_ca_cert_path, err, sizeof(err)) != 0) {
+		logstore_write("pki", "error", "root CA re-issue failed: %s (ADR-0395)", err);
+		return PKI_ERR_OPENSSL_FAILED;
+	}
+	logstore_write("pki", "info",
+	               "root CA re-issued with its own key, keyUsage added; everything it signed "
+	               "still verifies (ADR-0395)");
+	return write_ca_json(w, g_ca_cert_path);
+}
+
 int pki_intermediate_bootstrapped(void)
 {
 	struct stat st;

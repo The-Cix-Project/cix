@@ -1287,6 +1287,7 @@ static const char *const n_pki_ca_bootstrap_flags[] = {
 
 static const struct cli_node n_pki_ca_subs[] = {
 	{ "bootstrap", n_pki_ca_bootstrap_flags, NULL },
+	{ "reissue", NULL, NULL },
 	{ "show", NULL, NULL },
 	{ NULL, NULL, NULL },
 };

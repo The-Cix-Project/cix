@@ -283,6 +283,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/ldap/config` | Fetch the current `start_uid`/`start_gid` auto-allocation floor (task #748) |
 | PUT | `/ldap/config` | Set the `start_uid`/`start_gid` floor -- takes effect for future allocations only, does not renumber existing records |
 | GET | `/pki/ca` | Inspect the root CA (never includes the private key) |
+| POST | `/pki/ca/reissue` | Re-sign the root with its own key, same subject and expiry, adding the `keyUsage` extension RFC 5280 requires of a CA and Python 3.13 enforces ([ADR-0395](../adr/0395-a-root-ca-carries-key-usage-and-is-reissued-with-its-key.md)); nothing the key signed changes; `409` when the root already carries it |
 | POST | `/pki/ca` | Bootstrap the root CA (once; see `/pki/reset` for regeneration) |
 | GET | `/pki/intermediate` | Inspect the intermediate CA (never includes the private key) |
 | POST | `/pki/intermediate` | Bootstrap a second CA tier, signed by the root |
