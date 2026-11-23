@@ -1570,6 +1570,37 @@ static int wait_pkg_exists(const struct cix_client *c, const char *name, int tri
 }
 
 /*
+ * ADR-0393 (#711): an install blocked only by work in flight is queued,
+ * not refused. Sends it, expects 202 with "queued":true, then takes it
+ * back out of the queue so the test goes on exactly as before. 1 on
+ * success.
+ */
+static int install_expect_queued(const struct cix_client *c, const char *body,
+                                 const char *name, const char *image, const char *label)
+{
+	struct cix_response r;
+	char path[256];
+	int ok = 1;
+
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "POST", "/v1/pkg/install", body, &r) != 0 || r.status != 202 ||
+	    r.body == NULL || strstr(r.body, "\"queued\":true") == NULL) {
+		fprintf(stderr, "FAIL: %s: expected 202 queued (ADR-0393), got %d %s\n", label,
+		        r.status, r.body != NULL ? r.body : "");
+		ok = 0;
+	}
+	cix_response_free(&r);
+	snprintf(path, sizeof(path), "/v1/pkg/install-queue/%s/%s", image, name);
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(c, "DELETE", path, NULL, &r) != 0 || r.status != 204) {
+		fprintf(stderr, "FAIL: %s: removing the queued install answered %d\n", label, r.status);
+		ok = 0;
+	}
+	cix_response_free(&r);
+	return ok;
+}
+
+/*
  * Issue #407: PkgEntry.build_container must be non-null EXACTLY while a
  * build is in flight, and the gate is the whole correctness of the
  * field. Nothing clears the daemon's own build_container_name when a
@@ -2228,16 +2259,13 @@ static int test_one_job_per_target(void)
 		goto out;
 	}
 
-	/* 2. The same request again must be refused, not given a second slot. */
+	/* 2. The same request again is not given a second slot: it waits in
+	 * the install queue (ADR-0393), as base -- an unnamed image is base,
+	 * and base already has this job. */
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&c, "POST", "/v1/pkg/install", "{\"name\":\"dupjob\"}", &r) != 0 ||
-	    r.status != 409) {
-		fprintf(stderr,
-		        "FAIL: #572 a second install of dupjob with no image named answered %d, "
-		        "expected 409 -- an unnamed image is base, and base already has this job\n",
-		        r.status);
+	if (!install_expect_queued(&c, "{\"name\":\"dupjob\"}", "dupjob", "base",
+	                           "#572 a second install of dupjob with no image named"))
 		ok = 0;
-	}
 	cix_response_free(&r);
 
 	/* 3. Control: a different image is a different target and still starts. */
@@ -2575,17 +2603,14 @@ int main(void)
 	cix_response_free(&r);
 
 	/* 4b. a THIRD distinct install while both chain slots are occupied
-	 * -> 409 -- proves both slots are genuinely in use (not just that
+	 * -> queued, not started (ADR-0393) -- proves both slots are genuinely
+	 * in use (not just that
 	 * "concurrent" above got lucky some other way), and that the
 	 * PKG_MAX_CONCURRENT_JOBS ceiling is still real and enforced. */
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"overflow\"}", &r) != 0 ||
-	    r.status != 409) {
-		fprintf(stderr, "FAIL: overflow install with both chains busy expected 409, got %d\n",
-		        r.status);
+	if (!install_expect_queued(&client, "{\"name\":\"overflow\"}", "overflow", "base",
+	                           "overflow install with both chains busy"))
 		ok = 0;
-	}
-	cix_response_free(&r);
 
 	/*
 	 * Issue #40: the shared build sandbox is a real, versioned image
@@ -6242,19 +6267,13 @@ skip_pin_isolation:
 
 		/* a THIRD job attempt now that both chain slots are genuinely
 		 * occupied (hbtest's hostbuild + hbconcurrent's fetch/build)
-		 * -> 409 -- "overflow" is the same never-yet-installed recipe
-		 * step 4b already proved gets rejected the same way at the
+		 * -> queued, not started (ADR-0393) -- "overflow" is the same never-yet-installed recipe
+		 * step 4b already proved waits the same way at the
 		 * top level. */
 		memset(&r, 0, sizeof(r));
-		if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"overflow\"}", &r) !=
-		        0 ||
-		    r.status != 409) {
-			fprintf(stderr,
-			        "FAIL: overflow install with both chains busy (hostbuild case) expected 409, got %d\n",
-			        r.status);
+		if (!install_expect_queued(&client, "{\"name\":\"overflow\"}", "overflow", "base",
+		                           "overflow install with both chains busy (hostbuild case)"))
 			ok = 0;
-		}
-		cix_response_free(&r);
 
 		/* poll GET /v1/pkg/hostbuild/{name} (the dedicated route, not
 		 * the generic /v1/pkg/{name} -- that one has no way to say
@@ -6910,15 +6929,9 @@ skip_hostbuild:
 	}
 
 	memset(&r, 0, sizeof(r));
-	if (cix_client_request(&client, "POST", "/v1/pkg/install", "{\"name\":\"hbconcurrent\"}", &r) !=
-	        0 ||
-	    r.status != 409) {
-		fprintf(stderr,
-		        "FAIL: POST install hbconcurrent while ceiling=1 already busy expected 409, got %d\n",
-		        r.status);
+	if (!install_expect_queued(&client, "{\"name\":\"hbconcurrent\"}", "hbconcurrent", "base",
+	                           "POST install hbconcurrent while ceiling=1 already busy"))
 		ok = 0;
-	}
-	cix_response_free(&r);
 
 	if (poll_pkg_state(&client, "slowhold", state, sizeof(state), 200) != 0 ||
 	    strcmp(state, "installed") != 0) {
