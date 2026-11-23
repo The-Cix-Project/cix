@@ -216,8 +216,9 @@ static void test_chain(void)
 		"keyUsage=critical,keyCertSign,cRLSign",
 	};
 	static const char *const leaf_ext[] = { "subjectAltName=DNS:probe-leaf,IP:192.168.150.250" };
+	/* ADR-0395: keyUsage, which RFC 5280 requires of a CA. */
 	static const int root_order[] = { NID_subject_key_identifier, NID_authority_key_identifier,
-		                          NID_basic_constraints };
+		                          NID_basic_constraints, NID_key_usage };
 	static const int int_order[] = { NID_basic_constraints, NID_key_usage,
 		                         NID_subject_key_identifier, NID_authority_key_identifier };
 	static const int leaf_order[] = { NID_subject_alt_name, NID_subject_key_identifier,
@@ -270,10 +271,11 @@ static void test_chain(void)
 	check_profile("root", root, "Probe Root", 30);
 	check_profile("intermediate", inter, "Probe Int", 30);
 	check_profile("leaf", leaf, "probe-leaf", 30);
-	check_ext_order("root", root, root_order, 3);
+	check_ext_order("root", root, root_order, 4);
 	check_ext_order("intermediate", inter, int_order, 4);
 	check_ext_order("leaf", leaf, leaf_order, 3);
-	CHECK(ext_critical(root, NID_basic_constraints), "root basicConstraints not critical");
+	CHECK(ext_critical(root, NID_basic_constraints) && ext_critical(root, NID_key_usage),
+	      "root basicConstraints/keyUsage not critical");
 	CHECK(ext_critical(inter, NID_basic_constraints) && ext_critical(inter, NID_key_usage),
 	      "intermediate basicConstraints/keyUsage not critical");
 	CHECK(X509_get_pathlen(inter) == 0, "intermediate pathlen is not 0");
