@@ -7799,6 +7799,19 @@ static int action_discover(const char *params, char *reason, size_t reason_size)
 			return -1;
 		}
 	}
+	/*
+	 * #722: with no recipe source there is nowhere to write a new
+	 * revision (ADR-0323's author stage commits to one), so there is
+	 * nothing to discover for, and nothing is fetched. That also keeps a
+	 * test daemon, whose data directory starts with its sources cleared,
+	 * from reaching kernel.org when the default discover schedule makes
+	 * its first run.
+	 */
+	if (pkgsource_count() == 0) {
+		snprintf(reason, reason_size,
+		         "no recipe source is configured, so there is nothing to discover for");
+		return 0;
+	}
 	if (pkg_upstream_refresh_running() || g_discover_after_kernel) {
 		snprintf(reason, reason_size, "a discovery run is already in progress");
 		return -1;
@@ -8009,9 +8022,16 @@ static void migrate_legacy_intervals(void)
  *   owner's window of 2026-10-03): build a newer kernel and deploy it
  *   with the root inside the window. A cix release deploys as cix-root
  *   moves, by a root-only roll (ADR-0379, ADR-0380).
+ * - discover, pkg.discover every hour (#722, the owner's "go ahead" of
+ *   2026-11-23): without it nothing rolling ever moves, since a release
+ *   is noticed only by discovery. gibsson-1 had none until one was made
+ *   by hand, and its catalogue said only "release data has never been
+ *   fetched on this host".
  */
 #define DEFAULT_RECIPE_SYNC_NAME "recipe-sync"
 #define DEFAULT_RECIPE_SYNC_SECONDS (6 * 3600)
+#define DEFAULT_DISCOVER_NAME "discover"
+#define DEFAULT_DISCOVER_BODY "{\"action\":\"pkg.discover\",\"schedule\":{\"every\":{\"seconds\":3600}}}"
 #define DEFAULT_HOST_ROLL_NAME "host-roll"
 #define DEFAULT_HOST_ROLL_BODY                                                                     \
 	"{\"action\":\"system.roll\",\"schedule\":{\"daily\":{\"at\":\"03:00\"}},"                \
@@ -8025,7 +8045,7 @@ static void seed_default_schedules(void)
 		const char *name;
 		const char *body;
 		const char *what;
-	} jobs[2];
+	} jobs[3];
 	int i;
 
 	if (scheduler_state_was_saved())
@@ -8038,7 +8058,10 @@ static void seed_default_schedules(void)
 	jobs[1].name = DEFAULT_HOST_ROLL_NAME;
 	jobs[1].body = DEFAULT_HOST_ROLL_BODY;
 	jobs[1].what = "system.roll nightly at 03:00 for 3h, ADR-0327";
-	for (i = 0; i < 2; i++) {
+	jobs[2].name = DEFAULT_DISCOVER_NAME;
+	jobs[2].body = DEFAULT_DISCOVER_BODY;
+	jobs[2].what = "pkg.discover every hour, #722";
+	for (i = 0; i < 3; i++) {
 		if (scheduler_find(jobs[i].name) != NULL)
 			continue;
 		if (scheduler_set_from_json(jobs[i].name, jobs[i].body, strlen(jobs[i].body), err,
@@ -8183,8 +8206,8 @@ static void handle_ntp_sync_post(int fd)
 	}
 	if (serr == NTP_START_NO_CANDIDATES) {
 		respond_error(fd, 400, "Bad Request",
-		              "no NTP servers configured -- set upstream (PUT /v1/system/ntp) or "
-		              "register a server container (POST /v1/ntp/servers) first");
+		              "no upstream NTP server is configured -- set one with PUT /v1/system/ntp "
+		              "(a registered NTP container serves the network, never this host, ADR-0391)");
 		return;
 	}
 	if (serr != NTP_START_OK) {
@@ -38119,10 +38142,29 @@ static void fwacquire_say(const char *key, const char *level, const char *fmt, .
 	logstore_write("cixd", level, "firmware: %s (ADR-0381)", msg);
 }
 
+/*
+ * #709: names a driver declares that its provider does not ship, one
+ * group per device, driver and provider, said once at the end of the
+ * pass rather than once per name. A driver declares firmware for every
+ * chip it supports, so amdgpu on a Ryzen APU listed ~50 blobs for GPUs
+ * the box does not have, each its own warning, at every boot
+ * (gibsson-1, 2026-11-21).
+ */
+#define FWACQUIRE_NOT_CARRIED_GROUPS 16
+struct fwacquire_not_carried {
+	char device[96];
+	char module[KMOD_NAME_MAX];
+	char provider[FWSCAN_PKG_MAX];
+	char first[FWSCAN_NAME_MAX];
+	int count;
+};
+
 struct fwacquire_pass {
 	struct image_manifest_entry manifest[IMAGE_MANIFEST_MAX_PACKAGES];
 	int manifest_count;
 	int declared; /* this pass added an entry */
+	struct fwacquire_not_carried not_carried[FWACQUIRE_NOT_CARRIED_GROUPS];
+	int not_carried_n;
 };
 
 static int fwacquire_declared(const struct fwacquire_pass *p, const char *output)
@@ -38207,12 +38249,27 @@ static void fwacquire_one(const char *device, const char *module, const struct f
 		              n->provider, n->name, device, module,
 		              source[0] != '\0' ? source : "(none)");
 		return;
-	case FWACQUIRE_NOT_CARRIED:
-		snprintf(key, sizeof(key), "not-carried:%s", n->name);
-		fwacquire_say(key, "warn", "%s is installed and does not carry %s, which %s's %s "
-		                           "declares; its files selector claims more than it ships",
-		              n->provider, n->name, device, module);
+	case FWACQUIRE_NOT_CARRIED: {
+		int g;
+
+		for (g = 0; g < p->not_carried_n; g++)
+			if (strcmp(p->not_carried[g].device, device) == 0 &&
+			    strcmp(p->not_carried[g].module, module) == 0 &&
+			    strcmp(p->not_carried[g].provider, n->provider) == 0)
+				break;
+		if (g == p->not_carried_n) {
+			if (g == FWACQUIRE_NOT_CARRIED_GROUPS)
+				return; /* more groups than that is said by the ones already held */
+			snprintf(p->not_carried[g].device, sizeof(p->not_carried[g].device), "%s", device);
+			snprintf(p->not_carried[g].module, sizeof(p->not_carried[g].module), "%s", module);
+			snprintf(p->not_carried[g].provider, sizeof(p->not_carried[g].provider), "%s",
+			         n->provider);
+			snprintf(p->not_carried[g].first, sizeof(p->not_carried[g].first), "%s", n->name);
+			p->not_carried_n++;
+		}
+		p->not_carried[g].count++;
 		return;
+	}
 	case FWACQUIRE_PENDING:
 	case FWACQUIRE_NOTHING:
 		return;
@@ -38230,6 +38287,22 @@ static void firmware_acquire(void)
 	                        IMAGE_MANIFEST_MAX_PACKAGES) != IMAGE_OK)
 		return;
 	fwscan_for_each_absent(fwacquire_one, &p);
+	{
+		int g;
+
+		for (g = 0; g < p.not_carried_n; g++) {
+			const struct fwacquire_not_carried *nc = &p.not_carried[g];
+			char key[FWSCAN_NAME_MAX + 32];
+
+			snprintf(key, sizeof(key), "not-carried:%s:%s", nc->device, nc->module);
+			fwacquire_say(key, "warn",
+			              "%s's %s declares %d firmware file(s) that %s, installed, does not "
+			              "ship (the first: %s). A driver declares firmware for every chip it "
+			              "supports, so these are usually for other chips; a device missing one "
+			              "it needs fails to probe, and the kernel log names the file",
+			              nc->device, nc->module, nc->count, nc->provider, nc->first);
+		}
+	}
 	if (!p.declared)
 		return;
 	pkg_rebuild_queue_add(FIRMWARE_IMAGE);

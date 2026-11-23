@@ -559,6 +559,42 @@ int main(void)
 		}
 	}
 
+	/* #716: a server that never answers ends as failed, with a reason
+	 * naming what was asked. Nothing listens on 127.0.0.9:123, and an
+	 * unconnected UDP socket hears no port-unreachable, so this is the
+	 * per-candidate timeout (1.5 s). */
+	{
+		int found = 0;
+
+		memset(&r, 0, sizeof(r));
+		cix_client_request(&client, "PUT", "/v1/system/ntp", "{\"upstream\":[\"127.0.0.9\"]}", &r);
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		if (cix_client_request(&client, "POST", "/v1/system/ntp/sync", NULL, &r) != 0 ||
+		    r.status != 202) {
+			fprintf(stderr, "FAIL: #716 POST sync to a silent server, status=%d\n", r.status);
+			ok = 0;
+		}
+		cix_response_free(&r);
+		for (i = 0; i < 80 && !found; i++) {
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/system/ntp/status", NULL, &r) == 0 &&
+			    r.status == 200 && str_eq(json_str_field(r.json, "state"), "failed") &&
+			    json_str_field(r.json, "reason") != NULL &&
+			    strstr(json_str_field(r.json, "reason"), "127.0.0.9") != NULL &&
+			    strstr(json_str_field(r.json, "reason"), "no server answered") != NULL)
+				found = 1;
+			cix_response_free(&r);
+			if (!found)
+				usleep(50000);
+		}
+		if (!found) {
+			fprintf(stderr, "FAIL: #716 a silent server did not end as failed with a reason "
+			                "naming it within 4 s\n");
+			ok = 0;
+		}
+	}
+
 	/* cleanup */
 	memset(&r, 0, sizeof(r));
 	cix_client_request(&client, "PUT", "/v1/system/ntp", "{\"upstream\":[]}", &r);

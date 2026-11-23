@@ -23946,12 +23946,12 @@ components:
 
     NtpStatus:
       type: object
-      required: [state, synced_from, last_sync_unixtime]
+      required: [state, synced_from, last_sync_unixtime, reason]
       properties:
         state:
           type: string
           enum: [never, ok, failed]
-          description: never -- no sync attempted yet since the daemon started. ok -- last attempt succeeded. failed -- last attempt exhausted every candidate with no valid reply (or a valid reply arrived but clock_settime() itself failed).
+          description: never -- no sync attempted yet since the daemon started. ok -- last attempt succeeded. failed -- last attempt exhausted every upstream server with no valid reply (or a valid reply arrived but clock_settime() itself failed). Only the configured upstream servers are asked; a registered NTP container is never a source for this host (ADR-0391).
         synced_from:
           type: string
           nullable: true
@@ -23961,6 +23961,14 @@ components:
           format: unix-seconds
           nullable: true
           description: Null unless state is ok.
+        reason:
+          type: string
+          nullable: true
+          description: >
+            Why the last attempt failed, in words an operator can act on (no server answered
+            within the timeout, naming what was asked; a request could not be sent; the
+            clock could not be set), also logged once when it changes (#716). Null unless
+            state is failed.
 
     NtpServerBindingCreateRequest:
       type: object

@@ -29,12 +29,10 @@
  *    server_* below). Simpler than either: NTP is itself a live
  *    query/response protocol, the same reasoning that already let
  *    LDAP registration skip pid/pidfd entirely (task #725) -- no
- *    config-file push, no signal needed. cixd resolves the
- *    registered container's own live IP (registry_find()'s
- *    nets[0].ip_be) fresh at every sync attempt and queries it
- *    directly with the exact same SNTP client as (1) -- a registered
- *    container is just one more candidate source ntp_sync_start()
- *    tries, ahead of the external addresses from (1).
+ *    config-file push, no signal needed. A registered container
+ *    serves time to the network; it is never a source for the host
+ *    it runs on (ADR-0391, #718): its clock is the host's, so
+ *    asking it measured nothing.
  *
  * The sync mechanism itself (part 3) is a real, bounded async job,
  * matching this project's own established "one job of this kind in
@@ -84,8 +82,8 @@ void ntp_repoint(const char *new_state_path, const char *new_servers_state_path)
 
 /*
  * Replaces the full upstream address list and rewrites the persisted
- * file. count == 0 clears it entirely (host then relies solely on any
- * registered server containers, if any). Each entry must be a valid,
+ * file. count == 0 clears it entirely: the host then has no time source,
+ * since a registered container never is one (ADR-0391). Each entry must be a valid,
  * non-empty IPv4 dotted-quad string; count above NTP_MAX_UPSTREAM is
  * rejected outright, the same rule resolv_set() already enforces for
  * its own nameserver list.
@@ -120,15 +118,14 @@ void ntp_server_write_json_list(struct json_writer *w);
 enum ntp_start_error {
 	NTP_START_OK = 0,
 	NTP_START_BUSY,          /* a sync attempt is already in flight */
-	NTP_START_NO_CANDIDATES, /* nothing configured: no registered servers, no upstream addresses */
+	NTP_START_NO_CANDIDATES, /* no upstream address is configured */
 	NTP_START_SOCKET_FAILED
 };
 
 /*
- * Starts one sync attempt: builds the ordered candidate list
- * (registered, currently-running server containers first -- resolved
- * to their live IP right now, not cached -- then the configured
- * upstream addresses, in the order each was added), opens one
+ * Starts one sync attempt: builds the candidate list (the configured
+ * upstream addresses, in the order each was added, and nothing else --
+ * ADR-0391), opens one
  * non-blocking UDP socket, and sends the first candidate's own SNTP
  * request. *out_sockfd is that socket -- main.c registers it with
  * epoll (EPOLLIN) plus a paired one-shot timeout timer (the same

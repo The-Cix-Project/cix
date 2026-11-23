@@ -2189,19 +2189,19 @@ PUT /v1/system/ntp
 {"upstream": ["192.168.15.1", "10.0.0.1"]}
 ```
 
-Same list convention `PUT /v1/system/resolv` already has: up to 3 IPv4 addresses, tried in order at every sync attempt; an empty array clears it (the host then relies solely on any registered `/ntp/servers` container, if any). Synced automatically every hour, or immediately via:
+Same list convention `PUT /v1/system/resolv` already has: up to 3 IPv4 addresses, tried in order at every sync attempt; an empty array clears it, and the host then has no time source: a registered `/ntp/servers` container serves the network and is never a source for this host (ADR-0391, #718). Synced automatically every hour, or immediately via:
 
 ```
 POST /v1/system/ntp/sync
 ```
 
-`202` starts a sync attempt (`409` if one's already in flight, `400` if nothing is configured at all -- no upstream and no registered server container). `GET /v1/system/ntp/status` reports the outcome once it lands:
+`202` starts a sync attempt (`409` if one's already in flight, `400` if no upstream server is configured). `GET /v1/system/ntp/status` reports the outcome once it lands:
 
 ```json
-{"state": "ok", "synced_from": "192.168.15.1", "last_sync_unixtime": 1735689600}
+{"state": "ok", "synced_from": "192.168.15.1", "last_sync_unixtime": 1735689600, "reason": null}
 ```
 
-`state` is `never` (nothing attempted yet), `ok`, or `failed` (every candidate exhausted with no valid reply, or a valid reply arrived but the final `clock_settime()` itself failed -- e.g. no `CAP_SYS_TIME`).
+`state` is `never` (nothing attempted yet), `ok`, or `failed` (every candidate exhausted with no valid reply, or a valid reply arrived but the final `clock_settime()` itself failed -- e.g. no `CAP_SYS_TIME`). When it is `failed`, `reason` says why in words an operator can act on -- for example `no server answered within 1500 ms each (asked 192.168.15.1)` -- and the same sentence is logged once when it changes (#716).
 
 **2. Container-to-container NTP:** `POST`/`GET /v1/ntp/servers` and `DELETE /v1/ntp/servers/{container}`, registering a running container as an available time source -- mirrors `POST /v1/dns/servers`/`POST /v1/ldap/servers` exactly:
 
@@ -2210,7 +2210,7 @@ POST /v1/ntp/servers
 {"container": "ntp1"}
 ```
 
-Simpler than either: NTP is itself a live query/response protocol, so this is pure bookkeeping -- no pid/pidfd, no config-file push, no signal. `cixd` resolves the registered container's own live IP fresh at every sync attempt (never cached) and queries it directly with the exact same SNTP client as (1) -- a registered container is just one more candidate `ntp_sync_start()` tries, ahead of the configured upstream addresses. `404` if the named container doesn't exist or isn't currently running.
+Simpler than either: NTP is itself a live query/response protocol, so this is pure bookkeeping -- no pid/pidfd, no config-file push, no signal. A registered container serves time to the network. It is never a source for the host it runs on (ADR-0391, #718): its clock is the host's own, so asking it measured nothing, and a box that did so reported `ok` while running 8 hours wrong. `404` if the named container doesn't exist or isn't currently running.
 
 Once a running chrony container exists (`chrony.recipe`, this platform's own standard NTP server -- `chronyd`, plain from-source, `--without-libcap --without-seccomp` so it never attempts privilege dropping in the first place, since it's already the container's own root):
 
@@ -3742,7 +3742,7 @@ POST /v1/pkg/sources
 
 Each source has a **role** and a **key trust**. `write: true` lets this host commit the recipes it writes to that source (ADR-0323, `POST /v1/pkg/recipe-commit`, gitea only); every other source is read. `trust_keys: true` lets the signing keys the source carries in `docs/keys` be trusted for artifacts; off by default, because a source that supplies keys can vouch for packages.
 
-**A host that never saved a source list starts with one**: `cix-public`, the public catalogue (`https://github.com/The-Cix-Project/cix-recipes`, `github`, `main`, read, trusted for keys, [ADR-0315](../adr/0315-the-public-catalogue-and-cache-are-the-defaults.md)). A fresh install can therefore sync with no configuration, and does at first boot through the default `recipe-sync` schedule ([ADR-0316](../adr/0316-a-fresh-host-syncs-recipes-on-a-schedule.md)). A host upgrading from the single repo config has that config as its first source, named after its repository, with its token and commit switch, and trusted for keys. Removing every source is saved, and survives restarts: the default never comes back.
+**A host that never saved a source list starts with one**: `cix-public`, the public catalogue (`https://github.com/The-Cix-Project/cix-recipes`, `github`, `main`, read, trusted for keys, [ADR-0315](../adr/0315-the-public-catalogue-and-cache-are-the-defaults.md)). A fresh install can therefore sync with no configuration, and does at first boot through the default `recipe-sync` schedule ([ADR-0316](../adr/0316-a-fresh-host-syncs-recipes-on-a-schedule.md)). It also gets an hourly `discover` schedule (`pkg.discover`, #722), without which no rolling package ever moves; a discovery run with no recipe source configured does nothing and fetches nothing. A host upgrading from the single repo config has that config as its first source, named after its repository, with its token and commit switch, and trusted for keys. Removing every source is saved, and survives restarts: the default never comes back.
 
 `POST /v1/pkg/sync` fetches every source and merges each into this host's catalogue. **Merge is additive**: an already-known `(name, version)` is counted as `skipped`, never overwritten (ADR-0107), so a sync never discards a recipe a host has, and an applied artifact approval counts as `approved` (#404). Two rules decide *which source* supplies what:
 - **A package, image or deployment name belongs to exactly one source.** A name offered by one source belongs to it. A name offered by several is **held**: it is merged from none of them until the operator chooses one with `PUT /v1/pkg/source-ownership {"item": "package:glibc", "source": "site"}`. `GET /v1/pkg/source-ownership` lists every held item and every choice. List order never decides.

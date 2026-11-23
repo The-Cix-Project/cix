@@ -6,6 +6,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The host's clock comes from outside the box; discovery by default; one firmware line per device (#718, #716, #722, #709)
+
+- **#718 (ADR-0391):** the host syncs its clock only from configured upstream servers. A registered NTP container is never a source for the host it runs on. Its chrony served the host's own clock, so .95 and gibsson-1 both reported `state=ok` from their own ntp-1, and gibsson-1 ran 8 hours fast.
+- **#716 (part):** a failed sync says why, in `GET /v1/system/ntp/status`'s new `reason` and once in the log when it changes: no server answered within the timeout (naming what was asked), a request could not be sent, or the clock could not be set. `test_ntp` checks a silent server ends as failed with a reason naming it. A public default time source is still to come.
+- **#722:** a fresh host gets an hourly `discover` schedule beside `recipe-sync` and `host-roll`. A discovery run with no recipe source configured does nothing and fetches nothing.
+- **#709:** firmware names a driver declares that its installed provider does not ship are counted per device and driver, and said in one line per pass instead of one line per file. amdgpu on gibsson-1 gave about fifty lines at every boot.
+
 ### Fresh-install fixes: a certificate's own name, the busy message, shell quoting, login lockout, recovery prompt, DHCP state (#734, #732, #717, #720, #721, #719)
 
 - **#720:** authentication switches on only once a user **who has a password** holds `identity:write` (`ldap_user_can_log_in()`), and the last-grantor guards count only such users. Creating the first administrator and then setting its password, in either order, no longer locks the API and the console out. A `uidnumber` or `gidnumber` already in use is refused with 409 on create and update. A container's provisioned LDAP account keeps its uid across restarts instead of taking a newly allocated one at each start.

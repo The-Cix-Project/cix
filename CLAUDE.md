@@ -581,6 +581,14 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **The pool fills only while a CA exists**, one key at a time in a helper child, after autostart and after each take. Never fill at daemon start regardless of the CA: a boot test under TCG would pay seconds a key.
 - **A CA bootstrap and a large reset still generate in place.** That is a stated limit, not a defect to chase.
 
+## The host's clock comes from outside the box
+
+**cixd sets the host's clock only from configured upstream NTP servers. A registered NTP container serves the network and is never a source for the host it runs on**: [ADR-0391](docs/adr/0391-the-hosts-clock-comes-from-outside-the-box.md), #718. On 2026-11-23 I asked whether to make that change and give fresh installs a public default, and the owner answered *"go ahead"*.
+
+- **Never add a container back as a candidate.** Its chrony serves the host's own clock, so the host asked itself: .95 and gibsson-1 both reported `state=ok` from their own ntp-1, and gibsson-1 ran 8 hours fast.
+- **A failed sync says why**, in `GET /v1/system/ntp/status`'s `reason` and once in the log when it changes (#716).
+- **The public default is not built yet** (#716). It needs host-name upstream entries resolved in a helper child, and test data directories that start with the list saved empty, like the package sources. The owner chooses the name: the NTP Pool asks products to use a vendor zone, not `pool.ntp.org`.
+
 ## One way to make an image
 
 **An image is made by `POST /v1/images` (`cixctl image create --name=NAME`) and by nothing else.** `POST /v1/pkg/install` naming an image that does not exist is a 400 naming that fix, and creates nothing (#500) -- the owner's decision of 2026-09-30, chosen over documenting the implicit create an install used to perform, which is how `--image=jump`, a typo for `jumpbox`, became a new image.
@@ -690,6 +698,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Changeable and clearable, for good.** The first change saves the list; a saved empty list -- of sources or of repositories -- means cleared and is never replaced by the default again. Do not add anything that re-applies a default over a saved value.
 - **Never push by default, never a token by default.** Publishing is the operator's act (#129).
 - **And a default `recipe-sync` schedule** (`pkg.sync` every 6 hours, [ADR-0316](docs/adr/0316-a-fresh-host-syncs-recipes-on-a-schedule.md)), stated by the owner the same day: *"add a default recipe-sync schedule too"*. Same rule: created only on a host that never saved a schedule file, and a deleted one stays deleted. Test data dirs start with `state/schedules.json` saved empty.
+- **And a default hourly `discover` schedule** (`pkg.discover`, #722). On 2026-11-23 I asked whether fresh hosts should get one like `recipe-sync`, and the owner answered *"go ahead"*. Without it nothing rolling ever moves. Same rule as `recipe-sync`: created only on a host that never saved a schedule file. A discovery run with no recipe source configured does nothing and fetches nothing, which is also what keeps a test daemon off kernel.org.
 - **Tests never use the defaults' network.** Test data directories start cleared (`test_pkg_config_seed_cleared()`); a new test that wipes its pkg state dir must call it again.
 - **192.168.15.95 has its own saved config** (LAN gitea with a token, LAN cache with push). A test there that points it at the public sources restores that config straight afterwards, and does not send the LAN token to GitHub.
 

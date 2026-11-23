@@ -1,10 +1,12 @@
 #include "ntp.h"
 #include "persist.h"
 #include "registry.h"
+#include "logstore.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -81,6 +83,47 @@ static struct {
 static enum ntp_sync_result g_last_result = NTP_SYNC_NEVER;
 static char g_last_synced_from[NTP_IP_STRLEN];
 static time_t g_last_sync_unixtime;
+
+/*
+ * #716: why the last attempt failed, in words an operator can act on.
+ * A failed sync on gibsson-1 (2026-11-21) ended {"state":"failed"} with
+ * nothing in the status or the log, so the cause had to be guessed.
+ * Empty unless the last attempt failed. Logged when it changes, not at
+ * every periodic attempt.
+ */
+static char g_last_reason[256];
+
+static void sync_failed(const char *fmt, ...)
+{
+	char reason[sizeof(g_last_reason)];
+	va_list ap;
+
+	va_start(ap, fmt);
+	vsnprintf(reason, sizeof(reason), fmt, ap);
+	va_end(ap);
+	g_job.active = 0;
+	if (g_last_result != NTP_SYNC_FAILED || strcmp(reason, g_last_reason) != 0)
+		logstore_write("ntp", "warn", "time sync failed: %s", reason);
+	g_last_result = NTP_SYNC_FAILED;
+	snprintf(g_last_reason, sizeof(g_last_reason), "%s", reason);
+}
+
+/* The candidates this attempt asked, "a, b, c", for a reason. */
+static void tried_list(char *out, size_t out_size)
+{
+	int i;
+	size_t used = 0;
+
+	out[0] = '\0';
+	for (i = 0; i < g_job.candidate_count && used + 1 < out_size; i++) {
+		int n = snprintf(out + used, out_size - used, "%s%s", i > 0 ? ", " : "",
+		                 g_job.candidates[i]);
+
+		if (n < 0)
+			break;
+		used += (size_t)n < out_size - used ? (size_t)n : out_size - used - 1;
+	}
+}
 
 /* ---- persistence: upstream list (plain "server A.B.C.D" lines, same
  * literal-format convention resolv.c's own nameserver list already
@@ -208,6 +251,7 @@ int ntp_init(const char *state_path, const char *servers_state_path)
 	memset(&g_job, 0, sizeof(g_job));
 	g_last_result = NTP_SYNC_NEVER;
 	g_last_synced_from[0] = '\0';
+	g_last_reason[0] = '\0';
 	g_last_sync_unixtime = 0;
 	return 0;
 }
@@ -349,27 +393,20 @@ static double ntp_halves_to_seconds(uint32_t sec, uint32_t frac)
 	return (double)(sec - NTP_UNIX_EPOCH_DELTA) + (double)frac / 4294967296.0;
 }
 
+/*
+ * #718: the configured upstream servers, and nothing else. A registered
+ * NTP container is never a source for the host it runs on: its chrony
+ * serves that container's clock, which is the host's, so the host asked
+ * itself and reported state=ok with nothing outside the box ever
+ * consulted. Measured on .95 and gibsson-1, 2026-11-21: synced_from was
+ * the box's own ntp-1 on both, and gibsson-1 ran 8 hours fast (#716).
+ * Registration still says which containers serve time to the network.
+ */
 static void build_candidate_list(void)
 {
 	int i;
-	struct in_addr a;
-	char ipstr[NTP_IP_STRLEN];
 
 	g_job.candidate_count = 0;
-
-	for (i = 0; i < NTP_SERVER_MAX && g_job.candidate_count < NTP_SYNC_MAX_CANDIDATES; i++) {
-		struct registry_entry *entry;
-
-		if (g_servers[i][0] == '\0')
-			continue;
-		entry = registry_find(g_servers[i]);
-		if (entry == NULL || !entry->running)
-			continue;
-		a.s_addr = entry->nets[0].ip_be;
-		inet_ntop(AF_INET, &a, ipstr, sizeof(ipstr));
-		snprintf(g_job.candidates[g_job.candidate_count], NTP_IP_STRLEN, "%s", ipstr);
-		g_job.candidate_count++;
-	}
 	for (i = 0; i < g_upstream_count && g_job.candidate_count < NTP_SYNC_MAX_CANDIDATES; i++) {
 		snprintf(g_job.candidates[g_job.candidate_count], NTP_IP_STRLEN, "%s", g_upstream[i]);
 		g_job.candidate_count++;
@@ -425,6 +462,7 @@ enum ntp_start_error ntp_sync_start(int *out_sockfd)
 
 	g_job.candidate_index = 0;
 	if (send_query_to_current_candidate(fd) != 0) {
+		sync_failed("could not send a request to %s: %s", g_job.candidates[0], strerror(errno));
 		close(fd);
 		return NTP_START_SOCKET_FAILED;
 	}
@@ -443,13 +481,19 @@ static int advance_to_next_candidate(int sockfd)
 {
 	g_job.candidate_index++;
 	if (g_job.candidate_index >= g_job.candidate_count) {
-		g_job.active = 0;
-		g_last_result = NTP_SYNC_FAILED;
+		char tried[sizeof(g_last_reason) - 64];
+
+		/* A reply that does not match is ignored rather than counted,
+		 * so a candidate is only ever left behind by its timeout. */
+		tried_list(tried, sizeof(tried));
+		sync_failed("no server answered within %d ms each (asked %s) -- check that this host "
+		            "can reach them on UDP port %d",
+		            NTP_SYNC_TIMEOUT_MS, tried, NTP_PORT);
 		return 1;
 	}
 	if (send_query_to_current_candidate(sockfd) != 0) {
-		g_job.active = 0;
-		g_last_result = NTP_SYNC_FAILED;
+		sync_failed("could not send a request to %s: %s",
+		            g_job.candidates[g_job.candidate_index], strerror(errno));
 		return 1;
 	}
 	return 0;
@@ -506,15 +550,19 @@ int ntp_sync_handle_reply(int sockfd)
 		 * valid, applying it is what failed. Still counts this candidate
 		 * as exhausted rather than retried, since retrying won't change
 		 * a permission failure. */
-		g_job.active = 0;
-		g_last_result = NTP_SYNC_FAILED;
+		sync_failed("%s answered, but setting the clock failed: %s",
+		            g_job.candidates[g_job.candidate_index], strerror(errno));
 		return 1;
 	}
 
+	if (g_last_result != NTP_SYNC_OK)
+		logstore_write("ntp", "info", "time synced from %s (offset %.3f s)",
+		               g_job.candidates[g_job.candidate_index], offset);
 	snprintf(g_last_synced_from, sizeof(g_last_synced_from), "%s",
 	         g_job.candidates[g_job.candidate_index]);
 	g_last_sync_unixtime = new_time.tv_sec;
 	g_last_result = NTP_SYNC_OK;
+	g_last_reason[0] = '\0';
 	g_job.active = 0;
 	return 1;
 }
@@ -547,6 +595,11 @@ void ntp_write_json_status(struct json_writer *w)
 	jw_key(w, "last_sync_unixtime");
 	if (g_last_sync_unixtime != 0)
 		jw_int(w, (long long)g_last_sync_unixtime);
+	else
+		jw_null(w);
+	jw_key(w, "reason");
+	if (g_last_result == NTP_SYNC_FAILED && g_last_reason[0] != '\0')
+		jw_str(w, g_last_reason);
 	else
 		jw_null(w);
 	jw_obj_close(w);

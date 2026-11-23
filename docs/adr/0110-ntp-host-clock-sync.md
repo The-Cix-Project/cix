@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. The part that made a registered container a time source for the host is superseded by [ADR-0391](0391-the-hosts-clock-comes-from-outside-the-box.md) (#718).
 
 ## Context
 

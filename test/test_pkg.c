@@ -1937,6 +1937,19 @@ static int test_schedule_defaults(void)
 	}
 	cix_response_free(&r);
 
+	/* #722: and hourly discovery, without which nothing rolling moves. */
+	if (get_schedule(&c, "discover", &r) != 0 || r.status != 200 ||
+	    !str_eq(json_str_field(r.json, "action"), "pkg.discover") ||
+	    json_as_number(json_object_get(json_object_get(json_object_get(r.json, "schedule"),
+	                                                   "every"),
+	                                   "seconds")) != 3600) {
+		fprintf(stderr, "FAIL: schedule defaults: no hourly pkg.discover discover on a fresh "
+		                "host: %s\n",
+		        r.body != NULL ? r.body : "(no body)");
+		ok = 0;
+	}
+	cix_response_free(&r);
+
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&c, "DELETE", "/v1/schedules/recipe-sync", NULL, &r) != 0 ||
 	    r.status != 204) {
