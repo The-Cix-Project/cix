@@ -565,6 +565,7 @@ int main(void)
 	 * per-candidate timeout (1.5 s). */
 	{
 		int found = 0;
+		int i;
 
 		memset(&r, 0, sizeof(r));
 		cix_client_request(&client, "PUT", "/v1/system/ntp", "{\"upstream\":[\"127.0.0.9\"]}", &r);
