@@ -39,6 +39,9 @@
 
 #define HOSTAUTH_TOKEN_LEN 48 /* hex-encoded, real /dev/urandom bytes -- see hostauth.c */
 #define HOSTAUTH_SESSION_MAX 64
+/* ADR-0394: a login past this ends the user's own least recently used
+ * session, so one user can never fill the table for everyone (#738). */
+#define HOSTAUTH_SESSION_PER_USER 16
 /* A session's recorded source address: an IPv6 literal fits
  * (INET6_ADDRSTRLEN, 46), though cixd's peer capture is IPv4 today
  * (CONNTHROTTLE_IP_MAX). */

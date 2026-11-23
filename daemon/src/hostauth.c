@@ -332,6 +332,67 @@ static void drop_session(int i)
 	events_announce(EV_listHostauthSessions);
 }
 
+/* ADR-0394: how many sessions username holds. */
+static int sessions_of(const char *username)
+{
+	int i, n = 0;
+
+	for (i = 0; i < HOSTAUTH_SESSION_MAX; i++)
+		if (g_sessions[i].in_use && strcmp(g_sessions[i].username, username) == 0)
+			n++;
+	return n;
+}
+
+/*
+ * ADR-0394: username's least recently used session, or -1. A session's
+ * expiry slides with each use (slide_session()), so the earliest expiry
+ * is the least recently used; with no idle timeout nothing slides, and
+ * the oldest login is.
+ */
+static int lru_session_of(const char *username)
+{
+	int i, best = -1;
+
+	if (username == NULL)
+		return -1;
+	for (i = 0; i < HOSTAUTH_SESSION_MAX; i++) {
+		time_t key, best_key;
+
+		if (!g_sessions[i].in_use || strcmp(g_sessions[i].username, username) != 0)
+			continue;
+		if (best < 0) {
+			best = i;
+			continue;
+		}
+		key = g_config.idle_timeout_seconds > 0 ? g_sessions[i].expires_at
+		                                         : g_sessions[i].logged_in_at;
+		best_key = g_config.idle_timeout_seconds > 0 ? g_sessions[best].expires_at
+		                                              : g_sessions[best].logged_in_at;
+		if (key < best_key)
+			best = i;
+	}
+	return best;
+}
+
+/* ADR-0394: the user holding the most sessions, or NULL when none. */
+static const char *busiest_user(void)
+{
+	int i, best = -1, best_n = 0;
+
+	for (i = 0; i < HOSTAUTH_SESSION_MAX; i++) {
+		int n;
+
+		if (!g_sessions[i].in_use)
+			continue;
+		n = sessions_of(g_sessions[i].username);
+		if (n > best_n) {
+			best_n = n;
+			best = i;
+		}
+	}
+	return best >= 0 ? g_sessions[best].username : NULL;
+}
+
 static void expiry_may_be_sooner(void);
 
 /* Slides slot i's idle window, writing the file only when it has moved enough. */
@@ -1042,6 +1103,37 @@ enum hostauth_login_result hostauth_issue_session(const char *username,
 			drop_session(i);
 		if (!g_sessions[i].in_use && slot < 0)
 			slot = i;
+	}
+	/*
+	 * ADR-0394 (#738): one user's sessions never refuse another user's
+	 * login. Measured on gibsson-1, 2026-11-23: a client logging in on
+	 * every poll held 61 of the 64 slots, and the owner's own login was
+	 * refused. A user past its limit gives up its own least recently
+	 * used session; a full table gives up the least recently used session
+	 * of the user holding the most. A login is never refused for room.
+	 */
+	{
+		int victim = -1;
+		const char *why = NULL;
+
+		if (sessions_of(username) >= HOSTAUTH_SESSION_PER_USER) {
+			victim = lru_session_of(username);
+			why = "it reached its limit of sessions";
+		} else if (slot < 0) {
+			victim = lru_session_of(busiest_user());
+			why = "the session table was full";
+		}
+		if (victim >= 0) {
+			logstore_write("audit", "warn",
+			               "session of %s from %s ended to make room for a login by %s: %s "
+			               "(ADR-0394)",
+			               g_sessions[victim].username,
+			               g_sessions[victim].source_ip[0] != '\0' ? g_sessions[victim].source_ip
+			                                                       : "-",
+			               username, why);
+			drop_session(victim);
+			slot = victim;
+		}
 	}
 	if (slot < 0)
 		return HOSTAUTH_LOGIN_TABLE_FULL;

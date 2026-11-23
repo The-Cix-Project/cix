@@ -110,7 +110,7 @@ void handle_login(int fd, const char *peer_ip, const char *body, size_t body_len
 	lerr = hostauth_issue_session(who, token, &expires_in_seconds, peer_ip);
 	if (lerr == HOSTAUTH_LOGIN_TABLE_FULL) {
 		respond_error(fd, 500, "Internal Server Error",
-		              "too many active sessions -- try again shortly");
+		              "could not create a session token -- try again");
 		return;
 	}
 

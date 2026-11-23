@@ -534,6 +534,30 @@ static int test_permission_mapping(void)
 		fprintf(stderr, "FAIL: #540 login as keeper\n");
 		ok = 0;
 	}
+	/* ADR-0394 (#738): a user past its 16 sessions gives up its own least
+	 * recently used one, and the login is never refused. On gibsson-1 a
+	 * client logging in on every poll filled the table and the owner
+	 * could not log in. The first of these is the oldest, so it is the
+	 * one ended; the newest replaces ktok for the rest of the test. */
+	{
+		char first[128], tok[128];
+		int n;
+
+		snprintf(first, sizeof(first), "%s", ktok);
+		for (n = 0; n < 16; n++) { /* HOSTAUTH_SESSION_PER_USER */
+			if (!login_as(&c, "keeper", "keeps the keys", tok, sizeof(tok))) {
+				fprintf(stderr, "FAIL: #738 login %d as keeper past its limit was refused\n",
+				        n + 2);
+				ok = 0;
+				break;
+			}
+		}
+		snprintf(ktok, sizeof(ktok), "%s", tok);
+		ok &= expect_status(&c, first, "GET", "/v1/system/hostauth/permissions", NULL, 401,
+		                    "#738 keeper's oldest session ended when it passed 16");
+		ok &= expect_status(&c, ktok, "GET", "/v1/system/hostauth/permissions", NULL, 200,
+		                    "#738 keeper's newest session works");
+	}
 	ok &= expect_status(&c, ktok, "PUT", "/v1/system/hostauth/permissions/keepers",
 	                    "{\"permissions\":[\"identity:read\"]}", 409,
 	                    "taking identity:write from its only holder");

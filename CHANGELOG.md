@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### One user can no longer lock everyone out of logging in (#738, ADR-0394)
+
+- **Before:** the session table holds 64, and a full table refused every login with "too many active sessions". On gibsson-1 a client logging in on every poll (my build-wait loops) held 61 slots, and the owner could not log in.
+- **Now:** a user holds at most 16 sessions (`HOSTAUTH_SESSION_PER_USER`), and a login past that ends that user's own least recently used session. A full table ends the least recently used session of the user holding the most. A login is never refused for room, and each ending is in the audit log. `test_hostauth` logs in past the limit and checks the oldest session ended and the newest works.
+
 ### An install that must wait is queued, not refused (#711, ADR-0393)
 
 - **Before:** an install blocked by work in flight (a job for the same package and image, a shared dependency another job was installing, #701, or every build slot taken) answered 409, and setting up an image meant re-issuing installs by hand.

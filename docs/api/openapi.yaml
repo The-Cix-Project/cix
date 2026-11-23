@@ -270,6 +270,13 @@ paths:
         token is then single-use, consumed by the very next request
         that presents it, matching that configuration's own documented
         "every write re-authenticates" contract.
+
+
+        ADR-0394 (#738): a login is never refused for room. A user
+        holds at most 16 sessions, and a login past that ends that
+        user's own least recently used session; a full table (64) ends
+        the least recently used session of the user holding the most.
+        Each ending is logged to the audit log.
       operationId: postLogin
       x-cix-invalidates: [listHostauthSessions]
       x-cix-permission: public
