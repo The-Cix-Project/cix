@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### An install that must wait is queued, not refused (#711, ADR-0393)
+
+- **Before:** an install blocked by work in flight (a job for the same package and image, a shared dependency another job was installing, #701, or every build slot taken) answered 409, and setting up an image meant re-issuing installs by hand.
+- **Now:** it is queued and answered `202 {"queued": true, "position": N, "waiting_for": ...}`. The queue keeps the request exactly (`STATE_DIR/pkg-install-queue.json`, so it survives a restart and an in-place switch) and starts it when a package job ends, before the rolling drain. A second request for the same package and image while one waits is a 409. `GET /v1/pkg/install-queue` and `DELETE /v1/pkg/install-queue/{image}/{name}`, or `cixctl pkg queue [rm NAME@IMAGE]`. Every other refusal is unchanged, and a hostbuild is not queued. `test_pkg`'s #701 case now checks the 202, the queue, the duplicate 409, and that both installs finish with no second request.
+
 ### A deployment is re-applied in place, and keeps its secrets (#724, ADR-0392)
 
 - **Before:** changing one thing in a running container's deployment meant `container rm`, then `deployment apply` with every `--secret` typed again. vpn-1/vpn-2 needed both longwire secrets retyped for one `--pair` argument, and ar-1, cr-1/cr-2 and br-2 went the same way.

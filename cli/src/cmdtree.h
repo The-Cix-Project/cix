@@ -1487,6 +1487,11 @@ static const char *const n_pkg_recipe_show_flags[] = {
 	NULL
 };
 
+static const struct cli_node n_pkg_queue_subs[] = {
+	{ "rm", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
 static const struct cli_node n_pkg_bad_versions_subs[] = {
 	{ "clear", NULL, NULL },
 	{ "ls", NULL, NULL },
@@ -1586,6 +1591,7 @@ static const struct cli_node n_pkg_subs[] = {
 	{ "bad-versions", NULL, n_pkg_bad_versions_subs },
 	{ "trusted-origins", NULL, n_pkg_trusted_origins_subs },
 	{ "upstream-keys", NULL, n_pkg_upstream_keys_subs },
+	{ "queue", NULL, n_pkg_queue_subs },
 	{ "rebuilds", NULL, NULL },
 	{ "recipe", NULL, n_pkg_recipe_subs },
 	{ "recipes", NULL, NULL },

@@ -109,6 +109,7 @@ extern char RESOLV_CONF_PATH[PATH_MAX];
 extern char NTP_STATE_PATH[PATH_MAX];
 extern char NTP_SERVERS_STATE_PATH[PATH_MAX];
 extern char DEPLOYMENT_SECRETS_PATH[PATH_MAX]; /* ADR-0392: kept deployment secrets, 0600 */
+extern char INSTALL_QUEUE_PATH[PATH_MAX]; /* ADR-0393: explicit installs waiting for work in flight */
 extern char SYSLOGFWD_STATE_PATH[PATH_MAX];
 extern char CONNTHROTTLE_CONFIG_PATH[PATH_MAX];
 extern char BACKUP_CONFIG_PATH[PATH_MAX];

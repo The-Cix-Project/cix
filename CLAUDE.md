@@ -597,6 +597,14 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **A failed sync says why**, in `GET /v1/system/ntp/status`'s `reason` and once in the log when it changes (#716).
 - **The public default is not built yet** (#716). It needs host-name upstream entries resolved in a helper child, and test data directories that start with the list saved empty, like the package sources. The owner chooses the name: the NTP Pool asks products to use a vendor zone, not `pool.ntp.org`.
 
+## An install that must wait is queued
+
+**An explicit install blocked only by work in flight is queued, never refused** -- [ADR-0393](docs/adr/0393-an-install-that-must-wait-is-queued.md), accepted by the owner on 2026-11-23 for #711 (*"should it not have queued them so that they build once slots are empty?"*).
+
+- **Queueable causes:** a job for the same package and image, another job installing a dependency it shares (#701), or every build slot taken. Every other refusal stays an error.
+- **The queue holds the request exactly** (`installq.c`, `STATE_DIR/pkg-install-queue.json`), survives restarts, and is started by `start_queued_installs()` when a package job ends, before the rolling drain. Never start queued installs from anywhere else, and never turn a queued install into a manifest entry: installing is not declaring (ADR-0320).
+- **A hostbuild is not queued**; the host roll owns when one runs.
+
 ## One way to make an image
 
 **An image is made by `POST /v1/images` (`cixctl image create --name=NAME`) and by nothing else.** `POST /v1/pkg/install` naming an image that does not exist is a 400 naming that fix, and creates nothing (#500) -- the owner's decision of 2026-09-30, chosen over documenting the implicit create an install used to perform, which is how `--image=jump`, a typo for `jumpbox`, became a new image.

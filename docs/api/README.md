@@ -359,6 +359,8 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | GET | `/pkg/hostbuild/{name}` | Inspect one hostbuild job's current state |
 | POST | `/pkg/resume` | Continue a `keep_on_failure`-preserved build container in place, without a fetch/extract restart |
 | GET | `/pkg/rebuilds` | Image rebuilds this host has queued but not started — what publishing a recipe committed it to (issue #236) |
+| GET | `/pkg/install-queue` | Explicit installs waiting for work in flight to end, oldest first ([ADR-0393](../adr/0393-an-install-that-must-wait-is-queued.md), #711): an install blocked only by a job for the same package and image, a shared dependency being installed (#701), or every build slot taken is queued and answered `202 {"queued": true, "position": N, "waiting_for": ...}`, kept across restarts, and started when a package job ends, before the rolling drain |
+| DELETE | `/pkg/install-queue/{image}/{name}` | Remove one queued install before it starts (ADR-0393) |
 | POST | `/pkg/cancel` | Stop an in-flight build **or fetch**; the entry becomes failed with kind `cancelled` |
 | GET | `/pkg/build/log` | Upgrade to a WebSocket; live-tail a currently-running install/hostbuild job's own stdout/stderr |
 | GET | `/pkg` | List every known package (installed or in-flight) with its state |

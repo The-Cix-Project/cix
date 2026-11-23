@@ -352,6 +352,8 @@ static const char USAGE_TEXT[] =
 	        "               publish/roll/deploy gates hold, let one through, or take an\n"
 	        "               unused approval back (ADR-0273, #381)\n"
 	        "  pkg recipes  -- lists every published (name,version) recipe (ADR-0107)\n"
+	        "  pkg queue [rm NAME@IMAGE]  -- installs waiting for work in flight to end; an\n"
+	        "               install blocked by a running job is queued, not refused (ADR-0393)\n"
 	        "  pkg rebuilds  -- image rebuilds this host has queued but not started.\n"
 	        "               Publishing a recipe queues one for every image tracking that\n"
 	        "               package `rolling`, which is real work nothing else reports.\n"
@@ -16794,7 +16796,76 @@ static int cmd_pkg_install(const struct cix_client *c, int json_mode, int argc, 
 	}
 	jw_free(&w);
 
+	/* ADR-0393: blocked by work in flight, the install waits in the
+	 * queue and the answer says where and why. */
+	if (!json_mode && r.status == 202 && json_object_get(r.json, "queued") != NULL) {
+		const struct json_value *jp = json_object_get(r.json, "position");
+
+		printf("%-24s %-16s queued at position %lld -- waiting for: %s\n",
+		       json_str_field(r.json, "name") != NULL ? json_str_field(r.json, "name") : "",
+		       json_str_field(r.json, "image") != NULL ? json_str_field(r.json, "image") : "",
+		       jp != NULL && jp->type == JSON_NUMBER ? (long long)jp->u.number : 0LL,
+		       json_str_field(r.json, "waiting_for") != NULL
+		           ? json_str_field(r.json, "waiting_for")
+		           : "");
+		cix_response_free(&r);
+		return 0;
+	}
 	return emit(&r, json_mode, fmt_pkg_line);
+}
+
+/* pkg queue: explicit installs waiting for work in flight (ADR-0393). */
+static void fmt_pkg_install_queue(const struct json_value *root)
+{
+	const struct json_value *arr = json_object_get(root, "queued");
+	size_t i;
+
+	if (arr == NULL || arr->type != JSON_ARRAY || arr->u.array.count == 0) {
+		printf("no installs queued\n");
+		return;
+	}
+	printf("%-4s %-24s %-16s %-14s %s\n", "POS", "NAME", "IMAGE", "VERSION", "WAITING FOR");
+	for (i = 0; i < arr->u.array.count; i++) {
+		const struct json_value *e = arr->u.array.items[i];
+		const struct json_value *jp = json_object_get(e, "position");
+
+		printf("%-4lld %-24s %-16s %-14s %s\n",
+		       jp != NULL && jp->type == JSON_NUMBER ? (long long)jp->u.number : 0LL,
+		       json_str_field(e, "name") != NULL ? json_str_field(e, "name") : "",
+		       json_str_field(e, "image") != NULL ? json_str_field(e, "image") : "",
+		       json_str_field(e, "version") != NULL ? json_str_field(e, "version") : "newest",
+		       json_str_field(e, "waiting_for") != NULL ? json_str_field(e, "waiting_for") : "");
+	}
+}
+
+static int cmd_pkg_queue(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	char path[256];
+
+	if (argc == 0) {
+		if (cix_client_request(c, CIX_API_listPkgInstallQueue_METHOD,
+		                       CIX_API_listPkgInstallQueue, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_pkg_install_queue);
+	}
+	if (strcmp(argv[0], "rm") == 0 && argc == 2 && strchr(argv[1], '@') != NULL) {
+		char name[128], *at;
+
+		snprintf(name, sizeof(name), "%s", argv[1]);
+		at = strchr(name, '@');
+		*at = '\0';
+		snprintf(path, sizeof(path), CIX_API_cancelPkgInstallQueued, at + 1, name);
+		if (cix_client_request(c, CIX_API_cancelPkgInstallQueued_METHOD, path, NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_removed);
+	}
+	fprintf(stderr, "usage: cixctl pkg queue [rm NAME@IMAGE]\n");
+	return 2;
 }
 
 /*
@@ -18958,6 +19029,8 @@ static int cmd_pkg(const struct cix_client *c, int json_mode, int argc, char **a
 		return cmd_pkg_build_logs(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "ls") == 0)
 		return cmd_pkg_ls(c, json_mode);
+	if (strcmp(sub, "queue") == 0)
+		return cmd_pkg_queue(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "rebuilds") == 0)
 		return cmd_pkg_rebuilds(c, json_mode);
 	if (strcmp(sub, "rm") == 0)

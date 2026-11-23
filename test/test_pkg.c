@@ -6980,12 +6980,14 @@ skip_hostbuild:
 	}
 
 	/*
-	 * #701: two installs into one image that share a dependency. The
-	 * first chain installs slowhold (it sleeps) before its target; the
-	 * second, sent while it does, used to queue slowhold again and run it
-	 * in a second build slot beside the first. Now it is deferred with a
-	 * 409, and the log names the shared package. Ten slots are free
-	 * here, so a full slot table is not what refuses it.
+	 * #701 and ADR-0393 (#711): two installs into one image that share a
+	 * dependency. The first chain installs slowhold (it sleeps) before
+	 * its target; the second, sent while it does, used to queue slowhold
+	 * again in a second build slot (#701), then was refused with a 409
+	 * the operator had to re-issue. Now it waits in the install queue,
+	 * answered 202 with its position, and starts by itself when the
+	 * first ends. Ten slots are free here, so a full slot table is not
+	 * what holds it.
 	 */
 	{
 		char st701[32];
@@ -7007,29 +7009,38 @@ skip_hostbuild:
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "POST", "/v1/pkg/install",
 			                       "{\"name\":\"uses701b\",\"image\":\"img701\"}", &r) != 0 ||
-			    r.status != 409) {
+			    r.status != 202 || r.body == NULL || strstr(r.body, "\"queued\":true") == NULL ||
+			    strstr(r.body, "slowhold") == NULL) {
 				fprintf(stderr,
-				        "FAIL: #701 a second install sharing slowhold answered %d, expected "
-				        "409 while the first installs it\n",
-				        r.status);
+				        "FAIL: #711 a second install sharing slowhold answered %d (%s), "
+				        "expected 202 queued, naming slowhold\n",
+				        r.status, r.body != NULL ? r.body : "");
 				ok = 0;
 			}
 			cix_response_free(&r);
 			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "GET", "/v1/system/logs?source=cixd&tail=200", NULL,
-			                       &r) != 0 ||
-			    r.status != 200 || r.body == NULL ||
-			    strstr(r.body, "deferred -- slowhold is already being installed into img701") ==
-			        NULL) {
-				fprintf(stderr, "FAIL: #701 the deferral does not name slowhold in the log\n");
+			if (cix_client_request(&client, "GET", "/v1/pkg/install-queue", NULL, &r) != 0 ||
+			    r.status != 200 || r.body == NULL || strstr(r.body, "\"uses701b\"") == NULL) {
+				fprintf(stderr, "FAIL: #711 uses701b is not in GET /v1/pkg/install-queue: %s\n",
+				        r.body != NULL ? r.body : "");
 				ok = 0;
 			}
 			cix_response_free(&r);
-			/* The first finishes, and the second then installs. A chain's
-			 * target has no record while its dependency builds, so its
-			 * GET answers 404 until then, which poll_pkg_state() takes
-			 * as the end: wait for slowhold in this image first, then for
-			 * the target's record to appear (probe 795, 2026-11-21). */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/pkg/install",
+			                       "{\"name\":\"uses701b\",\"image\":\"img701\"}", &r) != 0 ||
+			    r.status != 409) {
+				fprintf(stderr, "FAIL: #711 the same install queued twice answered %d, "
+				                "expected 409\n",
+				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			/* The first finishes, and the queued second then starts with no
+			 * further request. A chain's target has no record while its
+			 * dependency builds, so its GET answers 404 until then, which
+			 * poll_pkg_state() takes as the end: wait for slowhold in this
+			 * image first, then for each target's record (probe 795). */
 			st701[0] = '\0';
 			if (poll_pkg_state(&client, "slowhold@img701", st701, sizeof(st701), 300) != 0 ||
 			    strcmp(st701, "installed") != 0) {
@@ -7037,43 +7048,34 @@ skip_hostbuild:
 				ok = 0;
 			}
 			{
-				int tries;
+				static const char *const targets[] = { "uses701a@img701", "uses701b@img701" };
+				int t;
 
-				st701[0] = '\0';
-				for (tries = 0; tries < 60; tries++) {
-					if (poll_pkg_state(&client, "uses701a@img701", st701, sizeof(st701),
-					                   300) == 0)
-						break;
-					sleep(1);
+				for (t = 0; t < 2; t++) {
+					int tries;
+
+					st701[0] = '\0';
+					for (tries = 0; tries < 90; tries++) {
+						if (poll_pkg_state(&client, targets[t], st701, sizeof(st701),
+						                   300) == 0 &&
+						    strcmp(st701, "installed") == 0)
+							break;
+						sleep(1);
+					}
+					if (strcmp(st701, "installed") != 0) {
+						fprintf(stderr, "FAIL: #711 %s ended '%s'\n", targets[t], st701);
+						ok = 0;
+					}
 				}
 			}
-			if (strcmp(st701, "installed") != 0) {
-				fprintf(stderr, "FAIL: #701 uses701a ended '%s'\n", st701);
-				ok = 0;
-			}
 			memset(&r, 0, sizeof(r));
-			if (cix_client_request(&client, "POST", "/v1/pkg/install",
-			                       "{\"name\":\"uses701b\",\"image\":\"img701\"}", &r) != 0 ||
-			    r.status != 202) {
-				fprintf(stderr, "FAIL: #701 uses701b after the first status=%d\n", r.status);
+			if (cix_client_request(&client, "GET", "/v1/pkg/install-queue", NULL, &r) != 0 ||
+			    r.status != 200 || r.body == NULL || strstr(r.body, "\"depth\":0") == NULL) {
+				fprintf(stderr, "FAIL: #711 the install queue is not empty afterwards: %s\n",
+				        r.body != NULL ? r.body : "");
 				ok = 0;
 			}
 			cix_response_free(&r);
-			{
-				int tries;
-
-				st701[0] = '\0';
-				for (tries = 0; tries < 60; tries++) {
-					if (poll_pkg_state(&client, "uses701b@img701", st701, sizeof(st701),
-					                   300) == 0)
-						break;
-					sleep(1);
-				}
-			}
-			if (strcmp(st701, "installed") != 0) {
-				fprintf(stderr, "FAIL: #701 uses701b ended '%s'\n", st701);
-				ok = 0;
-			}
 		}
 	}
 

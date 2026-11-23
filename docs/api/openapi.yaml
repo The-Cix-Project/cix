@@ -11519,6 +11519,68 @@ paths:
                       without limit, so depth == capacity means work has
                       been discarded.
 
+  /pkg/install-queue:
+    get:
+      summary: Explicit installs waiting for work in flight to end (ADR-0393, #711)
+      description: >
+        An install blocked only by a job for the same package and image, another job
+        installing a dependency it shares (#701), or every build slot taken is kept here,
+        exactly as requested, oldest first, and started when a package job ends, before
+        the rolling drain. Persisted, so it survives a restart and an in-place switch.
+      operationId: listPkgInstallQueue
+      x-cix-read: state
+      x-cix-permission: packages:read
+      x-cix-mcp: tool
+      x-cix-expose: [cli]
+      responses:
+        "200":
+          description: The queue, next first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [queued, depth, capacity]
+                properties:
+                  queued:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PkgInstallQueueEntry"
+                  depth:
+                    type: integer
+                    description: How many installs are waiting.
+                  capacity:
+                    type: integer
+                    description: The queue's bound; an install blocked while it is full is a 409.
+
+  /pkg/install-queue/{image}/{name}:
+    delete:
+      summary: Remove one queued install before it starts (ADR-0393)
+      operationId: cancelPkgInstallQueued
+      x-cix-invalidates: [listPkgInstallQueue]
+      x-cix-permission: packages:write
+      x-cix-mcp: tool
+      x-cix-expose: [cli]
+      parameters:
+        - name: image
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Removed; it will not start
+        "404":
+          description: No install of that package is queued for that image
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /pkg/recipes:
     get:
       summary: List recipes found on disk (metadata only, never sourced/executed)
@@ -14116,8 +14178,16 @@ paths:
         "base") every container using that image sees. Several installs can build
         at once, up to max_concurrent_jobs (GET/PUT /system/pkg-build-config,
         ADR-0157); hostbuilds run one at a time.
+
+
+        ADR-0393 (#711): an install blocked only by work in flight -- a job for the
+        same package and image, another job installing a dependency it shares (#701),
+        or every build slot taken -- is queued, not refused. It is kept exactly as
+        requested, survives a restart, and starts when a package job ends, before the
+        rolling drain. The 202 then says queued, its position and what it waits for;
+        GET /pkg/install-queue lists the queue.
       operationId: pkgInstall
-      x-cix-invalidates: [getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg, listImages, getImage, listSoftware, listBuildLogs, getPipeline, getPipelineRuns]
+      x-cix-invalidates: [getPkgArtifactExport, listPkgUpstreamKeys, listPkg, getPkg, listImages, getImage, listSoftware, listBuildLogs, getPipeline, getPipelineRuns, listPkgInstallQueue]
       x-cix-permission: packages:write
       x-cix-mcp: tool
       x-cix-expose: [cli, web]
@@ -14129,11 +14199,15 @@ paths:
               $ref: "#/components/schemas/PkgInstallRequest"
       responses:
         "202":
-          description: Install started -- poll GET /pkg/{name} for progress
+          description: >
+            Install started -- poll GET /pkg/{name} for progress. Or, ADR-0393, queued
+            behind work in flight: the body is then a PkgInstallQueued.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PkgEntry"
+                oneOf:
+                  - $ref: "#/components/schemas/PkgEntry"
+                  - $ref: "#/components/schemas/PkgInstallQueued"
         "400":
           description: >
             name missing; no such recipe / it failed to parse; or a dependency it names
@@ -14153,10 +14227,9 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: >
-            Already installed (see upgrade); another install is already in progress; or
-            (#384) a job for this same package and image is already running -- a second
-            one would take another build slot to do the same work, so it is refused
-            rather than accepted; or (ADR-0373, ADR-0374) held by the ABI check: the
+            Already installed (see upgrade); the same package and image is already
+            waiting in the install queue (ADR-0393), or the queue is full; or
+            (ADR-0373, ADR-0374) held by the ABI check: the
             package, or a dependency it brings, would leave a provider and a consumer
             built against another of its ABIs in the image's target set. The message
             names both packages and both ABIs and how to move them together: declare
@@ -25269,6 +25342,53 @@ components:
             Same ADR-0175 meaning as PkgInstallRequest's own field, applied to this
             resumed attempt's own outcome -- independent of whether the original,
             now-being-resumed attempt asked for it.
+
+    PkgInstallQueued:
+      type: object
+      description: >
+        ADR-0393: an install waiting behind work in flight, answered by POST /pkg/install
+        in place of the started entry.
+      required: [queued, position, name, image, waiting_for]
+      properties:
+        queued:
+          type: boolean
+          description: Always true.
+        position:
+          type: integer
+          description: Its place in the install queue, 1 = next.
+        name:
+          type: string
+        image:
+          type: string
+        waiting_for:
+          type: string
+          description: What it waits for, as the 409 it replaced would have said.
+
+    PkgInstallQueueEntry:
+      type: object
+      required: [position, name, image, version, upgrade, keep_on_failure, queued_at, waiting_for]
+      properties:
+        position:
+          type: integer
+          description: 1 = the next to start.
+        name:
+          type: string
+        image:
+          type: string
+        version:
+          type: string
+          nullable: true
+          description: The version asked for; null for the newest.
+        upgrade:
+          type: boolean
+        keep_on_failure:
+          type: boolean
+        queued_at:
+          type: integer
+          format: unix-seconds
+        waiting_for:
+          type: string
+          description: What blocked it when it was queued.
 
     PkgEntry:
       type: object

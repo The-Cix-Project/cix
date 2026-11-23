@@ -5,6 +5,7 @@
 #include "containerdef.h"
 #include "depsecret.h"
 #include "jsondiff.h"
+#include "installq.h"
 #include "nsswitch.h"
 #include "internal.h"
 #include "device.h"
@@ -451,6 +452,7 @@ char RESOLV_CONF_PATH[PATH_MAX];
 char NTP_STATE_PATH[PATH_MAX];
 char NTP_SERVERS_STATE_PATH[PATH_MAX];
 char DEPLOYMENT_SECRETS_PATH[PATH_MAX];
+char INSTALL_QUEUE_PATH[PATH_MAX];
 char SYSLOGFWD_STATE_PATH[PATH_MAX];
 /* Per-source-IP HTTPS-handshake-failure throttling config (GET/PUT
  * /v1/system/tls-throttle) -- the tracked-peer table itself is
@@ -559,6 +561,7 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(NTP_SERVERS_STATE_PATH, sizeof(NTP_SERVERS_STATE_PATH), "%s/ntp_servers.json", STATE_DIR);
 	snprintf(DEPLOYMENT_SECRETS_PATH, sizeof(DEPLOYMENT_SECRETS_PATH), "%s/deployment-secrets.json",
 	         STATE_DIR);
+	snprintf(INSTALL_QUEUE_PATH, sizeof(INSTALL_QUEUE_PATH), "%s/pkg-install-queue.json", STATE_DIR);
 	snprintf(SYSLOGFWD_STATE_PATH, sizeof(SYSLOGFWD_STATE_PATH), "%s/syslog_targets.json", STATE_DIR);
 	snprintf(CONNTHROTTLE_CONFIG_PATH, sizeof(CONNTHROTTLE_CONFIG_PATH), "%s/tls_throttle.json", STATE_DIR);
 	snprintf(BACKUP_CONFIG_PATH, sizeof(BACKUP_CONFIG_PATH), "%s/backup_config.json", STATE_DIR);
@@ -5784,6 +5787,7 @@ static void report_default_image_seed_result(void);
 /* Forward declaration -- defined further down beside the other reactor
  * registrations, which all sit after the startup helpers that use them. */
 static void register_pkg_fetch_pidfd(pid_t pid, int pidfd, int chain_idx);
+static void start_queued_installs(void); /* ADR-0393 */
 /* ADR-0278: defined next to the other pidfd handlers, used well above
  * them -- pkg.sync's completion is the first caller. */
 static int helper_run(int (*work)(void *), void *work_arg, void (*done)(int, void *), void *ctx,
@@ -10156,7 +10160,11 @@ static void try_start_queued_pkg_rebuild(void)
 	int pkg_chain_idx;
 	/* 1 for a fetch; 2 for an image producer, a stray's uninstall
 	 * (ADR-0357). */
-	int started = pkg_try_start_queued_rebuild(&pkg_pid, &pkg_pidfd, &pkg_chain_idx);
+	int started;
+
+	/* ADR-0393: an operator's queued installs before automatic work. */
+	start_queued_installs();
+	started = pkg_try_start_queued_rebuild(&pkg_pid, &pkg_pidfd, &pkg_chain_idx);
 
 	if (started == 1)
 		register_pkg_fetch_pidfd(pkg_pid, pkg_pidfd, pkg_chain_idx);
@@ -28592,6 +28600,115 @@ static void handle_pkg_recipe_get(int fd, const char *name, const char *version)
 	jw_free(&w);
 }
 
+/*
+ * ADR-0393 (#711): an explicit install blocked only by work in flight
+ * waits in the install queue instead of being refused. Answers 202 with
+ * its position, or 409 when the same package and image already waits.
+ */
+static void queue_install_request(int fd, const char *name, const char *image,
+                                  const char *version, int upgrade, int keep_on_failure,
+                                  const char *why)
+{
+	struct installq_entry e;
+	struct json_writer w;
+	int existing = 0, pos;
+
+	memset(&e, 0, sizeof(e));
+	snprintf(e.name, sizeof(e.name), "%s", name);
+	snprintf(e.image, sizeof(e.image), "%s", image != NULL && image[0] != '\0' ? image : "base");
+	snprintf(e.version, sizeof(e.version), "%s", version != NULL ? version : "");
+	e.upgrade = upgrade;
+	e.keep_on_failure = keep_on_failure;
+	e.queued_at = (long long)time(NULL);
+	snprintf(e.waiting_for, sizeof(e.waiting_for), "%s", why);
+	pos = installq_add(&e, &existing);
+	if (pos == -2) {
+		char msg[256];
+
+		snprintf(msg, sizeof(msg),
+		         "%s for %s is already queued, at position %d -- see GET /v1/pkg/install-queue",
+		         e.name, e.image, existing);
+		respond_error(fd, 409, "Conflict", msg);
+		return;
+	}
+	if (pos < 0) {
+		respond_error(fd, 409, "Conflict",
+		              "the install is blocked by work in flight, and the install queue is full "
+		              "or could not be saved -- retry when that work ends");
+		return;
+	}
+	events_announce(EV_listPkgInstallQueue);
+	logstore_write("cixd", "info", "pkg install %s@%s: queued at position %d -- %s (ADR-0393)",
+	               e.name, e.image, pos, why);
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "queued");
+	jw_bool(&w, 1);
+	jw_key(&w, "position");
+	jw_int(&w, pos);
+	jw_key(&w, "name");
+	jw_str(&w, e.name);
+	jw_key(&w, "image");
+	jw_str(&w, e.image);
+	jw_key(&w, "waiting_for");
+	jw_str(&w, why);
+	jw_obj_close(&w);
+	respond_json(fd, 202, "Accepted", &w);
+	jw_free(&w);
+}
+
+/*
+ * ADR-0393: start every queued install whose cause has cleared, oldest
+ * first. Called when a package job ends, before the rolling drain, so an
+ * operator's request runs before automatic work, and once after start.
+ * One still blocked stays where it is; one refused for a reason waiting
+ * cannot fix leaves the queue, logged.
+ */
+static int g_installq_kick = 1; /* the queue may hold work from before a restart */
+
+static void start_queued_installs(void)
+{
+	int i = 0, changed = 0;
+
+	while (i < installq_count()) {
+		struct installq_entry e = *installq_at(i);
+		char started_name[PKG_NAME_MAX];
+		pid_t pid;
+		int pidfd, chain_idx;
+		enum pkg_error perr;
+
+		if (pkg_job_in_flight_for(e.name, e.image, 0)) {
+			i++;
+			continue;
+		}
+		perr = pkg_install_start(e.name, e.image, e.version[0] != '\0' ? e.version : NULL,
+		                         e.upgrade, e.keep_on_failure, started_name,
+		                         sizeof(started_name), &pid, &pidfd, &chain_idx);
+		if (perr == PKG_ERR_BUSY) {
+			i++;
+			continue;
+		}
+		installq_remove(e.name, e.image);
+		changed = 1;
+		if (perr == PKG_OK) {
+			register_pkg_fetch_pidfd(pid, pidfd, chain_idx);
+			logstore_write("cixd", "info", "pkg install %s@%s: started from the install queue "
+			                               "(ADR-0393)",
+			               e.name, e.image);
+		} else {
+			const char *phrase;
+			char msg[1100];
+
+			pkg_error_describe(perr, &phrase, msg, sizeof(msg));
+			logstore_write("cixd", "error",
+			               "pkg install %s@%s: left the install queue, refused: %s (ADR-0393)",
+			               e.name, e.image, msg);
+		}
+	}
+	if (changed)
+		events_announce(EV_listPkgInstallQueue);
+}
+
 static void handle_pkg_install(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
@@ -28685,15 +28802,29 @@ static void handle_pkg_install(int fd, const char *body, size_t body_len)
 	 * The objection was answered rather than argued with.
 	 */
 	if (pkg_job_in_flight_for(name, image, 0)) {
+		char why[192];
+
+		snprintf(why, sizeof(why), "a job for %s in %s is already running", name,
+		         image != NULL && image[0] != '\0' ? image : "base");
+		queue_install_request(fd, name, image, version, upgrade, keep_on_failure, why);
 		json_free(root);
-		respond_error(fd, 409, "Conflict",
-		              "a job for this package and image is already running -- watch it with "
-		              "GET /v1/pkg/{name}, or cancel it with POST /v1/pkg/cancel");
 		return;
 	}
 
 	perr = pkg_install_start(name, image, version, upgrade, keep_on_failure, started_name,
 	                          sizeof(started_name), &pid, &pidfd, &chain_idx);
+	if (perr == PKG_ERR_BUSY) {
+		/* ADR-0393: blocked only by work in flight (a shared dependency
+		 * being installed, #701, or every build slot taken) -- it waits
+		 * for that work, rather than the operator re-issuing it. */
+		const char *phrase;
+		char why[1100];
+
+		pkg_error_describe(perr, &phrase, why, sizeof(why));
+		queue_install_request(fd, name, image, version, upgrade, keep_on_failure, why);
+		json_free(root);
+		return;
+	}
 	if (perr != PKG_OK) {
 		json_free(root);
 		respond_pkg_error(fd, perr);
@@ -30997,6 +31128,30 @@ static void op_listPkgRebuilds(const struct api_ctx *ctx)
 	pkg_rebuild_queue_write_json(&w);
 	respond_json(ctx->fd, 200, "OK", &w);
 	jw_free(&w);
+}
+
+/* GET /v1/pkg/install-queue (ADR-0393) */
+static void op_listPkgInstallQueue(const struct api_ctx *ctx)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	installq_write_json(&w);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* DELETE /v1/pkg/install-queue/{image}/{name} (ADR-0393) */
+static void op_cancelPkgInstallQueued(const struct api_ctx *ctx)
+{
+	if (installq_remove(ctx->p[1], ctx->p[0]) != 0) {
+		respond_error(ctx->fd, 404, "Not Found", "no install of that package is queued for that image");
+		return;
+	}
+	logstore_write("cixd", "info", "pkg install %s@%s: removed from the install queue (ADR-0393)",
+	               ctx->p[1], ctx->p[0]);
+	http_set_blocking(ctx->fd);
+	http_write_response(ctx->fd, 204, "No Content", "application/json", "", 0);
 }
 
 /* POST /v1/pkg/recipes */
@@ -43800,6 +43955,12 @@ static int cixd_main(int argc, char **argv)
 		 */
 		if (pkg_rebuild_queue_depth() > 0)
 			try_start_queued_pkg_rebuild();
+		/* ADR-0393: the install queue survives a restart, so it is looked
+		 * at once after start even when no job ends to trigger it. */
+		if (g_installq_kick) {
+			g_installq_kick = 0;
+			start_queued_installs();
+		}
 
 		if (n < 0) {
 			if (errno == EINTR)
