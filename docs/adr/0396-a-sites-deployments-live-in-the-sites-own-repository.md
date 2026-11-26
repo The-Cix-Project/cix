@@ -29,7 +29,7 @@ The model already supports the split. A source can own `deployment:` items besid
 5. **The move:**
    - The site repository is filled from the box's store, the deployments actually running here, with no literal secret in any of them (a secret is a `{{SECRET:KEY}}`, kept on the box, ADR-0392).
    - The box takes it as a source, without `trust_keys`: read-only at the move, `write` once the commit above is released.
-   - The deployments leave `cix-recipes`. Every one of its 21 names is also a gibsson-1 container's name (measured 2026-11-26), so moving gibsson-1's empties the directory; .95's versions stay in its history.
+   - The deployments leave `cix-recipes`. Every one of its 21 names is also a gibsson-1 container's name (measured 2026-11-26), so moving gibsson-1's empties the directory. At the owner's direction the same day, the deployments were then removed from its history too (forge and GitHub mirror, `60e76de5`); a private bundle of the old history is kept off the forge.
    - A source dropping a file never deletes a deployment or its kept secrets: a sync adds and overwrites and never removes (`container_recipe_rm()` has one caller, `DELETE /v1/deployments/{name}`).
 
 ## Alternatives considered
