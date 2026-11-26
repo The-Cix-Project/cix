@@ -8,10 +8,10 @@ You are an elite Operating System Architect and Systems C Programmer. We are ite
 
 ## This repository is public: no site detail goes into it
 
-**`cix` and `cix-recipes` are published to GitHub, so nothing that identifies the owner's site is written into either: no real address, host name, domain, vpn number, account or personal email.** The owner on 2026-11-26, after their deployments had been public: *"my deployments should be private"*, then *"purge"* for both repositories' histories, which were rewritten that day. A site's facts live in the site's own private repository (ADR-0396) and in this session's memory, never here.
+**`cix` and `cix-recipes` are published to GitHub, so nothing that identifies the owner's site is written into either: no real address, host name, domain, vpn number or account. The owner's public address, `osakka@gmail.com`, is the one exception.** The owner on 2026-11-26, after their deployments had been public: *"my deployments should be private"*, then *"purge"* for both repositories' histories, which were rewritten that day. A site's facts live in the site's own private repository (ADR-0396) and in this session's memory, never here.
 
 - **Write measurements without the site:** "on the box", "the site's services network", or the placeholders this file already uses. Where an address is the point, use a documentation range (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`), never the real one.
-- **Commits are authored as `osakka@home.arpa`.** `SECURITY.md`'s contact is the owner's choice and stays.
+- **Commits are authored as `osakka@gmail.com`**, the owner's public address (2026-11-26: "that's what I use publically"); the history was rewritten to it. `SECURITY.md`'s contact is the same.
 - **A container recipe in `cix-recipes` is generic** (ADR-0397): every site value is a variable, and its value is in the site's repository.
 - **The text above this section that names the site's host and numbers is placeholders since the purge.** The real ones are in memory.
 
