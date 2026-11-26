@@ -412,7 +412,7 @@ requested and `""` when it was but nothing was written yet. Details:
 
 A deployment is a container's create body stored under its name, so the
 container can be re-created from it at any time
-([ADR-0151](../adr/0151-container-recipes.md)). It is the complete form:
+([ADR-0151](../adr/0151-deployments.md)). It is the complete form:
 every field of `POST /v1/containers`, with `cmd` as real JSON arrays and
 nothing lost to flag syntax. The platform's own deployments are in the
 `cix-recipes` repository as `recipes/deployment/<name>@<version>.json`.
@@ -546,7 +546,7 @@ it no longer exists before creating one with the same name.
 | Consoles are declared; no exec | [ADR-0261](../adr/0261-reaching-inside-a-container.md) |
 | A container's rootfs is derived from its image | [ADR-0277](../adr/0277-a-container-rootfs-is-derived-from-its-image.md) |
 | Persistent volumes | [ADR-0183](../adr/0183-persistent-volumes.md) |
-| Deployments (container recipes) and secrets | [ADR-0151](../adr/0151-container-recipes.md) |
+| Deployments (deployments) and secrets | [ADR-0151](../adr/0151-deployments.md) |
 | A deployment waits for its image | [ADR-0270](../adr/0270-a-deployment-waits-for-its-image-rather-than-being-refused.md) |
 | Rolling containers | [ADR-0124](../adr/0124-pkg-redesign-part5-rolling-containers-and-restart-jitter.md) |
 | btrfs substrate and user namespaces by default | [ADR-0207](../adr/0207-btrfs-storage-substrate-userns-by-default.md) |

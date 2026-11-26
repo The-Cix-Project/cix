@@ -6,7 +6,7 @@ This guide covers standing each service up, feeding it, and taking a server out 
 
 ## The shape every service shares
 
-1. **A container runs the server.** It is created from a deployment (a container recipe, [ADR-0151](../adr/0151-container-recipes.md)) — `dns-1`/`dns-2`, `ntp-1`/`ntp-2`, `syslog-1`/`syslog-2` in the [cix-recipes](https://git.home.arpa/itdlabs/cix-recipes) repository — and runs from an image (`dns`, `chrony`, `syslog`) that must already hold its packages. Running containers and deployments is covered in [`containers-and-services.md`](containers-and-services.md); building an image is covered in [`images.md`](images.md).
+1. **A container runs the server.** It is created from a deployment (a deployment, [ADR-0151](../adr/0151-deployments.md)) — `dns-1`/`dns-2`, `ntp-1`/`ntp-2`, `syslog-1`/`syslog-2` in the [cix-recipes](https://git.home.arpa/itdlabs/cix-recipes) repository — and runs from an image (`dns`, `chrony`, `syslog`) that must already hold its packages. Running containers and deployments is covered in [`containers-and-services.md`](containers-and-services.md); building an image is covered in [`images.md`](images.md).
 2. **The container is registered** as a server of its kind. Registration is what makes the daemon write configuration into it and track its health. Deleting a container forgets its registration.
 3. **Health is probed**, and a server can be drained by hand. See [Health, drain and undrain](#health-drain-and-undrain).
 
@@ -215,7 +215,7 @@ cixctl server-health undrain dns dns-2
 
 | Topic | ADR |
 |---|---|
-| Deployments (container recipes) | [ADR-0151](../adr/0151-container-recipes.md) |
+| Deployments (deployments) | [ADR-0151](../adr/0151-deployments.md) |
 | Site-scoped names, default qualification | [ADR-0046](../adr/0046-site-scoped-dns-pki-naming.md), [ADR-0052](../adr/0052-server-side-default-name-qualification.md), [ADR-0117](../adr/0117-dns-record-qualify-on-read.md) |
 | Forwarders are daemon-owned | [ADR-0203](../adr/0203-dns-forwarders-are-daemon-owned-config.md) |
 | Host resolver | [ADR-0076](../adr/0076-host-dns-resolver-config.md) |

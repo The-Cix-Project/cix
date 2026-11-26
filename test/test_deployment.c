@@ -1,5 +1,5 @@
 /*
- * Proves ADR-0151: container recipes -- a git-syncable, reproducible
+ * Proves ADR-0151: deployments -- a git-syncable, reproducible
  * template for a real POST /v1/containers body (cmd/files/network/
  * restart-policy/sysctls, everything an image recipe deliberately
  * doesn't cover), and the {{SECRET:KEY}} substitution mechanism that
@@ -237,7 +237,7 @@ int main(void)
 	 * allowlist -- so that code was unreachable. Measured against a
 	 * real daemon (v2.53.71 on 192.168.15.95): POST /v1/containers
 	 * with a dns_server block returned {"error":"unknown field:
-	 * dns_server"}, and container recipe add refused the same field
+	 * dns_server"}, and deployment add refused the same field
 	 * with "unknown field in recipe content: dns_server". The feature
 	 * never fired and nothing said so.
 	 *
@@ -768,9 +768,9 @@ int main(void)
 	test_data_dir_cleanup(g_data_dir);
 
 	if (g_failures > 0) {
-		fprintf(stderr, "test_container_recipe: %d failure(s)\n", g_failures);
+		fprintf(stderr, "test_deployment: %d failure(s)\n", g_failures);
 		return 1;
 	}
-	printf("test_container_recipe: OK\n");
+	printf("test_deployment: OK\n");
 	return 0;
 }

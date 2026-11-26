@@ -1341,7 +1341,7 @@ next:
 	 * `has space` and `a/b`; with `\-` all nine compile, refuse the
 	 * same junk, and still accept a real name. The fields were the
 	 * container, network, device-map, LDAP group, volume, package
-	 * source, repository, container recipe and package names -- every
+	 * source, repository, deployment and package names -- every
 	 * name an operator types by hand.
 	 *
 	 * Textual, like `test_apigen`'s, because a C gate cannot compile a

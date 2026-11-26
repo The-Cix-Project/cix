@@ -250,7 +250,7 @@ static void write_images(struct json_writer *w, int *stage_counts)
 
 /*
  * The deployment rows (#371) -- what this platform used to call
- * "container recipes".
+ * "deployments".
  *
  * A deployment's position is where its container actually is, which is
  * why `verify` exists as a stage: a container that started and is not
@@ -262,7 +262,7 @@ static void write_deployments(struct json_writer *w, int *stage_counts)
 	static char names[PIPELINEVIEW_MAX_DEPLOYMENTS][PKG_IMAGE_NAME_MAX];
 	int n, i;
 
-	n = container_recipe_list_names(names, PIPELINEVIEW_MAX_DEPLOYMENTS);
+	n = deployment_list_names(names, PIPELINEVIEW_MAX_DEPLOYMENTS);
 	jw_key(w, "deployments");
 	jw_arr_open(w);
 	for (i = 0; i < n; i++) {
@@ -393,7 +393,7 @@ static void write_edges(struct json_writer *w)
 		}
 	}
 
-	n = container_recipe_list_names(dnames, PIPELINEVIEW_MAX_DEPLOYMENTS);
+	n = deployment_list_names(dnames, PIPELINEVIEW_MAX_DEPLOYMENTS);
 	for (i = 0; i < n; i++) {
 		const struct registry_entry *e = registry_find(dnames[i]);
 		const struct container_def *pd = containerdef_find(dnames[i]);

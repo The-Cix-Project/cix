@@ -366,7 +366,7 @@ A deployment is a stored container definition: what to run and where. Deployment
 
 | Command | |
 |---|---|
-| `deployment add --name=NAME --file=PATH` | Publish one ([ADR-0151](../adr/0151-container-recipes.md)). The content is a full `POST /containers` body whose `"name"` matches `NAME`. Refused (409) for a name a recipe source owns: commit it instead |
+| `deployment add --name=NAME --file=PATH` | Publish one ([ADR-0151](../adr/0151-deployments.md)). The content is a full `POST /containers` body whose `"name"` matches `NAME`. Refused (409) for a name a recipe source owns: commit it instead |
 | `deployment commit NAME --file=PATH --version=V [--source=NAME] [--wait]` | Commit it to the source that owns it as `recipes/deployment/NAME@V.json`, then store it ([ADR-0396](../adr/0396-a-sites-deployments-live-in-the-sites-own-repository.md)). The version must be above the one the box holds; `--wait` follows the commit as `pkg recipe commit --wait` does |
 | `deployment show NAME` | Its raw, unsubstituted content |
 | `deployment ls` / `deployment rm NAME` | List / remove. Removing one does not affect containers already created from it |

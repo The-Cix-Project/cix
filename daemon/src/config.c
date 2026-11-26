@@ -195,7 +195,7 @@ static void cfg_package_policies(struct json_writer *w) { pkgpolicy_write_json(w
 static void cfg_packages(struct json_writer *w) { pkg_write_json_config(w); }
 static void cfg_images(struct json_writer *w) { image_write_json_list(w); }
 static void cfg_image_recipes(struct json_writer *w) { image_recipe_write_json_list(w); }
-static void cfg_container_recipes(struct json_writer *w) { container_recipe_write_json_list(w); }
+static void cfg_deployments(struct json_writer *w) { deployment_write_json_list(w); }
 /*
  * #426: without the platform's own build containers. A running-config
  * document describes configuration, and a __pkgbuild-<n> is a

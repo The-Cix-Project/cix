@@ -15459,7 +15459,7 @@ static const char *container_body_unknown_key(const struct json_value *root)
 		 * refused with "unknown field" before the registration could
 		 * run. Measured on 192.168.15.95 against v2.53.71:
 		 * POST /v1/containers with a dns_server block returned
-		 * {"error":"unknown field: dns_server"}, and container recipe
+		 * {"error":"unknown field: dns_server"}, and deployment
 		 * add refused the same field, so the recipe could not carry
 		 * it either. Nothing failed loudly; the feature simply never
 		 * fired.
@@ -20108,7 +20108,7 @@ static int register_declared_server_roles(const char *body, size_t body_len,
 	 * respawn, boot revival -- so the registration announces here
 	 * rather than in createContainer's x-cix-invalidates alone. All
 	 * four when any role is declared: more than changed, never less
-	 * (#607, found by the drift check in test_container_recipe).
+	 * (#607, found by the drift check in test_deployment).
 	 */
 	if (json_object_get(root, "dns_server") != NULL ||
 	    json_object_get(root, "ntp_server") != NULL ||
@@ -21183,7 +21183,7 @@ static void handle_container_volume_detach(int fd, const char *container_name,
  * container's own persisted create-request body, so a future restart
  * or recreate replays the original definition, this attachment gone.
  * If it needs to survive a recreate, the durable path is editing the
- * container's own definition (a container recipe, ADR-0151) and
+ * container's own definition (a deployment, ADR-0151) and
  * re-applying it -- not this endpoint, same division of responsibility
  * ADR-0153 already drew for files.
  *
@@ -22088,7 +22088,7 @@ static void handle_container_file_read(int fd, const char *name, const char *rel
  * appending a new one, preserving every other field) that doesn't
  * belong bolted onto a same primitive that's supposed to stay simple
  * and immediate. The durable path for "this change should survive a
- * recreate" is a container recipe (ADR-0151): capture the updated
+ * recreate" is a deployment (ADR-0151): capture the updated
  * file content there and re-apply, the same reproducible path this
  * project already uses for exactly that. Both together (live patch
  * now, recipe update for later) intentionally mirror how `pkg
@@ -23681,14 +23681,14 @@ static void handle_rebuildable_storage_migrate_get(int fd)
 	jw_free(&w);
 }
 
-static void respond_container_recipe_error(int fd, enum pkg_error err)
+static void respond_deployment_error(int fd, enum pkg_error err)
 {
 	switch (err) {
 	case PKG_ERR_INVALID_NAME:
-		respond_error(fd, 400, "Bad Request", "invalid container recipe name");
+		respond_error(fd, 400, "Bad Request", "invalid deployment name");
 		break;
 	case PKG_ERR_NOT_FOUND:
-		respond_error(fd, 404, "Not Found", "no such container recipe");
+		respond_error(fd, 404, "Not Found", "no such deployment");
 		break;
 	case PKG_ERR_INVALID_RECIPE:
 		respond_error(fd, 400, "Bad Request",
@@ -23698,25 +23698,25 @@ static void respond_container_recipe_error(int fd, enum pkg_error err)
 		break;
 	case PKG_ERR_PERSIST_FAILED:
 	default:
-		respond_error(fd, 500, "Internal Server Error", "container recipe operation failed");
+		respond_error(fd, 500, "Internal Server Error", "deployment operation failed");
 		break;
 	}
 }
 
-static void handle_container_recipe_list(int fd)
+static void handle_deployment_list(int fd)
 {
 	struct json_writer w;
 
 	jw_init(&w);
 	jw_obj_open(&w);
 	jw_key(&w, "recipes");
-	container_recipe_write_json_list(&w);
+	deployment_write_json_list(&w);
 	jw_obj_close(&w);
 	respond_json(fd, 200, "OK", &w);
 	jw_free(&w);
 }
 
-static void handle_container_recipe_add(int fd, const char *body, size_t body_len)
+static void handle_deployment_add(int fd, const char *body, size_t body_len)
 {
 	struct json_value *root;
 	const char *name;
@@ -23775,10 +23775,10 @@ static void handle_container_recipe_add(int fd, const char *body, size_t body_le
 		}
 	}
 
-	perr = container_recipe_add(name, content);
+	perr = deployment_add(name, content);
 	json_free(root);
 	if (perr != PKG_OK) {
-		respond_container_recipe_error(fd, perr);
+		respond_deployment_error(fd, perr);
 		return;
 	}
 	http_set_blocking(fd);
@@ -23829,16 +23829,16 @@ static void handle_deployment_commit_post(int fd, const char *name, const char *
 	recipe_commit_respond(fd, perr, err, sizeof(err));
 }
 
-static void handle_container_recipe_get(int fd, const char *name)
+static void handle_deployment_get(int fd, const char *name)
 {
 	char *content;
 	size_t content_len;
 	enum pkg_error perr;
 	struct json_writer w;
 
-	perr = container_recipe_get(name, &content, &content_len);
+	perr = deployment_get(name, &content, &content_len);
 	if (perr != PKG_OK) {
-		respond_container_recipe_error(fd, perr);
+		respond_deployment_error(fd, perr);
 		return;
 	}
 	jw_init(&w);
@@ -23857,7 +23857,7 @@ static void handle_container_recipe_get(int fd, const char *name)
 		 * source edit, none of which announce a deployment, and
 		 * `pkg source own` already reports it. */
 		jw_key(&w, "version");
-		if (container_recipe_version(name, version, sizeof(version)) == 0)
+		if (deployment_version(name, version, sizeof(version)) == 0)
 			jw_str(&w, version);
 		else
 			jw_null(&w);
@@ -23868,12 +23868,12 @@ static void handle_container_recipe_get(int fd, const char *name)
 	jw_free(&w);
 }
 
-static void handle_container_recipe_delete(int fd, const char *name)
+static void handle_deployment_delete(int fd, const char *name)
 {
-	enum pkg_error perr = container_recipe_rm(name);
+	enum pkg_error perr = deployment_rm(name);
 
 	if (perr != PKG_OK) {
-		respond_container_recipe_error(fd, perr);
+		respond_deployment_error(fd, perr);
 		return;
 	}
 	/* ADR-0392: kept secrets live as long as the deployment. */
@@ -23890,7 +23890,7 @@ static void handle_container_recipe_delete(int fd, const char *name)
  * POST /v1/containers/recipes/{name}/apply -- renders the recipe
  * (substituting any {{SECRET:KEY}} tokens from the request body's own
  * "secrets" object) and hands the result to handle_create()'s own
- * body-handling path unchanged -- a container recipe apply IS a
+ * body-handling path unchanged -- a deployment apply IS a
  * container create, just sourced from a stored, git-syncable template
  * instead of an inline request body. handle_create() itself responds
  * (201 + the new container, or whatever error create_container_from_
@@ -24189,7 +24189,7 @@ static void deployment_replace(int fd, const char *name, struct container_def *d
 	jw_free(&out);
 }
 
-static void handle_container_recipe_apply(int fd, const char *name, const char *body,
+static void handle_deployment_apply(int fd, const char *name, const char *body,
                                            size_t body_len)
 {
 	struct json_value *root = NULL;
@@ -24215,18 +24215,18 @@ static void handle_container_recipe_apply(int fd, const char *name, const char *
 	depsecret_merge(name, given, &sw);
 	secrets = json_parse(sw.buf, sw.len);
 	jw_free(&sw);
-	rendered = container_recipe_render(name, secrets, &perr);
+	rendered = deployment_render(name, secrets, &perr);
 	json_free(secrets);
 	if (rendered == NULL) {
 		json_free(root);
-		respond_container_recipe_error(fd, perr);
+		respond_deployment_error(fd, perr);
 		return;
 	}
 	/* #696: never create a container holding a literal placeholder. */
 	{
 		char keys[256], msg[512];
 
-		if (container_recipe_unfilled_secrets(rendered, keys, sizeof(keys)) > 0) {
+		if (deployment_unfilled_secrets(rendered, keys, sizeof(keys)) > 0) {
 			free(rendered);
 			json_free(root);
 			snprintf(msg, sizeof(msg),
@@ -26380,7 +26380,7 @@ static void handle_dhcp_server_register(int fd, const char *body, size_t body_le
  */
 /*
  * POST /v1/dns/provision -- bring up this platform's DNS service in one
- * call: create each replica from its own container recipe, register it
+ * call: create each replica from its own deployment, register it
  * as a DNS server so records reach it live, and point the host's own
  * resolver at the addresses those containers actually got.
  *
@@ -26913,7 +26913,7 @@ static void handle_dns_provision(int fd, const char *body, size_t body_len)
 	json_free(root);
 
 	/*
-	 * The two replicas this platform ships container recipes for. A
+	 * The two replicas this platform ships deployments for. A
 	 * default rather than a requirement, because "provision DNS" with
 	 * no further detail is the overwhelmingly common request, and
 	 * making the caller restate the standard topology every time adds
@@ -26947,14 +26947,14 @@ static void handle_dns_provision(int fd, const char *body, size_t body_len)
 			char *rendered;
 			enum pkg_error perr;
 
-			rendered = container_recipe_render(replicas[i], NULL, &perr);
+			rendered = deployment_render(replicas[i], NULL, &perr);
 			if (rendered == NULL) {
 				created = "no-recipe";
 				problems++;
 				jw_key(&w, "created");
 				jw_str(&w, created);
 				jw_key(&w, "error");
-				jw_str(&w, "no container recipe published for this replica");
+				jw_str(&w, "no deployment published for this replica");
 				jw_obj_close(&w);
 				continue;
 			}
@@ -26964,7 +26964,7 @@ static void handle_dns_provision(int fd, const char *body, size_t body_len)
 			{
 				char keys[256], msg[384];
 
-				if (container_recipe_unfilled_secrets(rendered, keys, sizeof(keys)) > 0) {
+				if (deployment_unfilled_secrets(rendered, keys, sizeof(keys)) > 0) {
 					free(rendered);
 					snprintf(msg, sizeof(msg),
 					         "its recipe needs secrets (%s); apply it with cixctl deployment "
@@ -31038,13 +31038,13 @@ static void op_addImageRecipe(const struct api_ctx *ctx)
 /* GET /v1/containers/recipes */
 static void op_listDeployments(const struct api_ctx *ctx)
 {
-	handle_container_recipe_list(ctx->fd);
+	handle_deployment_list(ctx->fd);
 }
 
 /* POST /v1/containers/recipes */
 static void op_addDeployment(const struct api_ctx *ctx)
 {
-	handle_container_recipe_add(ctx->fd, ctx->req->body, ctx->req->body_len);
+	handle_deployment_add(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
 /* GET /v1/dns/records */
@@ -31921,7 +31921,7 @@ static void op_setVolumeBackupConfig(const struct api_ctx *ctx)
 
 static void op_getDeployment(const struct api_ctx *ctx)
 {
-	handle_container_recipe_get(ctx->fd, ctx->p[0]);
+	handle_deployment_get(ctx->fd, ctx->p[0]);
 }
 
 /* POST /v1/deployments/{name}/commit (ADR-0396, #740) */
@@ -31932,12 +31932,12 @@ static void op_commitDeployment(const struct api_ctx *ctx)
 
 static void op_deleteDeployment(const struct api_ctx *ctx)
 {
-	handle_container_recipe_delete(ctx->fd, ctx->p[0]);
+	handle_deployment_delete(ctx->fd, ctx->p[0]);
 }
 
 static void op_applyDeployment(const struct api_ctx *ctx)
 {
-	handle_container_recipe_apply(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
+	handle_deployment_apply(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
 }
 
 static void op_getContainer(const struct api_ctx *ctx)

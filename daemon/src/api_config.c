@@ -1877,7 +1877,7 @@ static int build_plan(const struct json_value *doc, const char *containers_dir,
 			 * or the section is an observation with no setter
 			 * (`routes`), or the thing already has a better
 			 * distribution mechanism than this one
-			 * (`image_recipes`, `container_recipes`, which
+			 * (`image_recipes`, `deployments`, which
 			 * `pkg sync` brings from git). The message used to
 			 * assert the first two reasons for all eleven, which
 			 * was simply untrue for the recipe sections.

@@ -597,7 +597,7 @@ static void jw_raw_str(struct json_writer *w, const char *s)
  * jw_raw_escaped_content() below (content only, no surrounding quotes
  * -- for splicing escaped text into the middle of a JSON string
  * literal that's already open, e.g. container-recipe secret
- * substitution, daemon/src/pkg.c's container_recipe_substitute_
+ * substitution, daemon/src/pkg.c's deployment_substitute_
  * secrets()) -- one escaping ruleset, never two drifting copies.
  */
 static void jw_escape_content(struct json_writer *w, const char *s)

@@ -815,7 +815,7 @@ static const struct cli_node n_time_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
-static const char *const n_container_apply_recipe_flags[] = {
+static const char *const n_deployment_apply_flags[] = {
 	"--secret=",
 	NULL
 };
@@ -868,7 +868,7 @@ static const struct cli_node n_container_network_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
-static const char *const n_container_recipe_add_flags[] = {
+static const char *const n_deployment_add_flags[] = {
 	"--file=",
 	"--name=",
 	NULL
@@ -882,10 +882,10 @@ static const char *const n_deployment_commit_flags[] = {
 	NULL
 };
 
-/* #371: was n_container_recipe_subs, promoted to a top-level noun. */
+/* #371: was n_deployment_subs, promoted to a top-level noun. */
 static const struct cli_node n_deployment_subs[] = {
-	{ "add", n_container_recipe_add_flags, NULL },
-	{ "apply", n_container_apply_recipe_flags, NULL },
+	{ "add", n_deployment_add_flags, NULL },
+	{ "apply", n_deployment_apply_flags, NULL },
 	{ "commit", n_deployment_commit_flags, NULL },
 	{ "ls", NULL, NULL },
 	{ "rm", NULL, NULL },

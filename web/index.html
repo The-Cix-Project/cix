@@ -1988,7 +1988,7 @@
 			<div class="tab-bar">
 				<button type="button" class="tab-button active" data-tab="pkg-recipes">Package Recipes</button>
 				<button type="button" class="tab-button" data-tab="image-recipes">Image Recipes</button>
-				<button type="button" class="tab-button" data-tab="container-recipes">Container Recipes</button>
+				<button type="button" class="tab-button" data-tab="deployments">Deployments</button>
 				<button type="button" class="tab-button" data-tab="pkg-repo">Sources &amp; Sync</button>
 			</div>
 <div class="tab-panel" id="recipes-panel-pkg" data-tab="pkg-recipes">
@@ -2015,17 +2015,17 @@
 						</tbody>
 					</table>
 				</div>
-<div class="tab-panel" id="recipes-panel-container" data-tab="container-recipes" hidden>
+<div class="tab-panel" id="recipes-panel-container" data-tab="deployments" hidden>
 					<div class="list-toolbar">
-						<input type="search" id="recipes-container-search" placeholder="Search container recipes by name&hellip;">
+						<input type="search" id="recipes-container-search" placeholder="Search deployments by name&hellip;">
 						<button type="button" id="recipes-container-add">Add recipe&hellip;</button>
 					</div>
 					<p class="hint">A recipe's own name is always the container it creates (ADR-0151) --
 						content is a real <code>POST /containers</code> body; applying creates that
 						container. A recipe may embed <code>{{SECRET:KEY}}</code> tokens in staged file
 						content -- supply real values only at apply time, never committed to git.</p>
-					<table id="container-recipes">
-						<tbody id="container-recipes-body">
+					<table id="deployments">
+						<tbody id="deployments-body">
 							<tr><td colspan="2" class="empty">Reading&hellip;</td></tr>
 						</tbody>
 					</table>

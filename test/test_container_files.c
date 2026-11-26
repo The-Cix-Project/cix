@@ -906,7 +906,7 @@ int main(void)
 	 * /proc/<pid>/root) -- and confirms the write is live/ephemeral: it
 	 * never touches the container's own persisted files[] body, so it is
 	 * NOT what a recreate would replay (that durability boundary belongs
-	 * to a container recipe instead, by design -- see ADR-0153). */
+	 * to a deployment instead, by design -- see ADR-0153). */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",
 	                       "{\"name\":\"writetest2\",\"image\":\"filestest\","

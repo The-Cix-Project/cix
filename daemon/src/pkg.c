@@ -7650,7 +7650,7 @@ void pkg_repoint(const char *pkg_dir, const char *installed_state_path, const ch
 	snprintf(g_images_dir, sizeof(g_images_dir), "%s", images_dir);
 	snprintf(g_artifacts_dir, sizeof(g_artifacts_dir), "%s", artifacts_dir);
 	image_recipe_repoint(pkg_dir);
-	container_recipe_repoint(pkg_dir);
+	deployment_repoint(pkg_dir);
 	{
 		char upstream_dir[PATH_MAX];
 
@@ -8085,7 +8085,7 @@ int pkg_init(const char *pkg_dir, const char *installed_state_path, const char *
 	memset(g_chains, 0, sizeof(g_chains));
 	memset(g_build_output_entries, 0, sizeof(g_build_output_entries));
 	image_recipe_init(pkg_dir);
-	container_recipe_init(pkg_dir);
+	deployment_init(pkg_dir);
 	/*
 	 * ADR-0272: before load_state(), and deliberately not inside it.
 	 * load_state() returns early when the installed-state file is not
@@ -9429,7 +9429,7 @@ static void rebuild_queue_enqueue(const char *image)
 	g_rebuild_queue_count++;
 	/* ADR-0339: the queue changes by itself -- a publish queues, the
 	 * drain takes -- with no request whose x-cix-invalidates could
-	 * say so. Found by #607's drift check in test_container_recipe. */
+	 * say so. Found by #607's drift check in test_deployment. */
 	events_announce(EV_listPkgRebuilds);
 }
 
@@ -19365,7 +19365,7 @@ enum pkg_error pkg_deployment_commit_start(const char *name, const char *version
 		return PKG_ERR_INVALID_RECIPE;
 	}
 	json_free(root);
-	if (container_recipe_version(name, held, sizeof(held)) == 0 &&
+	if (deployment_version(name, held, sizeof(held)) == 0 &&
 	    pkg_version_compare(version, held) <= 0) {
 		snprintf(err, err_size,
 		         "%s is at %s here; a new version must be above it, or the next sync "
@@ -20085,7 +20085,7 @@ void pkg_recipe_commit_done(int exit_status, void *unused)
 	/* ADR-0396: a deployment is stored, with the version it was
 	 * committed at, which is what the next sync will find. */
 	if (strcmp(g_recipe_commit.kind, "deployment") == 0) {
-		perr = container_recipe_add_versioned(g_recipe_commit.name, g_recipe_commit.content,
+		perr = deployment_add_versioned(g_recipe_commit.name, g_recipe_commit.content,
 		                                      g_recipe_commit.version);
 		if (perr != PKG_OK) {
 			snprintf(g_recipe_commit.error, sizeof(g_recipe_commit.error),
@@ -20963,13 +20963,13 @@ static void sync_walk_image_recipes(const char *images_root, int *added, int *sk
 
 /*
  * Same shape as sync_walk_image_recipes() above -- highest version per
- * name directory wins, container_recipe_add() always overwrites (no
+ * name directory wins, deployment_add() always overwrites (no
  * version-keying at the daemon layer, ADR-0151, mirroring ADR-0123's
  * image-recipe design) -- but the leaf filename is container.json,
- * not build.sh, since a container recipe's content is a JSON body,
+ * not build.sh, since a deployment's content is a JSON body,
  * never a shell script.
  */
-static void sync_walk_container_recipes(const char *containers_root, int *added, int *skipped,
+static void sync_walk_deployments(const char *containers_root, int *added, int *skipped,
                                          int *failed, const char *source, int *held,
                                          const struct catalogue *cat)
 {
@@ -20978,7 +20978,7 @@ static void sync_walk_container_recipes(const char *containers_root, int *added,
 
 	/* #505: flat, and the same "wins unless outranked" rule as the
 	 * image walk above. The extension is json, not sh, because a
-	 * container recipe's content is a JSON body. */
+	 * deployment's content is a JSON body. */
 	names_d = opendir(containers_root);
 	if (names_d == NULL)
 		return;
@@ -21036,7 +21036,7 @@ static void sync_walk_container_recipes(const char *containers_root, int *added,
 		{
 			char *have = NULL;
 			size_t have_len = 0;
-			int same = container_recipe_get(name, &have, &have_len) == PKG_OK && have != NULL &&
+			int same = deployment_get(name, &have, &have_len) == PKG_OK && have != NULL &&
 			           strcmp(have, content) == 0;
 
 			free(have);
@@ -21045,15 +21045,15 @@ static void sync_walk_container_recipes(const char *containers_root, int *added,
 
 				/* ADR-0396: the same bytes still record the version
 				 * git has them at, for a commit to be above. */
-				if (container_recipe_version(name, held_version, sizeof(held_version)) != 0 ||
+				if (deployment_version(name, held_version, sizeof(held_version)) != 0 ||
 				    strcmp(held_version, version) != 0)
-					container_recipe_add_versioned(name, content, version);
+					deployment_add_versioned(name, content, version);
 				free(content);
 				(*skipped)++;
 				continue;
 			}
 		}
-		rc = container_recipe_add_versioned(name, content, version);
+		rc = deployment_add_versioned(name, content, version);
 		free(content);
 		if (rc == PKG_OK)
 			(*added)++;
@@ -21643,7 +21643,7 @@ int pkg_sync_merge(void)
 		sync_walk_image_recipes(sub, &res[i].added, &res[i].skipped, &res[i].failed, s->name,
 		                        &res[i].held, cats[i]);
 		snprintf(sub, sizeof(sub), "%s/recipes/deployment", dir);
-		sync_walk_container_recipes(sub, &res[i].added, &res[i].skipped, &res[i].failed,
+		sync_walk_deployments(sub, &res[i].added, &res[i].skipped, &res[i].failed,
 		                            s->name, &res[i].held, cats[i]);
 
 		/* ADR-0324: keys only from a source trusted to vouch for
@@ -25652,11 +25652,11 @@ void image_recipe_write_json_list(struct json_writer *w)
 }
 
 /*
- * Container recipes (ADR-0151): a git-syncable, reproducible template
+ * Deployments (ADR-0151): a git-syncable, reproducible template
  * for a real POST /v1/containers body -- cmd/files/network/restart-
  * policy/sysctls, everything an image recipe deliberately does NOT
  * cover (ADR-0123's own image_packages= is package-manifest-only by
- * design; a container recipe is the missing other half). Unlike an
+ * design; a deployment is the missing other half). Unlike an
  * image recipe, content is stored and applied AS-IS: it must already
  * be the exact JSON body create_container_from_body() (main.c) would
  * accept, including its own "name" field, which must match the name
@@ -25665,7 +25665,7 @@ void image_recipe_write_json_list(struct json_writer *w)
  * for pkg_name=, and image recipes deliberately don't need since they
  * carry no internal name field of their own). A recipe MAY embed
  * {{SECRET:KEY}} tokens inside any string value (typically staged
- * file content) -- container_recipe_apply_start() substitutes them
+ * file content) -- deployment_apply_start() substitutes them
  * from the apply request's own secrets map before ever calling
  * create_container_from_body(), so a real credential never has to be
  * committed to git (the same class of gap cix.recipe's own
@@ -25673,25 +25673,55 @@ void image_recipe_write_json_list(struct json_writer *w)
  * convention for, generalized here into a real substitution
  * mechanism instead of a manual find-and-replace).
  */
-static char g_container_recipes_dir[PATH_MAX];
+static char g_deployments_dir[PATH_MAX];
 
-void container_recipe_init(const char *pkg_dir)
+/*
+ * ADR-0397: the store was <pkg_dir>/container-recipes until the name
+ * "container recipe" went to the reusable part and deployments became
+ * deployments everywhere. A store still under the old name is moved
+ * once, by rename, which is atomic and idempotent: after it the old
+ * name is gone and the check finds nothing to do. A failure leaves the
+ * old directory where it was and says so; the new one is then empty and
+ * the next sync refills what a source offers.
+ */
+static void deployment_set_dir(const char *pkg_dir)
 {
-	snprintf(g_container_recipes_dir, sizeof(g_container_recipes_dir), "%s/container-recipes",
-	         pkg_dir);
+	char old[PATH_MAX];
+	struct stat st;
+
+	snprintf(g_deployments_dir, sizeof(g_deployments_dir), "%s/deployments", pkg_dir);
+	snprintf(old, sizeof(old), "%s/container-recipes", pkg_dir);
+	if (stat(old, &st) != 0 || !S_ISDIR(st.st_mode))
+		return;
+	if (stat(g_deployments_dir, &st) == 0) {
+		logstore_write("cixd", "error",
+		               "deployments: both %s and %s exist; using %s, %s is left alone",
+		               old, g_deployments_dir, g_deployments_dir, old);
+		return;
+	}
+	if (rename(old, g_deployments_dir) != 0)
+		logstore_write("cixd", "error", "deployments: could not move %s to %s: %s", old,
+		               g_deployments_dir, strerror(errno));
+	else
+		logstore_write("cixd", "info", "deployments: moved %s to %s (ADR-0397)", old,
+		               g_deployments_dir);
+}
+
+void deployment_init(const char *pkg_dir)
+{
+	deployment_set_dir(pkg_dir);
 }
 
 /* ADR-0141 Phase 4 style path-only repoint, mirroring image_recipe_
  * repoint()'s own doc comment exactly -- see pkg_repoint(). */
-void container_recipe_repoint(const char *pkg_dir)
+void deployment_repoint(const char *pkg_dir)
 {
-	snprintf(g_container_recipes_dir, sizeof(g_container_recipes_dir), "%s/container-recipes",
-	         pkg_dir);
+	deployment_set_dir(pkg_dir);
 }
 
-static void container_recipe_path(const char *name, char *out, size_t out_size)
+static void deployment_path(const char *name, char *out, size_t out_size)
 {
-	snprintf(out, out_size, "%s/%s.recipe", g_container_recipes_dir, name);
+	snprintf(out, out_size, "%s/%s.recipe", g_deployments_dir, name);
 }
 
 /*
@@ -25701,12 +25731,12 @@ static void container_recipe_path(const char *name, char *out, size_t out_size)
  * none, removes the record, since the content no longer matches it.
  * Only a commit reads it, to refuse a version the next sync would not use.
  */
-static void container_recipe_version_path(const char *name, char *out, size_t out_size)
+static void deployment_version_path(const char *name, char *out, size_t out_size)
 {
-	snprintf(out, out_size, "%s/%s.version", g_container_recipes_dir, name);
+	snprintf(out, out_size, "%s/%s.version", g_deployments_dir, name);
 }
 
-int container_recipe_version(const char *name, char *out, size_t out_size)
+int deployment_version(const char *name, char *out, size_t out_size)
 {
 	char path[PATH_MAX];
 	char *buf = NULL;
@@ -25715,7 +25745,7 @@ int container_recipe_version(const char *name, char *out, size_t out_size)
 	out[0] = '\0';
 	if (!pkg_name_is_valid(name))
 		return -1;
-	container_recipe_version_path(name, path, sizeof(path));
+	deployment_version_path(name, path, sizeof(path));
 	if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)
 		return -1;
 	while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == ' '))
@@ -25730,21 +25760,21 @@ int container_recipe_version(const char *name, char *out, size_t out_size)
 	return 0;
 }
 
-static enum pkg_error container_recipe_store(const char *name, const char *content,
+static enum pkg_error deployment_store(const char *name, const char *content,
                                              const char *version);
 
-enum pkg_error container_recipe_add(const char *name, const char *content)
+enum pkg_error deployment_add(const char *name, const char *content)
 {
-	return container_recipe_store(name, content, NULL);
+	return deployment_store(name, content, NULL);
 }
 
-enum pkg_error container_recipe_add_versioned(const char *name, const char *content,
+enum pkg_error deployment_add_versioned(const char *name, const char *content,
                                               const char *version)
 {
-	return container_recipe_store(name, content, version);
+	return deployment_store(name, content, version);
 }
 
-static enum pkg_error container_recipe_store(const char *name, const char *content,
+static enum pkg_error deployment_store(const char *name, const char *content,
                                              const char *version)
 {
 	struct json_value *root;
@@ -25778,12 +25808,12 @@ static enum pkg_error container_recipe_store(const char *name, const char *conte
 	}
 	json_free(root);
 
-	if (persist_mkdir_p(g_container_recipes_dir) != 0)
+	if (persist_mkdir_p(g_deployments_dir) != 0)
 		return PKG_ERR_PERSIST_FAILED;
 
 	/* Staged then renamed into place -- same crash-safety convention
 	 * image_recipe_add()/pkg_recipe_add() already established. */
-	snprintf(staging_path, sizeof(staging_path), "%s/.%s.recipe.new", g_container_recipes_dir,
+	snprintf(staging_path, sizeof(staging_path), "%s/.%s.recipe.new", g_deployments_dir,
 	         name);
 	fd = open(staging_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 	if (fd < 0)
@@ -25795,12 +25825,12 @@ static enum pkg_error container_recipe_store(const char *name, const char *conte
 		unlink(staging_path);
 		return PKG_ERR_PERSIST_FAILED;
 	}
-	container_recipe_path(name, path, sizeof(path));
+	deployment_path(name, path, sizeof(path));
 	if (rename(staging_path, path) != 0) {
 		unlink(staging_path);
 		return PKG_ERR_PERSIST_FAILED;
 	}
-	container_recipe_version_path(name, path, sizeof(path));
+	deployment_version_path(name, path, sizeof(path));
 	if (version != NULL) {
 		if (persist_atomic_write(path, version, strlen(version)) != 0)
 			return PKG_ERR_PERSIST_FAILED;
@@ -25813,35 +25843,35 @@ static enum pkg_error container_recipe_store(const char *name, const char *conte
 	return PKG_OK;
 }
 
-enum pkg_error container_recipe_get(const char *name, char **out_content, size_t *out_len)
+enum pkg_error deployment_get(const char *name, char **out_content, size_t *out_len)
 {
 	char path[PATH_MAX];
 
 	if (!pkg_name_is_valid(name))
 		return PKG_ERR_INVALID_NAME;
-	container_recipe_path(name, path, sizeof(path));
+	deployment_path(name, path, sizeof(path));
 	if (persist_read_file(path, out_content, out_len) != 0 || *out_content == NULL)
 		return PKG_ERR_NOT_FOUND;
 	return PKG_OK;
 }
 
-enum pkg_error container_recipe_rm(const char *name)
+enum pkg_error deployment_rm(const char *name)
 {
 	char path[PATH_MAX];
 
 	if (!pkg_name_is_valid(name))
 		return PKG_ERR_INVALID_NAME;
-	container_recipe_path(name, path, sizeof(path));
+	deployment_path(name, path, sizeof(path));
 	if (unlink(path) != 0)
 		return (errno == ENOENT) ? PKG_ERR_NOT_FOUND : PKG_ERR_PERSIST_FAILED;
-	container_recipe_version_path(name, path, sizeof(path));
+	deployment_version_path(name, path, sizeof(path));
 	unlink(path);
 	return PKG_OK;
 }
 
-void container_recipe_write_json_list(struct json_writer *w)
+void deployment_write_json_list(struct json_writer *w)
 {
-	DIR *d = opendir(g_container_recipes_dir);
+	DIR *d = opendir(g_deployments_dir);
 	struct dirent *de;
 
 	jw_arr_open(w);
@@ -25880,11 +25910,11 @@ void container_recipe_write_json_list(struct json_writer *w)
  * error create_container_from_body() gives for the resulting
  * malformed value (e.g. a literal "{{SECRET:X}}" landing in a config
  * file), not silently swallowed here, and a recipe author previewing
- * raw content via container_recipe_get() should always see the real,
+ * raw content via deployment_get() should always see the real,
  * unsubstituted token, never a guess. Returns a newly allocated
  * string the caller frees, or NULL on allocation failure.
  */
-static char *container_recipe_substitute_secrets(const char *content,
+static char *deployment_substitute_secrets(const char *content,
                                                    const struct json_value *secrets)
 {
 	struct json_writer w;
@@ -25995,7 +26025,7 @@ static char *container_recipe_substitute_secrets(const char *content,
 	return out;
 }
 
-char *container_recipe_render(const char *name, const struct json_value *secrets,
+char *deployment_render(const char *name, const struct json_value *secrets,
                                enum pkg_error *out_err)
 {
 	char *content;
@@ -26003,13 +26033,13 @@ char *container_recipe_render(const char *name, const struct json_value *secrets
 	char *rendered;
 	enum pkg_error rc;
 
-	rc = container_recipe_get(name, &content, &content_len);
+	rc = deployment_get(name, &content, &content_len);
 	if (rc != PKG_OK) {
 		*out_err = rc;
 		return NULL;
 	}
 
-	rendered = container_recipe_substitute_secrets(content, secrets);
+	rendered = deployment_substitute_secrets(content, secrets);
 	free(content);
 	if (rendered == NULL) {
 		*out_err = PKG_ERR_PERSIST_FAILED;
@@ -26019,7 +26049,7 @@ char *container_recipe_render(const char *name, const struct json_value *secrets
 	 * An unmatched {{SECRET:KEY}} is left untouched here deliberately
 	 * (see substitute_secrets above): a preview must show the real
 	 * token, not a guess. Creating a container from it is another
-	 * matter, and container_recipe_unfilled_secrets() is what every
+	 * matter, and deployment_unfilled_secrets() is what every
 	 * caller that creates one asks first (#696).
 	 */
 	(void)name;
@@ -26037,7 +26067,7 @@ char *container_recipe_render(const char *name, const struct json_value *secrets
  * back to services, access and remote-access expired. So a caller
  * refuses to create from a render with any left, naming them.
  */
-int container_recipe_unfilled_secrets(const char *rendered, char *keys, size_t keys_size)
+int deployment_unfilled_secrets(const char *rendered, char *keys, size_t keys_size)
 {
 	char seen[16][128];
 	const char *p = rendered;
@@ -26308,9 +26338,9 @@ int image_recipe_list_names(char names[][PKG_IMAGE_NAME_MAX], int max)
 	return recipe_dir_names(g_image_recipes_dir, names, max);
 }
 
-int container_recipe_list_names(char names[][PKG_IMAGE_NAME_MAX], int max)
+int deployment_list_names(char names[][PKG_IMAGE_NAME_MAX], int max)
 {
-	return recipe_dir_names(g_container_recipes_dir, names, max);
+	return recipe_dir_names(g_deployments_dir, names, max);
 }
 
 /*

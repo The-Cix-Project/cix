@@ -458,9 +458,9 @@ struct ldap_config {
 	 * authenticates against this platform's LDAP needs -- stored once
 	 * here instead of hand-copied (URI list, base DN, bind DN, and a
 	 * real bind credential) into every such container's recipe. A
-	 * container recipe references them as {{LDAP:URI}} /
+	 * deployment references them as {{LDAP:URI}} /
 	 * {{LDAP:BASE_DN}} / {{LDAP:BIND_DN}} / {{LDAP:BIND_PASSWORD}}
-	 * tokens, resolved at recipe render time (container_recipe_
+	 * tokens, resolved at recipe render time (deployment_
 	 * render()) exactly like {{SECRET:KEY}} -- so recipes carry no
 	 * values at all and an LDAP server move is one config PUT, not a
 	 * recipe hunt. bind_password is stored in this module's root-only

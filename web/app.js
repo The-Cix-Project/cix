@@ -112,7 +112,7 @@ const cache = {
 	pkgRecipes: [],
 	pkgList: [],
 	imageRecipes: [],
-	containerRecipes: [],
+	deployments: [],
 	pkgSyncStatus: null,
 	pkgCacheConfig: null,
 	pkgCacheStatus: null,
@@ -541,7 +541,7 @@ async function submitForm(form) {
 		 * thing just written and on a create nobody knew it until it
 		 * was typed -- and the response, because an operation with
 		 * more than one success answers which one it took. applying a
-		 * container recipe is the case: 201 created, 202 queued behind
+		 * deployment is the case: 201 created, 202 queued behind
 		 * an image build (ADR-0270), and the hand-written form
 		 * reported "created" for both.
 		 */
@@ -1014,7 +1014,7 @@ function sessionRefusal(opId) {
  * templates (`<opId>_PATH`, generated into web/api.js). Matched with the
  * daemon's precedence (daemon/src/apiroute.c): among templates of the
  * same length, a literal segment beats a {parameter}, leftmost first --
- * so GET /v1/containers/recipes is listContainerRecipes, never
+ * so GET /v1/containers/recipes is listDeployments, never
  * getContainer with name "recipes". Built once, by iterating the table,
  * so nothing here names an operation.
  */
@@ -2487,7 +2487,7 @@ const CATEGORY_VIEWS = {
 	recipes: "view-catalogue",
 	"pkg-recipes": "view-catalogue",
 	"image-recipes": "view-catalogue",
-	"container-recipes": "view-catalogue",
+	"deployments": "view-catalogue",
 	pipeline: "view-integration",
 	"pipeline-errors": "view-integration",
 	"site": "view-configuration",
@@ -2802,7 +2802,7 @@ function renderCurrentView() {
 		if (onPageOf("pkg-recipes")) {
 			renderRecipesList();
 			renderImageRecipesTable();
-			renderContainerRecipesTable();
+			renderDeploymentsTable();
 		}
 		if (onPageOf("pkg-build-config")) {
 			renderPackagesView(null);
@@ -3449,7 +3449,7 @@ function renderTree() {
 			 * The children stay Catalogue/Build/Deployment rather
 			 * than becoming agent-nouns for the same reason, and
 			 * "Deployer" would additionally collide with the
-			 * /deployments API resource, which is container recipes
+			 * /deployments API resource, which is deployments
 			 * (ADR-0151) -- a different thing entirely.
 			 *
 			 * The hash stays "pipeline"; this is a label change, not
@@ -5174,7 +5174,7 @@ for (const tabButton of document.querySelectorAll(".tab-bar .tab-button")) {
 				runRefreshers(refreshersForView(owner.id));
 		}
 		if (tabName === "config" && currentContainerDetailName !== null)
-			loadContainerRecipe(currentContainerDetailName);
+			loadDeployment(currentContainerDetailName);
 		/* #398: same on-open-only rule as the recipe above -- a
 		 * version's manifest is immutable, so re-fetching it on the
 		 * two-second detail poll would be a request every two seconds
@@ -5214,7 +5214,7 @@ function formatExitStatus(c) {
  * an error, and it is said in those words -- which is why apiRequest()
  * now carries the HTTP status on the errors it throws.
  *
- * Fetched through loadContainerRecipeContent(), the same accessor the
+ * Fetched through loadDeploymentContent(), the same accessor the
  * recipes page uses, rather than a second copy of the request: it also
  * caches by name, so switching tabs back and forth costs nothing.
  *
@@ -5222,7 +5222,7 @@ function formatExitStatus(c) {
  * UNSUBSTITUTED, so {{SECRET:...}} and {{LDAP:BIND_PASSWORD}} appear as
  * their tokens and no credential reaches this page.
  */
-async function loadContainerRecipe(name) {
+async function loadDeployment(name) {
 	const statusEl = document.getElementById("cd-config-recipe-status");
 	const textEl = document.getElementById("cd-config-recipe");
 
@@ -5231,7 +5231,7 @@ async function loadContainerRecipe(name) {
 	statusEl.textContent = "Reading\u2026";
 	textEl.hidden = true;
 	try {
-		const content = await loadContainerRecipeContent(name);
+		const content = await loadDeploymentContent(name);
 
 		/* Moved on to another container while this was in flight. */
 		if (currentContainerDetailName !== name)
@@ -5357,7 +5357,7 @@ function renderContainerDetail(name) {
 	 */
 	if (switched && c) {
 		if (document.getElementById("cd-tab-config").classList.contains("active"))
-			loadContainerRecipe(name);
+			loadDeployment(name);
 		if (document.getElementById("cd-tab-packages").classList.contains("active"))
 			loadContainerPackages(name);
 	}
@@ -11148,10 +11148,10 @@ async function removePkgRecipe(name, version) {
 	}
 }
 
-/* ---- Software Catalogue: Image + Container recipe tabs ----
+/* ---- Software Catalogue: Image + Deployment tabs ----
  * The Packages tab (renderRecipesList()) already existed; these two
  * make the catalogue actually cover all three recipe kinds (ADR-0151)
- * instead of leaving image/container recipes only reachable buried in
+ * instead of leaving image/deployments only reachable buried in
  * an image's own detail page (image) or not browsable at all
  * (container, brand new). Both filtered client-side by their own
  * search box -- these lists are small, no server-side search needed. */
@@ -11164,12 +11164,12 @@ async function refreshImageRecipesList() {
 		renderImageRecipesTable();
 }
 
-async function refreshContainerRecipesList() {
+async function refreshDeploymentsList() {
 	const data = await apiRequest("GET", CIX_API.listDeployments());
 
-	cache.containerRecipes = data.recipes;
+	cache.deployments = data.recipes;
 	if (onPageOf("recipes"))
-		renderContainerRecipesTable();
+		renderDeploymentsTable();
 }
 
 function renderImageRecipesTable() {
@@ -11240,24 +11240,24 @@ function renderImageRecipesTable() {
 	});
 }
 
-let containerRecipeContentCache = { name: null, content: null };
+let deploymentContentCache = { name: null, content: null };
 
-async function loadContainerRecipeContent(name) {
-	if (containerRecipeContentCache.name === name)
-		return containerRecipeContentCache.content;
+async function loadDeploymentContent(name) {
+	if (deploymentContentCache.name === name)
+		return deploymentContentCache.content;
 	const data = await apiRequest("GET", CIX_API.getDeployment(name));
 
-	containerRecipeContentCache = { name: name, content: data.content };
-	return containerRecipeContentCache.content;
+	deploymentContentCache = { name: name, content: data.content };
+	return deploymentContentCache.content;
 }
 
-function renderContainerRecipesTable() {
+function renderDeploymentsTable() {
 	const filter = document.getElementById("recipes-container-search").value.trim().toLowerCase();
-	const rows = cache.containerRecipes.filter((r) => r.name.toLowerCase().includes(filter));
+	const rows = cache.deployments.filter((r) => r.name.toLowerCase().includes(filter));
 
 	/* Generated (#592), with the filter in `extra` as the image
 	 * catalogue's is. */
-	renderTable(document.getElementById("container-recipes"), "Deployment", rows, [
+	renderTable(document.getElementById("deployments"), "Deployment", rows, [
 		"name",
 		{ label: "", actions: (r) => {
 			const apply = document.createElement("button");
@@ -11271,7 +11271,7 @@ function renderContainerRecipesTable() {
 					title: "Apply recipe: " + r.name,
 					submit: "Apply -- create container",
 					args: [r.name],
-					after: (b, result) => afterContainerRecipeApply(r.name, result),
+					after: (b, result) => afterDeploymentApply(r.name, result),
 					failed: "Failed to apply recipe " + r.name,
 				});
 			});
@@ -11282,27 +11282,27 @@ function renderContainerRecipesTable() {
 				let content = "";
 
 				try {
-					content = await loadContainerRecipeContent(r.name);
+					content = await loadDeploymentContent(r.name);
 				} catch (e) {
 					/* Shouldn't happen for a name the list just returned. */
 				}
-				openContainerRecipeForm("Edit container recipe " + r.name, r.name, content);
+				openDeploymentForm("Edit deployment " + r.name, r.name, content);
 			});
 
 			rm.textContent = "Delete";
 			rm.className = "button-danger";
 			gateAction(rm, "deleteDeployment");
 			rm.addEventListener("click", async () => {
-				if (!confirm("Delete the container recipe for " + r.name + "? A container already "
+				if (!confirm("Delete the deployment for " + r.name + "? A container already "
 				             + "created from it is not affected."))
 					return;
 				try {
 					await apiRequest("DELETE", CIX_API.deleteDeployment(r.name));
-					showStatus("Deleted the container recipe for " + r.name);
-					containerRecipeContentCache = { name: null, content: null };
-					await refreshContainerRecipesList();
+					showStatus("Deleted the deployment for " + r.name);
+					deploymentContentCache = { name: null, content: null };
+					await refreshDeploymentsList();
 				} catch (e) {
-					showStatus("Failed to remove container recipe for " +
+					showStatus("Failed to remove deployment for " +
 					    r.name + ": " + e.message, true);
 				}
 			});
@@ -11310,15 +11310,15 @@ function renderContainerRecipesTable() {
 		} },
 	], {
 		op: "listDeployments",
-		what: "container recipes",
-		empty: cache.containerRecipes.length > 0 ? "No match" : "No container recipes",
+		what: "deployments",
+		empty: cache.deployments.length > 0 ? "No match" : "No deployments",
 		extra: filter,
 	});
 }
 
 document.getElementById("recipes-pkg-search").addEventListener("input", renderRecipesList);
 document.getElementById("recipes-image-search").addEventListener("input", renderImageRecipesTable);
-document.getElementById("recipes-container-search").addEventListener("input", renderContainerRecipesTable);
+document.getElementById("recipes-container-search").addEventListener("input", renderDeploymentsTable);
 
 document.getElementById("recipes-pkg-add").addEventListener("click", () => openPkgRecipeForm("Add a recipe"));
 document.getElementById("recipes-image-add").addEventListener("click", () => {
@@ -11330,27 +11330,27 @@ document.getElementById("recipes-image-add").addEventListener("click", () => {
 	});
 });
 /*
- * The container recipe form (#592): one generated form for adding a
+ * The deployment form (#592): one generated form for adding a
  * recipe and for editing one. On an edit the name is FIXED -- it is also
  * the container the recipe creates, so typing over it would write a
  * different recipe rather than rename this one. The content field is a
  * document, so it can be filled from a file.
  */
-function openContainerRecipeForm(title, name, content) {
+function openDeploymentForm(title, name, content) {
 	openForm("addDeployment", {
 		title: title, submit: "Save",
 		fixed: name ? { name: name } : {},
 		values: content ? { content: content } : {},
-		failed: "Failed to save the container recipe",
+		failed: "Failed to save the deployment",
 		after: async () => {
-			containerRecipeContentCache = { name: null, content: null };
-			await refreshContainerRecipesList();
+			deploymentContentCache = { name: null, content: null };
+			await refreshDeploymentsList();
 		},
 	});
 }
 
 document.getElementById("recipes-container-add").addEventListener("click",
-	() => openContainerRecipeForm("Add container recipe"));
+	() => openDeploymentForm("Add deployment"));
 
 /*
  * Which of an apply's two successes happened, said out loud.
@@ -11365,7 +11365,7 @@ document.getElementById("recipes-container-add").addEventListener("click",
  * The discriminator is the contract's own `state`, a declared enum of
  * one value, rather than the absence of some field on the 201 body.
  */
-async function afterContainerRecipeApply(name, result) {
+async function afterDeploymentApply(name, result) {
 	if (result !== null && result.state === "awaiting-image")
 		showStatus("Recipe " + name + " is queued: image " +
 			(result.awaiting_image || "it names") + " is being built, and the " +
@@ -15280,10 +15280,10 @@ const VIEW_REFRESHERS = {
 	"pipeline-errors": [refreshPipeline],
 	reconcile: [refreshImages, refreshPkgList],
 	images: [refreshImages, refreshPkgList],
-	recipes: [refreshPkgRecipes, refreshImageRecipesList, refreshContainerRecipesList],
-	"pkg-recipes": [refreshPkgRecipes, refreshImageRecipesList, refreshContainerRecipesList],
-	"image-recipes": [refreshImageRecipesList, refreshPkgRecipes, refreshContainerRecipesList],
-	"container-recipes": [refreshContainerRecipesList, refreshPkgRecipes, refreshImageRecipesList],
+	recipes: [refreshPkgRecipes, refreshImageRecipesList, refreshDeploymentsList],
+	"pkg-recipes": [refreshPkgRecipes, refreshImageRecipesList, refreshDeploymentsList],
+	"image-recipes": [refreshImageRecipesList, refreshPkgRecipes, refreshDeploymentsList],
+	"deployments": [refreshDeploymentsList, refreshPkgRecipes, refreshImageRecipesList],
 	packages: [refreshPkgList, refreshImages],
 	"pkg-repo": [refreshPkgSources, refreshPkgSyncStatus],
 	"pkg-cache": [refreshPkgCacheConfig, refreshPkgCacheStatus, refreshPkgRepositories],
@@ -15349,7 +15349,7 @@ const ALL_REFRESHERS = [
 	refreshLdapServers, refreshLdapGroups, refreshLdapUsers, refreshLdapConfig, refreshNtpConfig,
 	refreshNtpServers, refreshSyslogTargets, refreshNtpStatus, refreshNtpTime, refreshPkiCa,
 	refreshPkiIntermediate, refreshPkiCerts, refreshPkgRecipes, refreshImageRecipesList,
-	refreshContainerRecipesList, refreshPkgList, refreshPkgSources, refreshPkgSyncStatus,
+	refreshDeploymentsList, refreshPkgList, refreshPkgSources, refreshPkgSyncStatus,
 	refreshPkgCacheConfig, refreshPkgCacheStatus, refreshPkgRepositories,
 	refreshSiteConfig, refreshDaemonConfig, refreshRollingConfig,
 	refreshPkgBuildConfig, refreshRoutes, refreshSysctl, refreshKmod, refreshKmodConfig,

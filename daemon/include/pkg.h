@@ -1696,7 +1696,7 @@ enum pkg_error pkg_sync_start(pid_t *out_pid, int *out_pidfd);
  * safe). Also walks recipes/image/<name>@<version>.json (ADR-0311)
  * and recipes/deployment/<name>@<version>.json (ADR-0151),
  * each picking the highest version per name and add()ing it via its
- * own image_recipe_add()/container_recipe_add() -- both always
+ * own image_recipe_add()/deployment_add() -- both always
  * overwrite (no version-keying at the daemon layer, ADR-0123/ADR-0151),
  * so neither ever comes back PKG_ERR_DUPLICATE the way a package
  * recipe can. Records combined added/skipped counts and any error for
@@ -2059,27 +2059,27 @@ enum pkg_error pkg_image_recipe_apply(const char *image, int allow_downgrade,
                                       struct pkg_image_apply_result *out);
 
 /*
- * Container recipes (ADR-0151): a git-syncable, reproducible template
+ * Deployments (ADR-0151): a git-syncable, reproducible template
  * for a real POST /v1/containers body -- everything an image recipe
  * deliberately doesn't cover (cmd/files/network/restart-policy/
- * sysctls). name-keyed flat file (<pkg_dir>/container-recipes/
+ * sysctls). name-keyed flat file (<pkg_dir>/deployments/
  * <name>.recipe), content stored and applied as-is (must already be
  * the exact JSON create_container_from_body() would accept, including
  * its own "name" field matching the recipe's own name). See
- * daemon/src/pkg.c's own doc comment above container_recipe_add() for
+ * daemon/src/pkg.c's own doc comment above deployment_add() for
  * the full {{SECRET:KEY}} substitution mechanism.
  */
-void container_recipe_init(const char *pkg_dir);
-void container_recipe_repoint(const char *pkg_dir);
-enum pkg_error container_recipe_add(const char *name, const char *content);
+void deployment_init(const char *pkg_dir);
+void deployment_repoint(const char *pkg_dir);
+enum pkg_error deployment_add(const char *name, const char *content);
 /* ADR-0396 (#740): the version a stored deployment was synced or
  * committed at, recorded beside it; 0 when known, -1 when not. */
-enum pkg_error container_recipe_add_versioned(const char *name, const char *content,
+enum pkg_error deployment_add_versioned(const char *name, const char *content,
                                               const char *version);
-int container_recipe_version(const char *name, char *out, size_t out_size);
-enum pkg_error container_recipe_get(const char *name, char **out_content, size_t *out_len);
-enum pkg_error container_recipe_rm(const char *name);
-void container_recipe_write_json_list(struct json_writer *w);
+int deployment_version(const char *name, char *out, size_t out_size);
+enum pkg_error deployment_get(const char *name, char **out_content, size_t *out_len);
+enum pkg_error deployment_rm(const char *name);
+void deployment_write_json_list(struct json_writer *w);
 
 /*
  * Name-only enumerations for the declared-vs-installed reconciliation
@@ -2092,7 +2092,7 @@ void container_recipe_write_json_list(struct json_writer *w);
  * join server-side.
  */
 int image_recipe_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
-int container_recipe_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
+int deployment_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
 int pkg_recipe_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
 
 /*
@@ -2161,7 +2161,7 @@ int pkg_installed_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
  * and returns the result -- caller frees. NULL + *out_err set on any
  * failure (recipe not found). This is the one step between a stored
  * recipe and a real create_container_from_body() call; main.c's own
- * apply handler does exactly: container_recipe_render() -> pass the
+ * apply handler does exactly: deployment_render() -> pass the
  * result straight to handle_create()'s own body-handling path.
  */
 /*
@@ -2170,9 +2170,9 @@ int pkg_installed_list_names(char names[][PKG_IMAGE_NAME_MAX], int max);
  * container from a render refuses when this is not 0: the placeholder
  * would otherwise be written into the container as literal text.
  */
-int container_recipe_unfilled_secrets(const char *rendered, char *keys, size_t keys_size);
+int deployment_unfilled_secrets(const char *rendered, char *keys, size_t keys_size);
 
-char *container_recipe_render(const char *name, const struct json_value *secrets,
+char *deployment_render(const char *name, const struct json_value *secrets,
                                enum pkg_error *out_err);
 
 #endif /* PKG_H */

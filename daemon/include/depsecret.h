@@ -22,7 +22,7 @@
 /*
  * Writes into w one JSON object: every string member of `given`, then
  * every kept secret of `deployment` that `given` does not name. `given`
- * may be NULL. The result is what container_recipe_render() takes as
+ * may be NULL. The result is what deployment_render() takes as
  * its secrets. Returns the number of kept secrets it added.
  */
 int depsecret_merge(const char *deployment, const struct json_value *given,

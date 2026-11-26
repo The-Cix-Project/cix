@@ -866,7 +866,7 @@ void handle_software_list(int fd)
 			snprintf(installed[i], PKG_IMAGE_NAME_MAX, "%s", order[i]);
 		if (n > PKG_MAX_PACKAGES)
 			n = PKG_MAX_PACKAGES;
-		dn = container_recipe_list_names(declared, PKG_MAX_PACKAGES);
+		dn = deployment_list_names(declared, PKG_MAX_PACKAGES);
 		software_write_kind(&w, "container", declared, dn, installed, n);
 	}
 
@@ -1177,7 +1177,7 @@ void handle_image_recipe_export(int fd, const char *name)
 
 
 /*
- * Container recipes (ADR-0151) -- same shape as the image-recipe
+ * Deployments (ADR-0151) -- same shape as the image-recipe
  * handlers immediately above, minus the async artifact-fetch path
  * (containers create synchronously, always).
  */

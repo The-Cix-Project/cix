@@ -5626,9 +5626,9 @@ static int cmd_container_drift(const struct cix_client *c, int json_mode)
 	return drifted ? 1 : 0;
 }
 
-static int cmd_container_recipe(const struct cix_client *c, int json_mode, int argc, char **argv);
+static int cmd_deployment(const struct cix_client *c, int json_mode, int argc, char **argv);
 static int cmd_deployment_commit(const struct cix_client *c, int json_mode, int argc, char **argv);
-static int cmd_container_apply_recipe(const struct cix_client *c, int json_mode, int argc,
+static int cmd_deployment_apply(const struct cix_client *c, int json_mode, int argc,
                                        char **argv);
 
 /*
@@ -12597,16 +12597,16 @@ static int cmd_image_policy(const struct cix_client *c, int json_mode, int argc,
 	return emit(&r, json_mode, fmt_image_policy);
 }
 
-/* ---- ADR-0151: deployments (#371 -- were "container recipes") ---- */
+/* ---- ADR-0151: deployments (#371 -- were "deployments") ---- */
 
-static void fmt_container_recipe_line(const struct json_value *v)
+static void fmt_deployment_line(const struct json_value *v)
 {
 	const char *name = json_str_field(v, "name");
 
 	printf("%s\n", name != NULL ? name : "");
 }
 
-static void fmt_container_recipe_list(const struct json_value *v)
+static void fmt_deployment_list(const struct json_value *v)
 {
 	const struct json_value *recipes = json_object_get(v, "recipes");
 	size_t i;
@@ -12614,10 +12614,10 @@ static void fmt_container_recipe_list(const struct json_value *v)
 	if (recipes == NULL || recipes->type != JSON_ARRAY)
 		return;
 	for (i = 0; i < recipes->u.array.count; i++)
-		fmt_container_recipe_line(recipes->u.array.items[i]);
+		fmt_deployment_line(recipes->u.array.items[i]);
 }
 
-static int cmd_container_recipe_ls(const struct cix_client *c, int json_mode)
+static int cmd_deployment_ls(const struct cix_client *c, int json_mode)
 {
 	struct cix_response r;
 
@@ -12625,7 +12625,7 @@ static int cmd_container_recipe_ls(const struct cix_client *c, int json_mode)
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
-	return emit(&r, json_mode, fmt_container_recipe_list);
+	return emit(&r, json_mode, fmt_deployment_list);
 }
 
 /* --name= is the recipe's own name AND must match the "name" field
@@ -12633,7 +12633,7 @@ static int cmd_container_recipe_ls(const struct cix_client *c, int json_mode)
  * pkg_recipe_add()'s package-name contract) -- unlike an image recipe,
  * a deployment's content is a real POST /v1/containers body, so
  * it necessarily already carries its own name. */
-static int cmd_container_recipe_add(const struct cix_client *c, int json_mode, int argc,
+static int cmd_deployment_add(const struct cix_client *c, int json_mode, int argc,
                                      char **argv)
 {
 	const char *name = NULL;
@@ -12693,14 +12693,14 @@ static int cmd_container_recipe_add(const struct cix_client *c, int json_mode, i
 	return 0;
 }
 
-static void fmt_container_recipe_show(const struct json_value *v)
+static void fmt_deployment_show(const struct json_value *v)
 {
 	const char *content = json_str_field(v, "content");
 
 	printf("%s", content != NULL ? content : "");
 }
 
-static int cmd_container_recipe_show(const struct cix_client *c, int json_mode, int argc,
+static int cmd_deployment_show(const struct cix_client *c, int json_mode, int argc,
                                       char **argv)
 {
 	struct cix_response r;
@@ -12725,10 +12725,10 @@ static int cmd_container_recipe_show(const struct cix_client *c, int json_mode, 
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
-	return emit(&r, json_mode, fmt_container_recipe_show);
+	return emit(&r, json_mode, fmt_deployment_show);
 }
 
-static int cmd_container_recipe_rm(const struct cix_client *c, int json_mode, int argc,
+static int cmd_deployment_rm(const struct cix_client *c, int json_mode, int argc,
                                     char **argv)
 {
 	struct cix_response r;
@@ -12756,7 +12756,7 @@ static int cmd_container_recipe_rm(const struct cix_client *c, int json_mode, in
 	return emit(&r, json_mode, fmt_removed);
 }
 
-static int cmd_container_recipe(const struct cix_client *c, int json_mode, int argc, char **argv)
+static int cmd_deployment(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
@@ -12771,15 +12771,15 @@ static int cmd_container_recipe(const struct cix_client *c, int json_mode, int a
 	}
 	sub = argv[0];
 	if (strcmp(sub, "add") == 0)
-		return cmd_container_recipe_add(c, json_mode, argc - 1, argv + 1);
+		return cmd_deployment_add(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "commit") == 0)
 		return cmd_deployment_commit(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "show") == 0)
-		return cmd_container_recipe_show(c, json_mode, argc - 1, argv + 1);
+		return cmd_deployment_show(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "rm") == 0)
-		return cmd_container_recipe_rm(c, json_mode, argc - 1, argv + 1);
+		return cmd_deployment_rm(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "ls") == 0)
-		return cmd_container_recipe_ls(c, json_mode);
+		return cmd_deployment_ls(c, json_mode);
 
 	fprintf(stderr, "cixctl: unknown deployment subcommand '%s'\n", sub);
 	return 2;
@@ -12793,7 +12793,7 @@ static int cmd_container_recipe(const struct cix_client *c, int json_mode, int a
  * real error, never an async job to poll (unlike image recipes' own
  * artifact-fetch fast path, which containers have no equivalent of).
  */
-static int cmd_container_apply_recipe(const struct cix_client *c, int json_mode, int argc,
+static int cmd_deployment_apply(const struct cix_client *c, int json_mode, int argc,
                                        char **argv)
 {
 	struct cix_response r;
@@ -20409,8 +20409,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 	 */
 	if (strcmp(cmd, "deployment") == 0) {
 		if (argc >= 1 && strcmp(argv[0], "apply") == 0)
-			return cmd_container_apply_recipe(client, json_mode, argc - 1, argv + 1);
-		return cmd_container_recipe(client, json_mode, argc, argv);
+			return cmd_deployment_apply(client, json_mode, argc - 1, argv + 1);
+		return cmd_deployment(client, json_mode, argc, argv);
 	}
 	if (strcmp(cmd, "network") == 0)
 		return cmd_network(client, json_mode, argc, argv);

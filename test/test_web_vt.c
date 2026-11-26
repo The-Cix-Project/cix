@@ -122,7 +122,7 @@ int main(void)
 	 * at all, which is the check that cannot be got wrong by reading
 	 * the wrong line.
 	 */
-	want(app, "loadContainerRecipe", "app.js does not load a container's recipe (#289 Configuration tab)");
+	want(app, "loadDeployment", "app.js does not load a container's recipe (#289 Configuration tab)");
 	want(app, "getDeployment", "app.js builds the deployment path by hand instead of using the generated constant");
 	/*
 	 * The positive form, not a blanket ban on innerHTML in app.js. That
@@ -135,7 +135,7 @@ int main(void)
 	 * the page through textContent.
 	 */
 	want(app, "textEl.textContent = content",
-	     "app.js does not set the recipe with textContent -- a container recipe is stored "
+	     "app.js does not set the recipe with textContent -- a deployment is stored "
 	     "operator text and must never become markup");
 	want_not(vt, ".outerHTML", "vt.js assigns outerHTML on untrusted terminal output");
 	want_not(vt, "insertAdjacentHTML", "vt.js uses insertAdjacentHTML on untrusted terminal output");

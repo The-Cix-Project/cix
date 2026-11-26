@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### Deployments are called deployments everywhere (ADR-0397, step 1)
+
+- **Before:** the daemon, cixctl, the dashboard and the config export called a deployment a "container recipe", a name left from before #371: `container_recipe_*()`, the store at `<pkg>/container-recipes/`, a dashboard tab "Container Recipes" that listed deployments, and a config section `container_recipes`.
+- **Now:** all of it says deployment: `deployment_*()`, `<pkg>/deployments/`, the dashboard's Deployments tab, the config section `deployments`, and `test_deployment`. A store under the old name is moved once, by rename, at start. The name "container recipe" is free for ADR-0397's reusable part.
+
 ### A site's deployments live in the site's own repository (ADR-0396)
 
 - **Before:** `cix-recipes`, which is push-mirrored to the public catalogue, held every deployment beside the packages and images. A deployment is one site's container, so its addresses were public, and one name could not mean two sites' containers: a sync had written 192.168.15.95's `ntp-1` (192.168.150.105) back over gibsson-1's in the box's store.
