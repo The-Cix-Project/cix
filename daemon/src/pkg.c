@@ -25683,7 +25683,29 @@ static char g_deployments_dir[PATH_MAX];
  * name is gone and the check finds nothing to do. A failure leaves the
  * old directory where it was and says so; the new one is then empty and
  * the next sync refills what a source offers.
+ *
+ * Only a directory holding a deployment (<name>.recipe) is the old
+ * store. The name container-recipes is free for ADR-0397's reusable
+ * container recipes, which are never *.recipe files, so that store is
+ * never mistaken for this one and moved.
  */
+static int dir_holds_deployments(const char *dir)
+{
+	DIR *d = opendir(dir);
+	struct dirent *de;
+	int found = 0;
+
+	if (d == NULL)
+		return 0;
+	while (!found && (de = readdir(d)) != NULL) {
+		size_t n = strlen(de->d_name);
+
+		found = de->d_name[0] != '.' && n > 7 && strcmp(de->d_name + n - 7, ".recipe") == 0;
+	}
+	closedir(d);
+	return found;
+}
+
 static void deployment_set_dir(const char *pkg_dir)
 {
 	char old[PATH_MAX];
@@ -25691,7 +25713,7 @@ static void deployment_set_dir(const char *pkg_dir)
 
 	snprintf(g_deployments_dir, sizeof(g_deployments_dir), "%s/deployments", pkg_dir);
 	snprintf(old, sizeof(old), "%s/container-recipes", pkg_dir);
-	if (stat(old, &st) != 0 || !S_ISDIR(st.st_mode))
+	if (stat(old, &st) != 0 || !S_ISDIR(st.st_mode) || !dir_holds_deployments(old))
 		return;
 	if (stat(g_deployments_dir, &st) == 0) {
 		logstore_write("cixd", "error",
