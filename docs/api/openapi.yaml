@@ -9623,8 +9623,82 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            A recipe source owns this name (ADR-0396). It changes in git first,
+            through POST /deployments/{name}/commit; stored here alone, the next
+            sync would replace it. The message names the source.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           description: Validated but writing the recipe file to disk failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /deployments/{name}/commit:
+    post:
+      summary: >
+        Commits a deployment to the writable source that owns it, then stores
+        it here (ADR-0396). Git first, as POST /pkg/recipe-commit is for a
+        package: the content is checked as an add checks it, committed as
+        recipes/deployment/<name>@<version>.json on that source's ref, and only
+        then stored, with its version. The version must be above the one this
+        host holds, since a sync takes the highest version a source offers. One
+        commit at a time, shared with recipe commits. 202; poll GET
+        /pkg/recipe-commit for the outcome.
+      operationId: commitDeployment
+      x-cix-invalidates: [getPkgRecipeCommit, listDeployments, getDeployment]
+      x-cix-permission: containers:write
+      x-cix-mcp: tool
+      x-cix-expose: [cli]
+      parameters:
+        - $ref: "#/components/parameters/ContainerName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, content]
+              properties:
+                version:
+                  type: string
+                  pattern: '^[0-9][A-Za-z0-9.+~_\-]*$'
+                  description: The version it is committed at, above the one this host holds.
+                content:
+                  type: string
+                  description: A complete POST /containers body, as raw JSON text, whose "name" is name; may embed {{SECRET:KEY}} tokens.
+                source:
+                  type: string
+                  description: >
+                    The source to commit to, for a name no source offers yet.
+                    Omitted, it is the name's owning source, or the one writable
+                    source when there is exactly one (ADR-0324).
+      responses:
+        "202":
+          description: Checked; the commit has started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PkgRecipeCommit"
+        "400":
+          description: The version or content is missing or invalid, the content's "name" is not name, or it has a field no container body takes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: No writable source with a token owns the name (the message says which and why), a commit is already running, or the version is not above the one this host holds
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The commit could not be started
           content:
             application/json:
               schema:
@@ -24635,7 +24709,7 @@ components:
       allOf:
         - $ref: "#/components/schemas/Deployment"
         - type: object
-          required: [content]
+          required: [content, version, source]
           properties:
             content:
               type: string
@@ -24645,6 +24719,17 @@ components:
                 equal to the recipe's own name. May contain {{SECRET:KEY}} tokens
                 anywhere inside a string value (typically staged file content);
                 shown here exactly as stored, never substituted.
+            version:
+              type: [string, "null"]
+              description: >
+                The version this host synced or committed it at (ADR-0396), the
+                <version> of recipes/deployment/<name>@<version>.json; null when
+                it was added through the API, which records none.
+            source:
+              type: [string, "null"]
+              description: >
+                The recipe source that owns this name (ADR-0396, ADR-0324); null
+                when none does, or several do and none is chosen.
 
     PkgSource:
       type: object
@@ -24815,11 +24900,15 @@ components:
           description: scheme://host[:port], e.g. https://git.home.arpa
     PkgRecipeCommit:
       type: object
-      required: [state, name, version, source, path, commit, published, error, started_at, finished_at]
+      required: [state, kind, name, version, source, path, commit, published, error, started_at, finished_at]
       properties:
         state:
           type: string
           enum: [never, running, done, failed]
+        kind:
+          type: string
+          enum: [package, deployment]
+          description: What was committed. A deployment (ADR-0396) goes to recipes/deployment/<name>@<version>.json and is stored, not published.
         name:
           type: string
         version:
@@ -24830,13 +24919,13 @@ components:
           description: The writable source it is committed to (ADR-0324).
         path:
           type: string
-          description: Where it is committed, recipes/package/<name>@<version>.cbs (ADR-0308).
+          description: Where it is committed, recipes/package/<name>@<version>.cbs (ADR-0308) or recipes/deployment/<name>@<version>.json (ADR-0396).
         commit:
           type: string
           description: The commit sha the forge created; "" until there is one.
         published:
           type: boolean
-          description: Whether this host published it after the commit. A commit that published nothing is picked up by the next recipe sync.
+          description: Whether this host published it (a package) or stored it (a deployment) after the commit. A commit that did neither is picked up by the next recipe sync.
         error:
           type: string
           description: Why the commit, or the publish after it, did not happen; "" when it did.

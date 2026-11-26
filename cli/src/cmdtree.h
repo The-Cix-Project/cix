@@ -874,10 +874,19 @@ static const char *const n_container_recipe_add_flags[] = {
 	NULL
 };
 
+static const char *const n_deployment_commit_flags[] = {
+	"--file=",
+	"--source=",
+	"--version=",
+	"--wait",
+	NULL
+};
+
 /* #371: was n_container_recipe_subs, promoted to a top-level noun. */
 static const struct cli_node n_deployment_subs[] = {
 	{ "add", n_container_recipe_add_flags, NULL },
 	{ "apply", n_container_apply_recipe_flags, NULL },
+	{ "commit", n_deployment_commit_flags, NULL },
 	{ "ls", NULL, NULL },
 	{ "rm", NULL, NULL },
 	{ "show", NULL, NULL },

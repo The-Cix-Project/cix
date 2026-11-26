@@ -19170,6 +19170,7 @@ enum recipe_commit_state { RECIPE_COMMIT_NEVER = 0, RECIPE_COMMIT_RUNNING, RECIP
 
 static struct {
 	enum recipe_commit_state state;
+	char kind[16]; /* "package" or, since ADR-0396 (#740), "deployment" */
 	char name[PKG_NAME_MAX];
 	char version[PKG_VERSION_MAX];
 	int choose;                       /* record the source as the operator's choice when done */
@@ -19203,13 +19204,14 @@ static void recipe_commit_result_path(char *out, size_t out_size)
  * writable here -- a host never writes to a source it only reads,
  * because that source is authored somewhere else -- and to hold a token.
  */
-static int resolve_commit_target(const char *name, const char *requested, char *out,
-                                 size_t out_size, int *choose, char *err, size_t err_size)
+static int resolve_commit_target(const char *kind, const char *name, const char *requested,
+                                 char *out, size_t out_size, int *choose, char *err,
+                                 size_t err_size)
 {
 	char item[PKG_SOURCE_ITEM_MAX];
 	const struct pkg_source *s;
 
-	snprintf(item, sizeof(item), "package:%s", name);
+	snprintf(item, sizeof(item), "%s:%s", kind, name);
 	if (pkgsource_resolve(item, requested, 1, out, out_size, choose, err, err_size) != 0)
 		return -1;
 	s = pkgsource_find(out);
@@ -19244,7 +19246,8 @@ enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, co
 		         g_recipe_commit.version);
 		return PKG_ERR_BUSY;
 	}
-	if (resolve_commit_target(name, source, target, sizeof(target), &choose, err, err_size) != 0)
+	if (resolve_commit_target("package", name, source, target, sizeof(target), &choose, err,
+	                          err_size) != 0)
 		return PKG_ERR_NOT_FOUND;
 
 	/* Every test a publish applies, before anything reaches git. */
@@ -19275,6 +19278,7 @@ enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, co
 	free(g_recipe_commit.content);
 	memset(&g_recipe_commit, 0, sizeof(g_recipe_commit));
 	g_recipe_commit.content = redacted;
+	snprintf(g_recipe_commit.kind, sizeof(g_recipe_commit.kind), "%s", "package");
 	snprintf(g_recipe_commit.name, sizeof(g_recipe_commit.name), "%s", name);
 	snprintf(g_recipe_commit.version, sizeof(g_recipe_commit.version), "%s", check.version);
 	snprintf(g_recipe_commit.source, sizeof(g_recipe_commit.source), "%s", target);
@@ -19288,6 +19292,113 @@ enum pkg_error pkg_recipe_commit_start(const char *name, const char *content, co
 	snprintf(g_recipe_commit.message, sizeof(g_recipe_commit.message),
 	         "%s@%s: committed by cixd on %s before publishing it (ADR-0323)%s%s", name,
 	         check.version, host, check.changelog[0] != '\0' ? "\n\n" : "", check.changelog);
+	recipe_commit_set_state(RECIPE_COMMIT_RUNNING);
+	g_recipe_commit.started_at = time(NULL);
+	return PKG_OK;
+}
+
+/*
+ * A deployment version names a file, recipes/deployment/<name>@<version>.json,
+ * so it is what recipe_file_split() reads back from one: it starts with a
+ * digit and holds no '@', '/' or space. pkg_version_compare() orders it.
+ */
+static int deployment_version_ok(const char *v)
+{
+	size_t i, n;
+
+	if (v == NULL || !isdigit((unsigned char)v[0]))
+		return 0;
+	n = strlen(v);
+	if (n >= PKG_VERSION_MAX)
+		return 0;
+	for (i = 0; i < n; i++)
+		if (!isalnum((unsigned char)v[i]) && strchr(".+~_-", v[i]) == NULL)
+			return 0;
+	return 1;
+}
+
+/*
+ * ADR-0396 (#740): a deployment changed on this host goes to git first,
+ * as a package recipe does (ADR-0323). It is committed as
+ * recipes/deployment/<name>@<version>.json to the writable source that
+ * owns the name, and stored here only when the commit exists, so the
+ * next sync finds git and the store agreeing. The version is the
+ * operator's, since a deployment's content carries none, and it must be
+ * above the version this host holds: the sync takes the highest version
+ * a source offers, so a lower one would be committed and never used.
+ * The caller has already refused a body with an unknown field.
+ */
+enum pkg_error pkg_deployment_commit_start(const char *name, const char *version,
+                                           const char *content, const char *source, char *err,
+                                           size_t err_size)
+{
+	char target[PKG_SOURCE_NAME_MAX];
+	char held[PKG_VERSION_MAX];
+	char host[256];
+	int choose = 0;
+	char *copy;
+	struct json_value *root;
+	const char *body_name;
+
+	err[0] = '\0';
+	if (g_recipe_commit.state == RECIPE_COMMIT_RUNNING) {
+		snprintf(err, err_size, "%s@%s is still being committed", g_recipe_commit.name,
+		         g_recipe_commit.version);
+		return PKG_ERR_BUSY;
+	}
+	if (!pkg_name_is_valid(name)) {
+		snprintf(err, err_size, "invalid deployment name");
+		return PKG_ERR_INVALID_NAME;
+	}
+	if (!deployment_version_ok(version)) {
+		snprintf(err, err_size,
+		         "version is required: it starts with a digit and holds letters, digits "
+		         "and . + ~ _ - only, as in 2.0.1");
+		return PKG_ERR_INVALID_RECIPE;
+	}
+	root = content != NULL ? json_parse(content, strlen(content)) : NULL;
+	body_name = root != NULL ? json_as_string(json_object_get(root, "name")) : NULL;
+	if (body_name == NULL || strcmp(body_name, name) != 0) {
+		json_free(root);
+		snprintf(err, err_size, "content must be a JSON container body whose \"name\" is %s",
+		         name);
+		return PKG_ERR_INVALID_RECIPE;
+	}
+	json_free(root);
+	if (container_recipe_version(name, held, sizeof(held)) == 0 &&
+	    pkg_version_compare(version, held) <= 0) {
+		snprintf(err, err_size,
+		         "%s is at %s here; a new version must be above it, or the next sync "
+		         "would keep %s",
+		         name, held, held);
+		return PKG_ERR_DUPLICATE;
+	}
+	if (resolve_commit_target("deployment", name, source, target, sizeof(target), &choose, err,
+	                          err_size) != 0)
+		return PKG_ERR_NOT_FOUND;
+
+	copy = strdup(content);
+	if (copy == NULL) {
+		snprintf(err, err_size, "out of memory");
+		return PKG_ERR_PERSIST_FAILED;
+	}
+	redact_repo_token(copy, strlen(copy) + 1);
+
+	free(g_recipe_commit.content);
+	memset(&g_recipe_commit, 0, sizeof(g_recipe_commit));
+	g_recipe_commit.content = copy;
+	snprintf(g_recipe_commit.kind, sizeof(g_recipe_commit.kind), "%s", "deployment");
+	snprintf(g_recipe_commit.name, sizeof(g_recipe_commit.name), "%s", name);
+	snprintf(g_recipe_commit.version, sizeof(g_recipe_commit.version), "%s", version);
+	snprintf(g_recipe_commit.source, sizeof(g_recipe_commit.source), "%s", target);
+	g_recipe_commit.choose = choose;
+	snprintf(g_recipe_commit.repo_path, sizeof(g_recipe_commit.repo_path),
+	         "recipes/deployment/%s@%s.json", name, version);
+	if (gethostname(host, sizeof(host)) != 0)
+		snprintf(host, sizeof(host), "%s", "unknown host");
+	host[sizeof(host) - 1] = '\0';
+	snprintf(g_recipe_commit.message, sizeof(g_recipe_commit.message),
+	         "%s@%s: committed by cixd on %s before storing it (ADR-0396)", name, version, host);
 	recipe_commit_set_state(RECIPE_COMMIT_RUNNING);
 	g_recipe_commit.started_at = time(NULL);
 	return PKG_OK;
@@ -19962,13 +20073,32 @@ void pkg_recipe_commit_done(int exit_status, void *unused)
 	{
 		char item[PKG_SOURCE_ITEM_MAX];
 
-		snprintf(item, sizeof(item), "package:%s", g_recipe_commit.name);
+		snprintf(item, sizeof(item), "%s:%s", g_recipe_commit.kind, g_recipe_commit.name);
 		pkgsource_offers_add(g_recipe_commit.source, item);
 		if (g_recipe_commit.choose) {
 			char cerr[256];
 
 			pkgsource_choose(item, g_recipe_commit.source, cerr, sizeof(cerr));
 		}
+	}
+
+	/* ADR-0396: a deployment is stored, with the version it was
+	 * committed at, which is what the next sync will find. */
+	if (strcmp(g_recipe_commit.kind, "deployment") == 0) {
+		perr = container_recipe_add_versioned(g_recipe_commit.name, g_recipe_commit.content,
+		                                      g_recipe_commit.version);
+		if (perr != PKG_OK) {
+			snprintf(g_recipe_commit.error, sizeof(g_recipe_commit.error),
+			         "committed as %s but not stored here -- the next recipe sync adds it",
+			         g_recipe_commit.commit_sha);
+			recipe_commit_set_state(RECIPE_COMMIT_FAILED);
+			logstore_write("cixd", "error", "deployment commit %s@%s: %s",
+			               g_recipe_commit.name, g_recipe_commit.version, g_recipe_commit.error);
+			return;
+		}
+		g_recipe_commit.published = 1;
+		recipe_commit_set_state(RECIPE_COMMIT_DONE);
+		return;
 	}
 
 	/* Git first, then here. A publish that fails now is not a lost
@@ -19997,6 +20127,8 @@ void pkg_recipe_commit_write_json(struct json_writer *w)
 	jw_obj_open(w);
 	jw_key(w, "state");
 	jw_str(w, names[g_recipe_commit.state]);
+	jw_key(w, "kind");
+	jw_str(w, g_recipe_commit.kind[0] != '\0' ? g_recipe_commit.kind : "package");
 	jw_key(w, "name");
 	jw_str(w, g_recipe_commit.name);
 	jw_key(w, "version");
@@ -20909,12 +21041,19 @@ static void sync_walk_container_recipes(const char *containers_root, int *added,
 
 			free(have);
 			if (same) {
+				char held_version[PKG_VERSION_MAX];
+
+				/* ADR-0396: the same bytes still record the version
+				 * git has them at, for a commit to be above. */
+				if (container_recipe_version(name, held_version, sizeof(held_version)) != 0 ||
+				    strcmp(held_version, version) != 0)
+					container_recipe_add_versioned(name, content, version);
 				free(content);
 				(*skipped)++;
 				continue;
 			}
 		}
-		rc = container_recipe_add(name, content);
+		rc = container_recipe_add_versioned(name, content, version);
 		free(content);
 		if (rc == PKG_OK)
 			(*added)++;
@@ -25555,7 +25694,58 @@ static void container_recipe_path(const char *name, char *out, size_t out_size)
 	snprintf(out, out_size, "%s/%s.recipe", g_container_recipes_dir, name);
 }
 
+/*
+ * ADR-0396 (#740): the version of a stored deployment, beside it as
+ * <name>.version. A sync records the version it took from a source and
+ * a commit the version it committed; an add through the API, which has
+ * none, removes the record, since the content no longer matches it.
+ * Only a commit reads it, to refuse a version the next sync would not use.
+ */
+static void container_recipe_version_path(const char *name, char *out, size_t out_size)
+{
+	snprintf(out, out_size, "%s/%s.version", g_container_recipes_dir, name);
+}
+
+int container_recipe_version(const char *name, char *out, size_t out_size)
+{
+	char path[PATH_MAX];
+	char *buf = NULL;
+	size_t len = 0;
+
+	out[0] = '\0';
+	if (!pkg_name_is_valid(name))
+		return -1;
+	container_recipe_version_path(name, path, sizeof(path));
+	if (persist_read_file(path, &buf, &len) != 0 || buf == NULL)
+		return -1;
+	while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == ' '))
+		len--;
+	if (len == 0 || len >= out_size) {
+		free(buf);
+		return -1;
+	}
+	memcpy(out, buf, len);
+	out[len] = '\0';
+	free(buf);
+	return 0;
+}
+
+static enum pkg_error container_recipe_store(const char *name, const char *content,
+                                             const char *version);
+
 enum pkg_error container_recipe_add(const char *name, const char *content)
+{
+	return container_recipe_store(name, content, NULL);
+}
+
+enum pkg_error container_recipe_add_versioned(const char *name, const char *content,
+                                              const char *version)
+{
+	return container_recipe_store(name, content, version);
+}
+
+static enum pkg_error container_recipe_store(const char *name, const char *content,
+                                             const char *version)
 {
 	struct json_value *root;
 	const struct json_value *jname;
@@ -25610,6 +25800,13 @@ enum pkg_error container_recipe_add(const char *name, const char *content)
 		unlink(staging_path);
 		return PKG_ERR_PERSIST_FAILED;
 	}
+	container_recipe_version_path(name, path, sizeof(path));
+	if (version != NULL) {
+		if (persist_atomic_write(path, version, strlen(version)) != 0)
+			return PKG_ERR_PERSIST_FAILED;
+	} else if (unlink(path) != 0 && errno != ENOENT) {
+		return PKG_ERR_PERSIST_FAILED;
+	}
 	/* ADR-0339: a sync writes these with no API call in front of it. */
 	events_announce(EV_listDeployments);
 	events_announce(EV_getDeployment);
@@ -25637,6 +25834,8 @@ enum pkg_error container_recipe_rm(const char *name)
 	container_recipe_path(name, path, sizeof(path));
 	if (unlink(path) != 0)
 		return (errno == ENOENT) ? PKG_ERR_NOT_FOUND : PKG_ERR_PERSIST_FAILED;
+	container_recipe_version_path(name, path, sizeof(path));
+	unlink(path);
 	return PKG_OK;
 }
 

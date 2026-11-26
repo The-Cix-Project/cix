@@ -9221,6 +9221,136 @@ skip_resume:
 			cix_response_free(&r);
 		}
 
+		/* ADR-0396 (#740): a deployment goes to git first too, through the
+		 * same job, and is stored with its version only once committed. */
+		if (stage_ok) {
+			static const char dep[] = "{\"name\":\"dcommit\",\"image\":\"base\"}";
+			const char *kind = NULL, *path = NULL;
+			char body[512];
+			struct json_value *sent;
+			const char *b64;
+			unsigned char decoded[512];
+			int dn = -1;
+
+			jw_init(&w);
+			jw_obj_open(&w);
+			jw_key(&w, "version");
+			jw_str(&w, "1.0.0");
+			jw_key(&w, "content");
+			jw_str(&w, dep);
+			jw_obj_close(&w);
+			snprintf(body, sizeof(body), "%.*s", (int)w.len, w.buf);
+			jw_free(&w);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/deployments/dcommit/commit", body, &r) !=
+			        0 ||
+			    r.status != 202) {
+				fprintf(stderr, "FAIL: ADR-0396 POST deployment commit expected 202, got %d: %s\n",
+				        r.status, r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+			for (waited = 0; waited < 120; waited++) {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "GET", "/v1/pkg/recipe-commit", NULL, &r) == 0 &&
+				    r.json != NULL && json_str_field(r.json, "state") != NULL &&
+				    strcmp(json_str_field(r.json, "state"), "running") != 0)
+					break;
+				cix_response_free(&r);
+				usleep(500000);
+			}
+			kind = r.json != NULL ? json_str_field(r.json, "kind") : NULL;
+			path = r.json != NULL ? json_str_field(r.json, "path") : NULL;
+			if (r.json == NULL || !str_eq(json_str_field(r.json, "state"), "done") ||
+			    !str_eq(kind, "deployment") ||
+			    !str_eq(path, "recipes/deployment/dcommit@1.0.0.json") ||
+			    !str_eq(json_str_field(r.json, "source"), "forge")) {
+				fprintf(stderr, "FAIL: ADR-0396 the deployment commit ended: %s\n",
+				        r.body != NULL ? r.body : "(no body)");
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			snprintf(body_path, sizeof(body_path), "%s/dcommit@1.0.0.json.request.json",
+			         forge_dir);
+			sent = slurp_file(body_path, &posted, &posted_len) == 0
+			           ? json_parse(posted, posted_len)
+			           : NULL;
+			b64 = sent != NULL ? json_as_string(json_object_get(sent, "content")) : NULL;
+			if (b64 != NULL)
+				dn = base64_decode(b64, decoded, sizeof(decoded));
+			if (dn != (int)strlen(dep) || memcmp(decoded, dep, strlen(dep)) != 0) {
+				fprintf(stderr, "FAIL: ADR-0396 the forge did not receive the deployment: %s\n",
+				        posted != NULL ? posted : "(nothing posted)");
+				ok = 0;
+			}
+			json_free(sent);
+			free(posted);
+			posted = NULL;
+
+			/* Stored after the commit, with the version it was committed at. */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "GET", "/v1/deployments/dcommit", NULL, &r) != 0 ||
+			    r.status != 200 || !str_eq(json_str_field(r.json, "content"), dep) ||
+			    !str_eq(json_str_field(r.json, "version"), "1.0.0") ||
+			    !str_eq(json_str_field(r.json, "source"), "forge")) {
+				fprintf(stderr, "FAIL: ADR-0396 dcommit was committed but not stored at 1.0.0 "
+				                "from forge: %d %s\n",
+				        r.status, r.body != NULL ? r.body : "");
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			/* The same version again: refused, since a sync would never use it. */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/deployments/dcommit/commit", body, &r) !=
+			        0 ||
+			    r.status != 409) {
+				fprintf(stderr, "FAIL: ADR-0396 committing the held version again must be 409, "
+				                "got %d\n",
+				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			/* A name a source owns is never changed on the box alone. */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/deployments",
+			                       "{\"name\":\"dcommit\",\"content\":\"{\\\"name\\\":"
+			                       "\\\"dcommit\\\",\\\"image\\\":\\\"jumpbox\\\"}\"}",
+			                       &r) != 0 ||
+			    r.status != 409) {
+				fprintf(stderr, "FAIL: ADR-0396 adding a deployment a source owns must be 409, "
+				                "got %d\n",
+				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+
+			/* A body for another container, or with no version: 400, before git. */
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/deployments/dcommit/commit",
+			                       "{\"version\":\"1.0.1\",\"content\":\"{\\\"name\\\":"
+			                       "\\\"other\\\"}\"}",
+			                       &r) != 0 ||
+			    r.status != 400) {
+				fprintf(stderr, "FAIL: ADR-0396 a body naming another container must be 400, "
+				                "got %d\n",
+				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/deployments/dcommit/commit",
+			                       "{\"content\":\"{\\\"name\\\":\\\"dcommit\\\"}\"}", &r) != 0 ||
+			    r.status != 400) {
+				fprintf(stderr, "FAIL: ADR-0396 a commit with no version must be 400, got %d\n",
+				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+		}
+
 		/* A version git already has: the forge refuses, nothing publishes. */
 		if (stage_ok) {
 			char existing[PATH_MAX];

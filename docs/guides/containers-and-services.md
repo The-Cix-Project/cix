@@ -447,12 +447,30 @@ cixctl deployment apply syslog-1                              # create the conta
 cixctl deployment rm syslog-1
 ```
 
-- The file must be JSON and its own `"name"` must equal `--name`, or
-  `add` is refused. Its content is not otherwise checked until it is
-  applied.
-- **`apply` creates.** It goes through the same create path as
-  `POST /v1/containers`, so a container with that name must not already
-  exist; to re-create, `cixctl container rm NAME` first.
+- The file must be JSON and its own `"name"` must equal `--name`, and
+  every field must be one a container body takes, or `add` is refused.
+- **A deployment that lives in a repository changes there first**
+  ([ADR-0396](../adr/0396-a-sites-deployments-live-in-the-sites-own-repository.md)).
+  A site keeps its deployments in its own repository, added on the box
+  with `cixctl pkg source add`, and `add` refuses a name a source owns
+  (409), since the next sync would replace it. Change it in the
+  repository and run `cixctl pkg sync`, or commit it from here, which
+  writes `recipes/deployment/NAME@VERSION.json` to that source and then
+  stores it:
+
+  ```sh
+  cixctl deployment commit syslog-1 --file=syslog-1.json --version=2.0.1 --wait
+  cixctl deployment show syslog-1     # version and source are in --json
+  ```
+
+  The version must be above the one the box holds, and the source must
+  be marked `--write=on`.
+- **`apply` creates, or updates in place**
+  ([ADR-0392](../adr/0392-a-deployment-is-re-applied-in-place-and-keeps-its-secrets.md)).
+  On a container that exists it answers unchanged, restarts it through
+  the rolling restart, or updates it while stopped. A change to
+  `restart`, `restart_delay_seconds`, `depends_on`, `follow_rolling` or
+  `follow_rolling_jitter_seconds` is a 409 that needs remove and apply.
 - **Secrets.** A `{{SECRET:KEY}}` token anywhere in the text is replaced
   at apply time from `--secret=KEY=VALUE`, correctly escaped:
 
@@ -461,9 +479,10 @@ cixctl deployment rm syslog-1
   ```
 
   The stored deployment keeps the token, so it can live in git. A token
-  with no matching `--secret` is left as literal text and a warning is
-  logged. The container's own stored definition is the rendered body,
-  secret included.
+  with no matching `--secret` refuses the apply with a 400 naming every
+  missing key (#696), unless the box kept it from an earlier apply
+  (ADR-0392). The container's own stored definition is the rendered
+  body, secret included.
 - **LDAP values.** `{{LDAP:URI}}`, `{{LDAP:BASE_DN}}`, `{{LDAP:BIND_DN}}`
   and `{{LDAP:BIND_PASSWORD}}` are filled from the host's LDAP client
   configuration, so a deployment needs no copied values for them.

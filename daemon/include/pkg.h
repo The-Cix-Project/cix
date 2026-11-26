@@ -1628,6 +1628,13 @@ int pkg_recipe_commit_work(void *unused);
 void pkg_recipe_commit_done(int exit_status, void *unused);
 void pkg_recipe_commit_abort(const char *why);
 void pkg_recipe_commit_write_json(struct json_writer *w);
+/* ADR-0396 (#740): a deployment committed as
+ * recipes/deployment/<name>@<version>.json to its owning writable
+ * source, then stored here. The same one job, helper and status as a
+ * recipe commit; the version must be above the one this host holds. */
+enum pkg_error pkg_deployment_commit_start(const char *name, const char *version,
+                                           const char *content, const char *source, char *err,
+                                           size_t err_size);
 
 /*
  * ADR-0323's author stage: writes the next revision of name's newest
@@ -2065,6 +2072,11 @@ enum pkg_error pkg_image_recipe_apply(const char *image, int allow_downgrade,
 void container_recipe_init(const char *pkg_dir);
 void container_recipe_repoint(const char *pkg_dir);
 enum pkg_error container_recipe_add(const char *name, const char *content);
+/* ADR-0396 (#740): the version a stored deployment was synced or
+ * committed at, recorded beside it; 0 when known, -1 when not. */
+enum pkg_error container_recipe_add_versioned(const char *name, const char *content,
+                                              const char *version);
+int container_recipe_version(const char *name, char *out, size_t out_size);
 enum pkg_error container_recipe_get(const char *name, char **out_content, size_t *out_len);
 enum pkg_error container_recipe_rm(const char *name);
 void container_recipe_write_json_list(struct json_writer *w);

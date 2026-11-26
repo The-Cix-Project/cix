@@ -183,6 +183,8 @@ static const char USAGE_TEXT[] =
 	        "               replace the volume's contents with a snapshot\n"
 	        "  deployment add --name=NAME --file=PATH  -- store a container definition\n"
 	        "               (container.json) to create containers from (ADR-0151)\n"
+	        "  deployment commit NAME --file=PATH --version=V [--source=NAME] [--wait]\n"
+	        "               -- commit to the source that owns it, then store it (ADR-0396)\n"
 	        "  deployment show|rm NAME / deployment ls\n"
 	        "  deployment apply NAME [--secret=KEY=VALUE ...]  -- create the container;\n"
 	        "               each --secret= fills a {{SECRET:KEY}} token in the definition\n"
@@ -5625,6 +5627,7 @@ static int cmd_container_drift(const struct cix_client *c, int json_mode)
 }
 
 static int cmd_container_recipe(const struct cix_client *c, int json_mode, int argc, char **argv);
+static int cmd_deployment_commit(const struct cix_client *c, int json_mode, int argc, char **argv);
 static int cmd_container_apply_recipe(const struct cix_client *c, int json_mode, int argc,
                                        char **argv);
 
@@ -6104,6 +6107,7 @@ static int cmd_container(const struct cix_client *c, int json_mode, int argc, ch
 	        "         console NAME [--console=NAME] |\n"
 	        "         files get|put NAME --path=PATH\n"
 	        "       cixctl deployment add --name=NAME --file=PATH\n"
+	        "       cixctl deployment commit NAME --file=PATH --version=V [--source=NAME] [--wait]\n"
 	        "       cixctl deployment show|rm NAME / deployment ls\n"
 	        "       cixctl deployment apply NAME [--secret=KEY=VALUE ...]\n"
 	        "       cixctl container network attach NAME --network=NETWORK [--ip=A.B.C.D]\n"
@@ -12758,6 +12762,8 @@ static int cmd_container_recipe(const struct cix_client *c, int json_mode, int a
 
 	if (argc < 1) {
 		fprintf(stderr, "usage: cixctl deployment add --name=NAME --file=PATH\n"
+		                "       cixctl deployment commit NAME --file=PATH --version=V "
+		                "[--source=NAME] [--wait]\n"
 		                "       cixctl deployment show NAME\n"
 		                "       cixctl deployment rm NAME\n"
 		                "       cixctl deployment ls\n");
@@ -12766,6 +12772,8 @@ static int cmd_container_recipe(const struct cix_client *c, int json_mode, int a
 	sub = argv[0];
 	if (strcmp(sub, "add") == 0)
 		return cmd_container_recipe_add(c, json_mode, argc - 1, argv + 1);
+	if (strcmp(sub, "commit") == 0)
+		return cmd_deployment_commit(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "show") == 0)
 		return cmd_container_recipe_show(c, json_mode, argc - 1, argv + 1);
 	if (strcmp(sub, "rm") == 0)
@@ -16564,6 +16572,65 @@ static int cmd_pkg_recipe_commit(const struct cix_client *c, int json_mode, int 
 
 	return run_recipe_commit_job(c, json_mode, CIX_API_commitPkgRecipe_METHOD,
 	                             CIX_API_commitPkgRecipe, &w, wait);
+}
+
+/*
+ * cixctl deployment commit NAME --file=PATH --version=V [--source=NAME] [--wait]
+ * ADR-0396 (#740): commits a deployment to the source that owns it, as
+ * recipes/deployment/NAME@V.json, then stores it here -- git first, the
+ * same job a recipe commit is, so --wait follows it the same way.
+ */
+static int cmd_deployment_commit(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	static const char usage[] = "usage: cixctl deployment commit NAME --file=PATH --version=V "
+	                            "[--source=NAME] [--wait]\n";
+	const char *name = NULL, *file = NULL, *version = NULL, *source = NULL;
+	int wait = 0;
+	char *content;
+	size_t content_len;
+	char path[256];
+	int i;
+	struct json_writer w;
+
+	for (i = 0; i < argc; i++) {
+		if (strncmp(argv[i], "--file=", 7) == 0)
+			file = argv[i] + 7;
+		else if (strncmp(argv[i], "--version=", 10) == 0)
+			version = argv[i] + 10;
+		else if (strncmp(argv[i], "--source=", 9) == 0)
+			source = argv[i] + 9;
+		else if (strcmp(argv[i], "--wait") == 0)
+			wait = 1;
+		else if (argv[i][0] != '-' && name == NULL)
+			name = argv[i];
+		else {
+			fprintf(stderr, "cixctl: unknown deployment commit option '%s'\n", argv[i]);
+			return 2;
+		}
+	}
+	if (name == NULL || file == NULL || version == NULL) {
+		fputs(usage, stderr);
+		return 2;
+	}
+	if (read_local_file(file, &content, &content_len) != 0) {
+		fprintf(stderr, "cixctl: could not read %s\n", file);
+		return 1;
+	}
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "version");
+	jw_str(&w, version);
+	jw_key(&w, "content");
+	jw_str(&w, content);
+	if (source != NULL) {
+		jw_key(&w, "source");
+		jw_str(&w, source);
+	}
+	jw_obj_close(&w);
+	w.buf[w.len] = '\0';
+	free(content);
+	snprintf(path, sizeof(path), CIX_API_commitDeployment, name);
+	return run_recipe_commit_job(c, json_mode, CIX_API_commitDeployment_METHOD, path, &w, wait);
 }
 
 /*

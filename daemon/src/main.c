@@ -23756,6 +23756,25 @@ static void handle_container_recipe_add(int fd, const char *body, size_t body_le
 		json_free(content_root);
 	}
 
+	/* ADR-0396 (#740): a deployment a source owns changes in git first.
+	 * Stored here alone, the next sync would write the source's copy
+	 * back over it, which is how ntp-1 lost gibsson-1's address. */
+	{
+		char item[PKG_SOURCE_ITEM_MAX], owner[PKG_SOURCE_NAME_MAX];
+		char msg[PKG_SOURCE_NAME_MAX + 256];
+
+		snprintf(item, sizeof(item), "deployment:%s", name);
+		if (pkgsource_owner_of(item, owner, sizeof(owner)) != PKGSOURCE_OWNER_NONE) {
+			snprintf(msg, sizeof(msg),
+			         "%s belongs to source %s: commit it there with `cixctl deployment "
+			         "commit %s --file=PATH --version=V` (ADR-0396), or a sync replaces it",
+			         name, owner[0] != '\0' ? owner : "(several -- choose one)", name);
+			json_free(root);
+			respond_error(fd, 409, "Conflict", msg);
+			return;
+		}
+	}
+
 	perr = container_recipe_add(name, content);
 	json_free(root);
 	if (perr != PKG_OK) {
@@ -23764,6 +23783,50 @@ static void handle_container_recipe_add(int fd, const char *body, size_t body_le
 	}
 	http_set_blocking(fd);
 	http_write_response(fd, 204, "No Content", "application/json", "", 0);
+}
+
+static void recipe_commit_respond(int fd, enum pkg_error perr, char *err, size_t err_size);
+
+/*
+ * POST /v1/deployments/{name}/commit (ADR-0396, #740): a deployment
+ * committed to the source that owns it, then stored here, as a recipe
+ * commit does for a package. An unknown field is refused first, as an
+ * add refuses one (#68), so git never holds a body no apply accepts.
+ */
+static void handle_deployment_commit_post(int fd, const char *name, const char *body,
+                                          size_t body_len)
+{
+	struct json_value *root, *content_root;
+	const char *content, *bad;
+	char err[PKG_ERROR_MAX];
+	enum pkg_error perr;
+
+	root = body_len > 0 ? json_parse(body, body_len) : NULL;
+	if (root == NULL) {
+		respond_error(fd, 400, "Bad Request", "invalid JSON body");
+		return;
+	}
+	content = json_as_string(json_object_get(root, "content"));
+	if (content == NULL || content[0] == '\0') {
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", "version and content are required");
+		return;
+	}
+	content_root = json_parse(content, strlen(content));
+	bad = content_root != NULL ? container_body_unknown_key(content_root) : NULL;
+	if (bad != NULL) {
+		snprintf(err, sizeof(err), "unknown field in deployment content: %s", bad);
+		json_free(content_root);
+		json_free(root);
+		respond_error(fd, 400, "Bad Request", err);
+		return;
+	}
+	json_free(content_root);
+	perr = pkg_deployment_commit_start(name, json_as_string(json_object_get(root, "version")),
+	                                   content, json_as_string(json_object_get(root, "source")),
+	                                   err, sizeof(err));
+	json_free(root);
+	recipe_commit_respond(fd, perr, err, sizeof(err));
 }
 
 static void handle_container_recipe_get(int fd, const char *name)
@@ -23784,6 +23847,25 @@ static void handle_container_recipe_get(int fd, const char *name)
 	jw_str(&w, name);
 	jw_key(&w, "content");
 	jw_str(&w, content);
+	{
+		char version[PKG_VERSION_MAX];
+		char item[PKG_SOURCE_ITEM_MAX], owner[PKG_SOURCE_NAME_MAX];
+
+		/* ADR-0396: which version, from which source; null when this
+		 * host has no record (an add through the API) or no source. */
+		jw_key(&w, "version");
+		if (container_recipe_version(name, version, sizeof(version)) == 0)
+			jw_str(&w, version);
+		else
+			jw_null(&w);
+		snprintf(item, sizeof(item), "deployment:%s", name);
+		jw_key(&w, "source");
+		if (pkgsource_owner_of(item, owner, sizeof(owner)) == PKGSOURCE_OWNER_ONE &&
+		    owner[0] != '\0')
+			jw_str(&w, owner);
+		else
+			jw_null(&w);
+	}
 	jw_obj_close(&w);
 	free(content);
 	respond_json(fd, 200, "OK", &w);
@@ -31844,6 +31926,12 @@ static void op_setVolumeBackupConfig(const struct api_ctx *ctx)
 static void op_getDeployment(const struct api_ctx *ctx)
 {
 	handle_container_recipe_get(ctx->fd, ctx->p[0]);
+}
+
+/* POST /v1/deployments/{name}/commit (ADR-0396, #740) */
+static void op_commitDeployment(const struct api_ctx *ctx)
+{
+	handle_deployment_commit_post(ctx->fd, ctx->p[0], ctx->req->body, ctx->req->body_len);
 }
 
 static void op_deleteDeployment(const struct api_ctx *ctx)

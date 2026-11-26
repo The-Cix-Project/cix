@@ -525,9 +525,10 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 
 - **Never add a deployment to `cix-recipes`.** gibsson-1's are in `osakka/gibsson-1` (private), from 2.0.0; the 1.x line in `cix-recipes`' history was .95's.
 - **An administrator adds any repository as a source** (`cixctl pkg source add`), one per site or one per deployment. One name, one source (ADR-0324). `--write=on` is where the box pushes its changes back.
-- **A deployment changes git first.** Edit the repository, then `pkg sync` and `deployment apply NAME`. A box-side `deployment add` of a name a source owns is overwritten at the next sync until the push-back half of ADR-0396 ships (#740); never fix a deployment on the box alone.
+- **A deployment changes git first, from either end.** In the repository: commit, then `pkg sync` and `deployment apply NAME`. On the box: `cixctl deployment commit NAME --file=PATH --version=V --wait` commits `recipes/deployment/NAME@V.json` to the owning writable source, then stores it (#740), then `deployment apply NAME`. **Never fix a deployment on the box alone:** `deployment add` of a name a source owns is a 409.
+- **The version is above the one the box holds**, which `GET /v1/deployments/{name}` shows with its `source`. A sync takes the highest version, so a commit below it is refused rather than written and never used.
 - **A sync never deletes a deployment**, so a source dropping a file forgets nothing; only `DELETE /v1/deployments/{name}` does, kept secrets included.
-- **On gibsson-1** the `gibsson-1` source is read-only until push-back ships: with two writable sources a new package needs `--source=cix-recipes` named.
+- **With two writable sources a new name needs `--source` named**: a new package `--source=cix-recipes`, a new deployment `--source=gibsson-1`. On gibsson-1 the `gibsson-1` source stays read-only until the release carrying #740 is live.
 
 ## A container's LDAP account is staged before it starts
 

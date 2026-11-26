@@ -22,11 +22,13 @@ The model already supports the split. A source can own `deployment:` items besid
 3. **An administrator adds their own repository as a source, and the box both pulls from it and pushes back to it.** A site repository, or one per deployment if they want it, is one more source owning the names it offers: one name, one source (ADR-0324). Marked `write`, it is where the box's own changes go.
 4. **A deployment changes git first, from either end.**
    - An edit in the repository reaches the box at the next sync.
-   - A change made on the box is committed to the owning source first and published after, as `pkg recipe commit` does for a package (ADR-0323). Today only packages can be pushed back, so a box-side `deployment add` of a name a source owns is overwritten at the next sync, as `ntp-1` was. Pushing a deployment back is the code half of this ADR (#740).
-   - A source with no `write` is pull-only: the box takes what it offers and never commits to it.
+   - A change made on the box is committed to the owning source first and stored after, as `pkg recipe commit` does for a package (ADR-0323): `POST /v1/deployments/{name}/commit` (`cixctl deployment commit NAME --file=PATH --version=V`), which commits `recipes/deployment/<name>@<version>.json` and is the same one job as a recipe commit (#740).
+   - **The version is the operator's**, since a deployment's content carries none, and it must be above the version the box holds. The box records that version beside each deployment, from the sync that took it or the commit that wrote it: a sync takes the highest version a source offers, so a lower one would be committed and never used.
+   - **`deployment add` of a name a source owns is refused** (409, naming the source and the commit). Stored on the box alone, it would be overwritten at the next sync, as `ntp-1` was.
+   - A source with no `write` is pull-only: the box takes what it offers and never commits to it, so a commit for a name it owns is refused.
 5. **The move:**
    - The site repository is filled from the box's store, the deployments actually running here, with no literal secret in any of them (a secret is a `{{SECRET:KEY}}`, kept on the box, ADR-0392).
-   - The box takes it as a source (write, no `trust_keys`).
+   - The box takes it as a source, without `trust_keys`: read-only at the move, `write` once the commit above is released.
    - The deployments leave `cix-recipes`. Every one of its 21 names is also a gibsson-1 container's name (measured 2026-11-26), so moving gibsson-1's empties the directory; .95's versions stay in its history.
    - A source dropping a file never deletes a deployment or its kept secrets: a sync adds and overwrites and never removes (`container_recipe_rm()` has one caller, `DELETE /v1/deployments/{name}`).
 
