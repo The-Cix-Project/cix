@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The In Flight tab draws each build once
+
+- **Before:** two refreshes started close together (two announcements) each cleared the list and appended a card after every read, so one build could show as two identical cards, the second with empty graphs. Seen by the owner on gibsson-1 for `gcc-libs@cix-builder`.
+- **Now:** a refresh builds its cards off the page and puts them in place in one step, and a refresh a newer one has overtaken drops what it built. `tools/dashboard-screenshot.py` takes the box from `CIX_HOST`, since the address it named is gone and the repository names none.
+
 ### Deployments are called deployments everywhere (ADR-0397, step 1)
 
 - **Before:** the daemon, cixctl, the dashboard and the config export called a deployment a "container recipe", a name left from before #371: `container_recipe_*()`, the store at `<pkg>/container-recipes/`, a dashboard tab "Container Recipes" that listed deployments, and a config section `container_recipes`.

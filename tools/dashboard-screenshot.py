@@ -21,7 +21,11 @@ CDP here is plain ws on loopback, so no TLS.
 """
 import base64, json, os, socket, struct, subprocess, sys, time, urllib.request
 
-HOST = "192.168.15.95"
+# The box to render, from the environment: this repository is public and
+# names no site's address (CLAUDE.md), and the box it was written for is gone.
+HOST = os.environ.get("CIX_HOST")
+if not HOST:
+    sys.exit("set CIX_HOST to the box's address")
 ROUTE = sys.argv[1] if len(sys.argv) > 1 else "build-overview"
 OUT = sys.argv[2] if len(sys.argv) > 2 else "/tmp/shot.png"
 W, H = (int(sys.argv[3]) if len(sys.argv) > 3 else 1600,

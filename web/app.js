@@ -15058,10 +15058,24 @@ function boSyncStats(wanted) {
 	}
 }
 
+/*
+ * Which refresh of the In Flight tab is the newest. Two announcements
+ * close together start two refreshes, and their reads overlap. Each one
+ * used to clear the list and then append a card after each await, so
+ * both appended: one build showed as two identical cards, and the second
+ * card's graphs stayed empty because boDrawStats() draws into the first
+ * figure for a container (seen by the owner on gibsson-1, 2026-11-26,
+ * gcc-libs@cix-builder twice). Now a refresh builds its cards off the
+ * page and puts them in place in one step, and only if no newer refresh
+ * has started since; an overtaken one drops what it built.
+ */
+let boRefreshGeneration = 0;
+
 async function refreshBuildOverview() {
 	const cap = document.getElementById("bo-capacity");
 	const list = document.getElementById("bo-builds");
 	const hint = document.getElementById("bo-builds-hint");
+	const generation = ++boRefreshGeneration;
 	let config;
 
 	if (cap === null || list === null)
@@ -15071,6 +15085,8 @@ async function refreshBuildOverview() {
 	} catch (e) {
 		return; /* best-effort, same as every other refresher here */
 	}
+	if (generation !== boRefreshGeneration)
+		return;
 
 	const max = Number(config.max_concurrent_jobs) || 0;
 	const busy = Number(config.active_jobs) || 0;
@@ -15102,22 +15118,20 @@ async function refreshBuildOverview() {
 	const names = (config.active_job_names || "").split(",")
 	    .map((x) => x.trim()).filter((x) => x.length > 0);
 
-	list.textContent = "";
 	if (names.length === 0) {
 		const idle = document.createElement("p");
 
 		idle.className = "hint";
 		idle.textContent = "No build is in flight.";
-		list.appendChild(idle);
+		list.replaceChildren(idle);
 		if (hint)
 			hint.hidden = true;
 		boSyncStats(new Set());
 		return;
 	}
-	if (hint)
-		hint.hidden = false;
 
 	const statsWanted = new Set(); /* #431: the build containers this page charts */
+	const cards = []; /* built here, put on the page together below */
 
 	for (const key of names) {
 		let statsContainer = null;
@@ -15161,7 +15175,7 @@ async function refreshBuildOverview() {
 				card.removeAttribute("tabindex");
 				card.title = "Being uninstalled: the image's next version is being produced";
 				card.appendChild(dl);
-				list.appendChild(card);
+				cards.push(card);
 				continue;
 			}
 			add("state", e.state || "?");
@@ -15259,7 +15273,7 @@ async function refreshBuildOverview() {
 				followBuildLog(name, image);
 			}
 		});
-		list.appendChild(card);
+		cards.push(card);
 		if (statsContainer !== null) {
 			const note = document.createElement("p");
 
@@ -15269,9 +15283,15 @@ async function refreshBuildOverview() {
 			card.appendChild(boStatsFigure(statsContainer));
 			card.appendChild(note);
 			statsWanted.add(statsContainer);
-			boDrawStats(statsContainer);
 		}
 	}
+	if (generation !== boRefreshGeneration)
+		return;
+	list.replaceChildren(...cards);
+	if (hint)
+		hint.hidden = false;
+	for (const container of statsWanted)
+		boDrawStats(container);
 	boSyncStats(statsWanted);
 }
 
