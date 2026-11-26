@@ -6,6 +6,15 @@ You are an elite Operating System Architect and Systems C Programmer. We are ite
 
 **The owner reaches their network through vpn-1 and vpn-2 on gibsson-1 (192.168.253.1)** -- moved there from 192.168.15.95 on 2026-11-21 at the owner's request, new numbers 402-339-003 (vpn-1) and 259-619-514 (vpn-2). The owner on 2026-11-03: *"at the end of each run, I expect you to check if vpn-1 is running. I depend on it for remote access"*. So every run ends with checking that vpn-1 is `running` and that longwire's latest start reached its dial tone (`GET /v1/system/logs?container=vpn-1`). If it is down, find the cause and bring it back. Repairing through packages and recipes is in scope: on the day this was written, a rolled hibr broke the longwire module, and longwire 0.5.39-2 fixed it (#672). Stopping, starting or removing the container itself is asked of the owner first.
 
+## This repository is public: no site detail goes into it
+
+**`cix` and `cix-recipes` are published to GitHub, so nothing that identifies the owner's site is written into either: no real address, host name, domain, vpn number, account or personal email.** The owner on 2026-11-26, after their deployments had been public: *"my deployments should be private"*, then *"purge"* for both repositories' histories, which were rewritten that day. A site's facts live in the site's own private repository (ADR-0396) and in this session's memory, never here.
+
+- **Write measurements without the site:** "on the box", "the site's services network", or the placeholders this file already uses. Where an address is the point, use a documentation range (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`), never the real one.
+- **Commits are authored as `osakka@home.arpa`.** `SECURITY.md`'s contact is the owner's choice and stays.
+- **A container recipe in `cix-recipes` is generic** (ADR-0397): every site value is a variable, and its value is in the site's repository.
+- **The text above this section that names the site's host and numbers is placeholders since the purge.** The real ones are in memory.
+
 ## The Immutable Maxims — the base every other rule in this file operates from
 
 These nine (restated here in condensed form; the authoritative wording is `docs/mission/MISSION.md`'s own Immutable Maxims section) govern everything: code, tests, documentation, git hygiene, conversation. Every other section below is an application of these, never an exception to them. No infringement, ever, in any form:
