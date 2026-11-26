@@ -24709,7 +24709,7 @@ components:
       allOf:
         - $ref: "#/components/schemas/Deployment"
         - type: object
-          required: [content, version, source]
+          required: [content, version]
           properties:
             content:
               type: string
@@ -24725,11 +24725,6 @@ components:
                 The version this host synced or committed it at (ADR-0396), the
                 <version> of recipes/deployment/<name>@<version>.json; null when
                 it was added through the API, which records none.
-            source:
-              type: [string, "null"]
-              description: >
-                The recipe source that owns this name (ADR-0396, ADR-0324); null
-                when none does, or several do and none is chosen.
 
     PkgSource:
       type: object

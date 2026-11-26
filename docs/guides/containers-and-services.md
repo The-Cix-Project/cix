@@ -460,7 +460,7 @@ cixctl deployment rm syslog-1
 
   ```sh
   cixctl deployment commit syslog-1 --file=syslog-1.json --version=2.0.1 --wait
-  cixctl deployment show syslog-1     # version and source are in --json
+  cixctl --json deployment show syslog-1   # its version; `pkg source own` names the source
   ```
 
   The version must be above the one the box holds, and the source must

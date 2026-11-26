@@ -23849,20 +23849,16 @@ static void handle_container_recipe_get(int fd, const char *name)
 	jw_str(&w, content);
 	{
 		char version[PKG_VERSION_MAX];
-		char item[PKG_SOURCE_ITEM_MAX], owner[PKG_SOURCE_NAME_MAX];
 
-		/* ADR-0396: which version, from which source; null when this
-		 * host has no record (an add through the API) or no source. */
+		/* ADR-0396: the version it was synced or committed at; null
+		 * when this host has no record (an add through the API). It
+		 * changes only with the stored text, which announces this read.
+		 * The owning source is not here: it changes with every sync and
+		 * source edit, none of which announce a deployment, and
+		 * `pkg source own` already reports it. */
 		jw_key(&w, "version");
 		if (container_recipe_version(name, version, sizeof(version)) == 0)
 			jw_str(&w, version);
-		else
-			jw_null(&w);
-		snprintf(item, sizeof(item), "deployment:%s", name);
-		jw_key(&w, "source");
-		if (pkgsource_owner_of(item, owner, sizeof(owner)) == PKGSOURCE_OWNER_ONE &&
-		    owner[0] != '\0')
-			jw_str(&w, owner);
 		else
 			jw_null(&w);
 	}

@@ -9292,10 +9292,9 @@ skip_resume:
 			memset(&r, 0, sizeof(r));
 			if (cix_client_request(&client, "GET", "/v1/deployments/dcommit", NULL, &r) != 0 ||
 			    r.status != 200 || !str_eq(json_str_field(r.json, "content"), dep) ||
-			    !str_eq(json_str_field(r.json, "version"), "1.0.0") ||
-			    !str_eq(json_str_field(r.json, "source"), "forge")) {
-				fprintf(stderr, "FAIL: ADR-0396 dcommit was committed but not stored at 1.0.0 "
-				                "from forge: %d %s\n",
+			    !str_eq(json_str_field(r.json, "version"), "1.0.0")) {
+				fprintf(stderr, "FAIL: ADR-0396 dcommit was committed but not stored at "
+				                "1.0.0: %d %s\n",
 				        r.status, r.body != NULL ? r.body : "");
 				ok = 0;
 			}
@@ -9345,6 +9344,16 @@ skip_resume:
 			                       "{\"content\":\"{\\\"name\\\":\\\"dcommit\\\"}\"}", &r) != 0 ||
 			    r.status != 400) {
 				fprintf(stderr, "FAIL: ADR-0396 a commit with no version must be 400, got %d\n",
+				        r.status);
+				ok = 0;
+			}
+			cix_response_free(&r);
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, "POST", "/v1/deployments/dcommit/commit",
+			                       "{\"version\":\"1.0.1\",\"content\":\"not json\"}", &r) != 0 ||
+			    r.status != 400) {
+				fprintf(stderr, "FAIL: ADR-0396 a commit whose content is not JSON must be 400, "
+				                "got %d\n",
 				        r.status);
 				ok = 0;
 			}
