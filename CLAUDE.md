@@ -537,7 +537,7 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **A deployment changes git first, from either end.** In the repository: commit, then `pkg sync` and `deployment apply NAME`. On the box: `cixctl deployment commit NAME --file=PATH --version=V --wait` commits `recipes/deployment/NAME@V.json` to the owning writable source, then stores it (#740), then `deployment apply NAME`. **Never fix a deployment on the box alone:** `deployment add` of a name a source owns is a 409.
 - **The version is above the one the box holds**, which `GET /v1/deployments/{name}` shows; `pkg source own` shows which source owns it. A sync takes the highest version, so a commit below it is refused rather than written and never used.
 - **A sync never deletes a deployment**, so a source dropping a file forgets nothing; only `DELETE /v1/deployments/{name}` does, kept secrets included.
-- **With two writable sources a new name needs `--source` named**: a new package `--source=cix-recipes`, a new deployment `--source=gibsson-1`. On gibsson-1 the `gibsson-1` source stays read-only until the release carrying #740 is live.
+- **With two writable sources a new name needs `--source` named**: a new package `--source=cix-recipes`, a new deployment `--source=gibsson-1`. On the box the site source is writable since 0.2.57-727 (2026-11-26); its first push-back was `dav@2.0.1`, committed by cixd and stored at that version.
 
 ## A container's LDAP account is staged before it starts
 
