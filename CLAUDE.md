@@ -13,6 +13,7 @@ You are an elite Operating System Architect and Systems C Programmer. We are ite
 - **Write new text without the site:** "on the box", "the site's services network". Where an address is the point, use a documentation range (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`), never the real one. Older sections of this file still name the site; leave them unless the text is being rewritten anyway.
 - **Commits are authored as `osakka@gmail.com`**, the owner's public address (2026-11-26: "that's what I use publically"). `SECURITY.md`'s contact is the same. Earlier commits keep the address they were made with.
 - **A container recipe in `cix-recipes` is generic** (ADR-0397): every site value is a variable, and its value is in the site's repository.
+- **A config file in a container recipe or deployment is an include** (ADR-0397 decision 8): `recipes/<kind>/<name>@<version>.d/<file>`, in its own format, rendered with the recipe's variables, secrets and LDAP values. Never paste a whole configuration file into JSON as an escaped string.
 
 ## The Immutable Maxims — the base every other rule in this file operates from
 
