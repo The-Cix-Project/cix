@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A site's deployments live in the site's own repository (ADR-0396)
+
+- **Before:** `cix-recipes`, which is push-mirrored to the public catalogue, held every deployment beside the packages and images. A deployment is one site's container, so its addresses were public, and one name could not mean two sites' containers: a sync had written 192.168.15.95's `ntp-1` (192.168.150.105) back over gibsson-1's in the box's store.
+- **Now:** `cix-recipes` holds packages and images only (cix-recipes d27b728b). gibsson-1's 22 deployments are in `osakka/gibsson-1` (private) at 2.0.0, taken from the definitions each running container was created with. The box has it as a read source; its first sync added 17 and found 5 already identical, and `ntp-1` reads 192.168.250.105 again. Nothing restarted.
+- **Still to come:** pushing a box-side deployment change back to its source, git first, as `pkg recipe commit` does for a package (#740). Until then a deployment changes in its repository.
+
 ### A root CA carries keyUsage, and an existing one is re-issued with its own key (ADR-0395)
 
 - **Before:** a root CA was made with subjectKeyIdentifier, authorityKeyIdentifier and basicConstraints, and no keyUsage, which RFC 5280 requires of a CA. Python 3.13 verifies strictly, so every Python TLS client refused every chain under a Cix root: Radicale's LDAP login on gibsson-1 failed with `CA cert does not include key usage extension`.

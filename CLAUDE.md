@@ -134,6 +134,8 @@ recipes/image/cix-builder@1.4.0.sh    was recipes/image/cix-builder/1.4.0/build.
 recipes/deployment/dns-1@1.2.0.json   was recipes/deployment/dns-1/1.2.0/container.json
 ```
 
+**Deployments are no longer in cix-recipes either** (ADR-0396, below): `cix-recipes` holds packages and images, and gibsson-1's deployments are in `git.home.arpa/osakka/gibsson-1`, in the same `recipes/deployment/` layout.
+
 Every `recipes/package/<name>/<version>/build.<ext>` cited further down
 this file, and in the ADRs, was correct when written and maps to the
 new path by that rule. Those citations are left as they are rather than
@@ -516,6 +518,16 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Never remove a container to change its deployment.** Re-apply it: 200 unchanged, 202 restarting (through the rolling restart, roll groups held apart), or 200 updated when stopped. Only a change to `restart`, `restart_delay_seconds`, `depends_on`, `follow_rolling` or `follow_rolling_jitter_seconds` needs remove and apply, and that is a 409 saying so.
 - **Kept secrets** live in `STATE_DIR/deployment-secrets.json`, written only through `persist_atomic_write_private()` (0600 from creation), and never returned by any read. They go with the deployment (`DELETE /v1/deployments/NAME`), never with the container.
 - **vpn-1/vpn-2:** a re-apply that changes their definition restarts them, so it is still asked of the owner first.
+
+## A site's deployments live in the site's own repository
+
+**`cix-recipes` is the platform (packages and images) and is public; a site's deployments live in the site's own repository, which its box takes as a source** -- [ADR-0396](docs/adr/0396-a-sites-deployments-live-in-the-sites-own-repository.md), the owner on 2026-11-26: *"we should split my own automation (my own deployments) from the cix ones"*, and *"the ability for a administrator/user to add their own repo to push back and pull changes from"*.
+
+- **Never add a deployment to `cix-recipes`.** gibsson-1's are in `osakka/gibsson-1` (private), from 2.0.0; the 1.x line in `cix-recipes`' history was .95's.
+- **An administrator adds any repository as a source** (`cixctl pkg source add`), one per site or one per deployment. One name, one source (ADR-0324). `--write=on` is where the box pushes its changes back.
+- **A deployment changes git first.** Edit the repository, then `pkg sync` and `deployment apply NAME`. A box-side `deployment add` of a name a source owns is overwritten at the next sync until the push-back half of ADR-0396 ships (#740); never fix a deployment on the box alone.
+- **A sync never deletes a deployment**, so a source dropping a file forgets nothing; only `DELETE /v1/deployments/{name}` does, kept secrets included.
+- **On gibsson-1** the `gibsson-1` source is read-only until push-back ships: with two writable sources a new package needs `--source=cix-recipes` named.
 
 ## A container's LDAP account is staged before it starts
 
