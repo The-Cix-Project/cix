@@ -8,12 +8,11 @@ You are an elite Operating System Architect and Systems C Programmer. We are ite
 
 ## This repository is public: no site detail goes into it
 
-**`cix` and `cix-recipes` are published to GitHub, so nothing that identifies the owner's site is written into either: no real address, host name, domain, vpn number or account. The owner's public address, `osakka@gmail.com`, is the one exception.** The owner on 2026-11-26, after their deployments had been public: *"my deployments should be private"*, then *"purge"* for both repositories' histories, which were rewritten that day. A site's facts live in the site's own private repository (ADR-0396) and in this session's memory, never here.
+**`cix` and `cix-recipes` are published to GitHub, so nothing that identifies the owner's site is written into either: no real address, host name, domain, vpn number or account. The owner's public address, `osakka@gmail.com`, is the one exception.** The owner on 2026-11-26, after their deployments had been public: *"my deployments should be private"*. `cix-recipes`' history was rewritten without its deployments that day (ADR-0396). `cix`'s history was left as it is, by the owner's choice the same day (*"drop the cix rewrite"*), because rewriting it moves every release tag; site details already in it stay, and none are added. A site's facts live in the site's own private repository (ADR-0396) and in this session's memory.
 
-- **Write measurements without the site:** "on the box", "the site's services network", or the placeholders this file already uses. Where an address is the point, use a documentation range (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`), never the real one.
-- **Commits are authored as `osakka@gmail.com`**, the owner's public address (2026-11-26: "that's what I use publically"); the history was rewritten to it. `SECURITY.md`'s contact is the same.
+- **Write new text without the site:** "on the box", "the site's services network". Where an address is the point, use a documentation range (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`), never the real one. Older sections of this file still name the site; leave them unless the text is being rewritten anyway.
+- **Commits are authored as `osakka@gmail.com`**, the owner's public address (2026-11-26: "that's what I use publically"). `SECURITY.md`'s contact is the same. Earlier commits keep the address they were made with.
 - **A container recipe in `cix-recipes` is generic** (ADR-0397): every site value is a variable, and its value is in the site's repository.
-- **The text above this section that names the site's host and numbers is placeholders since the purge.** The real ones are in memory.
 
 ## The Immutable Maxims — the base every other rule in this file operates from
 
