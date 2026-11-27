@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container's veth names cross to its child as whole records (#757)
+
+- **Before:** cixd wrote each container-side veth name into a pipe as `name\0`, and the child took each with one `read()` of up to 15 bytes. A pipe is a byte stream, so when cixd ran one name ahead, that read returned a name and the start of the next; the child's next "name" began mid-name, `if_nametoindex()` failed with ENODEV, and the create failed (`container_net_child_configure: No such device`, or on the host side ESRCH once the child had died). Seen on the box on 2026-11-26 and 2026-11-27: a six-network router container failed three creates in a row on a roll, each at a different attachment, and its peer failed once and recovered on retry.
+- **Now:** each name is one fixed 16-byte record, and the child reads exactly one record per attachment, however the bytes arrive. `test_netname_record` (in the release gate) queues six records before the first read, splits one across two writes, and checks a truncated stream fails with EPIPE.
+
 ### The In Flight tab draws each build once
 
 - **Before:** two refreshes started close together (two announcements) each cleared the list and appended a card after every read, so one build could show as two identical cards, the second with empty graphs. Seen by the owner on gibsson-1 for `gcc-libs@cix-builder`.

@@ -104,11 +104,31 @@ int mountns_bind_into(pid_t child_pid, const char *host_dir, const char *contain
  * brings it up, then writes the container-side veth's name through
  * ready_pipe_write -- not just a bare "ready" signal, since the child
  * can't recover that name itself via getpid() (CLONE_NEWPID means it
- * sees itself as pid 1 in its own namespace). One write per
+ * sees itself as pid 1 in its own namespace). One record per
  * attachment, same order the child will read them in. On failure, the
  * caller must close ready_pipe_write without writing, so the child's
  * read() observes EOF and fails cleanly instead of blocking forever.
+ *
+ * Each name travels as one fixed CONTAINER_NET_NAME_RECORD-byte record,
+ * NUL-padded, and the child reads exactly that many bytes per
+ * attachment (#757). A pipe is a byte stream, not a message channel:
+ * when the parent wrote two names before the child read, the child's
+ * single read() took one name and part of the next, so its next
+ * "name" began mid-name (e.g. "-3"), if_nametoindex() failed with
+ * ENODEV, and the create failed. Measured on the site box,
+ * 2026-11-27: three creates of one six-network container failed this
+ * way, stopping at a different attachment each time, while the same
+ * create succeeded right after.
  */
+#define CONTAINER_NET_NAME_RECORD 16 /* IFNAMSIZ */
+
+/* One record each way: write NAME (shorter than a record, else
+ * ENAMETOOLONG) as one NUL-padded record; read exactly one record into
+ * OUT, NUL-terminated. Both return 0, or -1 with errno set (EPIPE when
+ * the stream ends before a whole record). */
+int container_net_name_record_write(int fd, const char *name);
+int container_net_name_record_read(int fd, char out[CONTAINER_NET_NAME_RECORD]);
+
 int container_net_host_setup(const struct network_spec *nets, int net_count, pid_t child_pid,
                               int ready_pipe_write);
 

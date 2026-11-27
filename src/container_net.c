@@ -50,6 +50,52 @@ const struct container_net_attach_ms *container_net_last_attach_ms(void)
 	return &g_attach_ms;
 }
 
+int container_net_name_record_write(int fd, const char *name)
+{
+	char rec[CONTAINER_NET_NAME_RECORD];
+	ssize_t n;
+
+	if (strlen(name) >= sizeof(rec)) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	memset(rec, 0, sizeof(rec));
+	memcpy(rec, name, strlen(name));
+	/* Far below PIPE_BUF, so on a pipe the write is atomic: whole or
+	 * not at all. */
+	do {
+		n = write(fd, rec, sizeof(rec));
+	} while (n < 0 && errno == EINTR);
+	if (n != (ssize_t)sizeof(rec)) {
+		if (n >= 0)
+			errno = EIO;
+		return -1;
+	}
+	return 0;
+}
+
+int container_net_name_record_read(int fd, char out[CONTAINER_NET_NAME_RECORD])
+{
+	size_t got = 0;
+
+	/* Exactly one record however the bytes arrive: never past it, so
+	 * the next read starts at the next record. */
+	while (got < CONTAINER_NET_NAME_RECORD) {
+		ssize_t n = read(fd, out + got, CONTAINER_NET_NAME_RECORD - got);
+
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0) {
+			if (n == 0)
+				errno = EPIPE; /* closed before a whole record */
+			return -1;
+		}
+		got += (size_t)n;
+	}
+	out[CONTAINER_NET_NAME_RECORD - 1] = '\0';
+	return 0;
+}
+
 int container_net_host_setup(const struct network_spec *nets, int net_count, pid_t child_pid,
                               int ready_pipe_write)
 {
@@ -62,8 +108,7 @@ int container_net_host_setup(const struct network_spec *nets, int net_count, pid
 
 	for (idx = 0; idx < net_count; idx++) {
 		char veth_host[16];
-		char veth_ctr[16];
-		size_t len;
+		char veth_ctr[CONTAINER_NET_NAME_RECORD];
 
 		snprintf(veth_host, sizeof(veth_host), "vh%d-%d", (int)child_pid, idx);
 		snprintf(veth_ctr, sizeof(veth_ctr), "vc%d-%d", (int)child_pid, idx);
@@ -76,10 +121,7 @@ int container_net_host_setup(const struct network_spec *nets, int net_count, pid
 			return -1;
 		}
 
-		/* Include the NUL so the child's single read() knows exactly
-		 * where the name ends without needing its own delimiter scan. */
-		len = strlen(veth_ctr) + 1;
-		if ((size_t)write(ready_pipe_write, veth_ctr, len) != len) {
+		if (container_net_name_record_write(ready_pipe_write, veth_ctr) != 0) {
 			rtnl_close(fd);
 			return -1;
 		}
@@ -138,18 +180,13 @@ int container_net_child_configure(const struct network_spec *nets, int net_count
 		return -1;
 
 	for (idx = 0; idx < net_count; idx++) {
-		char veth_ctr[16];
+		char veth_ctr[CONTAINER_NET_NAME_RECORD];
 		char ifname[16];
-		ssize_t n;
 
-		n = read(ready_pipe_read, veth_ctr, sizeof(veth_ctr) - 1);
-		if (n <= 0) {
+		if (container_net_name_record_read(ready_pipe_read, veth_ctr) != 0) {
 			rtnl_close(fd);
 			return -1;
 		}
-		/* Defensive: guarantee termination regardless of whether the
-		 * sender's NUL already landed within these n bytes. */
-		veth_ctr[n] = '\0';
 		/* ADR-0259: the operator's chosen name when there is one, and
 		 * the positional eth<idx> when there is not. */
 		if (nets[idx].ifname[0] != '\0')
