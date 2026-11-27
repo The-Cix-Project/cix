@@ -18,7 +18,9 @@
  */
 
 #define RULE_NAMES_MAX 2048    /* usb-modeswitch-data-20261111 has 515 */
-#define RULES_PER_ID_MAX 16    /* 05c6:1000 has 13, the most of any id (probe-modeswitch@3-3) */
+/* 05c6:1000 has 12 attribute-qualified rules, the most of any id in
+ * usb-modeswitch-data-20261111 (probe-modeswitch@3-3's listing). */
+#define RULES_PER_ID_MAX 16
 #define RULE_FILE_MAX 8192     /* the largest rule is a few hundred bytes */
 #define PORTS_MAX 32
 #define HELPER_DEADLINE_S 600  /* queued and sent: 4 may wait, each transfer has a timeout */
@@ -32,12 +34,8 @@ struct port {
 	int used;
 	char port[DEVICE_ID_MAX];
 	enum port_state state;
-	unsigned int from_vendor, from_product;
-	char rule[MODESWITCH_NAME_MAX];
-	char device[96];
-	unsigned int target_vendor;
-	unsigned int targets[MODESWITCH_TARGETS_MAX];
-	int target_count;
+	struct modeswitch_rule rule;        /* its vendor:product is the id switched from */
+	unsigned int to_vendor, to_product; /* switched: the id it came back as */
 	char reason[200];
 	long long deadline;
 };
@@ -146,6 +144,15 @@ static int parse_hex(const char *s, unsigned int *out)
 	return 0;
 }
 
+static int record_ids(const struct discovered_device *d, unsigned int *vendor,
+                      unsigned int *product)
+{
+	if (strcmp(d->bus, "usb") != 0)
+		return -1;
+	return parse_hex(d->vendor_id, vendor) == 0 && parse_hex(d->product_id, product) == 0 ? 0
+	                                                                                       : -1;
+}
+
 static void read_attr(const struct discovered_device *d, const char *name, char *out,
                       size_t size)
 {
@@ -177,16 +184,16 @@ static struct port *port_find(const char *port)
 	return NULL;
 }
 
+/* A port's record, replacing the one it had; or a slot no switch is
+ * using. NULL only when every slot holds a switch in flight. */
 static struct port *port_take(const char *port)
 {
 	struct port *p = port_find(port);
 	int i;
 
-	if (p == NULL) {
-		for (i = 0; i < PORTS_MAX && p == NULL; i++) {
-			if (!g_ports[i].used || g_ports[i].state != PORT_SWITCHING)
-				p = &g_ports[i];
-		}
+	for (i = 0; i < PORTS_MAX && p == NULL; i++) {
+		if (!g_ports[i].used || g_ports[i].state != PORT_SWITCHING)
+			p = &g_ports[i];
 	}
 	if (p != NULL) {
 		memset(p, 0, sizeof(*p));
@@ -196,25 +203,23 @@ static struct port *port_take(const char *port)
 	return p;
 }
 
-/* The decision's inputs for record idx, and the chosen rule's index in
- * rules; -1 when the record is not a USB device. */
+/* The decision's inputs for record idx, and the chosen rule; -1 when the
+ * record is not a USB device. */
 static int gather(const struct discovered_device *recs, int n, int idx,
-                  const struct device_verdict *v, struct modeswitch_rule *rules, int *count,
+                  const struct device_verdict *v, struct modeswitch_rule *rules,
                   struct modeswitch_facts *f)
 {
 	const struct discovered_device *d = &recs[idx];
 	char manufacturer[128], product[128], serial[128];
 	struct modeswitch_device dev;
-	int chosen, i;
+	int count, chosen, i;
 
 	memset(f, 0, sizeof(*f));
 	f->iface0_class = -1;
-	*count = 0;
-	if (strcmp(d->bus, "usb") != 0 || parse_hex(d->vendor_id, &dev.vendor) != 0 ||
-	    parse_hex(d->product_id, &dev.product) != 0)
+	if (record_ids(d, &dev.vendor, &dev.product) != 0)
 		return -1;
-	*count = rules_for(dev.vendor, dev.product, rules, RULES_PER_ID_MAX);
-	if (*count == 0)
+	count = rules_for(dev.vendor, dev.product, rules, RULES_PER_ID_MAX);
+	if (count == 0)
 		return 0;
 	read_attr(d, "manufacturer", manufacturer, sizeof(manufacturer));
 	read_attr(d, "product", product, sizeof(product));
@@ -222,7 +227,7 @@ static int gather(const struct discovered_device *recs, int n, int idx,
 	dev.manufacturer = manufacturer;
 	dev.product_name = product;
 	dev.serial = serial;
-	chosen = modeswitch_choose(rules, *count, &dev, &f->ambiguous, &f->scsi_only);
+	chosen = modeswitch_choose(rules, count, &dev, &f->ambiguous, &f->scsi_only);
 	f->rule = chosen >= 0 ? &rules[chosen] : NULL;
 
 	f->device_free = v->state == DEVICE_STATE_FREE;
@@ -245,63 +250,49 @@ static int gather(const struct discovered_device *recs, int n, int idx,
 	return 0;
 }
 
-static void write_targets(struct json_writer *w, unsigned int vendor, const unsigned int *t,
-                          int count)
-{
-	char id[16];
-	int i;
-
-	jw_key(w, "targets");
-	jw_arr_open(w);
-	for (i = 0; i < count; i++) {
-		snprintf(id, sizeof(id), "%04x:%04x", vendor, t[i]);
-		jw_str(w, id);
-	}
-	jw_arr_close(w);
-}
-
-static void write_obj(struct json_writer *w, const char *state, const char *rule,
-                      const char *device, unsigned int tvendor, const unsigned int *t, int tcount,
-                      const char *reason)
-{
-	jw_obj_open(w);
-	jw_key(w, "state");
-	jw_str(w, state);
-	jw_key(w, "rule");
-	jw_str(w, rule);
-	jw_key(w, "device");
-	jw_str(w, device);
-	write_targets(w, tvendor, t, tcount);
-	jw_key(w, "reason");
-	jw_str(w, reason);
-	jw_obj_close(w);
-}
-
 static unsigned int rule_target_vendor(const struct modeswitch_rule *r)
 {
 	return r->has_target_vendor ? r->target_vendor : r->vendor;
 }
 
+static void write_obj(struct json_writer *w, const char *state, const struct modeswitch_rule *r,
+                      const char *reason)
+{
+	char id[16];
+	int i;
+
+	jw_obj_open(w);
+	jw_key(w, "state");
+	jw_str(w, state);
+	jw_key(w, "rule");
+	jw_str(w, r != NULL ? r->name : "");
+	jw_key(w, "device");
+	jw_str(w, r != NULL ? r->comment : "");
+	jw_key(w, "targets");
+	jw_arr_open(w);
+	for (i = 0; r != NULL && i < r->target_count; i++) {
+		snprintf(id, sizeof(id), "%04x:%04x", rule_target_vendor(r), r->targets[i]);
+		jw_str(w, id);
+	}
+	jw_arr_close(w);
+	jw_key(w, "reason");
+	jw_str(w, reason);
+	jw_obj_close(w);
+}
+
 /* A port's record still describes this record: the device it switched
- * from is still there, or the one it switched to is. */
+ * from is still there, or the device it came back as is. */
 static const struct port *port_for_record(const struct discovered_device *d)
 {
 	const char *port = port_of(d->id);
 	const struct port *p = port != NULL ? port_find(port) : NULL;
 	unsigned int v, pr;
-	int i;
 
-	if (p == NULL || parse_hex(d->vendor_id, &v) != 0 || parse_hex(d->product_id, &pr) != 0)
+	if (p == NULL || record_ids(d, &v, &pr) != 0)
 		return NULL;
-	if (p->state != PORT_SWITCHED)
-		return v == p->from_vendor && pr == p->from_product ? p : NULL;
-	if (v != p->target_vendor)
-		return NULL;
-	for (i = 0; i < p->target_count; i++) {
-		if (p->targets[i] == pr)
-			return p;
-	}
-	return NULL;
+	if (p->state == PORT_SWITCHED)
+		return v == p->to_vendor && pr == p->to_product ? p : NULL;
+	return v == p->rule.vendor && pr == p->rule.product ? p : NULL;
 }
 
 void modeswitch_write_device(struct json_writer *w, const struct discovered_device *recs, int n,
@@ -312,7 +303,6 @@ void modeswitch_write_device(struct json_writer *w, const struct discovered_devi
 	struct modeswitch_facts f;
 	const char *reason, *state;
 	char why[200];
-	int count;
 
 	if (strcmp(recs[idx].bus, "usb") != 0)
 		return;
@@ -322,11 +312,10 @@ void modeswitch_write_device(struct json_writer *w, const struct discovered_devi
 		state = p->state == PORT_SWITCHING ? "switching"
 		        : p->state == PORT_SWITCHED ? "switched"
 		                                    : "failed";
-		write_obj(w, state, p->rule, p->device, p->target_vendor, p->targets, p->target_count,
-		          p->reason);
+		write_obj(w, state, &p->rule, p->reason);
 		return;
 	}
-	if (gather(recs, n, idx, v, rules, &count, &f) != 0) {
+	if (gather(recs, n, idx, v, rules, &f) != 0) {
 		jw_null(w);
 		return;
 	}
@@ -349,12 +338,7 @@ void modeswitch_write_device(struct json_writer *w, const struct discovered_devi
 		snprintf(why, sizeof(why), "%s (%s)", reason, f.rule->unsupported);
 	else
 		snprintf(why, sizeof(why), "%s", reason);
-	if (f.rule == NULL) {
-		write_obj(w, state, "", "", 0, NULL, 0, why);
-		return;
-	}
-	write_obj(w, state, f.rule->name, f.rule->comment, rule_target_vendor(f.rule),
-	          f.rule->targets, f.rule->target_count, why);
+	write_obj(w, state, f.rule, why);
 }
 
 int modeswitch_prepare(const char *id, struct modeswitch_job *job, char *why, size_t why_size)
@@ -366,7 +350,7 @@ int modeswitch_prepare(const char *id, struct modeswitch_job *job, char *why, si
 	struct device_verdict v;
 	struct modeswitch_facts f;
 	const char *reason;
-	int idx, count;
+	int idx;
 
 	if (!g_active) {
 		snprintf(why, why_size, "switching runs only on an installed host (ADR-0398)");
@@ -385,7 +369,7 @@ int modeswitch_prepare(const char *id, struct modeswitch_job *job, char *why, si
 		return 409;
 	}
 	device_state_of(s->recs, s->n, idx, s->claims, s->claim_count, &v);
-	if (gather(s->recs, s->n, idx, &v, rules, &count, &f) != 0) {
+	if (gather(s->recs, s->n, idx, &v, rules, &f) != 0) {
 		snprintf(why, why_size, "%s is not a USB device", id);
 		return 422;
 	}
@@ -421,21 +405,14 @@ void modeswitch_started(const struct modeswitch_job *job)
 {
 	const char *port = port_of(job->id);
 	struct port *p = port != NULL ? port_take(port) : NULL;
-	const struct modeswitch_rule *r = &job->rule;
 
 	if (p == NULL)
 		return;
 	p->state = PORT_SWITCHING;
-	p->from_vendor = r->vendor;
-	p->from_product = r->product;
-	snprintf(p->rule, sizeof(p->rule), "%s", r->name);
-	snprintf(p->device, sizeof(p->device), "%s", r->comment);
-	p->target_vendor = rule_target_vendor(r);
-	memcpy(p->targets, r->targets, sizeof(p->targets));
-	p->target_count = r->target_count;
+	p->rule = job->rule;
 	p->deadline = now_s() + HELPER_DEADLINE_S;
-	logstore_write("cixd", "info", "modeswitch: switching %s by rule %s (%s)", job->id, r->name,
-	               r->comment[0] != '\0' ? r->comment : "no description");
+	logstore_write("cixd", "info", "modeswitch: switching %s by rule %s (%s)", job->id,
+	               job->rule.name, job->rule.comment[0] != '\0' ? job->rule.comment : "no description");
 	events_announce(EV_listDevices);
 }
 
@@ -465,44 +442,63 @@ void modeswitch_finished(const struct modeswitch_job *job, int ok, const char *e
 	modeswitch_usb_added(); /* it may already be back */
 }
 
+/* What the port of p holds now, from a snapshot: whether a USB record is
+ * there, and its ids. */
+static int port_now(const struct device_snapshot *s, const struct port *p, unsigned int *vendor,
+                    unsigned int *product)
+{
+	int j;
+
+	for (j = 0; j < s->n; j++) {
+		const char *port = port_of(s->recs[j].id);
+
+		if (port != NULL && strcmp(port, p->port) == 0 &&
+		    record_ids(&s->recs[j], vendor, product) == 0)
+			return 1;
+	}
+	return 0;
+}
+
 void modeswitch_usb_added(void)
 {
 	const struct device_snapshot *s;
-	int i, j;
+	int i;
 
 	if (!modeswitch_in_flight())
 		return;
 	s = devicegrant_snapshot();
 	for (i = 0; i < PORTS_MAX; i++) {
 		struct port *p = &g_ports[i];
+		unsigned int v = 0, pr = 0;
+		int present;
 
 		if (!p->used || p->state != PORT_SWITCHING)
 			continue;
-		for (j = 0; j < s->n; j++) {
-			const char *port = port_of(s->recs[j].id);
-			unsigned int v, pr;
-			int k;
-
-			if (strcmp(s->recs[j].bus, "usb") != 0 || port == NULL ||
-			    strcmp(port, p->port) != 0 || parse_hex(s->recs[j].vendor_id, &v) != 0 ||
-			    parse_hex(s->recs[j].product_id, &pr) != 0 || v != p->target_vendor)
-				continue;
-			for (k = 0; k < p->target_count; k++) {
-				if (p->targets[k] != pr)
-					continue;
-				p->state = PORT_SWITCHED;
-				p->reason[0] = '\0';
-				logstore_write("cixd", "info", "modeswitch: %04x:%04x on port %s switched to %s",
-				               p->from_vendor, p->from_product, p->port, s->recs[j].id);
-				events_announce(EV_listDevices);
-				break;
-			}
+		present = port_now(s, p, &v, &pr);
+		switch (modeswitch_return_of(p->rule.vendor, p->rule.product, &p->rule, present, v, pr)) {
+		case MODESWITCH_RETURN_WAIT:
+			continue;
+		case MODESWITCH_RETURN_TARGET:
+			p->reason[0] = '\0';
+			break;
+		case MODESWITCH_RETURN_UNLISTED:
+			snprintf(p->reason, sizeof(p->reason),
+			         "it came back as %04x:%04x, which its rule does not list", v, pr);
+			break;
 		}
+		p->state = PORT_SWITCHED;
+		p->to_vendor = v;
+		p->to_product = pr;
+		logstore_write("cixd", "info", "modeswitch: %04x:%04x on port %s switched to %04x:%04x%s",
+		               p->rule.vendor, p->rule.product, p->port, v, pr,
+		               p->reason[0] != '\0' ? ", an id its rule does not list" : "");
+		events_announce(EV_listDevices);
 	}
 }
 
 void modeswitch_tick(void)
 {
+	const struct device_snapshot *s = NULL;
 	long long now;
 	int i;
 
@@ -510,21 +506,20 @@ void modeswitch_tick(void)
 		return;
 	now = now_s();
 	for (i = 0; i < PORTS_MAX; i++) {
-		if (g_ports[i].used && g_ports[i].state == PORT_SWITCHING && now >= g_ports[i].deadline) {
-			char reason[200];
-			int k, at = 0;
+		struct port *p = &g_ports[i];
+		unsigned int v = 0, pr = 0;
 
-			modeswitch_usb_added(); /* a last look before saying it failed */
-			if (g_ports[i].state != PORT_SWITCHING)
-				continue;
-			at = snprintf(reason, sizeof(reason), "it did not come back as");
-			for (k = 0; k < g_ports[i].target_count && at < (int)sizeof(reason) - 12; k++)
-				at += snprintf(reason + at, sizeof(reason) - (size_t)at, "%s %04x:%04x",
-				               k == 0 ? "" : ",", g_ports[i].target_vendor,
-				               g_ports[i].targets[k]);
-			snprintf(reason + at, sizeof(reason) - (size_t)at, " in time");
-			port_failed(&g_ports[i], reason);
-		}
+		if (!p->used || p->state != PORT_SWITCHING || now < p->deadline)
+			continue;
+		modeswitch_usb_added(); /* a last look before saying it failed */
+		if (p->state != PORT_SWITCHING)
+			continue;
+		if (s == NULL)
+			s = devicegrant_snapshot();
+		if (port_now(s, p, &v, &pr))
+			port_failed(p, "it is still in its fake-disk mode after the switch");
+		else
+			port_failed(p, "nothing came back on its port after the switch");
 	}
 }
 

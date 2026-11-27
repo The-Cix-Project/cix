@@ -88,6 +88,14 @@ static void test_parse(void)
 	CHECK(r.msg_len[0] == 31 && r.msg_len[1] == 31 && r.msg_len[2] == 0, "two messages");
 	CHECK(r.target_count == 1 && r.targets[0] == 0x1022, "CRLF target");
 
+	/* Endpoints and Interface are hex with or without 0x, as upstream's
+	 * ParseParamHex reads them; delays are decimal. */
+	r = parse("1234:5678", "MessageEndpoint=01\nResponseEndpoint=81\nInterface=0x1\n"
+	                       "ReleaseDelay=4000\nTargetClass=0xff\n");
+	CHECK(r.message_endpoint == 0x01 && r.response_endpoint == 0x81 && r.interface == 1,
+	      "hex keys: %x %x %d", r.message_endpoint, r.response_endpoint, r.interface);
+	CHECK(r.release_delay_ms == 4000 && r.target_class == 0xff, "decimal delay, hex class");
+
 	r = parse("12d1:1446", HUAWEI);
 	CHECK(strcmp(r.unsupported, "HuaweiNewMode") == 0, "unsupported '%s'", r.unsupported);
 	r = parse("12d1:1446", "HuaweiNewMode=0\nStandardEject=1\n");
@@ -215,6 +223,17 @@ static void test_plan(void)
 
 	n = modeswitch_plan(&h, 0, s);
 	CHECK(n == 2 && s[1].data_len == 0xc0 && s[1].data_in, "two messages in order");
+
+	/* How a switch ended, from what the port holds now. */
+	CHECK(modeswitch_return_of(0x0bda, 0x1a2b, &r, 0, 0, 0) == MODESWITCH_RETURN_WAIT,
+	      "nothing on the port yet");
+	CHECK(modeswitch_return_of(0x0bda, 0x1a2b, &r, 1, 0x0bda, 0x1a2b) == MODESWITCH_RETURN_WAIT,
+	      "still the device switched from");
+	CHECK(modeswitch_return_of(0x0bda, 0x1a2b, &r, 1, 0x0bda, 0xb851) == MODESWITCH_RETURN_TARGET,
+	      "a listed target");
+	CHECK(modeswitch_return_of(0x0bda, 0x1a2b, &r, 1, 0x0bda, 0xc811) ==
+	              MODESWITCH_RETURN_UNLISTED,
+	      "another chip behind the same id still switched");
 
 	CHECK(modeswitch_is_target(&r, 0x0bda, 0xb851), "target");
 	CHECK(!modeswitch_is_target(&r, 0x0bda, 0x1a2b), "the source id is not a target");

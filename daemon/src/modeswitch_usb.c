@@ -78,6 +78,11 @@ static int bulk(int fd, unsigned int ep, void *buf, unsigned int len)
 	return ioctl(fd, USBDEVFS_BULK, &b);
 }
 
+static int clear_halt(int fd, unsigned int ep)
+{
+	return ioctl(fd, USBDEVFS_CLEAR_HALT, &ep);
+}
+
 /* The device answered a transfer by leaving: it has switched. */
 static int device_left(int err)
 {
@@ -204,12 +209,15 @@ int modeswitch_usb_run(const char *dev_path, const struct modeswitch_rule *r,
 		const struct modeswitch_step *s = &steps[i];
 
 		if (bulk(fd, (unsigned int)ep_out, (void *)s->bytes, (unsigned int)s->len) < 0) {
-			if (device_left(errno) && i > 0) {
+			/* Once a message has gone, a device that is switching may
+			 * answer the next with any error -- it leaves, stalls or
+			 * stops answering -- so the switch is sent and its return
+			 * decides. Only a first message that never went is a failure. */
+			if (i > 0) {
 				res->left_early = 1;
 				break;
 			}
 			say(res, "sending a switch message", errno);
-			res->steps_sent = i;
 			ioctl(fd, USBDEVFS_RELEASEINTERFACE, &ifno);
 			close(fd);
 			return -1;
@@ -219,18 +227,29 @@ int modeswitch_usb_run(const char *dev_path, const struct modeswitch_rule *r,
 			continue;
 		/* What follows a message is read and discarded: a device that
 		 * switches may never send it, so no read decides anything, but
-		 * one left unread would make the next command a phase error. */
+		 * one left unread would make the next command a phase error. A
+		 * stall is cleared and the status read once more, as bulk-only
+		 * transport 1.0 (6.7.2) has the host do. */
 		if (s->is_cbw && s->data_in && s->data_len > 0 &&
 		    bulk(fd, (unsigned int)ep_in, scratch,
-		         s->data_len < sizeof(scratch) ? s->data_len : (unsigned int)sizeof(scratch)) < 0 &&
-		    device_left(errno)) {
-			res->left_early = 1;
-			break;
+		         s->data_len < sizeof(scratch) ? s->data_len : (unsigned int)sizeof(scratch)) < 0) {
+			if (device_left(errno)) {
+				res->left_early = 1;
+				break;
+			}
+			if (errno == EPIPE)
+				clear_halt(fd, (unsigned int)ep_in);
 		}
-		if (s->is_cbw && bulk(fd, (unsigned int)ep_in, csw, sizeof(csw)) < 0 &&
-		    device_left(errno)) {
-			res->left_early = 1;
-			break;
+		if (s->is_cbw && bulk(fd, (unsigned int)ep_in, csw, sizeof(csw)) < 0) {
+			if (device_left(errno)) {
+				res->left_early = 1;
+				break;
+			}
+			if (errno == EPIPE && clear_halt(fd, (unsigned int)ep_in) == 0 &&
+			    bulk(fd, (unsigned int)ep_in, csw, sizeof(csw)) < 0 && device_left(errno)) {
+				res->left_early = 1;
+				break;
+			}
 		}
 		if (s->read_response && bulk(fd, (unsigned int)ep_in, scratch, 512) < 0 &&
 		    device_left(errno)) {

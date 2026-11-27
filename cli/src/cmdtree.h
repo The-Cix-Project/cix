@@ -1113,6 +1113,7 @@ static const struct cli_node n_image_subs[] = {
 
 static const struct cli_node n_device_subs[] = {
 	{ "ls", NULL, NULL },
+	{ "modeswitch", NULL, NULL },
 	{ NULL, NULL, NULL },
 };
 

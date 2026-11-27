@@ -113,9 +113,20 @@ static int decode_hex(const char *s, unsigned char *out, size_t max, size_t *len
 	return 0;
 }
 
+/*
+ * Upstream reads two kinds of number (usb_modeswitch.c, ParseParamInt and
+ * ParseParamHex, read 2026-11-27 by probe-modeswitch@3-3): the ids,
+ * classes, endpoints and Interface are hex whether or not they carry a
+ * `0x`, so `MessageEndpoint=81` is 0x81; delays and flags are decimal.
+ */
 static long number(const char *v)
 {
-	return strtol(v, NULL, 0);
+	return strtol(v, NULL, 10);
+}
+
+static long hexnum(const char *v)
+{
+	return strtol(v, NULL, 16);
 }
 
 static void parse_target_list(const char *v, struct modeswitch_rule *r)
@@ -179,26 +190,26 @@ static int parse_line(char *line, struct modeswitch_rule *r, char *err, size_t e
 
 	if (strcmp(key, "TargetVendor") == 0) {
 		r->has_target_vendor = 1;
-		r->target_vendor = (unsigned int)number(v);
+		r->target_vendor = (unsigned int)hexnum(v);
 	} else if (strcmp(key, "TargetProduct") == 0) {
 		if (r->target_count == 0) { /* TargetProductList has priority */
-			r->targets[0] = (unsigned int)number(v);
+			r->targets[0] = (unsigned int)hexnum(v);
 			r->target_count = 1;
 		}
 	} else if (strcmp(key, "TargetProductList") == 0) {
 		parse_target_list(v, r);
 	} else if (strcmp(key, "TargetClass") == 0) {
-		r->target_class = (int)number(v);
+		r->target_class = (int)hexnum(v);
 	} else if (strcmp(key, "StandardEject") == 0) {
 		r->standard_eject = number(v) != 0;
 	} else if (strcmp(key, "NeedResponse") == 0) {
 		r->need_response = number(v) != 0;
 	} else if (strcmp(key, "MessageEndpoint") == 0) {
-		r->message_endpoint = (int)number(v);
+		r->message_endpoint = (int)hexnum(v);
 	} else if (strcmp(key, "ResponseEndpoint") == 0) {
-		r->response_endpoint = (int)number(v);
+		r->response_endpoint = (int)hexnum(v);
 	} else if (strcmp(key, "Interface") == 0) {
-		r->interface = (int)number(v);
+		r->interface = (int)hexnum(v);
 	} else if (strcmp(key, "ReleaseDelay") == 0) {
 		r->release_delay_ms = (int)number(v);
 	} else if (strcmp(key, "WaitBefore") == 0) {
@@ -485,4 +496,14 @@ int modeswitch_is_target(const struct modeswitch_rule *r, unsigned int vendor,
 			return 1;
 	}
 	return 0;
+}
+
+enum modeswitch_return modeswitch_return_of(unsigned int from_vendor, unsigned int from_product,
+                                            const struct modeswitch_rule *r, int present,
+                                            unsigned int vendor, unsigned int product)
+{
+	if (!present || (vendor == from_vendor && product == from_product))
+		return MODESWITCH_RETURN_WAIT;
+	return modeswitch_is_target(r, vendor, product) ? MODESWITCH_RETURN_TARGET
+	                                                : MODESWITCH_RETURN_UNLISTED;
 }

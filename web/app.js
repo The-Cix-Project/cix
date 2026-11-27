@@ -7131,8 +7131,6 @@ function renderDeviceBus(bus, mappedNames) {
 		{ label: "Held by / why", text: (d) => deviceStateView(d).who || FIELD_ABSENT },
 		{ label: "Name", text: (d) => mappedNames[d.id] || FIELD_ABSENT },
 		{ label: "Firmware", text: deviceFirmwareText },
-		/* ADR-0398: USB only, since only a USB record carries the key. */
-		...(bus === "usb" ? [{ label: "Mode", text: (d) => deviceModeswitchView(d).text }] : []),
 		{ label: "", actions: (d) => {
 			const buttons = [];
 
@@ -7186,6 +7184,10 @@ function renderDeviceBus(bus, mappedNames) {
 		} },
 	];
 
+	/* ADR-0398: USB only, since only a USB record carries the key; just
+	 * before the actions. */
+	if (bus === "usb")
+		columns.splice(columns.length - 1, 0, { label: "Mode", text: (d) => deviceModeswitchView(d).text });
 	if (bus === "gpu") {
 		entries.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 		columns.unshift({ label: "Group", text: (d) => (d.id === "gpu:kfd" ? "every GPU" : d.id.split(":").slice(0, 2).join(":")) });

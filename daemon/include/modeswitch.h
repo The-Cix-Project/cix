@@ -162,9 +162,26 @@ struct modeswitch_step {
 int modeswitch_plan(const struct modeswitch_rule *r, int max_lun,
                     struct modeswitch_step out[MODESWITCH_STEPS_MAX]);
 
-/* Whether a target product of the rule is this device's: the device has
- * switched. */
+/* Whether a target product of the rule is this device's. */
 int modeswitch_is_target(const struct modeswitch_rule *r, unsigned int vendor,
                          unsigned int product);
+
+/*
+ * How a switch on a port ended, from what the port holds now. A rule's
+ * targets are not the whole truth: usb-modeswitch-data-20261111 has 515
+ * rules and 342 TargetVendor lines (probe-modeswitch@2-4), and
+ * one id can be several chips. So any other device on the port means
+ * the switch happened; listed or not only says whether the rule foresaw
+ * it.
+ */
+enum modeswitch_return {
+	MODESWITCH_RETURN_WAIT,     /* nothing on the port yet, or still the device switched from */
+	MODESWITCH_RETURN_TARGET,   /* a device the rule lists as a target */
+	MODESWITCH_RETURN_UNLISTED, /* another device: switched, to an id the rule does not list */
+};
+
+enum modeswitch_return modeswitch_return_of(unsigned int from_vendor, unsigned int from_product,
+                                            const struct modeswitch_rule *r, int present,
+                                            unsigned int vendor, unsigned int product);
 
 #endif
