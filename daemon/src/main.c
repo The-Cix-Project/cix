@@ -35807,6 +35807,12 @@ static int kmod_job_start(struct park *p)
 	return 0;
 }
 
+/* Defined with the park records further down; the mode switch's done and
+ * submit paths below call them. */
+static void park_finished(struct park *p);
+static void park_start_waiting(enum park_kind kind);
+static int park_submit(struct park *p);
+
 /* ADR-0398: the helper child of a USB mode switch. It sends the rule's
  * messages, every transfer with a timeout, and returns without waiting
  * for the device to come back; the result goes to the memory file. It
