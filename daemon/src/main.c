@@ -11642,6 +11642,7 @@ static long g_rootroll_deferred_until;
 static long g_roll_owed_until;
 
 static int handover_quiescent(void);
+static int handover_quiescent_why(char *why, size_t why_size);
 static void handover_exec(const char *target);
 
 /*
@@ -11879,6 +11880,7 @@ static void hostroll_switch_tick(void)
 {
 	char slot[8];
 	char target[IMAGE_VERSION_MAX];
+	char why[REGISTRY_NAME_MAX * 2 + 200];
 	int root_only;
 
 	if (g_hostroll.step != HOSTROLL_SWITCH)
@@ -11886,7 +11888,7 @@ static void hostroll_switch_tick(void)
 	snprintf(slot, sizeof(slot), "%s", g_hostroll.slot);
 	snprintf(target, sizeof(target), "%s", g_hostroll.root_target);
 	root_only = g_hostroll.root_only;
-	if (!handover_quiescent()) {
+	if (!handover_quiescent_why(why, sizeof(why))) {
 		if ((long)time(NULL) < g_hostroll.switch_by)
 			return;
 		/* ADR-0379: a root-only roll never reboots. The staged slot waits
@@ -11900,9 +11902,9 @@ static void hostroll_switch_tick(void)
 			hostroll_say("warn", 1,
 			             "root: work stayed in flight for %d min, so the root staged on slot %s "
 			             "was not switched into; it is retried in %d min, and a reboot before "
-			             "then boots it (ADR-0379)",
+			             "then boots it (ADR-0379)%s%s",
 			             HOSTROLL_SWITCH_WAIT_SECONDS / 60, slot,
-			             HOSTROLL_SWITCH_WAIT_SECONDS / 60);
+			             HOSTROLL_SWITCH_WAIT_SECONDS / 60, why[0] != '\0' ? ": " : "", why);
 			snprintf(g_rootroll_deferred, sizeof(g_rootroll_deferred), "%s", target);
 			g_rootroll_deferred_until = (long)time(NULL) + HOSTROLL_SWITCH_WAIT_SECONDS;
 			memset(&g_hostroll, 0, sizeof(g_hostroll));
@@ -11910,8 +11912,8 @@ static void hostroll_switch_tick(void)
 		}
 		hostroll_say("warn", 1,
 		             "work stayed in flight past the wait -- rebooting into slot %s instead of "
-		             "switching (ADR-0375)",
-		             slot);
+		             "switching (ADR-0375)%s%s",
+		             slot, why[0] != '\0' ? ": " : "", why);
 	} else {
 		memset(&g_hostroll, 0, sizeof(g_hostroll));
 		/* #692: the outcome the successor reads until it records its own. */
@@ -41977,11 +41979,23 @@ static void handover_recompute_data_dir_fault(void)
  * than carry it. Console shells are the one child left running unwatched
  * (phase 3).
  */
-static int handover_quiescent(void)
+/*
+ * #764: and no container is one the successor would refuse to take over.
+ * handover_takeover_one() refuses an entry with no definition, and the
+ * refusal reboots the host, so the sender holds the switch on exactly
+ * that rule. A build container kept by keep_on_failure (ADR-0175) is
+ * such an entry: on the site box, 2026-11-27 16:09, one turned a
+ * root-only switch into a reboot. Package jobs are held above, so a
+ * running build container never reaches this test; a kept one is held
+ * until it is resumed or deleted, and why says so.
+ */
+static int handover_quiescent_why(char *why, size_t why_size)
 {
 	static char names[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
 	int n, i;
 
+	if (why != NULL && why_size > 0)
+		why[0] = '\0';
 	if (g_helpers_live != 0 || pkg_any_job_in_flight() || modeswitch_in_flight() ||
 	    g_bootroot_assembly_running || g_bootroot_wanted ||
 	    (g_hostroll.step != HOSTROLL_IDLE && g_hostroll.step != HOSTROLL_SWITCH) ||
@@ -41995,8 +42009,22 @@ static int handover_quiescent(void)
 
 		if (e != NULL && e->teardown_kind != REGISTRY_TEARDOWN_NONE)
 			return 0;
+		if (e != NULL && containerdef_find(names[i]) == NULL) {
+			if (why != NULL && why_size > 0)
+				snprintf(why, why_size,
+				         "container %s has no definition, so the new cixd could not take "
+				         "it over (a build container kept by keep_on_failure: resume its "
+				         "build or DELETE /v1/containers/%s; #764)",
+				         names[i], names[i]);
+			return 0;
+		}
 	}
 	return 1;
+}
+
+static int handover_quiescent(void)
+{
+	return handover_quiescent_why(NULL, 0);
 }
 
 /* Every registry entry into rec, the descriptors it passes by number. */

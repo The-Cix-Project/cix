@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A kept build container holds an in-place switch instead of rebooting the host (#764)
+
+- **Before:** a build container kept by `keep_on_failure` (ADR-0175) is a registry entry with no container definition. The handover record carried it, the new cixd refused to take it over, and by ADR-0375's rule the host rebooted. On the site box at 16:09:52 on 2026-11-27, one kept `__pkgbuild-2` from a failed Rust build turned a root-only switch into a reboot of every container.
+- **Now:** quiescence holds the switch while any container has no definition, the receiver's own rule mirrored on the sender (`handover_quiescent_why()`). A root-only roll waits and retries without rebooting, as it does for work in flight, and the roll's message names the container and the way out: resume its build, or `DELETE /v1/containers/NAME`. A scheduled roll that outlasts its wait reboots into its staged slot as before, with the same reason.
+
 ### cixd switches a multi-mode USB device into its working mode (ADR-0398, release A)
 
 - **Before:** a USB Wi-Fi or cellular dongle that first appears as a fake disk stayed one. Measured on a Cix host: kernel 7.3.5 ignores the Realtek `0bda:1a2b` "DISK" on purpose (`unusual_devs.h`, `US_FL_IGNORE_DEVICE`, "otherwise usb_modeswitch may fail to switch the device into Wi-Fi mode"), and nothing on Cix sends the switch, so the record sat with no driver.
@@ -14,6 +19,8 @@ All notable changes to this project are recorded here, **newest first**. Format 
 - **Gates:** `test_modeswitch` (in SELFTESTS) parses real rule texts and checks matching, the verdict and the eject's command wrappers byte for byte; `test_blocking_waits` counts the one transfer call site; `test_docindex` requires the Mode switch in the architecture diagram.
 
 ### The test floor pins only what the public cache carries (#762)
+
+- **And installs every output, in dependency order:** the floor seeded openssl-dev, openssl-tools, glibc-tools, glibc-gconv and libarchive-dev but installed none of them, so ADR-0372 refused every test build ("its output openssl-dev is not installed anywhere", compile probes 0.2.57-824 and -827, 116 failures). They are installed after their packages, glibc-gconv before glibc-tools, which depends on it (-828 stopped on the 409 the other order gives).
 
 - **Before:** the release's test floor pinned coreutils 9.11-8, glibc 2.44-19, binutils 2.42-15 and libarchive 3.8.1-5, which the public cache does not carry (it keeps current versions only). 0.2.57-728 built on the box only because its source cache still held them; any other host failed at fetch.
 - **Now:** the floor pins coreutils 9.11-9, glibc 2.44-22, binutils 2.42-16 and libarchive 3.8.1-7, and adds what those need: libcap and openssl (coreutils' new runtime dependencies) and glibc-dev, where glibc's headers live since 2.44-20. A floor entry can name the recipe it is an output of, so an output's approval is read as that recipe's `artifact_sha256.<output>`.

@@ -579,7 +579,8 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Never switch by heuristic.** Only an exact rule match, with the rule's expected pre-switch interface class, through `modeswitch_verdict()`. Never a held, reserved or disk-bearing device, nor one a disk role or adopted volume names: an operator's data disk is USB mass storage too.
 - **No `usb_modeswitch` binary, no libusb, no udev-style rule runner.** Rules are data from the package; never hand-write a device list in code.
 - **The helper sends and returns**; the target id's own add uevent completes the switch, and the existing `kmod_hotplug()`/`fwscan_want()` path gives it a driver and firmware. Never wait for re-enumeration in a helper (#689).
-- **Init mode only; test data directories start with the setting `off`.** A test daemon must never switch the build host's devices.
+- **Release A switches only when asked** (`POST /v1/devices/{id}/modeswitch`, `cixctl device modeswitch ID`): a USB add or the tick only completes a switch already in flight (`modeswitch_usb_added()`, `modeswitch_tick()`, read 2026-11-27). Switching on plug and at start under a host setting `modeswitch: auto|off` is ADR-0398 decisions 4 and 6, not built yet; when it is, test data directories start with that setting `off`, so a test daemon never switches the build host's devices.
+- **Init mode only.**
 - **A switched modem may still have no driver**: the kernel carries none today, and adding them is a priced kernel change, asked first.
 
 ## A device gets its firmware after install, by itself
