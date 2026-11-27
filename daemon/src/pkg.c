@@ -24023,6 +24023,77 @@ static enum pkg_error seed_place_artifact(const char *name, const struct seed_ch
 	return PKG_ERR_NOT_FOUND;
 }
 
+/*
+ * Every output of a seeded package, at the version seeded (ADR-0367). A
+ * fresh box's install of that package is a cache hit only when the main
+ * artifact and every sibling output are cached (pkg_fetch_start()'s sib[]
+ * loop); with glibc-dev, glibc-tools and glibc-gconv missing from the
+ * media, the installed box fell through to building glibc from source,
+ * offline and with no compiler (test_installer, compile probe
+ * 0.2.57-829, 2026-11-27: glibc gained outputs in 2.44-20). Each output
+ * is held to the seed's rule: cached here, or approved and fetched.
+ */
+static enum pkg_error seed_place_outputs(const char *name, const struct seed_choice *c,
+                                         const char *artifacts_dst, char *err, size_t err_size)
+{
+	static struct pkg_recipe recipe;     /* static: the struct is large */
+	static struct pkg_recipe sib_recipe; /* and this runs in one child */
+	char recipe_path[PATH_MAX];
+	char sib_names[PKG_RECIPE_OUTPUTS_MAX][PKG_NAME_MAX];
+	int sib_n, si;
+
+	memset(&recipe, 0, sizeof(recipe));
+	if (find_recipe_path(name, c->version, recipe_path, sizeof(recipe_path)) != 0 ||
+	    parse_recipe_for(recipe_path, name, &recipe) != 0) {
+		snprintf(err, err_size, "the %s@%s recipe the seed names could not be read", name,
+		         c->version);
+		return PKG_ERR_INVALID_RECIPE;
+	}
+	sib_n = recipe_siblings(recipe_path, &recipe, sib_names, PKG_RECIPE_OUTPUTS_MAX);
+	for (si = 0; si < sib_n; si++) {
+		struct seed_choice sc;
+		char src[PATH_MAX];
+		char dst[PATH_MAX];
+		const char *base;
+		enum pkg_error rc;
+
+		memset(&sib_recipe, 0, sizeof(sib_recipe));
+		if (parse_recipe_for(recipe_path, sib_names[si], &sib_recipe) != 0) {
+			snprintf(err, err_size, "output %s of the %s@%s recipe could not be read",
+			         sib_names[si], name, c->version);
+			return PKG_ERR_INVALID_RECIPE;
+		}
+		memset(&sc, 0, sizeof(sc));
+		snprintf(sc.version, sizeof(sc.version), "%s", c->version);
+		snprintf(sc.sha256, sizeof(sc.sha256), "%s", sib_recipe.artifact_sha256);
+		snprintf(sc.format, sizeof(sc.format), "%s", sib_recipe.artifact_format);
+		sc.cached = pkg_artifact_cache_has(sib_names[si], c->version);
+		if (!sc.cached && sc.sha256[0] == '\0') {
+			snprintf(err, err_size,
+			         "the installer seed needs %s@%s, an output of %s, and its artifact is "
+			         "neither in this host's cache nor approved by its recipe",
+			         sib_names[si], c->version, name);
+			return PKG_ERR_NOT_FOUND;
+		}
+		if (!cache_artifact_path_existing(sib_names[si], c->version, src, sizeof(src)) &&
+		    cache_artifact_path(sib_names[si], c->version, sc.format, src, sizeof(src)) != 0) {
+			snprintf(err, err_size, "%s@%s declares artifact format \"%s\"; only cixpkg is "
+			         "seeded (cix#569)", sib_names[si], c->version, sc.format);
+			return PKG_ERR_INVALID_RECIPE;
+		}
+		base = strrchr(src, '/');
+		base = (base != NULL) ? base + 1 : src;
+		if (snprintf(dst, sizeof(dst), "%s/%s", artifacts_dst, base) >= (int)sizeof(dst)) {
+			snprintf(err, err_size, "seed artifact path too long for %s", sib_names[si]);
+			return PKG_ERR_INVALID_NAME;
+		}
+		rc = seed_place_artifact(sib_names[si], &sc, dst, err, err_size);
+		if (rc != PKG_OK)
+			return rc;
+	}
+	return PKG_OK;
+}
+
 enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size)
 {
 	char recipes_dst[PATH_MAX];
@@ -24104,6 +24175,9 @@ enum pkg_error pkg_seed_stage(const char *dest_dir, char *err, size_t err_size)
 			return PKG_ERR_INVALID_NAME;
 		}
 		rc = seed_place_artifact(name, &c, dst, err, err_size);
+		if (rc != PKG_OK)
+			return rc;
+		rc = seed_place_outputs(name, &c, artifacts_dst, err, err_size);
 		if (rc != PKG_OK)
 			return rc;
 		/*

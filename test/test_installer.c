@@ -226,6 +226,47 @@ static int build_seed_fixture(const char *workdir, char *out_root, size_t out_ro
 	}
 	if (test_image_fixture_copy_file(src, dst) != 0)
 		return -1;
+
+	/*
+	 * Every output the recipe declares, as the daemon's own seed
+	 * (seed_place_outputs()) carries them: the installed box's glibc
+	 * install is a cache hit only with every sibling output cached.
+	 * Without them it fell through to building glibc from source, with
+	 * no network ("Could not resolve host: mirrors.kernel.org", compile
+	 * probe 0.2.57-829). Read from the recipe just staged, so the list
+	 * is the recipe's, not a second copy of it.
+	 */
+	{
+		char recipe[PATH_MAX], line[512];
+		FILE *fp;
+		int ok = 0;
+
+		snprintf(recipe, sizeof(recipe), "%s/build.cbs", recipe_dir);
+		fp = fopen(recipe, "r");
+		if (fp == NULL)
+			return -1;
+		while (fgets(line, sizeof(line), fp) != NULL) {
+			char out_name[128];
+			const char *p = line;
+
+			while (*p == ' ' || *p == '\t')
+				p++;
+			if (sscanf(p, "output \"%127[^\"]\"", out_name) != 1)
+				continue;
+			snprintf(src, sizeof(src), "build-inputs/floor-artifacts/%s-%s.cixpkg", out_name,
+			         SEED_LIBC_VERSION);
+			snprintf(dst, sizeof(dst), "%s/%s-%s.cixpkg", artifact_dir, out_name,
+			         SEED_LIBC_VERSION);
+			if (access(src, R_OK) != 0 || test_image_fixture_copy_file(src, dst) != 0) {
+				fprintf(stderr, "the seed needs glibc's output %s at %s\n", out_name, src);
+				ok = -1;
+				break;
+			}
+		}
+		fclose(fp);
+		if (ok != 0)
+			return -1;
+	}
 	return 0;
 }
 

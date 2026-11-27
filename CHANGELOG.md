@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The installer seed carries every output of its packages (#762)
+
+- **Before:** the installer ISO's package seed carried glibc's main artifact only. Since glibc gained outputs (2.44-20: glibc-dev, glibc-tools, glibc-gconv), a freshly installed box's first glibc install was no cache hit, because a hit needs every sibling output cached, and it fell through to building glibc from source, offline and with no compiler. `test_installer` showed it once the floor moved to glibc 2.44-22: "default image: installing glibc FAILED -- ... Could not resolve host: mirrors.kernel.org" (compile probe 0.2.57-829). Any ISO built from a host on such a glibc had the same defect.
+- **Now:** `pkg_seed_stage()` seeds every output of each seed package at the version it seeds (`seed_place_outputs()`), each held to the seed's rule (cached here, or approved and fetched), and `test_installer`'s own seed copies the outputs its glibc recipe declares.
+
 ### A kept build container holds an in-place switch instead of rebooting the host (#764)
 
 - **Before:** a build container kept by `keep_on_failure` (ADR-0175) is a registry entry with no container definition. The handover record carried it, the new cixd refused to take it over, and by ADR-0375's rule the host rebooted. On the site box at 16:09:52 on 2026-11-27, one kept `__pkgbuild-2` from a failed Rust build turned a root-only switch into a reboot of every container.
