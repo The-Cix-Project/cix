@@ -236,11 +236,15 @@ static const struct {
  * output openssl-dev is not installed anywhere" (compile probes
  * 0.2.57-824 and -827, 2026-11-27). The floor recipes with outputs are
  * openssl, glibc and libarchive, read from cix-recipes at these versions.
+ * glibc-gconv comes before glibc-tools because glibc-tools depends on it:
+ * the other way round, glibc-tools' install brought glibc-gconv with it
+ * and the explicit install that followed answered 409 "package is
+ * already installed" (compile probe 0.2.57-828).
  */
 const char *const test_floor_install[] = { "bash",          "libcap",         "openssl",
                                            "openssl-dev",   "openssl-tools",  "coreutils",
-                                           "tcc",           "glibc-dev",      "glibc-tools",
-                                           "glibc-gconv",   "linux-headers",  "binutils",
+                                           "tcc",           "glibc-dev",      "glibc-gconv",
+                                           "glibc-tools",   "linux-headers",  "binutils",
                                            "xz",            "zstd",           "libarchive",
                                            "libarchive-dev", "cbs",           NULL };
 
