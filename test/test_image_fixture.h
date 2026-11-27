@@ -237,7 +237,7 @@ int test_image_fixture_write_manifest(const char *image_dir, const char *version
  * the whole of the bug -- so the table uses it now and the two cannot
  * disagree.
  */
-#define TEST_FLOOR_GLIBC_VERSION "2.44-19"
+#define TEST_FLOOR_GLIBC_VERSION "2.44-22" /* #762: the public cache's current */
 
 /*
  * ADR-0209: seeds a test daemon's own package cache with REAL,

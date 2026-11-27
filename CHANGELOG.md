@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### The test floor pins only what the public cache carries (#762)
+
+- **Before:** the release's test floor pinned coreutils 9.11-8, glibc 2.44-19, binutils 2.42-15 and libarchive 3.8.1-5, which the public cache does not carry (it keeps current versions only). 0.2.57-728 built on the box only because its source cache still held them; any other host failed at fetch.
+- **Now:** the floor pins coreutils 9.11-9, glibc 2.44-22, binutils 2.42-16 and libarchive 3.8.1-7, and adds what those need: libcap and openssl (coreutils' new runtime dependencies) and glibc-dev, where glibc's headers live since 2.44-20. A floor entry can name the recipe it is an output of, so an output's approval is read as that recipe's `artifact_sha256.<output>`.
+
 ### A container's veth names cross to its child as whole records (#757)
 
 - **Before:** cixd wrote each container-side veth name into a pipe as `name\0`, and the child took each with one `read()` of up to 15 bytes. A pipe is a byte stream, so when cixd ran one name ahead, that read returned a name and the start of the next; the child's next "name" began mid-name, `if_nametoindex()` failed with ENODEV, and the create failed (`container_net_child_configure: No such device`, or on the host side ESRCH once the child had died). Seen on the box on 2026-11-26 and 2026-11-27: a six-network router container failed three creates in a row on a roll, each at a different attachment, and its peer failed once and recovered on retry.

@@ -90,6 +90,10 @@ int test_image_fixture_copy_dir_recursive(const char *src_dir, const char *dst_d
 static const struct {
 	const char *name;
 	const char *version;
+	/* The recipe an OUTPUT belongs to (ADR-0367), or NULL for a package
+	 * with a recipe of its own. An output's approval is that recipe's
+	 * "artifact_sha256.<name>" line (#762: glibc-dev). */
+	const char *recipe;
 } floor_packages[] = {
 	/*
 	 * Exactly what a fixture build uses and nothing more, which is the
@@ -158,9 +162,19 @@ static const struct {
 	 * recipe does (#517). Its artifact is a .cixpkg, which is what
 	 * floor_artifact_find() above exists for.
 	 */
-	{ "bash", "5.2.37-6" }, { "coreutils", "9.11-8" }, { "tcc", "0.9.28rc-31" },
-	{ "glibc", TEST_FLOOR_GLIBC_VERSION }, { "linux-headers", "6.18.40-10" },
-	{ "zlib", "1.3.2-15" }, { "flex", "2.6.4-6" }, { "binutils", "2.42-15" },
+	/*
+	 * #762: every version here must be on the public cache, which the
+	 * release recipe fetches the floor from and which keeps only current
+	 * versions. coreutils 9.11-9 adds libcap and openssl at run time, and
+	 * glibc from 2.44-20 keeps its headers in the glibc-dev output, which
+	 * every build environment needs (sys/cdefs.h,
+	 * buildenv_verify_libc_intact()).
+	 */
+	{ "bash", "5.2.37-6" }, { "coreutils", "9.11-9" }, { "tcc", "0.9.28rc-31" },
+	{ "libcap", "2.78-18" }, { "openssl", "3.0.20-9" },
+	{ "glibc", TEST_FLOOR_GLIBC_VERSION }, { "glibc-dev", TEST_FLOOR_GLIBC_VERSION, "glibc" },
+	{ "linux-headers", "6.18.40-10" },
+	{ "zlib", "1.3.2-15" }, { "flex", "2.6.4-6" }, { "binutils", "2.42-16" },
 	/*
 	 * cbs and its runtime closure. cbs declares libarchive and zstd;
 	 * libarchive declares zlib, xz and zstd, and zlib is already here.
@@ -178,7 +192,7 @@ static const struct {
 	 * 2026-09-25). An explicit install is logged per package, so the
 	 * next run answers that instead of leaving it assumed.
 	 */
-	{ "cbs", "v0.1.129-1" }, { "libarchive", "3.8.1-5" }, { "zstd", "1.5.7-5" },
+	{ "cbs", "v0.1.129-1" }, { "libarchive", "3.8.1-7" }, { "zstd", "1.5.7-5" },
 	{ "xz", "5.8.3-11" },
 	/* m4: flex@2.6.4-6 declares it as a RUNTIME dependency where the
 	 * shell flex@2.6.4-2 did not, so binutils -- whose runtime deps are
@@ -202,8 +216,9 @@ static const struct {
  * is reached, and a failure names the package that actually failed
  * rather than something resolved behind it.
  */
-const char *const test_floor_install[] = { "bash",       "coreutils", "tcc",  "linux-headers",
-                                           "binutils",   "xz",        "zstd", "libarchive",
+const char *const test_floor_install[] = { "bash",       "libcap",    "openssl", "coreutils",
+                                           "tcc",        "glibc-dev", "linux-headers",
+                                           "binutils",   "xz",        "zstd",    "libarchive",
                                            "cbs",        NULL };
 
 static int sha256_file_hex(const char *path, char *out, size_t out_size)
@@ -245,15 +260,25 @@ static int sha256_file_hex(const char *path, char *out, size_t out_size)
 /* Reads an artifact approval out of a recipe -- the line that
  * approves those exact bytes, and the only thing that makes a cached
  * artifact trustworthy. */
-static int recipe_artifact_sha(const char *name, const char *version, char *out, size_t out_size)
+static int recipe_artifact_sha(const char *name, const char *version, const char *recipe,
+                               char *out, size_t out_size)
 {
 	char path[PATH_MAX];
+	char key[128];
 	char line[512];
 	FILE *f;
 	int found = 0;
 
+	/* An output's approval sits in its recipe's metadata under its own
+	 * name; a package's under the bare key. The closing quote in the
+	 * bare key keeps it from matching an output's line. */
+	if (recipe != NULL)
+		snprintf(key, sizeof(key), "\"artifact_sha256.%s\"", name);
+	else
+		snprintf(key, sizeof(key), "\"artifact_sha256\"");
 	/* The recipe is CPDL, the only kind there is (cix#569). */
-	if (test_recipe_path("package", name, version, "cbs", path, sizeof(path)) != 0)
+	if (test_recipe_path("package", recipe != NULL ? recipe : name, version, "cbs", path,
+	                     sizeof(path)) != 0)
 		return -1;
 	f = fopen(path, "r");
 	if (f == NULL)
@@ -263,9 +288,9 @@ static int recipe_artifact_sha(const char *name, const char *version, char *out,
 
 		/* CBS: "artifact_sha256" "<64 hex>" inside the metadata
 		 * block, so indented rather than at the line start. */
-		p = strstr(line, "\"artifact_sha256\"");
+		p = strstr(line, key);
 		if (p != NULL) {
-			p = strchr(p + strlen("\"artifact_sha256\""), '"');
+			p = strchr(p + strlen(key), '"');
 			if (p == NULL)
 				continue;
 			snprintf(out, out_size, "%.64s", p + 1);
@@ -360,7 +385,8 @@ int test_image_fixture_seed_floor_packages(const char *data_dir, const char *art
 			        name, version, src);
 			return -1;
 		}
-		if (recipe_artifact_sha(name, version, want, sizeof(want)) != 0) {
+		if (recipe_artifact_sha(name, version, floor_packages[i].recipe, want, sizeof(want)) !=
+		    0) {
 			fprintf(stderr, "recipe for %s@%s has no artifact_sha256 to verify against\n",
 			        name, version);
 			return -1;
@@ -389,6 +415,10 @@ int test_image_fixture_seed_floor_packages(const char *data_dir, const char *art
 		 * it. The daemon's own recipe store keeps its directory
 		 * shape -- only the repository changed -- so the layout
 		 * written here is still <name>/<version>/build.<ext>. */
+		/* An output has no recipe of its own: the recipe that approves
+		 * it is its parent's, which is what the daemon reads too. */
+		if (floor_packages[i].recipe != NULL)
+			name = floor_packages[i].recipe;
 		snprintf(recipe_dst_dir, sizeof(recipe_dst_dir), "%s/%s/%s", recipes_dir, name,
 		         version);
 		if (test_mkdir_p(recipe_dst_dir) != 0)
