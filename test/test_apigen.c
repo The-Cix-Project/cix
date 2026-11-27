@@ -426,12 +426,13 @@ int main(void)
 	 * 361 as of ADR-0393: GET /pkg/install-queue, DELETE /pkg/install-queue/{image}/{name}.
 	 * 362 as of ADR-0395: POST /pki/ca/reissue.
 	 * 363 as of ADR-0396: POST /deployments/{name}/commit.
+	 * 364 as of ADR-0398: POST /devices/{id}/modeswitch.
 	 */
 	status = run_apigen("docs/api/openapi.yaml", NULL, out, sizeof(out));
 	if (status != 0)
 		fail("apigen rejected the real spec: %.300s", out);
-	else if (atoi(out) != 363)
-		fail("apigen found %d operations in the real spec, expected 363 -- if the spec "
+	else if (atoi(out) != 364)
+		fail("apigen found %d operations in the real spec, expected 364 -- if the spec "
 		     "genuinely changed, update this number deliberately; a silently different "
 		     "count is how a lost route hides",
 		     atoi(out));
@@ -828,7 +829,7 @@ int main(void)
 	/*
 	 * ADR-0368: every operation says whether MCP clients may call it,
 	 * and only tool or none is a value. The real spec passing above is
-	 * the positive control: all 363 operations declare it.
+	 * the positive control: all 364 operations declare it.
 	 */
 	expect_refusal("an operation with no x-cix-mcp",
 	               VOCAB
@@ -1044,9 +1045,9 @@ int main(void)
 			}
 			fclose(f);
 			unlink(routes_path);
-			if (rows != 363 || with_permission != rows)
+			if (rows != 364 || with_permission != rows)
 				fail("the generated route table has %d rows and %d carry a permission; "
-				     "expected 363 and 363 (ADR-0317)",
+				     "expected 364 and 364 (ADR-0317)",
 				     rows, with_permission);
 		}
 	}
@@ -1128,9 +1129,9 @@ int main(void)
 			fail("the events slots say %d reads, define %d EV_ constants and the table has "
 			     "%d read rows; all three should be 130 (ADR-0339)",
 			     count, defines, read_rows);
-		if (change_count != 211 || change_rows != change_count)
+		if (change_count != 212 || change_rows != change_count)
 			fail("the events table declares %d changes and has %d change rows; both should "
-			     "be 211, one per non-GET operation (ADR-0339)",
+			     "be 212, one per non-GET operation (ADR-0339)",
 			     change_count, change_rows);
 		if (stream_count != 7 || stream_rows != stream_count)
 			fail("the events table declares %d subscribable reads and has %d stream rows; "
@@ -1235,10 +1236,10 @@ int main(void)
 			fclose(f);
 			unlink(hdr_path);
 		}
-		if (defines != 363)
-			fail("CLI header has %d path defines, expected one per operation (363)", defines);
-		if (methods != 363)
-			fail("CLI header has %d method defines, expected one per operation (363)", methods);
+		if (defines != 364)
+			fail("CLI header has %d path defines, expected one per operation (364)", defines);
+		if (methods != 364)
+			fail("CLI header has %d method defines, expected one per operation (364)", methods);
 		if (braces != 0)
 			fail("%d CLI path define(s) still contain '{' -- a parameter was not converted "
 			     "to %%s and would put a literal brace in the URL",
@@ -1565,8 +1566,8 @@ int main(void)
 			fclose(f);
 			unlink(js_path);
 		}
-		if (shapes != 363)
-			fail("web api.js has %d _SHAPE entries, expected one per operation (363)",
+		if (shapes != 364)
+			fail("web api.js has %d _SHAPE entries, expected one per operation (364)",
 			     shapes);
 		if (!saw_fields)
 			fail("web api.js has no FIELDS table -- the renderers have nothing to render "

@@ -227,11 +227,22 @@ static const struct {
  * and zstd -- so each one's dependencies are already installed when it
  * is reached, and a failure names the package that actually failed
  * rather than something resolved behind it.
+ *
+ * Every output of a floor package is installed too, not only seeded
+ * (#762): a build environment that meets a package with outputs takes
+ * the newest version at which EVERY output is installed (ADR-0372,
+ * buildenv_add_outputs()), so with openssl-dev seeded but not installed,
+ * every test build was refused with "runtime dependency openssl ... its
+ * output openssl-dev is not installed anywhere" (compile probes
+ * 0.2.57-824 and -827, 2026-11-27). The floor recipes with outputs are
+ * openssl, glibc and libarchive, read from cix-recipes at these versions.
  */
-const char *const test_floor_install[] = { "bash",       "libcap",    "openssl", "coreutils",
-                                           "tcc",        "glibc-dev", "linux-headers",
-                                           "binutils",   "xz",        "zstd",    "libarchive",
-                                           "cbs",        NULL };
+const char *const test_floor_install[] = { "bash",          "libcap",         "openssl",
+                                           "openssl-dev",   "openssl-tools",  "coreutils",
+                                           "tcc",           "glibc-dev",      "glibc-tools",
+                                           "glibc-gconv",   "linux-headers",  "binutils",
+                                           "xz",            "zstd",           "libarchive",
+                                           "libarchive-dev", "cbs",           NULL };
 
 static int sha256_file_hex(const char *path, char *out, size_t out_size)
 {
