@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed, 2026-11-27. The owner asked for a mode switcher that is *"original ... not hacky at all, and should work seamlessly"*, so that *"any device plugged in, can switch seamlessly"*, naming Wi-Fi and 4G/5G dongles. Not accepted and not built.
+Accepted, 2026-11-27, by the owner ("yes"). The owner asked for a mode switcher that is *"original ... not hacky at all, and should work seamlessly"*, so that *"any device plugged in, can switch seamlessly"*, naming Wi-Fi and 4G/5G dongles. Not built yet.
 
 ## Context
 

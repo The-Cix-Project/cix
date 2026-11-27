@@ -572,6 +572,16 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Every sync compares before it writes,** and reloads only on a real difference: the resync after every container start must not reload or restart anything unchanged.
 - **cixd records each container's cix-init version** from `EV_UP` and carries it across a handover (`init_version`, optional). An older or unknown cix-init gets those services restarted instead.
 
+## A multi-mode USB device is switched by cixd
+
+**A dongle that first appears as a fake disk is switched into its working mode by cixd itself, in `modeswitch.c`, over usbfs in a helper child, from rules parsed out of the `usb-modeswitch-data` package** -- [ADR-0398](docs/adr/0398-cixd-switches-a-multi-mode-usb-device-into-its-working-mode.md), accepted by the owner on 2026-11-27 (*"original ... not hacky at all, and should work seamlessly"*, *"any device plugged in, can switch seamlessly"*).
+
+- **Never switch by heuristic.** Only an exact rule match, with the rule's expected pre-switch interface class, through `modeswitch_verdict()`. Never a held, reserved or disk-bearing device, nor one a disk role or adopted volume names: an operator's data disk is USB mass storage too.
+- **No `usb_modeswitch` binary, no libusb, no udev-style rule runner.** Rules are data from the package; never hand-write a device list in code.
+- **The helper sends and returns**; the target id's own add uevent completes the switch, and the existing `kmod_hotplug()`/`fwscan_want()` path gives it a driver and firmware. Never wait for re-enumeration in a helper (#689).
+- **Init mode only; test data directories start with the setting `off`.** A test daemon must never switch the build host's devices.
+- **A switched modem may still have no driver**: the kernel carries none today, and adding them is a priced kernel change, asked first.
+
 ## A device gets its firmware after install, by itself
 
 **Firmware is not root content and never on the ISO. A host keeps it in its own `firmware` image, which cixd points the kernel's firmware path at. cixd installs, by itself, the `linux-firmware` output that provides a file a loaded driver declares and the host lacks, then probes the device again.** That is [ADR-0381](docs/adr/0381-a-device-gets-its-firmware-after-install.md), the owner's decisions of 2026-11-18 for #685 (*"can it not be downloaded after the initial install?"*, *"Automatic only"*).
