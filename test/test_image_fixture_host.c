@@ -173,6 +173,18 @@ static const struct {
 	{ "bash", "5.2.37-6" }, { "coreutils", "9.11-9" }, { "tcc", "0.9.28rc-31" },
 	{ "libcap", "2.78-18" }, { "openssl", "3.0.20-9" },
 	{ "glibc", TEST_FLOOR_GLIBC_VERSION }, { "glibc-dev", TEST_FLOOR_GLIBC_VERSION, "glibc" },
+	/*
+	 * Every OTHER output of a seeded multi-output recipe too: an install
+	 * is a cache hit only when the main package and every sibling output
+	 * are cached (pkg.c, the sib[] loop before e->cache_hit). With
+	 * glibc-tools missing, the daemon's own glibc install fell through
+	 * to a source build and failed fetching in the sealed build
+	 * container (compile probe 0.2.57-823, 2026-11-27).
+	 */
+	{ "glibc-tools", TEST_FLOOR_GLIBC_VERSION, "glibc" },
+	{ "glibc-gconv", TEST_FLOOR_GLIBC_VERSION, "glibc" },
+	{ "openssl-dev", "3.0.20-9", "openssl" }, { "openssl-tools", "3.0.20-9", "openssl" },
+	{ "libarchive-dev", "3.8.1-7", "libarchive" },
 	{ "linux-headers", "6.18.40-10" },
 	{ "zlib", "1.3.2-15" }, { "flex", "2.6.4-6" }, { "binutils", "2.42-16" },
 	/*
