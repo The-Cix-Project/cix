@@ -71,6 +71,9 @@ flowchart LR
     kmodpolicy["Module policy and queue -- one verdict for every module load<br/>blacklist beats every origin; a sweep at start, then one modprobe at a time off the loop"]
     devdisk -- "each modalias under /sys/devices, each plugged<br/>device's uevent, and every explicit load" --> kmodpolicy
     kmodpolicy -- "an explicit load or unload's result:<br/>served again" --> rbac
+    modeswitch["Mode switch -- a fake-disk USB dongle into its working mode<br/>rules from usb-modeswitch-data; usbfs in a helper child, one at a time"]
+    devstate -- "free, and no disk below:<br/>the only devices switched" --> modeswitch
+    modeswitch -- "the target id's own add:<br/>its driver and firmware as for any plug" --> kmodpolicy
     logs -- "a filtered log read:<br/>the request parks" --> logread
     logread["Filtered log reads<br/>in helper children, 2 at a time"] -- "result: served again" --> rbac
 ```
@@ -159,6 +162,8 @@ flowchart LR
 **Whether a device may be given is one verdict** ([ADR-0344](../adr/0344-a-device-is-one-record-with-one-state-and-every-grant-asks-it.md)). Every device is one record in a tree — a partition under its disk, an interface under its PHY under its USB dongle — and **device state** decides each record's state from the host's own use of it and every container's grants and reservations: free, held, reserved, host or unavailable. Creating, starting, live-attaching and hotplugging all ask it, and `GET /v1/devices` reports it, so the dashboard's list and a refusal cannot disagree. A moved interface stays in that list, held, because the grant was recorded when it was made.
 
 **What a block device holds is read in one place, off the loop** ([ADR-0377](../adr/0377-a-block-device-is-read-only-in-a-helper-child.md)). The **disk snapshot** (`disksnap.c`) keeps each device's filesystem type, UUID and partition label, and each mounted filesystem's capacity. A helper child fills it, refreshing when a device is touched (a format, a partition write, a kernel block event) and every 30 s. Every storage, volume, quota and device read takes those values from the snapshot, and reads only topology and mounts live, so no API call waits on a busy disk.
+
+**A multi-mode USB device is switched by cixd** ([ADR-0398](../adr/0398-cixd-switches-a-multi-mode-usb-device-into-its-working-mode.md)). The **Mode switch** (`modeswitch.c`, `modeswitchd.c`, `modeswitch_usb.c`) chooses a device's rule from the `usb-modeswitch-data` package's files, decides from the device state every grant reads, and sends the rule's messages over usbfs from a helper child. The device's return as its target id is an ordinary plug: the module policy gives it a driver and the firmware scan its firmware.
 
 **Firmware is a host's own image, read in place** ([ADR-0381](../adr/0381-a-device-gets-its-firmware-after-install.md)). The root and the installer carry none. `firmware.c` keeps `REBUILDABLE_DIR/firmware` naming the `firmware` image's current version's `lib/firmware`, and points the kernel's firmware path (`/sys/module/firmware_class/parameters/path`) at that link before the boot's module sweep. The loader searches it before `/lib/firmware`, resolved in cixd's own root. `fwscan.c` runs in a helper child: it reads each device's driver modules and their `.modinfo` firmware declarations, and device records say which names the host lacks.
 

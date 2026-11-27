@@ -120,11 +120,15 @@ void device_write_json_states(struct json_writer *w, const struct discovered_dev
                               const struct device_claim *claims, int claim_count);
 
 /*
- * ADR-0381: keys another module adds to every record, after "reason":
- * fn writes them for the record with this id. The daemon sets
- * fwscan_write_device(); with none set, a record has no such keys, which
+ * ADR-0381, ADR-0398: keys other modules add to every record, after
+ * "reason": fn writes them for record idx of recs, whose state is v.
+ * The daemon sets one function, which writes the firmware keys
+ * (fwscan_write_device()) and the mode switch (modeswitch_write_device());
+ * with none set, a record has no such keys, which
  * keeps this module free of what produces them.
  */
-void device_set_record_extra(void (*fn)(struct json_writer *w, const char *id));
+typedef void (*device_record_extra_fn)(struct json_writer *w, const struct discovered_device *recs,
+                                       int n, int idx, const struct device_verdict *v);
+void device_set_record_extra(device_record_extra_fn fn);
 
 #endif /* DEVICESTATE_H */

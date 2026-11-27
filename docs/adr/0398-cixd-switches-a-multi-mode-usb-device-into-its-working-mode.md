@@ -43,13 +43,24 @@ Cix already reacts to a USB add. `handle_uevent_event()` queues the device's dri
 5. **After the switch, nothing new runs.** The target id's add already calls `kmod_hotplug()` and `fwscan_want()`. So the driver loads under the kmod policy, the firmware is acquired, and waiting grants attach, exactly as for a device plugged in already switched. The record id changes, because the product id is part of it (ADR-0345). A mapping or grant that should follow the device across the switch names it by identity (a permanent MAC, or a scoped serial), never by the pre-switch record.
 
 6. **API, through the contract.**
-   - **On the device record:** `modeswitch` holds `{state, rule, targets, reason}`. `state` is one of `pending`, `switching`, `switched` or `failed`, and the field is `null` when no rule applies.
+   - **On the device record:** `modeswitch` holds `{state, rule, targets, reason}`. `state` is one of `pending`, `switching`, `switched` or `failed`, and the field is `null` when no rule applies. (Refined before release A; see the amendment below.)
    - **A host setting** `modeswitch: auto | off`, read and written through `/v1/system/modeswitch`.
    - **An explicit switch,** `POST /v1/devices/{id}/modeswitch`, which answers 202. It is refused with 409 by the same verdict.
 
    All four contract annotations apply (`x-cix-permission`, `x-cix-read`, `x-cix-invalidates`, `x-cix-mcp`). State changes go through an announcing setter (ADR-0339). The dashboard and cixctl show the record's field. The switch runs in init mode only, and test data directories start with the setting saved `off`, so a test daemon never switches the build host's devices.
 
 7. **Across a handover (ADR-0375)**, the in-flight switch and the per-port guard are optional fields of the handover record.
+
+### Amended before release A was built (2026-11-27)
+
+Measured while writing release A, and decided on that evidence:
+
+- **States.** `state` is `switchable`, `switching`, `switched`, `failed`, `refused` or `already`. "pending" read as "queued" while automatic switching is off, so a device a rule allows reads `switchable`. A verdict refusal is `refused` with its reason, and a device whose interface 0 already has the rule's `TargetClass` is `already`. The record also names the rule's own description of the device (`device`).
+- **Decision 7, for release A.** A handover waits while a switch is in flight (`handover_quiescent()` asks `modeswitch_in_flight()`), so no switch crosses one. What remains afterwards is history: a switched device reads as its target id, and a failed one as switchable again. The log keeps both. The per-port loop guard belongs to automatic switching and arrives with it, in release B, as an optional handover field.
+- **Matching.** Upstream's dispatcher (`usb_modeswitch_dispatcher.tcl`, `MatchDevice`, read from usb-modeswitch 2.6.3 by `probe-modeswitch@3-4`) matches a name's `uMa=`/`uPr=`/`uSe=` value as a substring of the device's sysfs string, also with `_` read as a space. cixd matches the same way. A matching qualified rule beats a plain one; two matching qualified rules are refused; a rule needing a SCSI attribute (`sVe=`, `sMo=`, `sRe=`) is not decided in release A, and a plain rule beside it is not used in its place.
+- **StandardEject** is built from the SCSI commands REFERENCE names, for every LUN the device reports through bulk-only GET MAX LUN (upstream sends LUN 0 and 1 unconditionally). After a command wrapper, its data stage (when the wrapper declares one) and its 13-byte status are read and discarded, because a device that switches may never send them.
+- **Coverage.** Of usb-modeswitch-data-20261111's 515 rules, 224 use a method release A does not carry out (a vendor mode, `Configuration`, `AltSetting`, `ResetUSB` or `DetachStorageOnly`), counted by `probe-modeswitch@3-3`. Such a rule reads `refused`, naming the key. `Interface` is carried out.
+- **The data package** is `usb-modeswitch-data@20261111`, pinned by the sha256 a Cix host measured, since upstream publishes only an md5 and no signature. CBS extracts its `.tar.bz2` because the recipe declares `bzip2`: libarchive, built without the bzip2 library, runs the external program.
 
 ## Consequences
 

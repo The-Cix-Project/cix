@@ -7022,6 +7022,30 @@ function deviceFirmwareText(d) {
 }
 
 /*
+ * ADR-0398: a multi-mode USB device's switch, from the daemon's own
+ * `modeswitch` and nothing else: the words for its cell, and whether the
+ * one action, switching it, is offered. One function, so the cell and
+ * the button cannot disagree about what the daemon decided.
+ */
+function deviceModeswitchView(d) {
+	const ms = d.modeswitch;
+
+	if (!ms)
+		return { text: FIELD_ABSENT, canSwitch: false };
+	const to = ms.targets.length > 0 ? " → " + ms.targets.join(", ") : "";
+	const words = {
+		switchable: "fake disk, can switch" + to,
+		switching: "switching" + to,
+		switched: "switched by " + ms.rule,
+		failed: "switch failed: " + ms.reason,
+		refused: "not switched: " + ms.reason,
+		already: "in its working mode",
+	};
+
+	return { text: words[ms.state] || ms.state, canSwitch: ms.state === "switchable" || ms.state === "failed" };
+}
+
+/*
  * A table's rows in tree order -- each record directly after the one it
  * hangs off -- with its depth among the rows of this table, so a
  * partition sits under its disk and an interface under its PHY.
@@ -7107,16 +7131,38 @@ function renderDeviceBus(bus, mappedNames) {
 		{ label: "Held by / why", text: (d) => deviceStateView(d).who || FIELD_ABSENT },
 		{ label: "Name", text: (d) => mappedNames[d.id] || FIELD_ABSENT },
 		{ label: "Firmware", text: deviceFirmwareText },
+		/* ADR-0398: USB only, since only a USB record carries the key. */
+		...(bus === "usb" ? [{ label: "Mode", text: (d) => deviceModeswitchView(d).text }] : []),
 		{ label: "", actions: (d) => {
+			const buttons = [];
+
+			/* ADR-0398: offered exactly when the daemon says a switch is
+			 * allowed; it refuses anything else with the same verdict. */
+			if (deviceModeswitchView(d).canSwitch) {
+				const sw = document.createElement("button");
+
+				sw.type = "button";
+				sw.textContent = "Switch mode";
+				gateAction(sw, "switchDeviceMode");
+				sw.addEventListener("click", async () => {
+					try {
+						await apiRequest("POST", CIX_API.switchDeviceMode(d.id), {});
+						showStatus("Switching " + d.id + "; its row follows the device", false);
+					} catch (e) {
+						showStatus("Failed to switch " + d.id + ": " + e.message, true);
+					}
+				});
+				buttons.push(sw);
+			}
 			/* A name is for something a grant can take, now or once its
 			 * state changes. A PCI function whose nodes are its
 			 * children's, and the OS disk's own layout, never can. */
 			if (mappedNames[d.id] || ["no-node", "os-disk", "os-partition"].includes(d.reason))
-				return [];
+				return buttons;
 			const draft = deviceNameDraft(d);
 
 			if (draft === null)
-				return [];
+				return buttons;
 
 			const btn = document.createElement("button");
 
@@ -7136,7 +7182,7 @@ function renderDeviceBus(bus, mappedNames) {
 					submit: "Create mapping",
 					values: draft,
 				}));
-			return [btn];
+			return [...buttons, btn];
 		} },
 	];
 

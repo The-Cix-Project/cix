@@ -7460,6 +7460,80 @@ paths:
                     items:
                       $ref: "#/components/schemas/Device"
 
+  /devices/{id}/modeswitch:
+    post:
+      summary: Switch a multi-mode USB device out of its fake-disk mode (ADR-0398)
+      description: >
+        Sends the switch the device's rule in the usb-modeswitch-data
+        package names -- the SCSI eject, or the rule's own bulk
+        messages -- from a helper child, every transfer with a
+        timeout. The answer is 202 as soon as the switch is queued; the
+        device then leaves and comes back as a target id, and its
+        record's `modeswitch` reads "switching", then "switched" on the
+        target record or "failed" with a reason. The decision is the
+        record's own `modeswitch` verdict: a device no rule names, one
+        held, reserved or owned by the host, one with a disk below it,
+        or one whose rule needs a method cixd does not carry out yet,
+        is refused. Runs only on an installed host (init mode).
+      operationId: switchDeviceMode
+      x-cix-invalidates: [listDevices]
+      x-cix-permission: devices:write
+      x-cix-mcp: tool
+      x-cix-expose: [cli, web]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The USB device record's id, as GET /devices lists it.
+          schema:
+            type: string
+      responses:
+        "202":
+          description: The switch is queued; the record's `modeswitch` follows it
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, state, rule]
+                properties:
+                  id:
+                    type: string
+                    description: The record being switched.
+                  state:
+                    type: string
+                    enum: [switching]
+                    description: Always "switching".
+                  rule:
+                    type: string
+                    description: The rule file the switch follows.
+        "404":
+          description: No such device record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >
+            The verdict refuses (the reason is the error), the device is
+            in its target mode already, a switch of it is in flight, or
+            this host is not an installed one
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The record is not a USB device, or no rule names it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The switch queue is full, or no helper could start; retry after Retry-After
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /storage:
     get:
       summary: List real host block devices, including their partitions, for multi-disk management
@@ -22535,6 +22609,55 @@ components:
               description: >
                 False when a module's file could not be read or a table
                 filled up: what is listed is right, and incomplete.
+        modeswitch:
+          type: [object, "null"]
+          description: >
+            USB records only, absent on every other bus: whether this
+            device is a multi-mode device that starts as a fake disk,
+            and what switching it into its working mode did or would do
+            (ADR-0398). Null when no rule in the usb-modeswitch-data
+            package names the device. A rule is chosen by the device's
+            id and, where its name carries one, its manufacturer,
+            product or serial string; two rules that both match are
+            refused, never picked. The decision is the same function
+            POST /devices/{id}/modeswitch asks, from the same device
+            state every grant reads, so a held, reserved or
+            host-owned device, or one with a disk below it, is never
+            switched. What a switch did is kept per USB port in the
+            daemon's memory: after a handover a switched device reads
+            as its target id and a failed one as switchable.
+          required: [state, rule, device, targets, reason]
+          properties:
+            state:
+              type: string
+              enum: [switchable, switching, switched, failed, refused, already]
+              description: >
+                "switchable": a rule applies and the verdict allows a
+                switch, which nothing has asked for yet. "switching":
+                its messages are queued or sent, and the device has
+                not come back as a target id. "switched": shown on the
+                target record, the device it was switched from having
+                left. "failed": the messages could not be sent, or the
+                device did not come back as a target id in time.
+                "refused": a rule applies and the verdict refuses;
+                `reason` says why. "already": interface 0 already has
+                the rule's TargetClass.
+            rule:
+              type: string
+              description: >
+                The rule file's name (`0bda:1a2b:uMa=Realtek`); empty
+                when no single rule was chosen.
+            device:
+              type: string
+              description: The rule's own description of the device, its first comment line.
+            targets:
+              type: array
+              items:
+                type: string
+              description: The ids (`vvvv:pppp`) the device becomes once switched.
+            reason:
+              type: string
+              description: Why it was refused or failed; empty otherwise.
         held_by:
           type: array
           description: >

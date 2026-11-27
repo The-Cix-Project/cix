@@ -6,6 +6,13 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### cixd switches a multi-mode USB device into its working mode (ADR-0398, release A)
+
+- **Before:** a USB Wi-Fi or cellular dongle that first appears as a fake disk stayed one. Measured on a Cix host: kernel 7.3.5 ignores the Realtek `0bda:1a2b` "DISK" on purpose (`unusual_devs.h`, `US_FL_IGNORE_DEVICE`, "otherwise usb_modeswitch may fail to switch the device into Wi-Fi mode"), and nothing on Cix sends the switch, so the record sat with no driver.
+- **Now:** every USB record carries `modeswitch`, decided from the `usb-modeswitch-data` package's rule for the device and the same device state every grant reads. `POST /v1/devices/{id}/modeswitch` (`cixctl device modeswitch ID`, the Devices page's "Switch mode") queues the switch, and a helper child sends it over usbfs: the SCSI eject per reported LUN, or the rule's own bulk messages, every transfer with a timeout. The device's return as its target id completes it; a device that does not come back in time reads `failed`. A held, reserved or host-owned device, one with a disk below it, a rule two matches share, and a rule needing a method release A does not carry out are refused and say why. Switching runs only on an installed host; automatic switching at plug and at start is release B.
+- **Data:** `usb-modeswitch-data@20261111` (515 rules, GPL-2.0-or-later) in `cix-recipes`, pinned by the sha256 measured on the box, since upstream publishes only an md5. It is extracted by CBS with `bzip2` declared, because libarchive runs the external program when built without the library.
+- **Gates:** `test_modeswitch` (in SELFTESTS) parses real rule texts and checks matching, the verdict and the eject's command wrappers byte for byte; `test_blocking_waits` counts the one transfer call site; `test_docindex` requires the Mode switch in the architecture diagram.
+
 ### The test floor pins only what the public cache carries (#762)
 
 - **Before:** the release's test floor pinned coreutils 9.11-8, glibc 2.44-19, binutils 2.42-15 and libarchive 3.8.1-5, which the public cache does not carry (it keeps current versions only). 0.2.57-728 built on the box only because its source cache still held them; any other host failed at fetch.

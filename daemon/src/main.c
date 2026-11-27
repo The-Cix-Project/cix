@@ -16,6 +16,8 @@
 #include "diskpart.h"
 #include "disksnap.h"
 #include "fwscan.h"
+#include "modeswitch_usb.h"
+#include "modeswitchd.h"
 #include "fwacquire_verdict.h"
 #include "diskrole.h"
 #include "bootmodules.h"
@@ -6437,6 +6439,12 @@ static void handle_uevent_event(struct conn *cc)
 		events_announce(EV_listStorage);
 		fwscan_want(); /* ADR-0381: which firmware the devices lack */
 	}
+	/* ADR-0398: a switched device comes back as its target id. Every USB
+	 * add is looked at, not only whole devices: the target's interfaces
+	 * arrive after it, and a look that finds nothing costs nothing when
+	 * no switch is in flight. */
+	if (is_add && is_usb)
+		modeswitch_usb_added();
 
 	/*
 	 * ADR-0345: any hardware add can be what a pending reference waits
@@ -32815,6 +32823,42 @@ static void op_deleteDeviceMap(const struct api_ctx *ctx)
 	handle_devicemap_delete(ctx->fd, ctx->p[0]);
 }
 
+/*
+ * POST /v1/devices/{id}/modeswitch (ADR-0398): the verdict decides from a
+ * fresh device snapshot, and a switch it allows is queued for the helper.
+ * 202 means the messages will be sent; the record's `modeswitch` says
+ * what came of them.
+ */
+static int modeswitch_submit(const struct modeswitch_job *job);
+static void op_switchDeviceMode(const struct api_ctx *ctx)
+{
+	static struct modeswitch_job job;
+	struct json_writer w;
+	char why[256];
+	int status = modeswitch_prepare(ctx->p[0], &job, why, sizeof(why));
+
+	if (status != 0) {
+		respond_error(ctx->fd, status, http_status_text(status), why);
+		return;
+	}
+	if (modeswitch_submit(&job) != 0) {
+		respond_error_hdrs(ctx->fd, 503, "Service Unavailable", "Retry-After: 5\r\n",
+		                   "the mode switch queue is full, or no helper could start", 0);
+		return;
+	}
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "id");
+	jw_str(&w, job.id);
+	jw_key(&w, "state");
+	jw_str(&w, "switching");
+	jw_key(&w, "rule");
+	jw_str(&w, job.rule.name);
+	jw_obj_close(&w);
+	respond_json(ctx->fd, 202, "Accepted", &w);
+	jw_free(&w);
+}
+
 static void op_deleteStorageRole(const struct api_ctx *ctx)
 {
 	handle_diskrole_delete(ctx->fd, ctx->p[0]);
@@ -35444,6 +35488,7 @@ enum park_kind {
 	PARK_PKGDELETE,
 	PARK_DATADIR,
 	PARK_EVENTSCHECK,
+	PARK_MODESWITCH,
 	PARK_KINDS
 };
 
@@ -35483,6 +35528,9 @@ struct park {
 	int ev_full;
 	int ev_slot;
 	uint64_t *ev_gen;
+	/* PARK_MODESWITCH (ADR-0398): the switch the child sends; its
+	 * struct modeswitch_result goes to the memfd */
+	struct modeswitch_job *ms_job;
 };
 
 /*
@@ -35511,6 +35559,9 @@ struct park {
  * Uninstalls (#642): one per package job slot and none waiting, because
  * pkg.c bounds them -- a job per slot, one producer per image -- and the
  * record only counts what is waiting on them; it is never queued here.
+ * USB mode switches (ADR-0398): one at a time, since two devices
+ * re-enumerating together would make each one's return harder to read,
+ * and 4 waiting.
  */
 struct park_queue {
 	int running_max;
@@ -35529,6 +35580,7 @@ struct park_queue {
 #define VERIFY_WAIT_MAX 4
 #define DATADIR_WAIT_MAX 4
 #define EVENTSCHECK_WAIT_MAX 4
+#define MODESWITCH_WAIT_MAX 4
 static struct park_queue g_park_q[PARK_KINDS] = {
 	[PARK_CRED] = { .running_max = 1, .wait_max = CRED_WAIT_MAX },
 	[PARK_LOGREAD] = { .running_max = LOGREAD_RUNNING_MAX, .wait_max = LOGREAD_WAIT_MAX },
@@ -35540,6 +35592,7 @@ static struct park_queue g_park_q[PARK_KINDS] = {
 	[PARK_PKGDELETE] = { .running_max = PKG_MAX_CONCURRENT_JOBS, .wait_max = 0 },
 	[PARK_DATADIR] = { .running_max = 1, .wait_max = DATADIR_WAIT_MAX },
 	[PARK_EVENTSCHECK] = { .running_max = 1, .wait_max = EVENTSCHECK_WAIT_MAX },
+	[PARK_MODESWITCH] = { .running_max = 1, .wait_max = MODESWITCH_WAIT_MAX },
 };
 
 static void serve_request(struct conn *cc);
@@ -35551,6 +35604,7 @@ static void update_done(int exit_status, void *ctx);
 static void bootmgr_done(int exit_status, void *ctx);
 static void verify_done(int exit_status, void *ctx);
 static void datadir_done(int exit_status, void *ctx);
+static void modeswitch_done(int exit_status, void *ctx);
 static int events_check_start(struct park *p); /* ADR-0376, with the self-check */
 
 static struct park *park_new(enum park_kind kind, struct conn *cc)
@@ -35577,6 +35631,7 @@ static void park_free(struct park *p)
 	explicit_bzero(&p->rq, sizeof(p->rq));
 	free(p->job_body);
 	free(p->ev_gen);
+	free(p->ms_job);
 	free(p);
 }
 
@@ -35749,6 +35804,77 @@ static int kmod_job_start(struct park *p)
 		p->memfd = -1;
 		return -1;
 	}
+	return 0;
+}
+
+/* ADR-0398: the helper child of a USB mode switch. It sends the rule's
+ * messages, every transfer with a timeout, and returns without waiting
+ * for the device to come back; the result goes to the memory file. It
+ * logs nothing and changes nothing the parent reads. */
+static int modeswitch_work(void *arg)
+{
+	struct park *p = arg;
+	struct modeswitch_result r;
+
+	modeswitch_usb_run(p->ms_job->dev_path, &p->ms_job->rule, &r);
+	return pwrite(p->memfd, &r, sizeof(r), 0) == (ssize_t)sizeof(r) ? 0 : 1;
+}
+
+static int modeswitch_start(struct park *p)
+{
+	p->memfd = memfd_create("cix-modeswitch", MFD_CLOEXEC);
+	if (p->memfd < 0)
+		return -1;
+	if (helper_run_pid(modeswitch_work, p, modeswitch_done, p, "a USB mode switch", &p->pid) !=
+	    0) {
+		close(p->memfd);
+		p->memfd = -1;
+		return -1;
+	}
+	return 0;
+}
+
+/* The switch's messages were sent, or could not be. Its outcome is the
+ * port's: modeswitchd.c says it, and the target id's add finishes it. */
+static void modeswitch_done(int exit_status, void *ctx)
+{
+	struct park *p = ctx;
+	static struct modeswitch_result r;
+	int have = exit_status == 0 && p->memfd >= 0 &&
+	           pread(p->memfd, &r, sizeof(r), 0) == (ssize_t)sizeof(r);
+
+	park_finished(p);
+	if (have)
+		modeswitch_finished(p->ms_job, r.ok, r.error);
+	else
+		modeswitch_finished(p->ms_job, 0, "the helper ended without a result");
+	park_free(p);
+	park_start_waiting(PARK_MODESWITCH);
+}
+
+/*
+ * ADR-0398: queues the switch job asked for. 0 when it runs or waits its
+ * turn, and its port reads "switching" from then on; -1 when the queue
+ * can neither start nor hold it.
+ */
+static int modeswitch_submit(const struct modeswitch_job *job)
+{
+	struct park *p = park_new(PARK_MODESWITCH, NULL);
+
+	if (p == NULL)
+		return -1;
+	p->ms_job = malloc(sizeof(*p->ms_job));
+	if (p->ms_job == NULL) {
+		park_free(p);
+		return -1;
+	}
+	*p->ms_job = *job;
+	p->daemon_job = 1;
+	if (park_submit(p) != 0) {
+		park_free(p);
+		return -1;
+	}
+	modeswitch_started(job);
 	return 0;
 }
 
@@ -36001,6 +36127,9 @@ static int park_start(struct park *p)
 	case PARK_EVENTSCHECK:
 		rc = events_check_start(p);
 		break;
+	case PARK_MODESWITCH:
+		rc = modeswitch_start(p);
+		break;
 	case PARK_PKGDELETE:
 		/* Never queued: pkg_delete_ask() starts the job itself. */
 		rc = -1;
@@ -36086,6 +36215,8 @@ static void park_daemon_job_unavailable(struct park *p)
 		               "the announcement self-check could not start (%s) -- the next tick tries "
 		               "again",
 		               strerror(errno));
+	} else if (p->kind == PARK_MODESWITCH) {
+		modeswitch_finished(p->ms_job, 0, "no helper could be started to send it");
 	} else if (p->job.kind == KMODSCAN_JOB_SWEEP) {
 		kmodscan_set_sweep_pending(0);
 		logstore_write("cixd", "error",
@@ -38934,6 +39065,14 @@ static void reprobe_tick(void)
 
 /* Every loop pass. Not while a host roll waits to switch, because a
  * running helper holds the switch back (ADR-0375); it runs after. */
+/* ADR-0381, ADR-0398: the keys other modules add to every device record. */
+static void device_record_extra(struct json_writer *w, const struct discovered_device *recs, int n,
+                                int idx, const struct device_verdict *v)
+{
+	fwscan_write_device(w, recs[idx].id);
+	modeswitch_write_device(w, recs, n, idx, v);
+}
+
 static void fwscan_tick(void)
 {
 	if (!g_fwscan_wanted || g_fwscan_running || g_hostroll.step == HOSTROLL_SWITCH)
@@ -41837,7 +41976,7 @@ static int handover_quiescent(void)
 	static char names[REGISTRY_MAX_CONTAINERS][REGISTRY_NAME_MAX];
 	int n, i;
 
-	if (g_helpers_live != 0 || pkg_any_job_in_flight() ||
+	if (g_helpers_live != 0 || pkg_any_job_in_flight() || modeswitch_in_flight() ||
 	    g_bootroot_assembly_running || g_bootroot_wanted ||
 	    (g_hostroll.step != HOSTROLL_IDLE && g_hostroll.step != HOSTROLL_SWITCH) ||
 	    pkg_push_in_flight() || pkg_sync_in_progress() ||
@@ -43330,8 +43469,10 @@ static int cixd_main(int argc, char **argv)
 	ensure_default_image();
 	firmware_image_start(); /* ADR-0381: init mode only (g_firmware_on) */
 	/* ADR-0381: every record carries "firmware", null on a daemon that never
-	 * scans (not init mode) or before its first scan. */
-	device_set_record_extra(fwscan_write_device);
+	 * scans (not init mode) or before its first scan. ADR-0398: and a USB
+	 * record "modeswitch"; only an installed host switches. */
+	device_set_record_extra(device_record_extra);
+	modeswitch_set_active(init_mode);
 	if (boot_subsystem_init(init_mode, "containerdef", containerdef_init(CONTAINER_DEFS_STATE_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "containerdef_rolling_config", containerdef_rolling_config_init(ROLLING_CONFIG_PATH)) != 0)
@@ -44218,6 +44359,7 @@ static int cixd_main(int argc, char **argv)
 		handover_old_slot_tick();
 		disksnap_tick(); /* ADR-0377 */
 		fwscan_tick();   /* ADR-0381 */
+		modeswitch_tick(); /* ADR-0398: a switch past its deadline has failed */
 		reprobe_tick();  /* ADR-0381 release 3 */
 		quota_tick(); /* #689 */
 		dhcp_scan_tick(); /* ADR-0386 */

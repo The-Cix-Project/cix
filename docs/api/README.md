@@ -174,6 +174,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | DELETE | `/deployments/{name}` | Remove a deployment |
 | POST | `/deployments/{name}/apply` | Render `{name}`'s own stored recipe (substituting any `{{SECRET:KEY}}` tokens from the request's own `secrets` object, and `{{LDAP:URI}}`/`{{LDAP:BASE_DN}}`/`{{LDAP:BIND_DN}}`/`{{LDAP:BIND_PASSWORD}}` tokens from the daemon's own LDAP client config, issue #66 — no per-apply secret, no copied values. `{{LDAP:URI}}` resolves to the same **effective** list the daemon's own `nslcd.conf` rendering uses — the registered servers' live addresses unless an explicit `client_uri` overrides them, health-filtered either way — rather than to the raw stored field, so a deployment that never typed a copy of its own server list still renders a usable URI (#327)) and create the container from it (201). **If the image it names exists but has not been built yet, this returns `202` and waits for it rather than failing** — ADR-0270, see below |
 | GET | `/devices` | List host devices, each with the state every grant is decided by (ADR-0344), and the firmware its driver declares that the host lacks (`firmware`, ADR-0381) |
+| POST | `/devices/{id}/modeswitch` | Switch a multi-mode USB device (a Wi-Fi or cellular dongle posing as a disk) into its working mode; `202`, and the record's `modeswitch` follows it (ADR-0398) |
 | GET | `/devicemaps` | List persistent, operator-named device mappings |
 | POST | `/devicemaps` | Create a persistent device mapping (name -> selector) |
 | DELETE | `/devicemaps/{name}` | Remove a device mapping |
@@ -2892,6 +2893,22 @@ If only the newcomer had to opt in, a container that asked for a device without 
 The same verdict decides `devices[]` and `interfaces[]` at create and at every start, the live attach `POST /containers/{name}/devices`, and a hotplugged device matched to a waiting container.
 
 **What a device is, as opposed to where it is (ADR-0345).** Each record also carries the facts a device mapping can select by: `serial` (USB), `wwid` (whole disks, the kernel's value without its trailing padding), `fs_uuid` (disks and partitions carrying ext4 or btrfs, read with the filesystem type), and `mac` with `mac_permanent` (interfaces). They are never part of the `id`. A USB serial names a device only together with its `vendor_id` and `product_id`, since many devices of one model report the same serial (the dongle above reports `123456`). An interface can be named by its address only when `mac_permanent` is true. Each field is empty, or `false`, on buses it does not apply to. For an interface a running container holds, `mac` is the address read when it was granted.
+
+### Multi-mode USB devices (ADR-0398)
+
+Many USB Wi-Fi and cellular dongles first appear as a fake disk holding a Windows driver, and become the real device only after the host sends a vendor-defined message. Every USB record carries `modeswitch`: `null` when no rule in the `usb-modeswitch-data` package names the device, otherwise `{state, rule, device, targets, reason}`:
+
+- `switchable`: a rule applies and the verdict allows a switch. `POST /v1/devices/{id}/modeswitch` queues it and answers `202`; a helper child sends the rule's messages (the SCSI eject, or the rule's own bulk messages), every transfer with a timeout.
+- `switching`, then `switched` on the record of the device it came back as (`targets` lists the ids it can become), or `failed` with a `reason` when the messages could not be sent or the device did not come back in time.
+- `refused`, with a `reason`: two rules match, the rule needs a method cixd does not carry out yet (it is named), or the device is held, reserved or the host's, or has a disk below it. Nothing is ever switched by heuristic.
+- `already`: interface 0 already has the rule's `TargetClass`.
+
+A rule is chosen by `idVendor:idProduct` and, where its file name carries one, a substring of the manufacturer, product or serial string, as upstream's dispatcher matches. Switching runs only on an installed host. A switched modem still needs its kernel driver.
+
+```
+$ cixctl device modeswitch 'usb:0bda:1a2b@0000:00:14.0-usb2-1'
+usb:0bda:1a2b@0000:00:14.0-usb2-1: switching by rule 0bda:1a2b:uMa=Realtek -- `cixctl device ls` shows when it is back
+```
 
 ### Composite USB devices (ADR-0161 Phase A)
 

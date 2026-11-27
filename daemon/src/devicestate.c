@@ -341,9 +341,9 @@ int device_records_share_an_id(const struct discovered_device *recs, int n, int 
 	return 0;
 }
 
-static void (*g_record_extra)(struct json_writer *w, const char *id);
+static device_record_extra_fn g_record_extra;
 
-void device_set_record_extra(void (*fn)(struct json_writer *w, const char *id))
+void device_set_record_extra(device_record_extra_fn fn)
 {
 	g_record_extra = fn;
 }
@@ -397,7 +397,7 @@ static void write_one(struct json_writer *w, const struct discovered_device *rec
 	jw_key(w, "reason");
 	jw_str(w, v.reason);
 	if (g_record_extra != NULL)
-		g_record_extra(w, d->id);
+		g_record_extra(w, recs, n, idx, &v);
 
 	/*
 	 * One entry per container and granted record. A container holding

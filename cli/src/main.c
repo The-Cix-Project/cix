@@ -1394,6 +1394,34 @@ static void fmt_device_line(const struct json_value *v, int depth)
 	       id != NULL ? id : "?", state_col, who[0] != '\0' ? who : "-",
 	       description != NULL ? description : "");
 
+	/* ADR-0398: a multi-mode device's switch, said under its line. */
+	{
+		const struct json_value *ms = json_object_get(v, "modeswitch");
+		const struct json_value *targets = ms != NULL ? json_object_get(ms, "targets") : NULL;
+		const char *ms_state = ms != NULL ? json_str_field(ms, "state") : NULL;
+		const char *ms_rule = ms != NULL ? json_str_field(ms, "rule") : NULL;
+		const char *ms_reason = ms != NULL ? json_str_field(ms, "reason") : NULL;
+		char to[96] = "";
+		size_t at = 0;
+
+		for (k = 0; targets != NULL && targets->type == JSON_ARRAY && k < targets->u.array.count;
+		     k++) {
+			const struct json_value *t = targets->u.array.items[k];
+			int n = snprintf(to + at, sizeof(to) - at, "%s%s", at > 0 ? "," : "",
+			                 t->type == JSON_STRING ? t->u.string : "?");
+
+			if (n < 0 || (size_t)n >= sizeof(to) - at)
+				break;
+			at += (size_t)n;
+		}
+		if (ms_state != NULL)
+			printf("%*s  modeswitch: %s%s%s%s%s%s%s\n", depth * 2, "", ms_state,
+			       ms_rule != NULL && ms_rule[0] != '\0' ? " by " : "",
+			       ms_rule != NULL ? ms_rule : "", to[0] != '\0' ? " -> " : "", to,
+			       ms_reason != NULL && ms_reason[0] != '\0' ? " -- " : "",
+			       ms_reason != NULL ? ms_reason : "");
+	}
+
 	/* ADR-0381: the firmware its driver declares that the host lacks. A
 	 * working device can list some: a module declares every chip's. */
 	{
@@ -13190,17 +13218,57 @@ static int cmd_device_ls(const struct cix_client *c, int json_mode)
 	return emit(&r, json_mode, fmt_device_list);
 }
 
+/* ADR-0398: switch a multi-mode USB device out of its fake-disk mode. The
+ * daemon answers 202 once it is queued; `device ls` then shows its
+ * `modeswitch` state. */
+static int cmd_device_modeswitch(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+	char path[512];
+
+	if (argc != 1) {
+		fprintf(stderr, "usage: cixctl device modeswitch ID\n");
+		return 2;
+	}
+	snprintf(path, sizeof(path), CIX_API_switchDeviceMode, argv[0]);
+	if (cix_client_request(c, CIX_API_switchDeviceMode_METHOD, path, "{}", &r) != 0) {
+		fprintf(stderr, "cixctl: could not reach daemon\n");
+		return 1;
+	}
+	if (r.status != 202) {
+		const char *msg = json_str_field(r.json, "error");
+
+		fprintf(stderr, "cixctl: could not switch %s (HTTP %d)%s%s\n", argv[0], r.status,
+		        msg != NULL ? " -- " : "", msg != NULL ? msg : "");
+		cix_response_free(&r);
+		return 1;
+	}
+	if (json_mode) {
+		printf("%s\n", r.body);
+	} else {
+		const char *rule = json_str_field(r.json, "rule");
+
+		printf("%s: switching by rule %s -- `cixctl device ls` shows when it is back\n",
+		       argv[0], rule != NULL ? rule : "?");
+	}
+	cix_response_free(&r);
+	return 0;
+}
+
 static int cmd_device(const struct cix_client *c, int json_mode, int argc, char **argv)
 {
 	const char *sub;
 
 	if (argc < 1) {
-		fprintf(stderr, "usage: cixctl device ls\n");
+		fprintf(stderr, "usage: cixctl device ls\n"
+		                "       cixctl device modeswitch ID\n");
 		return 2;
 	}
 	sub = argv[0];
 	if (strcmp(sub, "ls") == 0)
 		return cmd_device_ls(c, json_mode);
+	if (strcmp(sub, "modeswitch") == 0)
+		return cmd_device_modeswitch(c, json_mode, argc - 1, argv + 1);
 
 	fprintf(stderr, "cixctl: unknown device subcommand '%s'\n", sub);
 	return 2;

@@ -660,6 +660,23 @@ static const char *const g_dhcpleases_calls[] = {
 };
 
 /*
+ * A COUNTED SET for ADR-0398: a USB mode switch's transfers.
+ * modeswitch_usb_run() sends bulk messages and waits up to three seconds
+ * for each, and a device may take every one of them. Its one caller is
+ * modeswitch_work(), the helper child POST /v1/devices/{id}/modeswitch
+ * queues through modeswitch_submit().
+ */
+static const struct call_budget g_modeswitch_budgets[] = {
+	{ "modeswitch_usb.c", "modeswitch_usb_run(", 1, "the definition, not a call" },
+	{ "main.c", "modeswitch_usb_run(", 1, "modeswitch_work(), which runs only in a helper child" },
+};
+
+static const char *const g_modeswitch_calls[] = {
+	"modeswitch_usb_run(",
+	NULL,
+};
+
+/*
  * AN ELEVENTH COUNTED SET (ADR-0376, #646): the announcement self-check's
  * reads. events_self_read() runs any handler the contract marks
  * self-readable, so it costs what the slowest one costs: GET
@@ -795,6 +812,10 @@ static const struct call_set g_call_sets[] = {
 	  "A dhcpd lease file is an append log, unbounded, and cixd has one event loop. Read "
 	  "leases from the snapshot dhcp_scan_tick() keeps (ADR-0386), which a helper child "
 	  "makes." },
+	{ "USB mode switch", g_modeswitch_budgets,
+	  (int)(sizeof(g_modeswitch_budgets) / sizeof(g_modeswitch_budgets[0])), g_modeswitch_calls,
+	  "A mode switch waits on a USB device for every transfer, and cixd has one event loop. "
+	  "Queue it through modeswitch_submit() (ADR-0398), which sends it from a helper child." },
 	{ "announcement self-check", g_selfcheck_budgets,
 	  (int)(sizeof(g_selfcheck_budgets) / sizeof(g_selfcheck_budgets[0])), g_selfcheck_calls,
 	  "A self-read runs a handler the contract marks self-readable, which costs what that "

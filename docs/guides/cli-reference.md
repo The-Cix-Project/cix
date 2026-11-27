@@ -437,6 +437,7 @@ See [`networking.md`](networking.md).
 | Command | |
 |---|---|
 | `device ls` | Every host device as a tree under its parent, each with its `id` (for `--device=`; for `--interface=`, a `net:` id without its `net:`, or a `mac` mapping's name, ADR-0345), its state (`free`, `held`, `reserved`, `host:REASON`, `unavailable:REASON`) and who holds or reserves it (ADR-0344) |
+| `device modeswitch ID` | Switch a multi-mode USB device (a Wi-Fi or cellular dongle that first appears as a disk) into its working mode, by its rule in the `usb-modeswitch-data` package (ADR-0398). `device ls` shows each such device's `modeswitch:` line: `switchable`, `switching`, `switched`, `failed`, `refused` (with the reason) or `already` |
 | `devicemap create --name=NAME --kind=KIND --selector=SELECTOR` | A name for which device it is, usable in place of an id in `--device=` (ADR-0345). `usb_serial` takes `VID:PID:SERIAL`, `wwid` a disk's `wwid` from `device ls --json`, `fs_uuid` a filesystem UUID, `mac` a permanent address (an interface), `exact` a `usb:` or `pci:` id (that port or slot), `vendor_model` `VID:PID` (every device of that model) |
 | `devicemap ls` / `devicemap rm NAME` | List each mapping with its state -- `present`, `absent`, or `ambiguous` (a kind that names one device matched several, so a grant through it is refused) -- and what it resolved to / remove |
 

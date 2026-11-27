@@ -977,6 +977,7 @@ static void check_architecture_components(void)
 		{ "esp.c", "ESP" },
 		{ "trustanchor.c", "Trust anchors" },
 		{ "mcp.c", "MCP gateway" },
+		{ "modeswitchd.c", "Mode switch" },
 	};
 	char *doc = slurp("docs/architecture/architecture.md");
 	size_t i;
