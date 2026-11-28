@@ -65,6 +65,8 @@ static void fill(struct handover_record *rec, pid_t pid, int ctl, int rep, int s
 	rec->kmodscan = strdup("{\"ran\":false,\"not_run_reason\":\"policy \\\"off\\\"\"}");
 	rec->kmsg_seq = 123456789;
 	rec->roll_owed_until = 1795000000;
+	free(rec->modeswitch);
+	rec->modeswitch = strdup("[{\"port\":\"0000:00:14.0-usb2-1\",\"state\":\"switched\",\"rule\":\"0bda:1a2b:uMa=Realtek\",\"to\":198490162,\"reason\":\"\"}]");
 	rec->procfuse_pid = 4242;
 	rec->procfuse_load_fd = 9;
 	rec->console_count = 2;
@@ -158,6 +160,8 @@ static void round_trip(const char *dir)
 	      "kmodscan %s", r.kmodscan != NULL ? r.kmodscan : "(none)");
 	CHECK(r.kmsg_seq == 123456789, "kmsg_seq %lld", r.kmsg_seq);
 	CHECK(r.roll_owed_until == 1795000000, "roll_owed_until %lld", r.roll_owed_until);
+	CHECK(r.modeswitch != NULL && w.modeswitch != NULL && strcmp(r.modeswitch, w.modeswitch) == 0,
+	      "modeswitch %s", r.modeswitch != NULL ? r.modeswitch : "(none)");
 	CHECK(r.procfuse_pid == 4242, "procfuse_pid %d", (int)r.procfuse_pid);
 	CHECK(r.procfuse_load_fd == 9, "procfuse_load_fd %d", r.procfuse_load_fd);
 	CHECK(r.console_count == 2 && strcmp(r.consoles[0].tty, "/dev/tty0") == 0 &&
@@ -233,6 +237,7 @@ static void refusals(const char *dir)
 #undef TOP_TAIL
 #undef WHO
 	CHECK(handover_read(path, &r, err, sizeof(err)) == 0 && r.count == 0 && r.kmodscan == NULL &&
+	          r.modeswitch == NULL &&
 	          r.kmsg_seq == -1 && r.roll_owed_until == 0,
 	      "an unknown key must be ignored, and a record with no kmodscan (a 664 or 665 "
 	      "writer), no kmsg_seq (before 687) or no roll_owed_until (before 692) must read, "

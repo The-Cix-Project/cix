@@ -24,6 +24,7 @@
 #define RULES_PER_ID_MAX 16
 #define RULE_FILE_MAX 8192     /* the largest rule is a few hundred bytes */
 #define PORTS_MAX 32
+#define PRESENT_MAX 8
 #define HELPER_DEADLINE_S 600  /* queued and sent: 4 may wait, each transfer has a timeout */
 #define RETURN_DEADLINE_S 20   /* the device's re-enumeration after the last message */
 
@@ -39,6 +40,9 @@ struct port {
 	unsigned int to_vendor, to_product; /* switched: the id it came back as */
 	char reason[200];
 	long long deadline;
+	/* the ports holding a listed target id when the switch started */
+	char present[PRESENT_MAX][DEVICE_ID_MAX];
+	int present_count;
 };
 
 static int g_active;
@@ -402,6 +406,8 @@ int modeswitch_prepare(const char *id, struct modeswitch_job *job, char *why, si
 	return 0;
 }
 
+static void note_targets_present(const struct device_snapshot *s, struct port *p);
+
 void modeswitch_started(const struct modeswitch_job *job)
 {
 	const char *port = port_of(job->id);
@@ -412,6 +418,7 @@ void modeswitch_started(const struct modeswitch_job *job)
 	p->state = PORT_SWITCHING;
 	p->rule = job->rule;
 	p->deadline = now_s() + HELPER_DEADLINE_S;
+	note_targets_present(devicegrant_snapshot(), p);
 	logstore_write("cixd", "info", "modeswitch: switching %s by rule %s (%s)", job->id,
 	               job->rule.name, job->rule.comment[0] != '\0' ? job->rule.comment : "no description");
 	events_announce(EV_listDevices);
@@ -460,6 +467,49 @@ static int port_now(const struct device_snapshot *s, const struct port *p, unsig
 	return 0;
 }
 
+/* The ports that held one of p's listed target ids when its switch
+ * started, so a device already there is never taken for this one. */
+static void note_targets_present(const struct device_snapshot *s, struct port *p)
+{
+	int j;
+
+	p->present_count = 0;
+	for (j = 0; j < s->n && p->present_count < PRESENT_MAX; j++) {
+		const char *port = port_of(s->recs[j].id);
+		unsigned int v, pr;
+
+		if (port != NULL && record_ids(&s->recs[j], &v, &pr) == 0 &&
+		    modeswitch_is_target(&p->rule, v, pr))
+			snprintf(p->present[p->present_count++], sizeof(p->present[0]), "%s", port);
+	}
+}
+
+/* A device with a listed target id, on a port that held none when p's
+ * switch started and that no other switch's record names. */
+static int moved_target(const struct device_snapshot *s, const struct port *p,
+                        unsigned int *vendor, unsigned int *product)
+{
+	int j, k;
+
+	for (j = 0; j < s->n; j++) {
+		const char *port = port_of(s->recs[j].id);
+		unsigned int v, pr;
+		int was_there = 0;
+
+		if (port == NULL || record_ids(&s->recs[j], &v, &pr) != 0 ||
+		    !modeswitch_is_target(&p->rule, v, pr) || port_find(port) != NULL)
+			continue;
+		for (k = 0; k < p->present_count && !was_there; k++)
+			was_there = strcmp(p->present[k], port) == 0;
+		if (!was_there) {
+			*vendor = v;
+			*product = pr;
+			return 1;
+		}
+	}
+	return 0;
+}
+
 void modeswitch_usb_added(void)
 {
 	const struct device_snapshot *s;
@@ -476,6 +526,21 @@ void modeswitch_usb_added(void)
 		if (!p->used || p->state != PORT_SWITCHING)
 			continue;
 		present = port_now(s, p, &v, &pr);
+		/* A device can come back on another port: a Realtek dongle may
+		 * move itself onto the USB3 hub. With its own port empty, a
+		 * device with a listed target id on a port that held none when
+		 * the switch started is this one. */
+		if (!present && moved_target(s, p, &v, &pr)) {
+			p->state = PORT_SWITCHED;
+			p->to_vendor = v;
+			p->to_product = pr;
+			snprintf(p->reason, sizeof(p->reason), "it came back on another port");
+			logstore_write("cixd", "info",
+			               "modeswitch: %04x:%04x on port %s switched to %04x:%04x on another port",
+			               p->rule.vendor, p->rule.product, p->port, v, pr);
+			events_announce(EV_listDevices);
+			continue;
+		}
 		switch (modeswitch_return_of(p->rule.vendor, p->rule.product, &p->rule, present, v, pr)) {
 		case MODESWITCH_RETURN_WAIT:
 			continue;
