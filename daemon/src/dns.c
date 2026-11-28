@@ -450,9 +450,19 @@ int dns_forwarders_get(char out[][DNS_FORWARDER_LEN], int max)
 }
 
 /* Renders dnsmasq's own servers-file format: one "server=<ip>" per
- * line. An empty list renders an empty file, which is meaningful --
- * it means "no recursion", not "unchanged". Bytes, or -1 when it did
- * not fit. */
+ * line. An empty forwarder list renders no server= line with an
+ * address, which is meaningful -- it means "no recursion", not
+ * "unchanged". Bytes, or -1 when it did not fit.
+ *
+ * The first line is always `server=/localhost/`: answer the localhost
+ * zone from local data only, never forward it (RFC 6761 6.3, the form
+ * dnsmasq documents for --local). The answers themselves are in the
+ * hosts file, from dns_render_hosts(). Measured on gibsson-1,
+ * 2026-11-28: dnsmasq forwarded `localhost` upstream, Quad9 answers it
+ * with 127.0.0.1 and Google with NXDOMAIN, so a container with no
+ * /etc/hosts resolved localhost or not depending on which upstream its
+ * DNS server last used. The forge's push hook, which calls
+ * https://localhost:443, failed from 15:41 UTC. */
 int dns_render_servers(char *out, size_t out_size)
 {
 	size_t off = 0;
@@ -461,6 +471,10 @@ int dns_render_servers(char *out, size_t out_size)
 	if (out_size == 0)
 		return -1;
 	out[0] = '\0';
+	n = snprintf(out, out_size, "server=/localhost/\n");
+	if (n < 0 || (size_t)n >= out_size)
+		return -1;
+	off = (size_t)n;
 	for (i = 0; i < g_forwarder_count; i++) {
 		n = snprintf(out + off, out_size - off, "server=%s\n", g_forwarders[i]);
 		if (n < 0 || (size_t)n >= out_size - off)
@@ -503,7 +517,7 @@ static int write_if_changed(const char *abs_path, const char *buf, size_t len)
 
 static int dns_write_servers_file(const char *abs_path)
 {
-	char buf[DNS_FORWARDERS_MAX * (DNS_FORWARDER_LEN + 16)];
+	char buf[DNS_SERVERS_RENDER_MAX];
 	int n = dns_render_servers(buf, sizeof(buf));
 
 	return n < 0 ? -1 : write_if_changed(abs_path, buf, (size_t)n);
@@ -544,6 +558,17 @@ int dns_render_hosts(char *buf, size_t buf_size)
 	if (buf_size == 0)
 		return -1;
 	buf[0] = '\0';
+	/* localhost first, as every /etc/hosts carries it: with
+	 * dns_render_servers()'s `server=/localhost/`, a DNS server answers
+	 * localhost itself and forwards nothing of that zone. */
+	{
+		static const char loopback[] = "127.0.0.1 localhost\n::1 localhost\n";
+
+		if (sizeof(loopback) > buf_size)
+			return -1;
+		memcpy(buf, loopback, sizeof(loopback));
+		off = sizeof(loopback) - 1;
+	}
 	for (i = 0; i < DNS_MAX_RECORDS; i++) {
 		struct in_addr a;
 		char ipstr[INET_ADDRSTRLEN];

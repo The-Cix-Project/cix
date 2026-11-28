@@ -347,6 +347,41 @@ int main(void)
 		}
 	}
 
+	/* 8b. A registered DNS server answers localhost itself and never
+	 * forwards it (RFC 6761). Measured on gibsson-1, 2026-11-28: with
+	 * localhost forwarded, Quad9 answered it and Google did not, so a
+	 * container with no /etc/hosts resolved localhost depending on the
+	 * upstream its DNS server last used, and the forge's push hook
+	 * (https://localhost) failed. Both files are staged at create. */
+	{
+		static const char *const want[][2] = {
+			{ "/etc/hosts-dns", "127.0.0.1 localhost\n" },
+			{ "/etc/hosts-dns", "::1 localhost\n" },
+			{ "/etc/dnsmasq-servers", "server=/localhost/\n" },
+		};
+		size_t wi;
+
+		for (wi = 0; wi < sizeof(want) / sizeof(want[0]); wi++) {
+			char path[PATH_MAX];
+			char content[1024];
+			size_t got = 0;
+			FILE *f;
+
+			test_container_tree_path(g_data_dir, "srvdns", want[wi][0], path, sizeof(path));
+			f = fopen(path, "r");
+			if (f != NULL) {
+				got = fread(content, 1, sizeof(content) - 1, f);
+				fclose(f);
+			}
+			content[got] = '\0';
+			if (f == NULL || strstr(content, want[wi][1]) == NULL) {
+				fprintf(stderr, "FAIL: srvdns %s lacks \"%s\" (got: %s)\n", want[wi][0],
+				        want[wi][1], f == NULL ? "(absent)" : content);
+				ok = 0;
+			}
+		}
+	}
+
 	/* 9. The case #451 is about: omitted, so defaulted. */
 	memset(&r, 0, sizeof(r));
 	if (cix_client_request(&client, "POST", "/v1/containers",

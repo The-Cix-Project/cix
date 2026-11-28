@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A registered DNS server answers localhost itself and never forwards it
+
+- **Before:** dnsmasq on dns-1/dns-2 runs with `-h` (no `/etc/hosts`) and forwarded `localhost` upstream like any name. Measured on gibsson-1, 2026-11-28: Quad9 answers it with 127.0.0.1 and Google with NXDOMAIN, so a container with no `/etc/hosts` resolved `localhost` or not depending on which upstream its DNS server last used. The forge's push hook calls `https://localhost:443`, and every push was refused from 15:41 UTC (`pre-receive hook declined`, `Internal Server Connection Error`) while dns-1 was on Google.
+- **Now:** the servers file cixd renders starts with `server=/localhost/`, which answers that zone from local data only (RFC 6761), and the hosts file it renders starts with `127.0.0.1 localhost` and `::1 localhost`. Both reach a running server on reload, with no restart. `test_container_dns_servers` checks both files on a registered server.
+
 ### A recipe may declare thousands of sources, so a Rust application's crates can be its sources (ADR-0400, #771)
 
 - **Before:** a recipe held at most 32 sources, because they were two fixed arrays in `struct pkg_recipe` (577 bytes each, on the stack of about 25 functions), and `cbs explain` output was read into 64 KB. A Rust application builds against hundreds of crates (vaultwarden 638, tuwunel 566 plus 25 git dependencies, granian 185), and a sealed build container can only read them as declared sources. A recipe over the cap was also committed to git and published, then refused at every parse: `probe-pylayout@1-1` (38 sources) did exactly that.

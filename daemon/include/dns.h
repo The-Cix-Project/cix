@@ -146,6 +146,9 @@ enum dns_server_error {
 #define DNS_FORWARDERS_MAX 8
 #define DNS_FORWARDER_LEN 64
 #define DNS_SERVERS_FILE_PATH "/etc/dnsmasq-servers"
+/* What dns_render_servers() can write: the localhost line, then one
+ * "server=<ip>" per forwarder. The one size for every buffer it fills. */
+#define DNS_SERVERS_RENDER_MAX (64 + DNS_FORWARDERS_MAX * (DNS_FORWARDER_LEN + 16))
 
 /*
  * Where a DNS server container reads its records from. The path is

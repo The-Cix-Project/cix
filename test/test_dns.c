@@ -755,6 +755,29 @@ int main(void)
 		        "servers-file is: %s\n",
 		        r.body != NULL ? r.body : "(null)");
 		ok = 0;
+	} else if (strncmp(r.body, "server=/localhost/\n", 19) != 0) {
+		/* RFC 6761: the localhost zone is answered locally and never
+		 * forwarded -- an upstream that does not answer it left a
+		 * container with no /etc/hosts unable to reach itself. */
+		fprintf(stderr, "FAIL: servers-file does not start with server=/localhost/: %s\n",
+		        r.body);
+		ok = 0;
+	}
+	cix_response_free(&r);
+
+	/* And the answer itself, in the hosts file the server reads. */
+	memset(&r, 0, sizeof(r));
+	if (cix_client_request(&client, "GET",
+	                       "/v1/containers/dnsserver/files?path=/etc/dnsmasq-hosts", NULL,
+	                       &r) != 0 ||
+	    r.status != 200) {
+		fprintf(stderr, "FAIL: read dnsmasq-hosts from container, status=%d\n", r.status);
+		ok = 0;
+	} else if (r.body == NULL || strstr(r.body, "127.0.0.1 localhost\n") == NULL ||
+	           strstr(r.body, "::1 localhost\n") == NULL) {
+		fprintf(stderr, "FAIL: hosts file does not answer localhost: %s\n",
+		        r.body != NULL ? r.body : "(null)");
+		ok = 0;
 	}
 	cix_response_free(&r);
 

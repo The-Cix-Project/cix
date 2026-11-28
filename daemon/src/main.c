@@ -19046,7 +19046,7 @@ static int create_container_from_body(const char *body, size_t body_len,
 	 */
 	if (dns_server_is_registered(name)) {
 		static char hosts_buf[DNS_HOSTS_RENDER_MAX];
-		char servers_buf[DNS_FORWARDERS_MAX * (DNS_FORWARDER_LEN + 16)];
+		char servers_buf[DNS_SERVERS_RENDER_MAX];
 		const char *hosts_path = dns_server_hosts_path(name);
 		int hn = dns_render_hosts(hosts_buf, sizeof(hosts_buf));
 		int sn = dns_render_servers(servers_buf, sizeof(servers_buf));
