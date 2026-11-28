@@ -521,6 +521,15 @@ Stated by the owner on 2026-09-26, in these words: *"we should never ever have a
 - **Refuse at the point of asking:** a relay not attached to the network, a server sharing no network with a relay or with no route back to it, a container that is both server and relay, relays on a range whose servers are all attached.
 - **Relays re-render when a registered server or relay is created, re-addressed or deleted,** since the relay file names other containers' addresses.
 
+## A container is shown in its category and its group
+
+**A redundant group is `roll_group` and nothing else; a category is one optional path field of a container's definition, `category` (`network/core`); every container read returns both, and clients draw the tree** -- [ADR-0399](docs/adr/0399-a-container-is-shown-in-its-category-and-its-group.md), accepted by the owner on 2026-11-28 (*"Always 100% api first, no compromise, if it's not an api, it cannot exist"*).
+
+- **Never infer a group** from names, a shared image or a registration; a pair that should be one declares `roll_group` in its deployment.
+- **No category registry, resource or second membership list.** A category exists while a container names it. It is the site's, so it lives in the deployment, never in a container recipe.
+- **A re-apply that changes only fields read live from the stored body (`roll_group`, `category`) stores them and does not restart.** A field joins that list only when nothing derived from it is held anywhere but the body.
+- **One dashboard function builds the tree; the navigation tree and the Containers page both draw from it.**
+
 ## A roll group restarts one member at a time
 
 **Containers that declare the same `roll_group` are never restarted together by the daemon: a member's image roll or DHCP-driven restart waits until every other member is running and ready** -- [ADR-0385](docs/adr/0385-a-roll-group-restarts-one-member-at-a-time.md), the owner's choice of 2026-11-20 (*"Declared roll groups"*), over serialising every follower of an image.
