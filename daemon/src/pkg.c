@@ -87,8 +87,14 @@ extern char **environ;
  * buffer explicitly rather than handing on a truncated object, since
  * truncated JSON fails to parse with a message about syntax instead
  * of about size.
+ *
+ * 4 MiB since #771: a recipe that declares every crate of a Rust
+ * Cargo.lock as a source (vaultwarden's has 638) explains to roughly
+ * 250 bytes a source, which the old 64 KB filled near 200. The buffer
+ * is allocated for each explain and freed after it, so the size costs
+ * nothing between publishes.
  */
-#define PKG_EXPLAIN_MAX 65536
+#define PKG_EXPLAIN_MAX (4 * 1024 * 1024)
 
 /* Left with headroom under LOGSTORE_MSG_MAX (4096) once the surrounding
  * "pkg %s@%s: build output: " prefix and name/image (up to
@@ -505,21 +511,25 @@ struct pkg_recipe {
 	 * cbs_phase) each, read from the explain document. A build's phases
 	 * are reported against this plan. */
 	unsigned declared_phases;
-	/* source[0]/sha256[0] is the main source and the rest are extras;
-	 * cixd fetches and verifies every one host-side and hands each to
-	 * cbs as a source-cache entry named by its sha256 (ADR-0305), which
-	 * is the only place a build reads it from (cix#569). */
-	char source[PKG_MAX_SOURCES][PKG_URL_MAX];
-	char sha256[PKG_MAX_SOURCES][PKG_SHA256_MAX];
+	/* Source 0 is the main source and the rest are extras; cixd fetches
+	 * and verifies every one host-side and hands each to cbs as a
+	 * source-cache entry named by its sha256 (ADR-0305), which is the
+	 * only place a build reads it from (cix#569).
+	 *
+	 * The count only. Each source's url and sha256 are read through
+	 * pkg_recipe_source(), from the explain document at explain_path:
+	 * a Rust application declares hundreds of crates, and this struct
+	 * lives on the stack of about 25 functions. */
 	int source_count;
+	char explain_path[PATH_MAX];
 	/*
-	 * Fallback urls for the sources above (#507). source[i] is a
-	 * source's FIRST url; a CPDL recipe may declare more, which are
+	 * Fallback urls for the sources above (#507). Source i's url (pkg_recipe_source()) is its
+	 * FIRST url; a CPDL recipe may declare more, which are
 	 * ordered mirrors for that same source identity sharing its one
 	 * checksum. mirror_source[k] says which source index mirror_url[k]
 	 * belongs to, and entries for one source appear in the order the
 	 * recipe gave them -- which is the order the fetch tries them in,
-	 * after that source's own source[i] fails.
+	 * after that source's own first url fails.
 	 *
 	 * A shell recipe has no syntax for a second url and always leaves
 	 * mirror_count at 0, which is exactly the behaviour every recipe
@@ -3023,7 +3033,7 @@ static const char *owning_token(const char *name)
  * A recipe with no placeholder, no owning source, or an owner with no
  * token, is left byte-for-byte unchanged.
  */
-static void substitute_repo_token(struct pkg_recipe *out)
+static const char *recipe_owner_token(const struct pkg_recipe *r)
 {
 	/*
 	 * The RECIPE's owner, not the package's name (#677): for one of a
@@ -3035,15 +3045,21 @@ static void substitute_repo_token(struct pkg_recipe *out)
 	 * (2026-11-10, ts 1794305765). The sources ARE the recipe's, so
 	 * whose token they spend is the recipe's owner's question.
 	 */
-	const char *tok =
-	    owning_token(out->recipe_name[0] != '\0' ? out->recipe_name : out->name);
+	return owning_token(r->recipe_name[0] != '\0' ? r->recipe_name : r->name);
+}
+
+static void substitute_repo_token(struct pkg_recipe *out)
+{
+	const char *tok = recipe_owner_token(out);
 	int i;
 
 	if (tok == NULL)
 		return;
-	for (i = 0; i < out->source_count; i++)
-		str_replace_all(out->source[i], sizeof(out->source[i]), "{{REPO_TOKEN}}", tok);
-	/* Mirrors are urls like any other and reach curl the same way, so
+	/* The sources themselves are not stored here: pkg_recipe_source()
+	 * substitutes the same token, from the same owner, when it is asked
+	 * for a url with the token (see recipe_owner_token()).
+	 *
+	 * Mirrors are urls like any other and reach curl the same way, so
 	 * they get the same substitution -- a placeholder left in a mirror
 	 * would fail only on the fallback path, which is the one nobody
 	 * exercises until the day it matters (#507). */
@@ -3054,6 +3070,170 @@ static void substitute_repo_token(struct pkg_recipe *out)
 	 * the author stage writes the next revision's url from, and that
 	 * url keeps the placeholder (ADR-0323). Where it reaches curl, the
 	 * caller substitutes a copy with owning_token(). */
+}
+
+/*
+ * A recipe's sources, read from its explain document (#771).
+ *
+ * struct pkg_recipe carries only how many sources a recipe declares. The
+ * urls and checksums live here, in heap lists, because a Rust
+ * application declares every crate of its Cargo.lock as a source (a
+ * build container is sealed) and that struct is on the stack of about
+ * 25 functions. A published version's explain document never changes,
+ * so a list is loaded once and kept, keyed by the document's path and
+ * its inode, size and mtime, which also notices a document replaced in
+ * place.
+ *
+ * A handful of lists is plenty: every caller reads one recipe's sources
+ * in one loop, and nothing holds a pointer into a list past the call
+ * that returned it -- pkg_recipe_source() copies out. So eviction can
+ * never leave anything dangling, and copying a struct pkg_recipe copies
+ * nothing that is owned.
+ */
+struct pkg_source_item {
+	char url[PKG_URL_MAX];
+	char sha256[PKG_SHA256_MAX];
+};
+
+#define PKG_SOURCE_SETS 4
+
+static struct pkg_source_set {
+	char path[PATH_MAX];
+	dev_t dev;
+	ino_t ino;
+	off_t size;
+	struct timespec mtime;
+	int count;
+	struct pkg_source_item *items;
+	unsigned long used;
+} g_source_sets[PKG_SOURCE_SETS];
+static unsigned long g_source_set_clock;
+
+/* The source list of the explain document at `path`, which must declare
+ * exactly `want` sources; NULL, with the reason logged, otherwise. The
+ * returned array is valid until the next call. */
+static const struct pkg_source_item *source_set_get(const char *path, int want)
+{
+	struct pkg_source_set *slot = NULL;
+	struct pkg_source_item *items;
+	struct cbs_explain *ex;
+	struct stat st;
+	char err[256];
+	char *buf = NULL;
+	size_t len = 0;
+	int count;
+	int i;
+
+	if (path == NULL || path[0] == '\0' || stat(path, &st) != 0) {
+		logstore_write("cixd", "error", "pkg: %s: cannot read the recipe's sources: %s",
+		               path != NULL && path[0] != '\0' ? path : "(no explain document)",
+		               strerror(errno));
+		return NULL;
+	}
+	for (i = 0; i < PKG_SOURCE_SETS; i++) {
+		struct pkg_source_set *s = &g_source_sets[i];
+
+		if (s->items != NULL && strcmp(s->path, path) == 0 && s->dev == st.st_dev &&
+		    s->ino == st.st_ino && s->size == st.st_size &&
+		    s->mtime.tv_sec == st.st_mtim.tv_sec && s->mtime.tv_nsec == st.st_mtim.tv_nsec) {
+			if (s->count != want) {
+				logstore_write("cixd", "error",
+				               "pkg: %s declares %d sources, but the recipe was read with %d",
+				               path, s->count, want);
+				return NULL;
+			}
+			s->used = ++g_source_set_clock;
+			return s->items;
+		}
+	}
+
+	if (persist_read_file(path, &buf, &len) != 0 || buf == NULL) {
+		logstore_write("cixd", "error", "pkg: %s: cannot read the recipe's sources", path);
+		return NULL;
+	}
+	ex = cbs_explain_parse(buf, len, err, sizeof(err));
+	free(buf);
+	if (ex == NULL) {
+		logstore_write("cixd", "error", "pkg: %s: %s", path, err);
+		return NULL;
+	}
+	count = cbs_explain_source_count(ex);
+	if (count != want || count <= 0) {
+		logstore_write("cixd", "error",
+		               "pkg: %s declares %d sources, but the recipe was read with %d", path,
+		               count, want);
+		cbs_explain_free(ex);
+		return NULL;
+	}
+	items = calloc((size_t)count, sizeof(*items));
+	if (items == NULL) {
+		logstore_write("cixd", "error", "pkg: %s: no memory for %d sources", path, count);
+		cbs_explain_free(ex);
+		return NULL;
+	}
+	for (i = 0; i < count; i++) {
+		if (cbs_explain_source(ex, i, items[i].url, sizeof(items[i].url), items[i].sha256,
+		                        sizeof(items[i].sha256)) != 0) {
+			logstore_write("cixd", "error",
+			               "pkg: %s: source %d has no usable url/sha256 pair", path, i);
+			free(items);
+			cbs_explain_free(ex);
+			return NULL;
+		}
+	}
+	cbs_explain_free(ex);
+
+	for (i = 0; i < PKG_SOURCE_SETS; i++) {
+		struct pkg_source_set *s = &g_source_sets[i];
+
+		if (s->items == NULL) {
+			slot = s;
+			break;
+		}
+		if (slot == NULL || s->used < slot->used)
+			slot = s;
+	}
+	free(slot->items);
+	snprintf(slot->path, sizeof(slot->path), "%s", path);
+	slot->dev = st.st_dev;
+	slot->ino = st.st_ino;
+	slot->size = st.st_size;
+	slot->mtime = st.st_mtim;
+	slot->count = count;
+	slot->items = items;
+	slot->used = ++g_source_set_clock;
+	return items;
+}
+
+/*
+ * Source `i` of recipe `r`: its url into `url` (when non-NULL) and its
+ * sha256 into `sha` (when non-NULL). With `with_token`, the url carries
+ * the owning source's token in place of {{REPO_TOKEN}} -- for curl only,
+ * never for a log line or the API (#461); without it, the url is as the
+ * recipe wrote it. 0 on success, -1 (logged) otherwise.
+ */
+static int pkg_recipe_source(const struct pkg_recipe *r, int i, int with_token, char *url,
+                             size_t url_size, char *sha, size_t sha_size)
+{
+	const struct pkg_source_item *items;
+
+	if (r == NULL || i < 0 || i >= r->source_count)
+		return -1;
+	items = source_set_get(r->explain_path, r->source_count);
+	if (items == NULL)
+		return -1;
+	if (url != NULL && url_size > 0) {
+		snprintf(url, url_size, "%s", items[i].url);
+		if (with_token) {
+			const char *tok = recipe_owner_token(r);
+
+			if (tok != NULL)
+				str_replace_all(url, url_size, "{{REPO_TOKEN}}", tok);
+		}
+	}
+	if (sha != NULL && sha_size > 0)
+		snprintf(sha, sha_size, "%s", items[i].sha256);
+	return 0;
 }
 
 /*
@@ -3377,12 +3557,18 @@ static int parse_cbs_recipe(const char *path, const char *want, struct pkg_recip
 		return -1;
 	}
 	out->mirror_count = 0;
+	snprintf(out->explain_path, sizeof(out->explain_path), "%s", explain_path);
 	for (i = 0; i < count; i++) {
+		/* Checked here, so a recipe with a bad pair is refused at parse
+		 * as before; kept nowhere, since pkg_recipe_source() reads the
+		 * same document when a url or sha256 is needed (#771). */
+		char url_check[PKG_URL_MAX];
+		char sha_check[PKG_SHA256_MAX];
 		int urls;
 		int u;
 
-		if (cbs_explain_source(ex, i, out->source[i], PKG_URL_MAX, out->sha256[i],
-		                        PKG_SHA256_MAX) != 0) {
+		if (cbs_explain_source(ex, i, url_check, sizeof(url_check), sha_check,
+		                        sizeof(sha_check)) != 0) {
 			logstore_write("cixd", "error", "pkg: %s: source %d has no usable url/sha256 pair",
 			               explain_path, i);
 			cbs_explain_free(ex);
@@ -10817,6 +11003,28 @@ static enum pkg_error recipe_publish(const char *name, const char *content,
 			return PKG_ERR_INVALID_RECIPE;
 		}
 		/*
+		 * #771: the parse refuses more than PKG_MAX_SOURCES, so a
+		 * recipe over it is refused HERE, before a commit writes it to
+		 * git. probe-pylayout@1-1 (38 sources against the old 32) was
+		 * committed and published, then failed every parse.
+		 */
+		{
+			int nsrc = cbs_explain_source_count(ex);
+
+			if (nsrc <= 0 || nsrc > PKG_MAX_SOURCES) {
+				snprintf(g_recipe_add_err, sizeof(g_recipe_add_err),
+				         "the recipe declares %d sources; 1..%d is supported", nsrc,
+				         PKG_MAX_SOURCES);
+				logstore_write("cixd", "error", "pkg: recipe %s rejected: %s", name,
+				               g_recipe_add_err);
+				cbs_explain_free(ex);
+				unlink(staging_path);
+				free(redacted);
+				free(explain_json);
+				return PKG_ERR_INVALID_RECIPE;
+			}
+		}
+		/*
 		 * Capabilities by NAME (cix-build-system#162, closed).
 		 *
 		 * This block used to refuse any recipe declaring one, because
@@ -12107,9 +12315,29 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			 * them: a placeholder left in a mirror would surface
 			 * only once the primary failed, i.e. on the path nobody
 			 * exercises until it matters (#507). */
-			const char *url_to_check = j < recipe.source_count
-			                               ? recipe.source[j]
-			                               : recipe.mirror_url[j - recipe.source_count];
+			char source_url[PKG_URL_MAX];
+			const char *url_to_check;
+
+			if (j < recipe.source_count) {
+				if (pkg_recipe_source(&recipe, j, 1, source_url, sizeof(source_url), NULL,
+				                      0) != 0) {
+					static const char msg[] =
+					    "this recipe's sources could not be read from its explain document "
+					    "-- the log names why";
+					int efd = open(fetch_err_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+
+					if (efd >= 0) {
+						ssize_t written = write(efd, msg, sizeof(msg) - 1);
+
+						(void)written;
+						close(efd);
+					}
+					_exit(PKG_FETCH_EXIT_PRECONDITION);
+				}
+				url_to_check = source_url;
+			} else {
+				url_to_check = recipe.mirror_url[j - recipe.source_count];
+			}
 
 			if (strstr(url_to_check, "{{REPO_TOKEN}}") != NULL) {
 				static const char msg[] =
@@ -12142,6 +12370,8 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 
 		for (j = 0; j < recipe.source_count; j++) {
 			char src_tarball_path[PATH_MAX];
+			char source_url_j[PKG_URL_MAX];
+			char source_sha_j[PKG_SHA256_MAX];
 			struct curlfetch_opts opts;
 			char curl_err[256];
 			char url_shown[PKG_URL_MAX];
@@ -12182,9 +12412,14 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			 */
 			source_download_path(chain_idx, recipe.name, recipe.version, j, src_tarball_path,
 			                     sizeof(src_tarball_path));
+			/* Read by the loop above already, so this does not fail
+			 * short of the document vanishing between the two. */
+			if (pkg_recipe_source(&recipe, j, 1, source_url_j, sizeof(source_url_j),
+			                      source_sha_j, sizeof(source_sha_j)) != 0)
+				_exit(PKG_FETCH_EXIT_PRECONDITION);
 
 			/*
-			 * source[j] first, then every mirror declared for it,
+			 * source j's own url first, then every mirror declared for it,
 			 * in the order the recipe gave them (#507). CPDL calls
 			 * these ordered mirrors for one source identity sharing
 			 * one checksum, and that shared checksum is what makes
@@ -12194,7 +12429,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			 * mirror cannot substitute different bytes without
 			 * failing a gate that already exists.
 			 *
-			 * Before this, only source[j] was ever tried and the
+			 * Before this, only the first url was ever tried and the
 			 * remaining urls were parsed and dropped, so a declared
 			 * mirror list did nothing at all -- freetype@2.13.3-7
 			 * declared three and failed naming the first.
@@ -12209,7 +12444,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 			{
 				char cached[PATH_MAX];
 
-				if (source_cache_path(recipe.sha256[j], cached, sizeof(cached)) == 0 &&
+				if (source_cache_path(source_sha_j, cached, sizeof(cached)) == 0 &&
 				    access(cached, R_OK) == 0) {
 					unlink(src_tarball_path);
 					if (link(cached, src_tarball_path) == 0) {
@@ -12228,7 +12463,7 @@ static enum pkg_error start_fetch_for(const char *name, int chain_idx, pid_t *ou
 				int seen = 0;
 
 				if (attempt == 0) {
-					url = recipe.source[j];
+					url = source_url_j;
 				} else {
 					url = NULL;
 					for (k = 0; k < recipe.mirror_count; k++) {
@@ -13835,9 +14070,18 @@ static int pkg_prepare_build_and_start(int chain_idx, struct pkg_entry *e,
 		stallwatch_step("build prep: copy the sources into the cbs cache");
 		for (i = 0; i < recipe.source_count; i++) {
 			char src_path[PATH_MAX], cache_dst[PATH_MAX];
+			char source_sha[PKG_SHA256_MAX];
 
+			if (pkg_recipe_source(&recipe, i, 0, NULL, 0, source_sha, sizeof(source_sha)) != 0) {
+				pkg_fail(e, job_upgrade, PIPELINE_BUILD,
+				         "could not prepare the build container (source %d of the recipe could "
+				         "not be read; the log names why)",
+				         i);
+				chain_release(chain_idx);
+				return 0;
+			}
 			source_download_path(chain_idx, e->name, recipe.version, i, src_path, sizeof(src_path));
-			snprintf(cache_dst, sizeof(cache_dst), "%s/%s", cbs_cache_dir, recipe.sha256[i]);
+			snprintf(cache_dst, sizeof(cache_dst), "%s/%s", cbs_cache_dir, source_sha);
 			if (copy_file_simple(src_path, cache_dst) != 0) {
 				logstore_write("cixd", "error",
 				                "pkg %s@%s: could not prepare build container (stage source %d "
@@ -14063,7 +14307,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	/*
 	 * ADR-0122: start_fetch_for()'s child may have left a checksum-
 	 * verified artifact sitting at the sentinel path instead
-	 * of ever fetching recipe.source[] at all -- promote it into the
+	 * of ever fetching the recipe's sources at all -- promote it into the
 	 * real local cache right here and fold this job into the exact
 	 * same cache-hit path a local cache hit already takes (set fresh
 	 * by start_fetch_for() itself; this is the only other way it ever
@@ -14107,14 +14351,27 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 	 * bad entry fails the whole job, matching the single-source
 	 * case's own existing all-or-nothing guarantee (ADR-0036). Skipped
 	 * entirely for a cache/artifact hit -- nothing was fetched from
-	 * recipe.source[] at all in that case.
+	 * the recipe's sources at all in that case.
 	 */
 	if (!e->cache_hit) {
 		for (i = 0; i < recipe.source_count; i++) {
 			char src_path[PATH_MAX];
+			char source_url[PKG_URL_MAX];
+			char source_sha[PKG_SHA256_MAX];
 			struct stat sst;
 			const char *why = NULL;
 
+			/* The url without the token: it is read here only for a log
+			 * line (#461). */
+			if (pkg_recipe_source(&recipe, i, 0, source_url, sizeof(source_url), source_sha,
+			                      sizeof(source_sha)) != 0) {
+				pkg_fail(e, job_upgrade, PIPELINE_FETCH,
+				         "source %d of the recipe could not be read to verify it; the log "
+				         "names why",
+				         i);
+				chain_release(chain_idx);
+				return 0;
+			}
 			source_download_path(chain_idx, e->name, recipe.version, i, src_path, sizeof(src_path));
 			/*
 			 * #332: this reported only that two hashes differed, and
@@ -14160,7 +14417,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			sha_out[0] = '\0';
 			if (source_hash_read(src_path, sha_out, sizeof(sha_out)) != 0)
 				why = "could not be hashed";
-			else if (strcasecmp(sha_out, recipe.sha256[i]) != 0)
+			else if (strcasecmp(sha_out, source_sha) != 0)
 				why = "hashes to the wrong value";
 			/* ADR-0382: a source served from the cache is said once; a
 			 * fetched one that verified is kept; a cached one that no
@@ -14168,7 +14425,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 			{
 				char cached[PATH_MAX];
 
-				if (source_cache_path(recipe.sha256[i], cached, sizeof(cached)) == 0) {
+				if (source_cache_path(source_sha, cached, sizeof(cached)) == 0) {
 					int served = source_served_from_cache(src_path, cached);
 
 					if (why == NULL && served)
@@ -14187,18 +14444,18 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 				}
 			}
 			if (why != NULL) {
-				/* #461: recipe.source[i] carries the token parse_recipe()
-				 * substituted for {{REPO_TOKEN}}, so logging it verbatim
-				 * writes a live repo credential into the log store
-				 * (measured on 192.168.15.95, 2026-09-13, in a cix
-				 * fetch-mismatch line). Redact it exactly as the
-				 * recipe-serving path does -- the token value becomes the
-				 * {{REPO_TOKEN}} placeholder again; the host and path, the
+				/* #461: a url with the token substituted, logged
+				 * verbatim, writes a live repo credential into the log
+				 * store (measured on 192.168.15.95, 2026-09-13, in a cix
+				 * fetch-mismatch line). source_url is read without the
+				 * token (#771), and is redacted as the recipe-serving
+				 * path does anyway, so userinfo written into a recipe
+				 * by hand is not logged either; the host and path, the
 				 * useful diagnostic, stay. */
 				char url_redacted[PKG_URL_MAX];
 
 				snprintf(url_redacted, sizeof(url_redacted), "%s",
-				         recipe.source[i][0] != '\0' ? recipe.source[i] : "(none)");
+				         source_url[0] != '\0' ? source_url : "(none)");
 				redact_repo_token(url_redacted, sizeof(url_redacted));
 				redact_url_userinfo(url_redacted, sizeof(url_redacted));
 				logstore_write("cixd", "error",
@@ -14206,7 +14463,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 				                "declared=%s url=%s",
 				                e->name, recipe.version, i, why, src_path,
 				                (long long)sst.st_size,
-				                sha_out[0] != '\0' ? sha_out : "(none)", recipe.sha256[i],
+				                sha_out[0] != '\0' ? sha_out : "(none)", source_sha,
 				                url_redacted);
 				/*
 				 * #513: the FULL computed hash, in the message. It is
@@ -14222,7 +14479,7 @@ int pkg_fetch_completed(int chain_idx, int exit_status, struct container_spec *s
 				         "checksum mismatch (source %d): %lld bytes hash to %s, recipe declares "
 				         "%.12s... -- path and url: GET /v1/system/logs?source=cixd",
 				         i, (long long)sst.st_size,
-				         sha_out[0] != '\0' ? sha_out : "(unreadable)", recipe.sha256[i]);
+				         sha_out[0] != '\0' ? sha_out : "(unreadable)", source_sha);
 				chain_release(chain_idx);
 				return 0;
 			}

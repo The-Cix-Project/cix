@@ -190,15 +190,19 @@
 /* Max total packages in one resolved install chain (the target plus
  * every transitive dependency) -- a real cap, not an unbounded queue. */
 #define PKG_MAX_DEP_CHAIN 32
-/* Max sources (main plus extras) in one recipe, bounded but roomy like
- * PKG_MAX_DEP_CHAIN. It was 16, sized from lldap's 9, until the cix
- * release recipe reached 16 itself (cix@0.2.57-680: one main and fifteen
- * extras, the ADR-0209 floor artifacts) and probe-rootimage@1-1 needed
- * 26, which cbs accepted and cixd then refused at every parse (#684).
- * Each source costs struct pkg_recipe PKG_URL_MAX + PKG_SHA256_MAX bytes
- * (577), so 32 makes it about 18.5 KB; it lives on the stack of about
- * 25 functions, none of them on a thread, and one is static. */
-#define PKG_MAX_SOURCES 32
+/* Max sources (main plus extras) in one recipe. A Rust application
+ * declares every crate in its Cargo.lock as a source, since a build
+ * container is sealed: measured 2026-11-28, vaultwarden's lock names
+ * 638 registry crates, tuwunel's 566 plus 25 git dependencies, granian's
+ * 185 plus 3. So the ceiling is sized for those, with room, and is a
+ * refusal at publish, not a size anything is allocated at.
+ *
+ * It was 32 until then (16 before #684), because the sources were two
+ * fixed arrays inside struct pkg_recipe, which lives on the stack of
+ * about 25 functions: 577 bytes a source. They are no longer in the
+ * struct: pkg.c's pkg_recipe_source() reads them from the recipe's
+ * explain document, through a small cache of heap lists. */
+#define PKG_MAX_SOURCES 4096
 
 /*
  * Fallback URLs, pooled across every source of one recipe (#507).

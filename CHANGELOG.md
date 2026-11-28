@@ -6,6 +6,11 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A recipe may declare thousands of sources, so a Rust application's crates can be its sources (ADR-0400, #771)
+
+- **Before:** a recipe held at most 32 sources, because they were two fixed arrays in `struct pkg_recipe` (577 bytes each, on the stack of about 25 functions), and `cbs explain` output was read into 64 KB. A Rust application builds against hundreds of crates (vaultwarden 638, tuwunel 566 plus 25 git dependencies, granian 185), and a sealed build container can only read them as declared sources. A recipe over the cap was also committed to git and published, then refused at every parse: `probe-pylayout@1-1` (38 sources) did exactly that.
+- **Now:** `struct pkg_recipe` keeps only the count and the explain document's path. `pkg_recipe_source()` reads each url and sha256 from that document through a cache of four heap lists, and copies them out. The url carries the owning source's token only for the fetch, so a logged url never held one (#461). The ceiling is 4096 sources and the explain buffer 4 MiB. A recipe over the ceiling is refused at publish, before git. `test_pkg` adds `manysrc`, 41 sources, whose 41st is checked in the installed image.
+
 ### A plugged-in dongle switches by itself (ADR-0398 release B, #766)
 
 - **Before:** release A switched a multi-mode USB device only when asked (`POST /v1/devices/{id}/modeswitch`), so a dongle plugged in stayed a fake disk until someone pressed Switch mode.

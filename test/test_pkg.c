@@ -1519,6 +1519,72 @@ static int write_multisrc_recipe(const struct cix_client *c, const char *name,
 	                            "", build_body, install_body);
 }
 
+/*
+ * #771: more sources than the 32 a recipe was capped at, as a Rust
+ * application declares one per crate. Source 0 is the fixture tarball
+ * and sources 1..n are plain files named x1..xn; the install copies the
+ * LAST one out, so its bytes prove the highest-numbered source was
+ * fetched, verified and handed to cbs like the first.
+ */
+static int write_manysrc_recipe(const struct cix_client *c, const char *name,
+                                 const char *version, const char *tarball_path,
+                                 const char *tarball_sha256, int n, char (*paths)[512],
+                                 char (*shas)[128])
+{
+	char install_body[512];
+	size_t cap = (size_t)n * 768 + 1;
+	char *extra_sources = malloc(cap);
+	size_t len = 0;
+	int i;
+	int rc;
+
+	if (extra_sources == NULL)
+		return -1;
+	extra_sources[0] = '\0';
+	for (i = 0; i < n; i++) {
+		int w = snprintf(extra_sources + len, cap - len,
+		                 "        extra \"x%d\" {\n"
+		                 "            url \"%s\"\n"
+		                 "            sha256 \"%s\"\n"
+		                 "        }\n",
+		                 i + 1, test_http_src(paths[i]), shas[i]);
+
+		if (w < 0 || (size_t)w >= cap - len) {
+			free(extra_sources);
+			return -1;
+		}
+		len += (size_t)w;
+	}
+	snprintf(install_body, sizeof(install_body),
+	         "        mkdir \"${dest}/usr/share\" chmod 0755\n"
+	         "        mkdir \"${dest}/usr/share/%s\" chmod 0755\n"
+	         "        materialize $source.x%d to \"${dest}/usr/share/%s/last.txt\"\n",
+	         name, n, name);
+	/* Heap, not publish_cpdl_recipe()'s 4096-byte stack buffer: forty
+	 * sources do not fit it. */
+	{
+		size_t content_cap = len + 4096;
+		char *content = malloc(content_cap);
+
+		if (content == NULL) {
+			free(extra_sources);
+			return -1;
+		}
+		cpdl_recipe_text(content, content_cap, name, version, test_http_src(tarball_path),
+		                 tarball_sha256, extra_sources,
+		                 "            tool \"bash\"\n"
+		                 "            tool \"coreutils\"\n",
+		                 "",
+		                 "        run \"true\" {\n"
+		                 "        }\n",
+		                 install_body);
+		rc = publish_cpdl_content(c, name, version, content);
+		free(content);
+	}
+	free(extra_sources);
+	return rc;
+}
+
 /* Polls GET /v1/pkg/{name} until state leaves fetching/building (or
  * max_attempts is exhausted). Writes the final state into out_state. */
 /*
@@ -4933,6 +4999,68 @@ int main(void)
 					        "FAIL: multisrcbad binary present despite a checksum mismatch on "
 					        "one of its extra sources\n");
 					ok = 0;
+				}
+			}
+		}
+
+		/* 15a. #771: forty extras, more than the 32 sources a recipe
+		 * was capped at, the shape of a Rust application declaring its
+		 * crates. It must publish, fetch and verify every source, and
+		 * hand the last one to cbs: the install copies x40 out, and its
+		 * content is checked. */
+		{
+			enum { MANY = 40 };
+			static char many_paths[MANY][512];
+			static char many_shas[MANY][128];
+			int mi;
+			int staged = 1;
+
+			for (mi = 0; mi < MANY && staged; mi++) {
+				char fname[32], body[48];
+
+				snprintf(fname, sizeof(fname), "many%d.txt", mi + 1);
+				snprintf(body, sizeof(body), "many-content-%d\n", mi + 1);
+				if (stage_fixture_plain_file(scratch_dir, fname, body, many_paths[mi],
+				                              sizeof(many_paths[mi]), many_shas[mi],
+				                              sizeof(many_shas[mi])) != 0)
+					staged = 0;
+			}
+			if (!staged) {
+				fprintf(stderr, "FAIL: could not stage manysrc fixtures\n");
+				ok = 0;
+			} else if (write_manysrc_recipe(&client, "manysrc", "1.0", ms_tarball, ms_tarball_sha,
+			                                 MANY, many_paths, many_shas) != 0) {
+				fprintf(stderr, "FAIL: could not publish manysrc (41 sources)\n");
+				ok = 0;
+			} else {
+				memset(&r, 0, sizeof(r));
+				if (cix_client_request(&client, "POST", "/v1/pkg/install",
+				                       "{\"name\":\"manysrc\"}", &r) != 0 ||
+				    r.status != 202) {
+					fprintf(stderr, "FAIL: POST install manysrc, status=%d\n", r.status);
+					ok = 0;
+				}
+				cix_response_free(&r);
+
+				if (poll_pkg_state(&client, "manysrc", state, sizeof(state), 60) != 0 ||
+				    strcmp(state, "installed") != 0) {
+					fprintf(stderr, "FAIL: manysrc ended in state '%s', expected installed\n",
+					        state);
+					ok = 0;
+				} else {
+					char content[64] = { 0 };
+					FILE *cf = fopen(base_path("/usr/share/manysrc/last.txt"), "r");
+
+					if (cf == NULL || fgets(content, sizeof(content), cf) == NULL ||
+					    strcmp(content, "many-content-40\n") != 0) {
+						fprintf(stderr,
+						        "FAIL: manysrc's 41st source missing or wrong in base image, "
+						        "got: %s\n",
+						        content);
+						ok = 0;
+					}
+					if (cf != NULL)
+						fclose(cf);
 				}
 			}
 		}
