@@ -3,6 +3,7 @@
 #include "devicegrant.h"
 #include "events.h"
 #include "logstore.h"
+#include "persist.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -496,12 +497,241 @@ void modeswitch_usb_added(void)
 	}
 }
 
+/* Release B: the setting, the pass it drives, and the handover text. */
+#define WANT_DELAY_S 2 /* a device's interfaces arrive after its own add */
+
+static int g_mode_off;      /* 0: auto (the default) */
+static int g_mode_saved;
+static char g_mode_path[512];
+static long long g_want_at; /* when a pass is due; 0 for none */
+static int (*g_submit)(const struct modeswitch_job *job);
+
+int modeswitch_policy_init(const char *state_path)
+{
+	char *buf;
+	size_t len;
+	struct json_value *root;
+	const char *mode;
+
+	snprintf(g_mode_path, sizeof(g_mode_path), "%s", state_path);
+	g_mode_off = 0;
+	g_mode_saved = 0;
+	if (persist_read_file(g_mode_path, &buf, &len) != 0)
+		return -1;
+	if (buf == NULL)
+		return 0; /* never saved: auto */
+	root = json_parse(buf, len);
+	free(buf);
+	mode = root != NULL ? json_as_string(json_object_get(root, "mode")) : NULL;
+	if (mode == NULL || (strcmp(mode, "auto") != 0 && strcmp(mode, "off") != 0)) {
+		json_free(root);
+		fprintf(stderr, "%s: malformed persisted mode switch setting\n", g_mode_path);
+		return -1;
+	}
+	g_mode_off = strcmp(mode, "off") == 0;
+	g_mode_saved = 1;
+	json_free(root);
+	return 0;
+}
+
+int modeswitch_policy_put(const struct json_value *body, char *err, size_t err_size)
+{
+	const char *mode = body != NULL ? json_as_string(json_object_get(body, "mode")) : NULL;
+	struct json_writer w;
+	int rc;
+
+	if (mode == NULL || (strcmp(mode, "auto") != 0 && strcmp(mode, "off") != 0)) {
+		snprintf(err, err_size, "mode must be \"auto\" or \"off\"");
+		return 400;
+	}
+	jw_init(&w);
+	jw_obj_open(&w);
+	jw_key(&w, "mode");
+	jw_str(&w, mode);
+	jw_obj_close(&w);
+	rc = persist_atomic_write(g_mode_path, w.buf, w.len);
+	jw_free(&w);
+	if (rc != 0) {
+		snprintf(err, err_size, "could not save the setting -- nothing was changed");
+		return 500;
+	}
+	g_mode_off = strcmp(mode, "off") == 0;
+	g_mode_saved = 1;
+	logstore_write("cixd", "info", "modeswitch: automatic switching is %s (ADR-0398)",
+	               g_mode_off ? "off" : "on");
+	if (!g_mode_off)
+		modeswitch_want(); /* devices already waiting are switched now */
+	return 0;
+}
+
+void modeswitch_policy_write_json(struct json_writer *w)
+{
+	jw_obj_open(w);
+	jw_key(w, "mode");
+	jw_str(w, g_mode_off ? "off" : "auto");
+	jw_key(w, "saved");
+	jw_bool(w, g_mode_saved);
+	jw_obj_close(w);
+}
+
+void modeswitch_want(void)
+{
+	g_want_at = now_s() + WANT_DELAY_S;
+}
+
+void modeswitch_set_submitter(int (*submit)(const struct modeswitch_job *job))
+{
+	g_submit = submit;
+}
+
+/*
+ * One pass over the USB records: every ended switch's port is looked at
+ * through the loop guard, then, when automatic switching is on, every
+ * device the verdict allows and no port record holds back is queued.
+ */
+static void modeswitch_pass(void)
+{
+	static struct modeswitch_rule rules[RULES_PER_ID_MAX];
+	const struct device_snapshot *s = devicegrant_snapshot();
+	int i, j;
+
+	for (i = 0; i < PORTS_MAX; i++) {
+		struct port *p = &g_ports[i];
+		unsigned int v = 0, pr = 0;
+		enum modeswitch_seen seen;
+
+		if (!p->used || p->state == PORT_SWITCHING)
+			continue;
+		seen = !port_now(s, p, &v, &pr)                               ? MODESWITCH_SEEN_EMPTY
+		       : v == p->rule.vendor && pr == p->rule.product         ? MODESWITCH_SEEN_FROM
+		                                                              : MODESWITCH_SEEN_OTHER;
+		switch (modeswitch_port_next(p->state == PORT_SWITCHED, seen)) {
+		case MODESWITCH_NEXT_CLEAR:
+			p->used = 0;
+			events_announce(EV_listDevices);
+			break;
+		case MODESWITCH_NEXT_REVERTED:
+			port_failed(p, "it came back in its fake-disk mode after switching, so it is not "
+			               "switched again until it is unplugged");
+			break;
+		case MODESWITCH_NEXT_KEEP:
+			break;
+		}
+	}
+	if (g_mode_off || g_submit == NULL)
+		return;
+	for (j = 0; j < s->n; j++) {
+		const struct discovered_device *d = &s->recs[j];
+		const char *port = port_of(d->id);
+		struct device_verdict v;
+		struct modeswitch_facts f;
+		const char *reason;
+		static struct modeswitch_job job;
+
+		if (strcmp(d->bus, "usb") != 0 || port == NULL || port_find(port) != NULL ||
+		    d->dev_path[0] == '\0')
+			continue;
+		device_state_of(s->recs, s->n, j, s->claims, s->claim_count, &v);
+		if (gather(s->recs, s->n, j, &v, rules, &f) != 0 ||
+		    modeswitch_verdict(&f, &reason) != MODESWITCH_VERDICT_SWITCH)
+			continue;
+		memset(&job, 0, sizeof(job));
+		snprintf(job.id, sizeof(job.id), "%s", d->id);
+		snprintf(job.dev_path, sizeof(job.dev_path), "%s", d->dev_path);
+		job.rule = *f.rule;
+		if (g_submit(&job) != 0)
+			logstore_write("cixd", "warning",
+			               "modeswitch: %s could not be queued -- the queue is full or no "
+			               "helper could start; the next USB event tries again",
+			               d->id);
+	}
+}
+
+char *modeswitch_handover_json(void)
+{
+	struct json_writer w;
+	char *out;
+	int i, any = 0;
+
+	jw_init(&w);
+	jw_arr_open(&w);
+	for (i = 0; i < PORTS_MAX; i++) {
+		const struct port *p = &g_ports[i];
+
+		/* A switch in flight never crosses a handover (modeswitch_in_flight()). */
+		if (!p->used || p->state == PORT_SWITCHING)
+			continue;
+		any = 1;
+		jw_obj_open(&w);
+		jw_key(&w, "port");
+		jw_str(&w, p->port);
+		jw_key(&w, "state");
+		jw_str(&w, p->state == PORT_SWITCHED ? "switched" : "failed");
+		jw_key(&w, "rule");
+		jw_str(&w, p->rule.name);
+		jw_key(&w, "to");
+		jw_int(&w, (long long)(p->to_vendor << 16 | p->to_product));
+		jw_key(&w, "reason");
+		jw_str(&w, p->reason);
+		jw_obj_close(&w);
+	}
+	jw_arr_close(&w);
+	out = any && w.buf != NULL ? strndup(w.buf, w.len) : NULL;
+	jw_free(&w);
+	return out;
+}
+
+void modeswitch_handover_adopt(const char *json)
+{
+	static struct modeswitch_rule rules[RULES_PER_ID_MAX];
+	struct json_value *root = json != NULL ? json_parse(json, strlen(json)) : NULL;
+	size_t i;
+
+	if (root == NULL || root->type != JSON_ARRAY) {
+		json_free(root);
+		return;
+	}
+	for (i = 0; i < root->u.array.count; i++) {
+		const struct json_value *e = root->u.array.items[i];
+		const char *port = json_as_string(json_object_get(e, "port"));
+		const char *state = json_as_string(json_object_get(e, "state"));
+		const char *rule = json_as_string(json_object_get(e, "rule"));
+		const char *reason = json_as_string(json_object_get(e, "reason"));
+		long long to = (long long)json_as_number(json_object_get(e, "to"));
+		unsigned int v, pr;
+		struct port *p;
+		int n, k, found = -1;
+
+		/* The rule is read again from the root this cixd runs from. */
+		if (port == NULL || state == NULL || rule == NULL ||
+		    modeswitch_name_ids(rule, &v, &pr) != 0)
+			continue;
+		n = rules_for(v, pr, rules, RULES_PER_ID_MAX);
+		for (k = 0; k < n && found < 0; k++)
+			if (strcmp(rules[k].name, rule) == 0)
+				found = k;
+		p = found >= 0 ? port_take(port) : NULL;
+		if (p == NULL)
+			continue;
+		p->rule = rules[found];
+		p->state = strcmp(state, "switched") == 0 ? PORT_SWITCHED : PORT_FAILED;
+		p->to_vendor = (unsigned int)(to >> 16) & 0xffff;
+		p->to_product = (unsigned int)to & 0xffff;
+		snprintf(p->reason, sizeof(p->reason), "%s", reason != NULL ? reason : "");
+	}
+	json_free(root);
+}
+
 void modeswitch_tick(void)
 {
 	const struct device_snapshot *s = NULL;
 	long long now;
 	int i;
 
+	if (g_active && g_want_at != 0 && now_s() >= g_want_at) {
+		g_want_at = 0;
+		modeswitch_pass();
+	}
 	if (!modeswitch_in_flight())
 		return;
 	now = now_s();

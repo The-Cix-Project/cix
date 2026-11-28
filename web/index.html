@@ -633,6 +633,10 @@
 				<button type="button" class="tab-button" data-tab="gpu" id="dev-tab-gpu">GPU</button>
 			</div>
 			<div class="tab-panel" id="dev-panel-usb" data-tab="usb">
+				<h3>Automatic mode switching</h3>
+				<p class="hint">A Wi-Fi or cellular dongle that first appears as a disk is switched into its working mode (ADR-0398). With auto, cixd does it as the device is plugged in; with off, only the Switch mode button does.</p>
+				<p class="hint" id="modeswitch-policy-saved"></p>
+				<form id="modeswitch-policy-form"></form>
 				<table id="dev-usb">
 					<tbody><tr><td colspan="6" class="empty">Reading&hellip;</td></tr></tbody>
 				</table>

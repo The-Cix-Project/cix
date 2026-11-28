@@ -507,3 +507,12 @@ enum modeswitch_return modeswitch_return_of(unsigned int from_vendor, unsigned i
 	return modeswitch_is_target(r, vendor, product) ? MODESWITCH_RETURN_TARGET
 	                                                : MODESWITCH_RETURN_UNLISTED;
 }
+
+enum modeswitch_next modeswitch_port_next(int switched, enum modeswitch_seen seen)
+{
+	if (seen == MODESWITCH_SEEN_EMPTY)
+		return MODESWITCH_NEXT_CLEAR;
+	if (switched && seen == MODESWITCH_SEEN_FROM)
+		return MODESWITCH_NEXT_REVERTED;
+	return MODESWITCH_NEXT_KEEP;
+}

@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A plugged-in dongle switches by itself (ADR-0398 release B, #766)
+
+- **Before:** release A switched a multi-mode USB device only when asked (`POST /v1/devices/{id}/modeswitch`), so a dongle plugged in stayed a fake disk until someone pressed Switch mode.
+- **Now:** with `GET`/`PUT /v1/system/modeswitch` at `auto`, the default on a host that never saved a setting, cixd looks at the USB devices a moment after any is added or removed, and once after start, and queues every `switchable` one through the same verdict and queue as the POST. A device that comes back in its fake-disk mode after a switch is failed, said once, and left alone until it is unplugged (`modeswitch_port_next()`). The port records travel in the handover record as the optional `modeswitch` field. `cixctl modeswitch-policy [show] | set --mode=auto|off`, and the Devices page's USB tab has the setting. Test data directories start saved `off`, and switching still runs only on an installed host.
+- **Gates:** `test_modeswitch` covers the loop guard; `test_kmod` (in DAEMON_SELFTESTS) checks the seeded setting, a save each way, an unknown mode refused, and a switch refused on a daemon not in init mode.
+
 ### A container is shown in its category and its group (ADR-0399)
 
 - **Before:** a redundant pair's one declaration, `roll_group`, was read only by the rolling restart; no container read returned it, so nothing could show which containers belong together. Containers were listed flat, with no way to file them. And a deployment re-apply restarted a running container on any change, so a label alone would have restarted it.

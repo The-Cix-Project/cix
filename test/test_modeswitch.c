@@ -235,6 +235,18 @@ static void test_plan(void)
 	              MODESWITCH_RETURN_UNLISTED,
 	      "another chip behind the same id still switched");
 
+	/* Release B's loop guard. */
+	CHECK(modeswitch_port_next(1, MODESWITCH_SEEN_EMPTY) == MODESWITCH_NEXT_CLEAR,
+	      "unplugged after a switch: forget the port");
+	CHECK(modeswitch_port_next(1, MODESWITCH_SEEN_FROM) == MODESWITCH_NEXT_REVERTED,
+	      "back in its fake-disk mode after a switch: fail it");
+	CHECK(modeswitch_port_next(1, MODESWITCH_SEEN_OTHER) == MODESWITCH_NEXT_KEEP,
+	      "still its target: keep");
+	CHECK(modeswitch_port_next(0, MODESWITCH_SEEN_FROM) == MODESWITCH_NEXT_KEEP,
+	      "failed and still there: never retried by itself");
+	CHECK(modeswitch_port_next(0, MODESWITCH_SEEN_EMPTY) == MODESWITCH_NEXT_CLEAR,
+	      "failed, then unplugged: forget the port");
+
 	CHECK(modeswitch_is_target(&r, 0x0bda, 0xb851), "target");
 	CHECK(!modeswitch_is_target(&r, 0x0bda, 0x1a2b), "the source id is not a target");
 	CHECK(modeswitch_is_target(&o, 0x0b3c, 0xc004), "target list");

@@ -654,6 +654,9 @@ static const char USAGE_TEXT[] =
 	        "  kmod-policy set [--autoload=off|coldplug|hotplug|both] [--blacklist=NAME,...]\n"
 	        "               [--allowlist=NAME,...]  -- each flag given replaces that field;\n"
 	        "               an empty list clears it. Blacklisting never unloads a module\n"
+	        "  modeswitch-policy [show]  -- whether plugged-in multi-mode USB devices are\n"
+	        "               switched by themselves (ADR-0398): auto or off\n"
+	        "  modeswitch-policy set --mode=auto|off\n"
 	        "  kmod-scan [show]  -- the last sweep's report: every modalias and its module\n"
 	        "  kmod-scan run  -- sweep the devices present now, and print its report\n"
 	        "  kmod-build [--version=VERSION] [--symbol=CONFIG_FOO ...]\n"
@@ -3773,6 +3776,51 @@ static int cmd_kmodpolicy(const struct cix_client *c, int json_mode, int argc, c
 	fprintf(stderr, "usage: cixctl kmod-policy [show]  -- the policy every module load asks\n"
 	                "       cixctl kmod-policy set [--autoload=off|coldplug|hotplug|both] "
 	                "[--blacklist=NAME,...] [--allowlist=NAME,...]\n");
+	return 2;
+}
+
+/* ADR-0398 release B: whether plugged-in multi-mode USB devices are
+ * switched by themselves. */
+static void fmt_modeswitch_policy(const struct json_value *v)
+{
+	printf("mode: %s%s\n", json_str_or(v, "mode"),
+	       !json_bool_field(v, "saved") ? "  (default: this host has never saved a setting)" : "");
+}
+
+static int cmd_modeswitch_policy(const struct cix_client *c, int json_mode, int argc, char **argv)
+{
+	struct cix_response r;
+
+	if (argc < 1 || strcmp(argv[0], "show") == 0) {
+		if (cix_client_request(c, CIX_API_getModeswitchPolicy_METHOD, CIX_API_getModeswitchPolicy,
+		                       NULL, &r) != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_modeswitch_policy);
+	}
+	if (strcmp(argv[0], "set") == 0 && argc == 2 && strncmp(argv[1], "--mode=", 7) == 0) {
+		struct json_writer w;
+		int rc;
+
+		jw_init(&w);
+		jw_obj_open(&w);
+		jw_key(&w, "mode");
+		jw_str(&w, argv[1] + 7);
+		jw_obj_close(&w);
+		w.buf[w.len] = '\0';
+		rc = cix_client_request(c, CIX_API_putModeswitchPolicy_METHOD, CIX_API_putModeswitchPolicy,
+		                        w.buf, &r);
+		jw_free(&w);
+		if (rc != 0) {
+			fprintf(stderr, "cixctl: could not reach daemon\n");
+			return 1;
+		}
+		return emit(&r, json_mode, fmt_modeswitch_policy);
+	}
+	fprintf(stderr, "usage: cixctl modeswitch-policy [show]  -- whether plugged-in multi-mode USB "
+	                "devices are switched by themselves\n"
+	                "       cixctl modeswitch-policy set --mode=auto|off\n");
 	return 2;
 }
 
@@ -20589,6 +20637,8 @@ static int dispatch_command(const struct cix_client *client, int json_mode, cons
 		return cmd_kmod(client, json_mode, argc, argv);
 	if (strcmp(cmd, "kmod-config") == 0)
 		return cmd_kmodconfig(client, json_mode, argc, argv);
+	if (strcmp(cmd, "modeswitch-policy") == 0)
+		return cmd_modeswitch_policy(client, json_mode, argc, argv);
 	if (strcmp(cmd, "kmod-policy") == 0)
 		return cmd_kmodpolicy(client, json_mode, argc, argv);
 	if (strcmp(cmd, "trust-anchors") == 0)

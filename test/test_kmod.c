@@ -552,6 +552,50 @@ int main(void)
 		}
 	}
 
+	/* 6. ADR-0398 release B, beside the module policy because both decide
+	 * what happens to plugged hardware: the setting is seeded off, saves
+	 * and refuses an unknown mode, and a switch is refused on a daemon not
+	 * in init mode, so a test never sends a message to a real device. */
+	{
+		static const struct {
+			const char *method, *path, *body, *want_mode;
+			int want_status;
+			const char *why;
+		} steps[] = {
+			{ "GET", "/v1/system/modeswitch", NULL, "off", 200, "the seeded setting is off" },
+			{ "PUT", "/v1/system/modeswitch", "{\"mode\":\"sometimes\"}", NULL, 400,
+			  "an unknown mode is refused" },
+			{ "PUT", "/v1/system/modeswitch", "{\"mode\":\"auto\"}", "auto", 200,
+			  "auto saves" },
+			{ "PUT", "/v1/system/modeswitch", "{\"mode\":\"off\"}", "off", 200,
+			  "off saves, putting the seed back" },
+			{ "POST", "/v1/devices/usb:ffff:ffff@0000:00:00.0-usb2-1/modeswitch", "{}", NULL, 409,
+			  "a switch is refused on a daemon not in init mode" },
+		};
+		size_t k;
+
+		for (k = 0; ok && k < sizeof(steps) / sizeof(steps[0]); k++) {
+			const char *mode;
+
+			memset(&r, 0, sizeof(r));
+			if (cix_client_request(&client, steps[k].method, steps[k].path, steps[k].body, &r) !=
+			        0 ||
+			    r.status != steps[k].want_status) {
+				fprintf(stderr, "FAIL: ADR-0398: %s: %s %s expected %d, got %d\n", steps[k].why,
+				        steps[k].method, steps[k].path, steps[k].want_status, r.status);
+				ok = 0;
+			} else if (steps[k].want_mode != NULL) {
+				mode = json_as_string(json_object_get(r.json, "mode"));
+				if (mode == NULL || strcmp(mode, steps[k].want_mode) != 0) {
+					fprintf(stderr, "FAIL: ADR-0398: %s: mode is %s\n", steps[k].why,
+					        mode != NULL ? mode : "(none)");
+					ok = 0;
+				}
+			}
+			cix_response_free(&r);
+		}
+	}
+
 	if (test_assert_no_drift(&client, NULL) != 0)
 		ok = 0;
 	if (ok)

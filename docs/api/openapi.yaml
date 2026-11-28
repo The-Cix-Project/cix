@@ -3659,6 +3659,74 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /system/modeswitch:
+    get:
+      summary: Whether plugged-in multi-mode USB devices are switched by themselves (ADR-0398)
+      description: >
+        With `auto`, cixd looks at the USB devices a moment after any is
+        added or removed, and once after start, and queues a switch for
+        every one the record's `modeswitch` reads `switchable` for:
+        the same verdict and queue as POST /devices/{id}/modeswitch. A
+        device that comes back in its fake-disk mode after a switch is
+        marked failed and left alone until it is unplugged. With `off`,
+        only that POST switches. A host that has never saved a setting
+        is `auto`, and `saved` says which. Switching runs only on an
+        installed host, whatever this says.
+      operationId: getModeswitchPolicy
+      x-cix-read: state
+      x-cix-permission: config:read
+      x-cix-mcp: tool
+      x-cix-expose: [cli, web]
+      responses:
+        "200":
+          description: The live setting
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModeswitchPolicy"
+    put:
+      summary: Turn automatic USB mode switching on or off (ADR-0398)
+      description: >
+        Saved at once. Turning it to `auto` looks at the devices already
+        plugged in, a moment later.
+      operationId: putModeswitchPolicy
+      x-cix-invalidates: [getModeswitchPolicy]
+      x-cix-permission: config:write
+      x-cix-mcp: tool
+      x-cix-expose: [cli, web]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode:
+                  type: string
+                  enum: [auto, off]
+                  title: Mode
+                  description: auto switches every switchable device as it is plugged in and at start; off switches only on request.
+      responses:
+        "200":
+          description: The setting as saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModeswitchPolicy"
+        "400":
+          description: The body is not JSON, or mode is neither auto nor off
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The setting could not be saved; nothing was changed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /system/kmod-policy:
     get:
       summary: The policy every module load is decided by (ADR-0348)
@@ -20351,6 +20419,18 @@ components:
             type: string
         autoload:
           type: boolean
+    ModeswitchPolicy:
+      type: object
+      required: [mode, saved]
+      properties:
+        mode:
+          type: string
+          enum: [auto, off]
+          description: auto switches every switchable device as it is plugged in and at start; off switches only on request (ADR-0398).
+        saved:
+          type: boolean
+          description: Whether this host has saved a setting; a host that never has is auto.
+
     KmodPolicy:
       type: object
       required: [autoload, blacklist, allowlist, saved]

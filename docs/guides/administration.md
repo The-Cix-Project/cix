@@ -96,10 +96,11 @@ Every hotplug-driven grant or revocation is written to the consolidated log (`ci
 
 ```sh
 cixctl device ls                      # a "modeswitch: switchable" line under the dongle
-cixctl device modeswitch usb:0bda:1a2b@0000:00:14.0-usb2-1
+cixctl device modeswitch usb:0bda:1a2b@0000:00:14.0-usb2-1   # by hand
+cixctl modeswitch-policy                                    # auto (the default) or off
 ```
 
-Many USB Wi-Fi and 4G/5G dongles first appear as a fake disk holding a Windows driver. cixd switches one into its working mode itself (ADR-0398): it chooses the device's rule from the `usb-modeswitch-data` package, sends the switch from a helper child, and the device comes back as its target id, where it gets its driver and firmware like any device plugged in. A device a container holds or reserves, one the host uses, and one with a disk below it are never switched; `device ls` says why. A switched cellular modem still needs its kernel driver.
+Many USB Wi-Fi and 4G/5G dongles first appear as a fake disk holding a Windows driver. cixd switches one into its working mode itself (ADR-0398): it chooses the device's rule from the `usb-modeswitch-data` package, sends the switch from a helper child, and the device comes back as its target id, where it gets its driver and firmware like any device plugged in. A device a container holds or reserves, one the host uses, and one with a disk below it are never switched; `device ls` says why. With `modeswitch-policy` at `auto`, the default, this happens by itself a moment after the dongle is plugged in, and at start for one already there; `off` leaves it to `device modeswitch`. A dongle that comes back in its fake-disk mode after a switch is marked failed and left alone until it is unplugged. A switched cellular modem still needs its kernel driver.
 
 ## Backup and restore
 

@@ -388,6 +388,18 @@ int test_data_dir_create(char *out_path, size_t out_size)
 		fputs("{\"autoload\":\"off\",\"blacklist\":[],\"allowlist\":[]}\n", f);
 		fclose(f);
 		/*
+		 * ADR-0398 release B: a host with no saved setting switches
+		 * plugged-in dongles by itself. A test daemon starts as a host
+		 * that saved it off, so it never sends a message to the build
+		 * host's devices (and it is not in init mode, which also stops it).
+		 */
+		snprintf(cfg, sizeof(cfg), "%s/modeswitch.json", cfg_dir);
+		f = fopen(cfg, "w");
+		if (f == NULL)
+			return -1;
+		fputs("{\"mode\":\"off\"}\n", f);
+		fclose(f);
+		/*
 		 * ADR-0317 section 7 (#542): a host with no record of having
 		 * provisioned them is given cix-admins, cix-operators,
 		 * cix-readers and cix-agents at startup. A test daemon starts

@@ -35,6 +35,10 @@
  *                   is what writes the record, so without this the roll it
  *                   held off would be lost. Absent when none is owed, and
  *                   before 0.2.57-692.
+ *   modeswitch      optional: the mode switch's ended port records (ADR-0398
+ *                   release B), as JSON text, so the loop guard and what
+ *                   each port did outlive the exec. A switch in flight
+ *                   never crosses a handover. Absent when there are none.
  *   procfuse_pid    procfuse's server, which survives the exec; 0 for none
  *   procfuse_load_fd  the memfd holding its load page (ADR-0349), passed
  *                   across execve; -1 for none
@@ -156,6 +160,7 @@ struct handover_record {
 	char bind_addr[64];
 	char uplink_unattached[64];
 	char *kmodscan; /* heap JSON text, or NULL; freed by handover_record_free() */
+	char *modeswitch; /* ADR-0398: the mode switch's port records, heap JSON text, or NULL */
 	long long kmsg_seq; /* -1 when absent */
 	long long roll_owed_until; /* #694: a host roll owed until then; 0 when absent */
 	pid_t procfuse_pid;

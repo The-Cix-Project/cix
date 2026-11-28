@@ -175,6 +175,7 @@ Default base URL: `http://127.0.0.1/v1` (port 80, loopback-only by default; see 
 | POST | `/deployments/{name}/apply` | Render `{name}`'s own stored recipe (substituting any `{{SECRET:KEY}}` tokens from the request's own `secrets` object, and `{{LDAP:URI}}`/`{{LDAP:BASE_DN}}`/`{{LDAP:BIND_DN}}`/`{{LDAP:BIND_PASSWORD}}` tokens from the daemon's own LDAP client config, issue #66 — no per-apply secret, no copied values. `{{LDAP:URI}}` resolves to the same **effective** list the daemon's own `nslcd.conf` rendering uses — the registered servers' live addresses unless an explicit `client_uri` overrides them, health-filtered either way — rather than to the raw stored field, so a deployment that never typed a copy of its own server list still renders a usable URI (#327)) and create the container from it (201). **If the image it names exists but has not been built yet, this returns `202` and waits for it rather than failing** — ADR-0270, see below |
 | GET | `/devices` | List host devices, each with the state every grant is decided by (ADR-0344), and the firmware its driver declares that the host lacks (`firmware`, ADR-0381) |
 | POST | `/devices/{id}/modeswitch` | Switch a multi-mode USB device (a Wi-Fi or cellular dongle posing as a disk) into its working mode; `202`, and the record's `modeswitch` follows it (ADR-0398) |
+| GET, PUT | `/system/modeswitch` | Whether plugged-in multi-mode USB devices are switched by themselves: `auto` (the default for a host that never saved one) or `off` (ADR-0398) |
 | GET | `/devicemaps` | List persistent, operator-named device mappings |
 | POST | `/devicemaps` | Create a persistent device mapping (name -> selector) |
 | DELETE | `/devicemaps/{name}` | Remove a device mapping |
@@ -2903,7 +2904,7 @@ Many USB Wi-Fi and cellular dongles first appear as a fake disk holding a Window
 - `refused`, with a `reason`: two rules match, the rule needs a method cixd does not carry out yet (it is named), or the device is held, reserved or the host's, or has a disk below it. Nothing is ever switched by heuristic.
 - `already`: interface 0 already has the rule's `TargetClass`.
 
-A rule is chosen by `idVendor:idProduct` and, where its file name carries one, a substring of the manufacturer, product or serial string, as upstream's dispatcher matches. Switching runs only on an installed host. A switched modem still needs its kernel driver.
+A rule is chosen by `idVendor:idProduct` and, where its file name carries one, a substring of the manufacturer, product or serial string, as upstream's dispatcher matches. Switching runs only on an installed host. A switched modem still needs its kernel driver. **Automatic switching** (`GET`/`PUT /v1/system/modeswitch`, `mode: auto | off`; `auto` on a host that never saved a setting) looks at the USB devices a moment after any is added or removed, and once after start, and queues a switch for every `switchable` one, through the same verdict and queue as the POST. A device that comes back in its fake-disk mode after a switch is `failed`, said once, and left alone until it is unplugged; a failed port is never retried by itself. What each port did travels in the handover record, so the guard outlives an in-place upgrade.
 
 ```
 $ cixctl device modeswitch 'usb:0bda:1a2b@0000:00:14.0-usb2-1'

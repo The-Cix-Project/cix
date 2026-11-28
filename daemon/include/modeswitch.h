@@ -184,4 +184,27 @@ enum modeswitch_return modeswitch_return_of(unsigned int from_vendor, unsigned i
                                             const struct modeswitch_rule *r, int present,
                                             unsigned int vendor, unsigned int product);
 
+/*
+ * ADR-0398 release B, the loop guard. What a pass does with a port whose
+ * switch has ended (switched or failed), from what the port holds now.
+ * Empty means unplugged: the record goes, and the next device in that
+ * port is switched afresh. The id it was switched from, back again after
+ * a switch, is a device that will not stay switched: it is failed, said
+ * once, and left alone until it is unplugged. A failed port is never
+ * retried by itself.
+ */
+enum modeswitch_seen {
+	MODESWITCH_SEEN_EMPTY, /* no USB device on the port */
+	MODESWITCH_SEEN_FROM,  /* the id it was switched from */
+	MODESWITCH_SEEN_OTHER, /* any other device */
+};
+
+enum modeswitch_next {
+	MODESWITCH_NEXT_KEEP,     /* the record stands */
+	MODESWITCH_NEXT_CLEAR,    /* unplugged: forget the port */
+	MODESWITCH_NEXT_REVERTED, /* switched, then back in its fake-disk mode: fail it */
+};
+
+enum modeswitch_next modeswitch_port_next(int switched, enum modeswitch_seen seen);
+
 #endif

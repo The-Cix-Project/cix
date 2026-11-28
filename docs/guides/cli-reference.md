@@ -232,6 +232,7 @@ Runbooks: [`kernel-build-and-ab-updates.md`](kernel-build-and-ab-updates.md) and
 | `kmod-config rm NAME` | Clear both fields; the module's loaded state is untouched |
 | `kmod-policy [show]` | The policy every module load asks: autoload, blacklist, allowlist (ADR-0348) |
 | `kmod-policy set [--autoload=off\|coldplug\|hotplug\|both] [--blacklist=NAME,...] [--allowlist=NAME,...]` | Replace each field given; an empty list clears it. Blacklisting never unloads |
+| `modeswitch-policy [show]` / `modeswitch-policy set --mode=auto\|off` | Whether a multi-mode USB device (a dongle posing as a disk) is switched by itself as it is plugged in and at start (`auto`, the default) or only by `device modeswitch ID` (`off`) (ADR-0398) |
 | `kmod-scan [show]` | The last sweep's report; `--json` lists every alias |
 | `kmod-scan run` | Sweep the devices present now, wait for it, and print its report |
 | `ksm show` | Kernel samepage merging (#50) |

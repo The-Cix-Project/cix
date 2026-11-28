@@ -62,4 +62,32 @@ void modeswitch_tick(void);
 /* A switch is between its request and its outcome. */
 int modeswitch_in_flight(void);
 
+/*
+ * Release B: the host setting, `auto` or `off`, saved in state_path. A
+ * host that never saved one is `auto`; test data directories start saved
+ * `off`. 0, or -1 for a file that does not parse.
+ */
+int modeswitch_policy_init(const char *state_path);
+
+/* PUT /v1/system/modeswitch: 0, or the HTTP status with err set. */
+int modeswitch_policy_put(const struct json_value *body, char *err, size_t err_size);
+
+/* GET /v1/system/modeswitch's body: {"mode": ..., "saved": ...}. */
+void modeswitch_policy_write_json(struct json_writer *w);
+
+/* A USB device was added or removed: a pass runs a moment later, once its
+ * interfaces are there. Also asked once at start. */
+void modeswitch_want(void);
+
+/* How the pass queues a switch: main.c's modeswitch_submit(), which marks
+ * the port switching when it accepts the job. */
+void modeswitch_set_submitter(int (*submit)(const struct modeswitch_job *job));
+
+/* The port records, for the handover record (ADR-0375): heap JSON text, or
+ * NULL when there are none. */
+char *modeswitch_handover_json(void);
+
+/* A successor takes them back. Unknown or malformed entries are skipped. */
+void modeswitch_handover_adopt(const char *json);
+
 #endif

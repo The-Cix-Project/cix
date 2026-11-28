@@ -741,6 +741,17 @@ static const struct cli_node n_kmod_policy_subs[] = {
 	{ NULL, NULL, NULL },
 };
 
+static const char *const n_modeswitch_policy_set_flags[] = {
+	"--mode=",
+	NULL
+};
+
+static const struct cli_node n_modeswitch_policy_subs[] = {
+	{ "set", n_modeswitch_policy_set_flags, NULL },
+	{ "show", NULL, NULL },
+	{ NULL, NULL, NULL },
+};
+
 static const struct cli_node n_kmod_scan_subs[] = {
 	{ "run", NULL, NULL },
 	{ "show", NULL, NULL },
@@ -1718,6 +1729,7 @@ static const struct cli_node CLI_TREE[] = {
 	{ "kmod-policy", NULL, n_kmod_policy_subs },
 	{ "kmod-scan", NULL, n_kmod_scan_subs },
 	{ "kmod-build", n_kmod_build_flags, NULL },
+	{ "modeswitch-policy", NULL, n_modeswitch_policy_subs },
 	{ "ntp", NULL, n_ntp_subs },
 	{ "syslog", NULL, n_syslog_subs },
 	{ "time", NULL, n_time_subs },

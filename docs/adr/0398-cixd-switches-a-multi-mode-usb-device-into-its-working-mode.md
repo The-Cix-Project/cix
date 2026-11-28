@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, 2026-11-27, by the owner ("yes"). The owner asked for a mode switcher that is *"original ... not hacky at all, and should work seamlessly"*, so that *"any device plugged in, can switch seamlessly"*, naming Wi-Fi and 4G/5G dongles. Not built yet.
+Accepted, 2026-11-27, by the owner ("yes"). Release A shipped in 0.2.57-729; release B is built (#766). The owner asked for a mode switcher that is *"original ... not hacky at all, and should work seamlessly"*, so that *"any device plugged in, can switch seamlessly"*, naming Wi-Fi and 4G/5G dongles.
 
 ## Context
 
@@ -79,3 +79,10 @@ Measured while writing release A, and decided on that evidence:
 - **Shipping `usb_modeswitch` and a udev-style rule runner.** That is a second hotplug system beside cixd's, plus a libusb dependency, and an external program executed per plug. Rejected: one listener, one queue, one verdict.
 - **Switching by heuristic** (any device with a CD-ROM-class interface). Rejected: it cannot tell a dongle from an operator's disk, and an eject sent to the wrong device is unrecoverable.
 - **Hand-written rules in cixd.** Rejected: a list in code is a second, smaller copy of upstream's database that falls behind it.
+
+### Release B as built (2026-11-28, #766)
+
+- **The setting** is `mode: auto | off` in `STATE_DIR/modeswitch.json`, read and written through `GET`/`PUT /v1/system/modeswitch` with the module policy's permissions (`config:read`, `config:write`). A host that never saved one is `auto`; test data directories start saved `off`. Switching still runs only in init mode.
+- **The trigger is a pass, not the add itself.** Any USB add or remove asks for one a moment later, because a device's interfaces arrive after its own add and the verdict needs them; one also runs after start. A pass first applies the loop guard to every ended switch, then, with `auto`, queues every `switchable` device whose port has no record, through `modeswitch_submit()`, the same queue the POST uses.
+- **The loop guard is `modeswitch_port_next()`,** pure and tested. A port seen empty is forgotten: unplugged. A port that switched and then shows the id it was switched from is failed, said once, and kept until it is unplugged. A failed port is never retried by itself; the POST still may.
+- **Across a handover** the ended port records travel as the optional `modeswitch` field, and a successor reads each rule again from its own root.

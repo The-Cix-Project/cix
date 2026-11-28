@@ -34,6 +34,8 @@ int handover_record_init(struct handover_record *rec, int max)
 void handover_record_free(struct handover_record *rec)
 {
 	free(rec->kmodscan);
+	free(rec->modeswitch);
+	rec->modeswitch = NULL;
 	rec->kmodscan = NULL;
 	free(rec->containers);
 	rec->containers = NULL;
@@ -279,6 +281,10 @@ int handover_write(const char *path, const struct handover_record *rec, char *er
 	if (rec->kmsg_seq >= 0) {
 		jw_key(&w, "kmsg_seq");
 		jw_int(&w, rec->kmsg_seq);
+	}
+	if (rec->modeswitch != NULL) {
+		jw_key(&w, "modeswitch");
+		jw_str(&w, rec->modeswitch);
 	}
 	if (rec->roll_owed_until > 0) {
 		jw_key(&w, "roll_owed_until");
@@ -582,6 +588,11 @@ int handover_read(const char *path, struct handover_record *rec, char *err, size
 		const char *k = json_as_string(json_object_get(root, "kmodscan"));
 
 		rec->kmodscan = k != NULL ? strdup(k) : NULL;
+	}
+	{
+		const char *m = json_as_string(json_object_get(root, "modeswitch"));
+
+		rec->modeswitch = m != NULL ? strdup(m) : NULL;
 	}
 	{
 		const struct json_value *s = json_object_get(root, "kmsg_seq");

@@ -123,6 +123,7 @@ const cache = {
 	kmodModules: [],
 	kmodConfig: [],
 	kmodPolicy: null,
+	modeswitchPolicy: null, /* ADR-0398 release B */
 	kmodScan: null,
 	trustAnchors: [],
 };
@@ -7176,7 +7177,38 @@ function mappedDeviceNames() {
 	return mappedNames;
 }
 
+/* ADR-0398 release B: whether plugged-in dongles are switched by themselves. */
+async function refreshModeswitchPolicy() {
+	try {
+		cache.modeswitchPolicy = await apiRequest("GET", CIX_API.getModeswitchPolicy());
+	} catch (e) {
+		/* Best-effort -- cache.modeswitchPolicy stays at whatever was last shown. */
+	}
+}
+
+function renderModeswitchPolicy(policy) {
+	const savedNote = document.getElementById("modeswitch-policy-saved");
+
+	if (policy === null)
+		return;
+	/* `saved` is not a field of the PUT, so the form cannot say it. */
+	savedNote.hidden = policy.saved;
+	savedNote.textContent = policy.saved ? "" :
+		"This host has never saved a setting, so it uses the default: auto.";
+	syncForm(document.getElementById("modeswitch-policy-form"), "putModeswitchPolicy", {
+		values: { mode: policy.mode },
+		submit: "Save",
+		saved: "Setting saved",
+		failed: "Failed to save the mode switch setting",
+		after: (body, res) => {
+			cache.modeswitchPolicy = res;
+			renderCurrentView();
+		},
+	});
+}
+
 function renderDevices() {
+	renderModeswitchPolicy(cache.modeswitchPolicy);
 	renderDeviceMapsTable();
 
 	const mappedNames = mappedDeviceNames();
@@ -15446,7 +15478,8 @@ const VIEW_REFRESHERS = {
 	"build-overview": [refreshBuildOverview],
 	"pkg-build-config": [refreshPkgBuildConfig, refreshBuildLogs],
 	update: [refreshImages, refreshPkgList, refreshSoftwareReconcile],
-	devices: [refreshDevices, refreshDeviceMaps, refreshKmod, refreshKmodConfig, refreshKmodPolicy,
+	devices: [refreshDevices, refreshDeviceMaps, refreshModeswitchPolicy, refreshKmod,
+	          refreshKmodConfig, refreshKmodPolicy,
 	          refreshKmodScan],
 	"dns-records": [refreshDnsRecords, refreshDnsServers, refreshDnsForwarders],
 	"dns-servers": [refreshDnsRecords, refreshDnsServers, refreshDnsForwarders],
@@ -15509,7 +15542,7 @@ const ALL_REFRESHERS = [
 	refreshPkgCacheConfig, refreshPkgCacheStatus, refreshPkgRepositories,
 	refreshSiteConfig, refreshDaemonConfig, refreshRollingConfig,
 	refreshPkgBuildConfig, refreshRoutes, refreshSysctl, refreshKmod, refreshKmodConfig,
-	refreshKmodPolicy, refreshKmodScan,
+	refreshKmodPolicy, refreshKmodScan, refreshModeswitchPolicy,
 	refreshSwap, refreshTrustAnchors, refreshTlsThrottleConfig, refreshTlsThrottleStatus,
 ];
 

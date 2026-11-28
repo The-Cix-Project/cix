@@ -362,6 +362,7 @@ char DEVICEMAP_STATE_PATH[PATH_MAX];
 char SYSCTLCONFIG_STATE_PATH[PATH_MAX]; /* ADR-0160 */
 char KMODCONFIG_STATE_PATH[PATH_MAX]; /* ADR-0159 */
 char KMODPOLICY_STATE_PATH[PATH_MAX]; /* ADR-0348 */
+char MODESWITCH_STATE_PATH[PATH_MAX]; /* ADR-0398 release B */
 char ROUTES_STATE_PATH[PATH_MAX];     /* ADR-0387 */
 char DISKROLE_STATE_PATH[PATH_MAX];
 /* ADR-0141 Phase 2: which disk (if any) is the active placement for
@@ -554,6 +555,7 @@ static void compute_state_dir_relative_paths(void)
 	snprintf(SYSCTLCONFIG_STATE_PATH, sizeof(SYSCTLCONFIG_STATE_PATH), "%s/sysctl_config.json", STATE_DIR);
 	snprintf(KMODCONFIG_STATE_PATH, sizeof(KMODCONFIG_STATE_PATH), "%s/kmod_config.json", STATE_DIR);
 	snprintf(KMODPOLICY_STATE_PATH, sizeof(KMODPOLICY_STATE_PATH), "%s/kmod_policy.json", STATE_DIR);
+	snprintf(MODESWITCH_STATE_PATH, sizeof(MODESWITCH_STATE_PATH), "%s/modeswitch.json", STATE_DIR);
 	snprintf(ROUTES_STATE_PATH, sizeof(ROUTES_STATE_PATH), "%s/routes.json", STATE_DIR);
 	snprintf(DAEMON_CONFIG_PATH, sizeof(DAEMON_CONFIG_PATH), "%s/daemon_config.json", STATE_DIR);
 	snprintf(QUOTAMAP_STATE_PATH, sizeof(QUOTAMAP_STATE_PATH), "%s/quota_projids.json", STATE_DIR);
@@ -6445,6 +6447,10 @@ static void handle_uevent_event(struct conn *cc)
 	 * no switch is in flight. */
 	if (is_add && is_usb)
 		modeswitch_usb_added();
+	/* Release B: a pass a moment later decides plugged devices and
+	 * forgets the ports of unplugged ones. */
+	if ((is_add || is_remove) && is_usb)
+		modeswitch_want();
 
 	/*
 	 * ADR-0345: any hardware add can be what a pending reference waits
@@ -30559,6 +30565,41 @@ static void op_putKmodPolicy(const struct api_ctx *ctx)
 	handle_kmodpolicy_put(ctx->fd, ctx->req->body, ctx->req->body_len);
 }
 
+/* GET /v1/system/modeswitch (ADR-0398 release B) */
+static void op_getModeswitchPolicy(const struct api_ctx *ctx)
+{
+	struct json_writer w;
+
+	jw_init(&w);
+	modeswitch_policy_write_json(&w);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
+/* PUT /v1/system/modeswitch (ADR-0398 release B) */
+static void op_putModeswitchPolicy(const struct api_ctx *ctx)
+{
+	struct json_value *body = json_parse(ctx->req->body, ctx->req->body_len);
+	struct json_writer w;
+	char err[160];
+	int status;
+
+	if (body == NULL) {
+		respond_error(ctx->fd, 400, "Bad Request", "body is not JSON");
+		return;
+	}
+	status = modeswitch_policy_put(body, err, sizeof(err));
+	json_free(body);
+	if (status != 0) {
+		respond_error(ctx->fd, status, http_status_text(status), err);
+		return;
+	}
+	jw_init(&w);
+	modeswitch_policy_write_json(&w);
+	respond_json(ctx->fd, 200, "OK", &w);
+	jw_free(&w);
+}
+
 /* GET /v1/system/kmod-scan */
 static void op_getKmodScan(const struct api_ctx *ctx)
 {
@@ -42194,6 +42235,7 @@ static int handover_build_record(struct handover_record *rec)
 	}
 	rec->kmsg_seq = logstore_kmsg_last_seq(); /* #690 */
 	rec->roll_owed_until = g_roll_owed_until; /* #694 */
+	rec->modeswitch = modeswitch_handover_json(); /* ADR-0398 release B */
 	procfuse_handover_state(&rec->procfuse_pid, &rec->procfuse_load_fd);
 	rec->console_count = g_console_shell_count;
 	for (i = 0; i < g_console_shell_count; i++)
@@ -42643,6 +42685,9 @@ static int handover_load(void)
 	/* #694: a roll the predecessor's root-only roll held off is still owed. */
 	if (g_handover_rec.roll_owed_until > 0)
 		g_roll_owed_until = (long)g_handover_rec.roll_owed_until;
+	/* ADR-0398 release B: what each port's switch did, the loop guard's
+	 * memory, read against this root's own rules. */
+	modeswitch_handover_adopt(g_handover_rec.modeswitch);
 	/* procfuse's server outlived the exec and still serves the mount every
 	 * container binds from: take it back, never start a second one over it. */
 	if (g_handover_rec.procfuse_pid > 0) {
@@ -43416,6 +43461,9 @@ static int cixd_main(int argc, char **argv)
 	/* ADR-0348: before the NIC list, which asks its verdict. */
 	if (boot_subsystem_init(init_mode, "kmodpolicy", kmodpolicy_init(KMODPOLICY_STATE_PATH)) != 0)
 		return 1;
+	/* ADR-0398 release B: whether plugged devices are switched by themselves. */
+	if (boot_subsystem_init(init_mode, "modeswitch_policy", modeswitch_policy_init(MODESWITCH_STATE_PATH)) != 0)
+		return 1;
 	/*
 	 * Root-netns net.ipv4.ip_forward -- distinct from struct
 	 * container_spec's own per-container ip_forward field (which
@@ -43636,6 +43684,10 @@ static int cixd_main(int argc, char **argv)
 	 * record "modeswitch"; only an installed host switches. */
 	device_set_record_extra(device_record_extra);
 	modeswitch_set_active(init_mode);
+	/* Release B: the pass queues through the same helper as a request,
+	 * and one runs shortly after start, for what is already plugged in. */
+	modeswitch_set_submitter(modeswitch_submit);
+	modeswitch_want();
 	if (boot_subsystem_init(init_mode, "containerdef", containerdef_init(CONTAINER_DEFS_STATE_PATH)) != 0)
 		return 1;
 	if (boot_subsystem_init(init_mode, "containerdef_rolling_config", containerdef_rolling_config_init(ROLLING_CONFIG_PATH)) != 0)
