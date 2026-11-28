@@ -496,6 +496,27 @@ cixctl deployment rm syslog-1
   server when it is created, so re-creating it from the deployment
   restores the registration too.
 
+### Categories and redundant groups
+
+Two optional fields of a deployment say where its container is shown
+(ADR-0399):
+
+```json
+{ "name": "dns-1", "image": "dns", "roll_group": "dns", "category": "network/dns", "...": "..." }
+```
+
+- `roll_group` names a redundant set: its members are never restarted
+  together (ADR-0385), and the dashboard and `cixctl container ls --tree`
+  show them as one group. A pair that is not declared is not a group,
+  whatever its names suggest.
+- `category` is a path of up to four `/`-separated segments. The tree is
+  drawn from it: each category, the groups in it, their members. A
+  category exists while a container names it; there is nothing else to
+  create.
+
+Changing either and re-applying the deployment is `updated`, with no
+restart.
+
 ---
 
 ## Editing a container

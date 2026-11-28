@@ -385,6 +385,116 @@ int main(void)
 	CHECK(wait_container_gone(&client, "crtest") == 0,
 	      "the deleted crtest finishes tearing down, freeing its name");
 
+	/* --- scenario 5c (ADR-0399): a container read carries its category
+	 * and roll group from the stored definition; a re-apply changing
+	 * only those stores them with no restart (the pid stays); and a
+	 * category the create would refuse is refused before anything is
+	 * stored. /bin/true is daemon_child here, alive for argv[1] s. --- */
+	{
+		static const char first[] =
+		    "{\"name\":\"labeltest\",\"content\":\"{\\\"name\\\":\\\"labeltest\\\",\\\"image\\\":"
+		    "\\\"base\\\",\\\"services\\\":[{\\\"name\\\":\\\"main\\\",\\\"on_exit\\\":"
+		    "\\\"fail-container\\\",\\\"cmd\\\":[\\\"/bin/true\\\",\\\"600\\\",\\\"0\\\"]}],"
+		    "\\\"restart\\\":\\\"on-failure\\\",\\\"category\\\":\\\"net/core\\\"}\"}";
+		static const char relabelled[] =
+		    "{\"name\":\"labeltest\",\"content\":\"{\\\"name\\\":\\\"labeltest\\\",\\\"image\\\":"
+		    "\\\"base\\\",\\\"services\\\":[{\\\"name\\\":\\\"main\\\",\\\"on_exit\\\":"
+		    "\\\"fail-container\\\",\\\"cmd\\\":[\\\"/bin/true\\\",\\\"600\\\",\\\"0\\\"]}],"
+		    "\\\"restart\\\":\\\"on-failure\\\",\\\"category\\\":\\\"net/edge\\\","
+		    "\\\"roll_group\\\":\\\"pair\\\"}\"}";
+		static const char badlabel[] =
+		    "{\"name\":\"labeltest\",\"content\":\"{\\\"name\\\":\\\"labeltest\\\",\\\"image\\\":"
+		    "\\\"base\\\",\\\"services\\\":[{\\\"name\\\":\\\"main\\\",\\\"on_exit\\\":"
+		    "\\\"fail-container\\\",\\\"cmd\\\":[\\\"/bin/true\\\",\\\"600\\\",\\\"0\\\"]}],"
+		    "\\\"restart\\\":\\\"on-failure\\\",\\\"category\\\":\\\"net//edge\\\"}\"}";
+		long pid_before = -1, pid_after = -2;
+		const char *cat;
+
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "POST", "/v1/deployments", first, &r) == 0 &&
+		          r.status == 204,
+		      "ADR-0399: a deployment with a category is stored");
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "POST", "/v1/deployments/labeltest/apply", "{}", &r) ==
+		              0 &&
+		          r.status == 201,
+		      "ADR-0399: applying it creates the container (201)");
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "GET", "/v1/containers/labeltest", NULL, &r) == 0 &&
+		          r.status == 200 && r.json != NULL,
+		      "GET /v1/containers/labeltest");
+		cat = r.json != NULL ? json_str_field(r.json, "category") : NULL;
+		CHECK(cat != NULL && strcmp(cat, "net/core") == 0,
+		      "ADR-0399: the read carries the stored category");
+		CHECK(r.json != NULL && json_object_get(r.json, "roll_group") != NULL &&
+		          json_object_get(r.json, "roll_group")->type == JSON_NULL,
+		      "ADR-0399: roll_group is null when none is declared");
+		if (r.json != NULL)
+			pid_before = (long)json_as_number(json_object_get(r.json, "pid"));
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "POST", "/v1/deployments", relabelled, &r) == 0 &&
+		          r.status == 204,
+		      "ADR-0399: change only the category and add a roll group");
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "POST", "/v1/deployments/labeltest/apply", "{}", &r) ==
+		              0 &&
+		          r.status == 200 && r.body != NULL && strstr(r.body, "\"updated\"") != NULL,
+		      "ADR-0399: a re-apply changing only labels is 200 updated, not 202 restarting");
+		if (r.status != 200)
+			fprintf(stderr, "  re-apply said: status=%d body=%s\n", r.status,
+			        r.body != NULL ? r.body : "(null)");
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "GET", "/v1/containers/labeltest", NULL, &r) == 0 &&
+		          r.status == 200 && r.json != NULL,
+		      "GET /v1/containers/labeltest after the re-apply");
+		if (r.json != NULL) {
+			const char *rg = json_str_field(r.json, "roll_group");
+
+			cat = json_str_field(r.json, "category");
+			pid_after = (long)json_as_number(json_object_get(r.json, "pid"));
+			CHECK(cat != NULL && strcmp(cat, "net/edge") == 0 && rg != NULL &&
+			          strcmp(rg, "pair") == 0,
+			      "ADR-0399: the read carries the new labels at once");
+		}
+		CHECK(pid_before > 0 && pid_after == pid_before,
+		      "ADR-0399: the container was not restarted (the pid is the same)");
+		if (pid_after != pid_before)
+			fprintf(stderr, "  pid %ld before the re-apply, %ld after\n", pid_before, pid_after);
+		cix_response_free(&r);
+
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "POST", "/v1/deployments", badlabel, &r) == 0 &&
+		          r.status == 204,
+		      "ADR-0399: store a deployment whose category has an empty segment");
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "POST", "/v1/deployments/labeltest/apply", "{}", &r) ==
+		              0 &&
+		          r.status == 400,
+		      "ADR-0399: a re-apply with a category the create would refuse is 400");
+		cix_response_free(&r);
+		memset(&r, 0, sizeof(r));
+		CHECK(cix_client_request(&client, "GET", "/v1/containers/labeltest", NULL, &r) == 0 &&
+		          r.json != NULL && json_str_field(r.json, "category") != NULL &&
+		          strcmp(json_str_field(r.json, "category"), "net/edge") == 0,
+		      "ADR-0399: and nothing was stored");
+		cix_response_free(&r);
+
+		CHECK(cix_client_request(&client, "DELETE", "/v1/containers/labeltest", NULL, &r) == 0,
+		      "rm labeltest");
+		cix_response_free(&r);
+		CHECK(wait_container_gone(&client, "labeltest") == 0,
+		      "the deleted labeltest finishes tearing down");
+	}
+
 	/* --- scenario 6 (#696): apply with a secret neither given nor kept
 	 * is refused, naming the missing key, and creates nothing. It used
 	 * to create the container with the literal placeholder in its file

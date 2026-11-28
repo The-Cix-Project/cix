@@ -15451,6 +15451,8 @@ static const char *container_body_unknown_key(const struct json_value *root)
 		"follow_rolling_jitter_seconds", "depends_on", "memory_max", "memory_swap_max",
 		/* ADR-0385: never restarted together with its group by the daemon. */
 		"roll_group",
+		/* ADR-0399: where the container is shown; changes nothing that runs. */
+		"category",
 		"cpu_max", "pids_max", "cpuset_cpus", "disk_quota_bytes", "ldap_client",
 		"ldap_allow_groups",
 		"userns",
@@ -17065,6 +17067,103 @@ static int plan_interfaces(const struct json_value *jinterfaces, char net_chosen
 	return 0;
 }
 
+/*
+ * ADR-0399: a category is a path of 1-4 '/'-separated segments, each 1-63
+ * of roll_group's alphabet. Absent is fine. The create and a re-apply
+ * that stores a body with no restart both ask this, so a stored category
+ * is always one the next create accepts.
+ */
+#define CONTAINER_CATEGORY_RULE                                                                   \
+	"category must be 1-4 '/'-separated segments, each 1-63 characters of letters, digits, " \
+	"'_' or '-' (ADR-0399)"
+
+/* ADR-0385: 1-63 letters, digits, '_' or '-'; absent is fine. Asked by
+ * the create and by a re-apply that stores a body with no restart. */
+static int container_roll_group_ok(const struct json_value *jrg)
+{
+	const char *rg = json_as_string(jrg);
+	size_t k, n;
+
+	if (jrg == NULL)
+		return 1;
+	n = rg != NULL ? strlen(rg) : 0;
+	if (n < 1 || n > 63)
+		return 0;
+	for (k = 0; k < n; k++)
+		if (!((rg[k] >= 'a' && rg[k] <= 'z') || (rg[k] >= 'A' && rg[k] <= 'Z') ||
+		      (rg[k] >= '0' && rg[k] <= '9') || rg[k] == '_' || rg[k] == '-'))
+			return 0;
+	return 1;
+}
+
+static int container_category_ok(const struct json_value *jcat)
+{
+	const char *cat = json_as_string(jcat);
+	size_t k, seg = 0;
+	int segments = 1;
+
+	if (jcat == NULL)
+		return 1;
+	if (cat == NULL || cat[0] == '\0')
+		return 0;
+	for (k = 0; cat[k] != '\0'; k++) {
+		char c = cat[k];
+
+		if (c == '/') {
+			if (seg == 0 || ++segments > 4)
+				return 0;
+			seg = 0;
+		} else if (((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+		            c == '_' || c == '-') &&
+		           ++seg <= 63) {
+			continue;
+		} else {
+			return 0;
+		}
+	}
+	return seg > 0; /* not a trailing '/' */
+}
+
+/*
+ * ADR-0399: a and b, two definition bodies, differ only in fields every
+ * reader takes from the stored body when it uses them, so storing b is
+ * the whole change and nothing needs restarting. A field is listed here
+ * only when nothing derived from it is held anywhere but the stored
+ * body: roll_group_of() parses it at each use, and the container reads
+ * write both through containerdef_write_json_labels(). a, the new body,
+ * has a category and roll group the create would accept.
+ */
+static int bodies_equal_but_live(const struct json_value *a, const struct json_value *b)
+{
+	static const char *const live[] = { "roll_group", "category" };
+	const struct json_value *objs[2] = { a, b };
+	size_t i, k, o;
+
+	if (a == NULL || b == NULL || a->type != JSON_OBJECT || b->type != JSON_OBJECT ||
+	    !container_category_ok(json_object_get(a, "category")) ||
+	    !container_roll_group_ok(json_object_get(a, "roll_group")))
+		return 0;
+	/* Every key of each that is not live has an equal value in the other. */
+	for (o = 0; o < 2; o++) {
+		const struct json_value *x = objs[o], *y = objs[1 - o];
+
+		for (i = 0; i < x->u.object.count; i++) {
+			const char *key = x->u.object.keys[i];
+			const struct json_value *yv;
+			int is_live = 0;
+
+			for (k = 0; k < sizeof(live) / sizeof(live[0]); k++)
+				is_live = is_live || strcmp(key, live[k]) == 0;
+			if (is_live)
+				continue;
+			yv = json_object_get(y, key);
+			if (yv == NULL || jsondiff_equal(x->u.object.values[i], yv) != 1)
+				return 0;
+		}
+	}
+	return 1;
+}
+
 static int create_container_from_body(const char *body, size_t body_len,
                                        struct registry_entry **out_entry,
                                        char out_restart_policy[16], int *out_restart_delay_seconds,
@@ -17407,22 +17506,18 @@ static int create_container_from_body(const char *body, size_t body_len,
 	}
 	/* ADR-0385: read again from the body by roll_group_of() when a
 	 * restart is due; checked here so a bad value is a 400 at create. */
-	{
-		const struct json_value *jrg = json_object_get(root, "roll_group");
-		const char *rg = json_as_string(jrg);
-		size_t k, n = rg != NULL ? strlen(rg) : 0;
-		int ok = jrg == NULL || (rg != NULL && n >= 1 && n <= 63);
+	if (!container_roll_group_ok(json_object_get(root, "roll_group"))) {
+		json_free(root);
+		snprintf(err_msg, err_msg_size,
+		         "roll_group must be 1-63 characters of letters, digits, '_' or '-'");
+		return 400;
+	}
 
-		for (k = 0; ok && rg != NULL && k < n; k++)
-			if (!((rg[k] >= 'a' && rg[k] <= 'z') || (rg[k] >= 'A' && rg[k] <= 'Z') ||
-			      (rg[k] >= '0' && rg[k] <= '9') || rg[k] == '_' || rg[k] == '-'))
-				ok = 0;
-		if (!ok) {
-			json_free(root);
-			snprintf(err_msg, err_msg_size,
-			         "roll_group must be 1-63 characters of letters, digits, '_' or '-'");
-			return 400;
-		}
+	/* ADR-0399: read from the body by every container read. */
+	if (!container_category_ok(json_object_get(root, "category"))) {
+		json_free(root);
+		snprintf(err_msg, err_msg_size, "%s", CONTAINER_CATEGORY_RULE);
+		return 400;
 	}
 
 	jdepends_on = json_object_get(root, "depends_on");
@@ -24069,6 +24164,9 @@ static void arm_rolling_restart_timer(const char *name, int delay_seconds);
  * container restarted through the rolling-restart timer, so a roll group
  * is held apart exactly as for an image roll (ADR-0385), and its volumes
  * stay. A stopped container takes the new definition at its next start.
+ * A change only to fields read from the stored body at each use (ADR-0399:
+ * roll_group, category) is stored with no restart, those fields checked
+ * as the create checks them.
  *
  * Not validated beyond parsing: there is no create that does nothing, so
  * a definition the create refuses leaves the container down, retried
@@ -24131,6 +24229,20 @@ static void deployment_replace(int fd, const char *name, struct container_def *d
 	 * any of them goes through remove and apply instead, which since this
 	 * ADR needs no secret typed again.
 	 */
+	/* ADR-0399: a label the create would refuse is refused here, before
+	 * anything is stored, rather than leaving the container down at its
+	 * next start. */
+	if (proot != NULL && (!container_category_ok(json_object_get(proot, "category")) ||
+	                      !container_roll_group_ok(json_object_get(proot, "roll_group")))) {
+		json_free(proot);
+		json_free(oroot);
+		jw_free(&w);
+		respond_error(fd, 400, "Bad Request",
+		              CONTAINER_CATEGORY_RULE "; roll_group must be 1-63 characters of letters, "
+		                                      "digits, '_' or '-' -- nothing was changed");
+		return;
+	}
+
 	if (proot != NULL) {
 		static const char *const indexed[] = { "restart", "restart_delay_seconds", "depends_on",
 		                                        "follow_rolling", "follow_rolling_jitter_seconds" };
@@ -24159,6 +24271,23 @@ static void deployment_replace(int fd, const char *name, struct container_def *d
 	if (proot != NULL && jsondiff_equal(proot, oroot) == 1) {
 		state = "unchanged";
 		status = 200;
+	} else if (proot != NULL && bodies_equal_but_live(proot, oroot)) {
+		/* ADR-0399: only fields read from the stored body when used
+		 * changed, so storing it is the whole change. */
+		if (containerdef_set_body(name, w.buf, w.len) != 0) {
+			json_free(proot);
+			json_free(oroot);
+			jw_free(&w);
+			respond_error(fd, 500, "Internal Server Error",
+			              "could not store the new definition -- nothing was changed");
+			return;
+		}
+		state = "updated";
+		status = 200;
+		logstore_write("cixd", "info",
+		               "deployment %s re-applied: only its category or roll group changed, "
+		               "stored with no restart (ADR-0399)",
+		               name);
 	} else if (containerdef_set_body(name, w.buf, w.len) != 0) {
 		json_free(proot);
 		json_free(oroot);

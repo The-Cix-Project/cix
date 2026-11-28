@@ -995,6 +995,9 @@ static void fmt_container_line(const struct json_value *v)
 	const struct json_value *cpuset = json_object_get(v, "cpuset_cpus");
 	const struct json_value *disk_quota = json_object_get(v, "disk_quota_bytes");
 	const struct json_value *cap_add = json_object_get(v, "cap_add");
+	/* ADR-0399: the redundant group and the category, as the API reports them. */
+	const char *group = json_str_field(v, "roll_group");
+	const char *category = json_str_field(v, "category");
 	char exit_buf[16];
 	char net_buf[256];
 	char delay_buf[16];
@@ -1082,7 +1085,7 @@ static void fmt_container_line(const struct json_value *v)
 	printf("%-20s %-8s pid=%-8ld exit_status=%-6s networks=%-20s fwd=%-4s restart=%-15s "
 	       "delay=%-4s roll=%-4s jitter=%-4s stopped=%-5s ready=%-5s files=%-3zu sysctls=%-3zu "
 	       "env=%-3zu memory_max=%-12s cpu_max=%-14s pids_max=%-5s cpuset=%-8s disk_quota=%-12s "
-	       "caps=%-3zu services=%s\n",
+	       "caps=%-3zu group=%-10s category=%-20s services=%s\n",
 	       name, status, pid, exit_buf, net_buf[0] != '\0' ? net_buf : "-",
 	       (ip_forward != NULL && ip_forward->type == JSON_BOOL && ip_forward->u.boolean) ? "yes"
 	                                                                                        : "no",
@@ -1099,6 +1102,8 @@ static void fmt_container_line(const struct json_value *v)
 	       cpu_max != NULL && cpu_max->type == JSON_STRING ? cpu_max->u.string : "-", pids_buf,
 	       cpuset != NULL && cpuset->type == JSON_STRING ? cpuset->u.string : "-", quota_buf,
 	       cap_add != NULL && cap_add->type == JSON_ARRAY ? cap_add->u.array.count : 0,
+	       group != NULL && group[0] != '\0' ? group : "-",
+	       category != NULL && category[0] != '\0' ? category : "-",
 	       cmd_buf[0] != '\0' ? cmd_buf : "-");
 
 	/* Why a defined container is not running when nobody stopped it
@@ -1124,6 +1129,142 @@ static void fmt_list(const struct json_value *v)
 		return;
 	for (i = 0; i < containers->u.array.count; i++)
 		fmt_container_line(containers->u.array.items[i]);
+}
+
+/*
+ * ADR-0399: `container ls --tree`. Every category path and each of its
+ * prefixes is a heading, indented by depth; under a path, its roll groups
+ * with their members, then its ungrouped containers; containers that
+ * name no category last, under "Uncategorised". Drawn from each
+ * container's own `category` and `roll_group`, nothing else. A group
+ * whose members name different categories is shown in each, marked.
+ */
+#define TREE_MAX 256
+
+static const char *tree_category(const struct json_value *c)
+{
+	const char *cat = json_str_field(c, "category");
+
+	return cat != NULL && cat[0] != '\0' ? cat : "";
+}
+
+static const char *tree_group(const struct json_value *c)
+{
+	const char *g = json_str_field(c, "roll_group");
+
+	return g != NULL && g[0] != '\0' ? g : "";
+}
+
+static int tree_cmp(const void *a, const void *b)
+{
+	return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static void tree_member(const struct json_value *c, int indent)
+{
+	const char *name = json_str_field(c, "name");
+	const char *status = json_str_field(c, "status");
+
+	printf("%*s%-24s %s\n", indent, "", name != NULL ? name : "?", status != NULL ? status : "?");
+}
+
+/* The containers of one category path ("" for none), grouped. */
+static void tree_leaves(const struct json_value *list, const char *path, int indent)
+{
+	const char *groups[TREE_MAX];
+	size_t n = list->u.array.count, i, j, ng = 0;
+
+	for (i = 0; i < n && ng < TREE_MAX; i++) {
+		const struct json_value *c = list->u.array.items[i];
+		const char *g = tree_group(c);
+		int seen = 0;
+
+		if (strcmp(tree_category(c), path) != 0 || g[0] == '\0')
+			continue;
+		for (j = 0; j < ng && !seen; j++)
+			seen = strcmp(groups[j], g) == 0;
+		if (!seen)
+			groups[ng++] = g;
+	}
+	qsort(groups, ng, sizeof(groups[0]), tree_cmp);
+	for (j = 0; j < ng; j++) {
+		int split = 0;
+
+		/* Split: a member of this group names another category. */
+		for (i = 0; i < n && !split; i++) {
+			const struct json_value *c = list->u.array.items[i];
+
+			split = strcmp(tree_group(c), groups[j]) == 0 &&
+			        strcmp(tree_category(c), path) != 0;
+		}
+		printf("%*sgroup %s%s\n", indent, "", groups[j],
+		       split ? "  (members in other categories too)" : "");
+		for (i = 0; i < n; i++) {
+			const struct json_value *c = list->u.array.items[i];
+
+			if (strcmp(tree_category(c), path) == 0 && strcmp(tree_group(c), groups[j]) == 0)
+				tree_member(c, indent + 2);
+		}
+	}
+	for (i = 0; i < n; i++) {
+		const struct json_value *c = list->u.array.items[i];
+
+		if (strcmp(tree_category(c), path) == 0 && tree_group(c)[0] == '\0')
+			tree_member(c, indent);
+	}
+}
+
+static void fmt_tree(const struct json_value *v)
+{
+	const struct json_value *list = json_object_get(v, "containers");
+	static char paths[TREE_MAX][256];
+	const char *sorted[TREE_MAX];
+	size_t n, i, j, np = 0;
+	int uncategorised = 0;
+
+	if (list == NULL || list->type != JSON_ARRAY)
+		return;
+	n = list->u.array.count;
+	/* Every category, and every prefix of one, once. */
+	for (i = 0; i < n; i++) {
+		const char *cat = tree_category(list->u.array.items[i]);
+		size_t len = strlen(cat), k;
+
+		if (len == 0) {
+			uncategorised = 1;
+			continue;
+		}
+		for (k = 1; k <= len && np < TREE_MAX; k++) {
+			int seen = 0;
+
+			if (k < len && cat[k] != '/')
+				continue;
+			if (k >= sizeof(paths[0]))
+				break;
+			memcpy(paths[np], cat, k);
+			paths[np][k] = '\0';
+			for (j = 0; j < np && !seen; j++)
+				seen = strcmp(paths[j], paths[np]) == 0;
+			if (!seen)
+				np++;
+		}
+	}
+	for (i = 0; i < np; i++)
+		sorted[i] = paths[i];
+	qsort(sorted, np, sizeof(sorted[0]), tree_cmp);
+	for (i = 0; i < np; i++) {
+		const char *p = sorted[i], *last = strrchr(p, '/');
+		int depth = 0;
+
+		for (j = 0; p[j] != '\0'; j++)
+			depth += p[j] == '/';
+		printf("%*s%s/\n", depth * 2, "", last != NULL ? last + 1 : p);
+		tree_leaves(list, p, depth * 2 + 2);
+	}
+	if (uncategorised) {
+		printf("Uncategorised\n");
+		tree_leaves(list, "", 2);
+	}
 }
 
 static void fmt_removed(const struct json_value *v)
@@ -5502,7 +5643,7 @@ static int cmd_update(const struct cix_client *c, int json_mode, int argc, char 
  * program's -- so the CLI and the dashboard cannot disagree about what
  * "ours" means, and neither has a view the other cannot get.
  */
-static int cmd_ps(const struct cix_client *c, int json_mode, int include_internal)
+static int cmd_ps(const struct cix_client *c, int json_mode, int include_internal, int tree)
 {
 	struct cix_response r;
 	const char *path = include_internal ? CIX_API_listContainers "?include_internal=1"
@@ -5512,7 +5653,7 @@ static int cmd_ps(const struct cix_client *c, int json_mode, int include_interna
 		fprintf(stderr, "cixctl: could not reach daemon\n");
 		return 1;
 	}
-	return emit(&r, json_mode, fmt_list);
+	return emit(&r, json_mode, tree ? fmt_tree : fmt_list);
 }
 
 /* `container ls` -- a noun-based synonym for `ps` (identical output,
@@ -6087,20 +6228,24 @@ static int cmd_container(const struct cix_client *c, int json_mode, int argc, ch
 	 * cli-reference.md and issue #74.
 	 */
 	if (argc >= 1 && strcmp(argv[0], "ls") == 0) {
-		int include_internal = 0;
+		int include_internal = 0, tree = 0;
 		int i;
 
 		for (i = 1; i < argc; i++) {
 			if (strcmp(argv[i], "--all") == 0) {
 				include_internal = 1;
+			} else if (strcmp(argv[i], "--tree") == 0) {
+				tree = 1;
 			} else {
-				fprintf(stderr, "usage: cixctl container ls [--all]\n"
+				fprintf(stderr, "usage: cixctl container ls [--all] [--tree]\n"
 				                "       --all includes the platform's own build "
-				                "containers (#426)\n");
+				                "containers (#426)\n"
+				                "       --tree draws categories, their roll groups and "
+				                "members (ADR-0399)\n");
 				return 2;
 			}
 		}
-		return cmd_ps(c, json_mode, include_internal);
+		return cmd_ps(c, json_mode, include_internal, tree);
 	}
 	if (argc >= 1 && strcmp(argv[0], "drift") == 0)
 		return cmd_container_drift(c, json_mode);

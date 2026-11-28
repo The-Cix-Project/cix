@@ -6,6 +6,12 @@ All notable changes to this project are recorded here, **newest first**. Format 
 
 **Finding things.** Entries are titled by what changed and cite their issue number, so searching for `#347` or for a symbol name is the fastest route in. This file is long by design — it is a history, not a summary.
 
+### A container is shown in its category and its group (ADR-0399)
+
+- **Before:** a redundant pair's one declaration, `roll_group`, was read only by the rolling restart; no container read returned it, so nothing could show which containers belong together. Containers were listed flat, with no way to file them. And a deployment re-apply restarted a running container on any change, so a label alone would have restarted it.
+- **Now:** every container read returns `roll_group` and a new optional `category`, a path of 1-4 segments (`network/core`), both from the stored definition. Clients draw the tree from them: the dashboard's Containers branch and Containers page through one function (`containerTree()`), and `cixctl container ls --tree`; plain `container ls` adds `group=` and `category=` to each line. There is no category registry. A re-apply whose only difference is in those two fields is `200 updated` with no restart; one the create would refuse is a 400 and nothing is stored. `applyDeployment` now also announces `getContainer`.
+- **Gates:** `test_deployment` (in DAEMON_SELFTESTS) applies a deployment with a category, re-applies it with only the labels changed and checks the pid is unchanged, and checks a bad category is refused with nothing stored.
+
 ### The installer seed carries every output of its packages (#762)
 
 - **Before:** the installer ISO's package seed carried glibc's main artifact only. Since glibc gained outputs (2.44-20: glibc-dev, glibc-tools, glibc-gconv), a freshly installed box's first glibc install was no cache hit, because a hit needs every sibling output cached, and it fell through to building glibc from source, offline and with no compiler. `test_installer` showed it once the floor moved to glibc 2.44-22: "default image: installing glibc FAILED -- ... Could not resolve host: mirrors.kernel.org" (compile probe 0.2.57-829). Any ISO built from a host on such a glibc had the same defect.

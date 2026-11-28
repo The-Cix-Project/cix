@@ -278,7 +278,7 @@ Every container operation is a subcommand of `container`. `console NAME` is also
 
 | Command | |
 |---|---|
-| `container ls [--all]` | List containers (running, stopped and exited). `--all` includes the platform's own build containers (#426) |
+| `container ls [--all] [--tree]` | List containers (running, stopped and exited), one line each with its `group=` and `category=` (ADR-0399). `--tree` draws them as categories, the roll groups in each and their members. `--all` includes the platform's own build containers (#426) |
 | `container drift` | Containers that should be running and are not. **Exits 1** if any are listed, so a script can gate on it. A container an operator stopped is listed separately and does not set the exit status; a stopped `unless-stopped` container is not listed. Exit 2 means the daemon could not be asked (#268) |
 | `container run --name=NAME --image=IMAGE --service=NAME=/path [args] [flags...]` | Create and start a container; full flag set below |
 | `container inspect NAME` | Show one container |

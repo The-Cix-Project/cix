@@ -9864,7 +9864,7 @@ paths:
         is why the readiness test compares against that version rather
         than merely checking one exists.
       operationId: applyDeployment
-      x-cix-invalidates: [listDeployments, getDeployment, listContainers, listImages, getImage, listDevices, listDeviceMaps]
+      x-cix-invalidates: [listDeployments, getDeployment, listContainers, getContainer, listImages, getImage, listDevices, listDeviceMaps]
       x-cix-permission: containers:write
       x-cix-mcp: tool
       x-cix-expose: [cli, web]
@@ -18738,7 +18738,23 @@ components:
             DHCP-driven restart is due, it waits until every other member
             is running and ready. A redundant pair, such as two routers
             or two DNS servers, declares one group. Operator actions are
-            not held.
+            not held. It is also the group every container read reports
+            and every client draws (ADR-0399). A deployment re-apply
+            that changes only this field and `category` stores it with no
+            restart.
+        category:
+          title: Category
+          type: string
+          pattern: '^[A-Za-z0-9_\-]{1,63}(/[A-Za-z0-9_\-]{1,63}){0,3}$'
+          description: >
+            Where this container is shown: a path of 1-4 '/'-separated
+            segments, such as `network/core` (ADR-0399). Clients draw the
+            tree from it -- category, then the roll groups in it, then
+            their members. There is no category registry: a category
+            exists while a container names it. It is the site's choice,
+            so it belongs in a deployment, never in a container recipe.
+            Changes nothing that runs: a deployment re-apply that changes
+            only this field and `roll_group` stores it with no restart.
         depends_on:
           title: Depends on
           type: array
@@ -19967,6 +19983,23 @@ components:
             .../stop (see ContainerCreateRequest.restart's
             "unless-stopped" description). Always false unless restart
             is not "no".
+        roll_group:
+          type: string
+          nullable: true
+          description: >
+            The redundant group this container belongs to, from its
+            stored definition (ContainerCreateRequest.roll_group,
+            ADR-0385); null when it declares none. The only source of a
+            group: clients group containers by this value and never
+            infer one from names (ADR-0399).
+        category:
+          type: string
+          nullable: true
+          description: >
+            Where this container is shown, from its stored definition
+            (ContainerCreateRequest.category, ADR-0399); null when it
+            names none. A '/'-separated path, so clients draw a tree of
+            categories, the roll groups in each, and their members.
         depends_on:
           type: array
           items:

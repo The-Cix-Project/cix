@@ -3380,14 +3380,8 @@ function renderTree() {
 			label: "Containers",
 			hash: "containers",
 			icon: "containers",
-			children: cache.containers.map((c) => ({
-				label: c.name,
-				hash: "containers/" + encodeURIComponent(c.name),
-				icon: "containers",
-				/* green running, yellow paused, grey stopped, red
-				 * exited -- the state is the point of the list. */
-				iconColor: containerStatusColorClass(c.status),
-			})),
+			/* ADR-0399: categories, their roll groups, their members. */
+			children: containerTreeNodes(containerTree(cache.containers)),
 		},
 		{
 			label: "Networks",
@@ -3657,10 +3651,104 @@ function ensureActiveCategoryExpanded() {
  * never a domain's state (#592, where `exited` was rendering grey in
  * this very table while the tree showed it red).
  */
+/*
+ * ADR-0399: the containers as a tree, from each one's own `category` and
+ * `roll_group` and nothing else. One function, so the navigation tree's
+ * Containers branch and the Containers page cannot draw it differently.
+ *
+ * Nodes, in display order: { category, label, children } for every
+ * category path and each of its prefixes, sorted; inside a path its
+ * groups, { group, split, children }, then its ungrouped containers,
+ * { container }. Containers that name no category come last, under
+ * { category: "", label: "Uncategorised" } -- or at the top level when no
+ * container names a category at all, where that one heading would say
+ * nothing. A group whose members name different categories appears in
+ * each, with `split` set.
+ */
+function containerTree(containers) {
+	const cat = (c) => c.category || "";
+	const groupOf = (c) => c.roll_group || "";
+	const byName = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+	const parentOf = (p) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
+	const leaves = (path) => {
+		const here = containers.filter((c) => cat(c) === path);
+		const groups = [...new Set(here.map(groupOf).filter((g) => g))].sort(byName);
+
+		return groups.map((g) => ({
+			group: g,
+			split: containers.some((c) => groupOf(c) === g && cat(c) !== path),
+			children: here.filter((c) => groupOf(c) === g).map((c) => ({ container: c })),
+		})).concat(here.filter((c) => !groupOf(c)).map((c) => ({ container: c })));
+	};
+	const paths = new Set();
+
+	for (const c of containers) {
+		const parts = cat(c).split("/").filter((p) => p);
+
+		for (let i = 1; i <= parts.length; i++)
+			paths.add(parts.slice(0, i).join("/"));
+	}
+	const build = (parent) => [...paths]
+		.filter((p) => parentOf(p) === parent)
+		.sort(byName)
+		.map((p) => ({ category: p, label: p.slice(p.lastIndexOf("/") + 1), children: build(p).concat(leaves(p)) }));
+	const tree = build("");
+
+	if (tree.length === 0)
+		return leaves("");
+	if (containers.some((c) => !cat(c)))
+		tree.push({ category: "", label: "Uncategorised", children: leaves("") });
+	return tree;
+}
+
+/* The containers in containerTree() order, each with the group it is
+ * listed under being split across categories or not. */
+function containerTreeOrder(containers) {
+	const out = [];
+	const walk = (nodes, split) => {
+		for (const n of nodes) {
+			if (n.container)
+				out.push({ c: n.container, split });
+			else
+				walk(n.children, n.group !== undefined ? n.split : false);
+		}
+	};
+
+	walk(containerTree(containers), false);
+	return out;
+}
+
+/* The navigation tree's Containers branch, from containerTree(). */
+function containerTreeNodes(nodes) {
+	return nodes.map((n) => (n.container
+		? {
+			label: n.container.name,
+			hash: "containers/" + encodeURIComponent(n.container.name),
+			icon: "containers",
+			/* green running, yellow paused, grey stopped, red
+			 * exited -- the state is the point of the list. */
+			iconColor: containerStatusColorClass(n.container.status),
+		}
+		: {
+			label: n.group !== undefined ? "group " + n.group + (n.split ? " (split)" : "") : n.label,
+			icon: "containers",
+			children: containerTreeNodes(n.children),
+		}));
+}
+
 function renderContainers(containers) {
-	renderTable(document.getElementById("containers"), "Container", containers, [
+	const ordered = containerTreeOrder(containers);
+	const splitOf = new Map(ordered.map((o) => [o.c.name, o.split]));
+
+	renderTable(document.getElementById("containers"), "Container", ordered.map((o) => o.c), [
 		{ field: "name", link: (c) => "#containers/" + encodeURIComponent(c.name) },
 		{ field: "status", badge: (s) => containerStatusKind(s) },
+		/* ADR-0399: where it is filed and the redundant group it is in,
+		 * as the API reports them; the rows are in tree order. */
+		{ label: "Category", text: (c) => c.category || FIELD_ABSENT },
+		{ label: "Group", text: (c) => (c.roll_group
+			? c.roll_group + (splitOf.get(c.name) ? " (split)" : "")
+			: FIELD_ABSENT) },
 		"image",
 		{ label: "IP", text: (c) => (c.networks && c.networks.length > 0
 			? c.networks.map((n) => n.name + ":" + n.ip).join(", ")

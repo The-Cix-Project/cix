@@ -424,6 +424,22 @@ int containerdef_resolve_order(char out_order[][REGISTRY_NAME_MAX])
  * writes an empty array) so neither caller pays for a second parse of a
  * body it has already parsed.
  */
+void containerdef_write_json_labels(const struct json_value *root, struct json_writer *w)
+{
+	static const char *const keys[] = { "roll_group", "category" };
+	size_t i;
+
+	for (i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+		const char *v = root != NULL ? json_as_string(json_object_get(root, keys[i])) : NULL;
+
+		jw_key(w, keys[i]);
+		if (v != NULL && v[0] != '\0')
+			jw_str(w, v);
+		else
+			jw_null(w);
+	}
+}
+
 void containerdef_write_json_volumes(const struct json_value *root, struct json_writer *w)
 {
 	const struct json_value *jvols;
@@ -537,6 +553,7 @@ static void write_stopped_def_json_one(struct container_def *d, struct json_writ
 	}
 	jw_arr_close(w);
 	containerdef_write_json_volumes(root, w);
+	containerdef_write_json_labels(root, w);
 	jw_key(w, "restart");
 	jw_str(w, d->restart_policy);
 	jw_key(w, "restart_delay_seconds");

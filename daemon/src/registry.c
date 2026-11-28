@@ -1258,6 +1258,7 @@ void registry_write_json_one(const struct registry_entry *entry, struct json_wri
 		if (def != NULL && def->body != NULL)
 			body_root = json_parse(def->body, def->body_len);
 		containerdef_write_json_volumes(body_root, w);
+		containerdef_write_json_labels(body_root, w);
 		json_free(body_root);
 
 		jw_key(w, "restart");

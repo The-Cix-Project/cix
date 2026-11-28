@@ -288,6 +288,14 @@ struct container_def *containerdef_find(const char *name);
  */
 void containerdef_write_json_volumes(const struct json_value *root, struct json_writer *w);
 
+/*
+ * ADR-0399: "roll_group" and "category" from the already-parsed persisted
+ * body, each null when the body declares none (NULL root writes both
+ * null). Shared by both writers for the same reason as the volumes: the
+ * stored body is the one source, read when written, never mirrored.
+ */
+void containerdef_write_json_labels(const struct json_value *root, struct json_writer *w);
+
 
 
 /*

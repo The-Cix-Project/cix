@@ -970,6 +970,12 @@ static const char *const n_container_sysctl_flags[] = {
 	NULL
 };
 
+static const char *const n_container_ls_flags[] = {
+	"--all",
+	"--tree",
+	NULL
+};
+
 static const struct cli_node n_container_subs[] = {
 	{ "console", n_container_console_flags, NULL },
 	{ "device", NULL, n_container_device_subs },
@@ -977,7 +983,7 @@ static const struct cli_node n_container_subs[] = {
 	{ "edit", n_container_edit_flags, NULL },
 	{ "files", NULL, n_container_files_subs },
 	{ "inspect", NULL, NULL },
-	{ "ls", NULL, NULL },
+	{ "ls", n_container_ls_flags, NULL },
 	{ "network", NULL, n_container_network_subs },
 	{ "pause", NULL, NULL },
 	{ "rm", NULL, NULL },
